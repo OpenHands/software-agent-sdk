@@ -3,6 +3,8 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
+from opentelemetry.trace import Span
+
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -23,6 +25,12 @@ from openhands.sdk.event import (
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import (
+    end_active_span,
+    observe,
+    should_enable_observability,
+    start_active_span,
+)
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -42,6 +50,7 @@ class LocalConversation(BaseConversation):
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
+    _span: Span | None
 
     def __init__(
         self,
@@ -137,6 +146,10 @@ class LocalConversation(BaseConversation):
 
         self._cleanup_initiated = False
         atexit.register(self.close)
+        if should_enable_observability():
+            self._span = start_active_span("conversation")
+        else:
+            self._span = None
 
     @property
     def id(self) -> ConversationID:
@@ -163,6 +176,7 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    @observe(name="conversation.send_message")
     def send_message(self, message: str | Message) -> None:
         """Send a message to the agent.
 
@@ -214,6 +228,7 @@ class LocalConversation(BaseConversation):
             )
             self._on_event(user_msg_event)
 
+    @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
 
@@ -284,6 +299,8 @@ class LocalConversation(BaseConversation):
                     ):
                         break
         except Exception as e:
+            if self._span:
+                end_active_span(self._span)
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
 
@@ -368,6 +385,8 @@ class LocalConversation(BaseConversation):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
+        if self._span:
+            end_active_span(self._span)
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()
@@ -378,6 +397,7 @@ class LocalConversation(BaseConversation):
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
 
+    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 

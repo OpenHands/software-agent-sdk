@@ -8,6 +8,7 @@ openhands-sdk = { workspace = true }
 openhands-tools = { workspace = true }
 openhands-workspace = { workspace = true }
 openhands-agent-server = { workspace = true }
+lmnr = { path = "../lmnr-python-sdk" }
 
 [dependency-groups]
 dev = [
@@ -24,6 +25,8 @@ dev = [
     "pyinstaller>=6.16.0",
     "streamlit>=1.49.1",
     "pytest-timeout>=2.4.0",
+    "load-dotenv>=0.1.0",
+    "lmnr>=0.7.18",
 ]
 
 # Ruff configuration
