@@ -514,7 +514,7 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         if should_enable_observability():
-            self._span = start_active_span(f"conversation.{self._id}")
+            self._span = start_active_span("conversation", session_id=str(self._id))
         else:
             self._span = None
 

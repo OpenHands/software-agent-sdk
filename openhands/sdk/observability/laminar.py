@@ -105,9 +105,14 @@ def should_enable_observability():
     return False
 
 
-def start_active_span(name: str) -> trace.Span:
+def start_active_span(name: str, session_id: str | None = None) -> trace.Span:
     if is_package_installed("lmnr"):
-        return _start_laminar_active_span(name)
+        from lmnr import Laminar
+
+        span = _start_laminar_active_span(name)
+        if session_id:
+            Laminar.set_trace_session_id(session_id)
+        return span
     else:
         return _start_otel_active_span(name)
 
