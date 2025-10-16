@@ -147,10 +147,7 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
         atexit.register(self.close)
         if should_enable_observability():
-            self._span = start_active_span("conversation", session_id=str(desired_id))
-
-        else:
-            self._span = None
+            start_active_span("conversation", session_id=str(desired_id))
 
     @property
     def id(self) -> ConversationID:
@@ -263,8 +260,7 @@ class LocalConversation(BaseConversation):
                         AgentExecutionStatus.PAUSED,
                         AgentExecutionStatus.STUCK,
                     ]:
-                        if self._span:
-                            end_active_span(self._span)
+                        end_active_span(self._span)
                         break
 
                     # Check for stuck patterns if enabled
@@ -302,8 +298,7 @@ class LocalConversation(BaseConversation):
                     ):
                         break
         except Exception as e:
-            if self._span:
-                end_active_span(self._span)
+            end_active_span(self._span)
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
 
@@ -388,8 +383,7 @@ class LocalConversation(BaseConversation):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
-        if self._span:
-            end_active_span(self._span)
+        end_active_span()
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()

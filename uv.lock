@@ -1486,8 +1486,8 @@ wheels = [
 
 [[package]]
 name = "lmnr"
-version = "0.7.17"
-source = { directory = "../lmnr-python-sdk" }
+version = "0.7.18"
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
     { name = "httpx" },
@@ -1506,94 +1506,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "tqdm" },
 ]
-
-[package.metadata]
-requires-dist = [
-    { name = "grpcio", specifier = ">=1" },
-    { name = "httpx", specifier = ">=0.24.0" },
-    { name = "opentelemetry-api", specifier = ">=1.33.0" },
-    { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.33.0" },
-    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.33.0" },
-    { name = "opentelemetry-instrumentation", specifier = ">=0.54b0" },
-    { name = "opentelemetry-instrumentation-alephalpha", marker = "extra == 'alephalpha'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-alephalpha", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-bedrock", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-bedrock", marker = "extra == 'bedrock'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-chromadb", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-chromadb", marker = "extra == 'chromadb'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-cohere", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-cohere", marker = "extra == 'cohere'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-crewai", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-crewai", marker = "extra == 'crewai'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-haystack", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-haystack", marker = "extra == 'haystack'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-lancedb", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-lancedb", marker = "extra == 'lancedb'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-langchain", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-langchain", marker = "extra == 'langchain'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-llamaindex", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-llamaindex", marker = "extra == 'llamaindex'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-marqo", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-marqo", marker = "extra == 'marqo'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-mcp", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-mcp", marker = "extra == 'mcp'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-milvus", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-milvus", marker = "extra == 'milvus'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-mistralai", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-mistralai", marker = "extra == 'mistralai'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-ollama", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-ollama", marker = "extra == 'ollama'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-pinecone", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-pinecone", marker = "extra == 'pinecone'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-qdrant", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-qdrant", marker = "extra == 'qdrant'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-replicate", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-replicate", marker = "extra == 'replicate'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-sagemaker", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-sagemaker", marker = "extra == 'sagemaker'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-threading", specifier = ">=0.57b0" },
-    { name = "opentelemetry-instrumentation-together", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-together", marker = "extra == 'together'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-transformers", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-transformers", marker = "extra == 'transformers'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-vertexai", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-vertexai", marker = "extra == 'vertexai'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-watsonx", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-watsonx", marker = "extra == 'watsonx'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-weaviate", marker = "extra == 'all'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-instrumentation-weaviate", marker = "extra == 'weaviate'", specifier = ">=0.47.1" },
-    { name = "opentelemetry-sdk", specifier = ">=1.33.0" },
-    { name = "opentelemetry-semantic-conventions", specifier = ">=0.54b0" },
-    { name = "opentelemetry-semantic-conventions-ai", specifier = ">=0.4.13" },
-    { name = "orjson", specifier = ">=3.0.0" },
-    { name = "packaging", specifier = ">=22.0" },
-    { name = "pydantic", specifier = ">=2.0.3,<3.0.0" },
-    { name = "python-dotenv", specifier = ">=1.0" },
-    { name = "tenacity", specifier = ">=8.0" },
-    { name = "tqdm", specifier = ">=4.0" },
-]
-provides-extras = ["alephalpha", "bedrock", "chromadb", "cohere", "crewai", "haystack", "lancedb", "langchain", "llamaindex", "marqo", "mcp", "milvus", "mistralai", "ollama", "pinecone", "qdrant", "replicate", "sagemaker", "together", "transformers", "vertexai", "watsonx", "weaviate", "all"]
-
-[package.metadata.requires-dev]
-dev = [
-    { name = "anthropic", extras = ["bedrock"], specifier = ">=0.60.0" },
-    { name = "autopep8", specifier = ">=2.3.2" },
-    { name = "flake8", specifier = ">=7.2.0" },
-    { name = "google-genai", specifier = ">=1.31.0" },
-    { name = "groq", specifier = ">=0.30.0" },
-    { name = "langchain", specifier = ">=0.3.27" },
-    { name = "langchain-core", specifier = ">=0.3.75" },
-    { name = "langchain-openai", specifier = ">=0.3.32" },
-    { name = "langgraph", specifier = ">=0.4.8" },
-    { name = "litellm", specifier = ">=1.77.0" },
-    { name = "openai", specifier = ">=1.107.0" },
-    { name = "patchright", specifier = ">=1.52.3" },
-    { name = "playwright", specifier = ">=1.52.0" },
-    { name = "pytest", specifier = ">=8.3.5" },
-    { name = "pytest-asyncio", specifier = ">=1.1.0" },
-    { name = "pytest-recording", specifier = ">=0.13.4" },
-    { name = "pytest-sugar", specifier = ">=1.0.0" },
-    { name = "vcrpy", specifier = ">=7.0.0" },
+sdist = { url = "https://files.pythonhosted.org/packages/5b/f5/9579ab8075f701fd0940dffbc79eacfbe5e8b5ed71dda2628d450913c456/lmnr-0.7.18.tar.gz", hash = "sha256:7143fe04ad2a19c8526f5e2693c8800c7535b0060884c103561d1de387b9d383", size = 192208, upload-time = "2025-10-16T09:45:06.283Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4d/50/271b5efd4dab39dfe3930639cd3d0f7803d59019c46a6066c3ac6dcb9d33/lmnr-0.7.18-py3-none-any.whl", hash = "sha256:891dff3125c065cedb33e311489ca3822adb87d9eef2a1e55735499c42b4d039", size = 244985, upload-time = "2025-10-16T09:45:04.076Z" },
 ]
 
 [[package]]
@@ -2070,7 +1985,7 @@ dependencies = [
     { name = "fastmcp" },
     { name = "httpx" },
     { name = "litellm" },
-    { name = "opentelemetry-api" },
+    { name = "lmnr" },
     { name = "pydantic" },
     { name = "python-frontmatter" },
     { name = "python-json-logger" },
@@ -2089,6 +2004,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.11.3" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "litellm", specifier = ">=1.77.7.dev9" },
+    { name = "lmnr", specifier = ">=0.7.18" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "python-json-logger", specifier = ">=3.3.0" },

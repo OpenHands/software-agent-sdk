@@ -2,6 +2,7 @@ import os
 import shutil
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import observe
 
 from .base import FileStore
 
@@ -33,6 +34,7 @@ class LocalFileStore(FileStore):
             raise ValueError(f"path escapes filestore root: {path}")
         return full
 
+    @observe(name="LocalFileStore.write", span_type="TOOL")
     def write(self, path: str, contents: str | bytes) -> None:
         full_path = self.get_full_path(path)
         os.makedirs(os.path.dirname(full_path), exist_ok=True)
@@ -43,11 +45,13 @@ class LocalFileStore(FileStore):
             with open(full_path, "wb") as f:
                 f.write(contents)
 
+    @observe(name="LocalFileStore.read", span_type="TOOL")
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
         with open(full_path, encoding="utf-8") as f:
             return f.read()
 
+    @observe(name="LocalFileStore.list", span_type="TOOL")
     def list(self, path: str) -> list[str]:
         full_path = self.get_full_path(path)
         if not os.path.exists(full_path):
@@ -62,6 +66,7 @@ class LocalFileStore(FileStore):
         files = [f + "/" if os.path.isdir(self.get_full_path(f)) else f for f in files]
         return files
 
+    @observe(name="LocalFileStore.delete", span_type="TOOL")
     def delete(self, path: str) -> None:
         try:
             full_path = self.get_full_path(path)
