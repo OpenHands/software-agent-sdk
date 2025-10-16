@@ -1,4 +1,3 @@
-import os
 from collections.abc import Callable
 from contextvars import Context, Token
 from typing import (
@@ -7,11 +6,16 @@ from typing import (
 )
 
 import litellm
-from dotenv import dotenv_values
-from lmnr import Laminar, LaminarLiteLLMCallback, observe as laminar_observe
+from lmnr import (
+    Instruments,
+    Laminar,
+    LaminarLiteLLMCallback,
+    observe as laminar_observe,
+)
 from opentelemetry import trace
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.utils import get_env
 
 
 logger = get_logger(__name__)
@@ -32,7 +36,17 @@ def maybe_init_laminar():
     OTEL_EXPORTER=otlp_http # or otlp_grpc
     """
     if should_enable_observability():
-        Laminar.initialize()
+        if _is_otel_backend_laminar():
+            Laminar.initialize()
+        else:
+            # Do not enable browser session replays for non-laminar backends
+            Laminar.initialize(
+                disabled_instruments=[
+                    Instruments.BROWSER_USE_SESSION,
+                    Instruments.PATCHRIGHT,
+                    Instruments.PLAYWRIGHT,
+                ],
+            )
         litellm.callbacks.append(LaminarLiteLLMCallback())
     else:
         logger.debug(
@@ -78,18 +92,27 @@ def observe[**P, R](
 
 
 def should_enable_observability():
-    dotenv_vals = dotenv_values()
     keys = [
         "LMNR_PROJECT_API_KEY",
         "OTEL_ENDPOINT",
         "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
     ]
-    if any(dotenv_vals.get(key) for key in keys) or any(os.getenv(key) for key in keys):
+    if any(get_env(key) for key in keys):
         return True
     if Laminar.is_initialized():
         return True
     return False
+
+
+def _is_otel_backend_laminar():
+    """Simple heuristic to check if the OTEL backend is Laminar.
+    Caveat: This will still be True if another backend uses the same
+    authentication scheme, and the user uses LMNR_PROJECT_API_KEY
+    instead of OTEL_HEADERS to authenticate.
+    """
+    key = get_env("LMNR_PROJECT_API_KEY")
+    return key is not None and key != ""
 
 
 class SpanManager:

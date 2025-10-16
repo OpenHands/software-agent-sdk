@@ -17,7 +17,6 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "basedpyright", specifier = ">=1.21.0" },
-    { name = "lmnr", directory = "../lmnr-python-sdk" },
     { name = "load-dotenv", specifier = ">=0.1.0" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "psutil", specifier = ">=7.0.0" },
