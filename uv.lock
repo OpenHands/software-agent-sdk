@@ -17,7 +17,6 @@ members = [
 [manifest.dependency-groups]
 dev = [
     { name = "basedpyright", specifier = ">=1.21.0" },
-    { name = "load-dotenv", specifier = ">=0.1.0" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "pycodestyle", specifier = ">=2.12.0" },
@@ -1508,18 +1507,6 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/5b/f5/9579ab8075f701fd0940dffbc79eacfbe5e8b5ed71dda2628d450913c456/lmnr-0.7.18.tar.gz", hash = "sha256:7143fe04ad2a19c8526f5e2693c8800c7535b0060884c103561d1de387b9d383", size = 192208, upload-time = "2025-10-16T09:45:06.283Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/4d/50/271b5efd4dab39dfe3930639cd3d0f7803d59019c46a6066c3ac6dcb9d33/lmnr-0.7.18-py3-none-any.whl", hash = "sha256:891dff3125c065cedb33e311489ca3822adb87d9eef2a1e55735499c42b4d039", size = 244985, upload-time = "2025-10-16T09:45:04.076Z" },
-]
-
-[[package]]
-name = "load-dotenv"
-version = "0.1.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "python-dotenv" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/d7/95/055d123dde74bd54b99b27a3c2d8c6e218f544e0bd437480f61ccf85a07f/load-dotenv-0.1.0.tar.gz", hash = "sha256:bbe5f40072d4a61eadca66de6c222df5a2d935d6d41b703be1ff75396f635145", size = 6404, upload-time = "2022-09-02T19:55:01.349Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/14/2e/268a528dfa1f76999435634b0453fdd917ea878a818a6d5981632f7acffb/load_dotenv-0.1.0-py3-none-any.whl", hash = "sha256:614803f720153fb8a5f97124a72aaa3930a67aa5547cbe8603d01ea7f9ac1adf", size = 7175, upload-time = "2022-09-02T19:54:59.85Z" },
 ]
 
 [[package]]
