@@ -35,6 +35,7 @@ from openhands.sdk.observability.laminar import (
     observe,
     should_enable_observability,
 )
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
@@ -413,16 +414,7 @@ class Agent(AgentBase):
 
         # Execute actions!
         if should_enable_observability():
-            try:
-                if (
-                    action_event.action is not None
-                    and hasattr(action_event.action, "kind")
-                ):
-                    tool_name = action_event.action.kind
-                else:
-                    tool_name = action_event.tool_name
-            except Exception:
-                tool_name = "agent.execute_action"
+            tool_name = extract_action_name(action_event)
             observation: Observation = observe(name=tool_name, span_type="TOOL")(tool)(
                 action_event.action, conversation
             )

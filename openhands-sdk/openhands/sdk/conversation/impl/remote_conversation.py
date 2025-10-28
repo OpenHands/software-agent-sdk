@@ -653,10 +653,7 @@ class RemoteConversation(BaseConversation):
         except Exception:
             pass
 
-        try:
-            end_active_span()
-        except Exception:
-            pass
+        end_active_span()
 
         try:
             self._client.close()

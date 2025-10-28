@@ -260,7 +260,6 @@ class LocalConversation(BaseConversation):
                         AgentExecutionStatus.PAUSED,
                         AgentExecutionStatus.STUCK,
                     ]:
-                        end_active_span()
                         break
 
                     # Check for stuck patterns if enabled
@@ -298,9 +297,10 @@ class LocalConversation(BaseConversation):
                     ):
                         break
         except Exception as e:
-            end_active_span()
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
+        finally:
+            end_active_span()
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
