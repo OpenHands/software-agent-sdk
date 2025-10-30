@@ -13,10 +13,10 @@
 
 .modal-content {
   background: white;
-  border-radius: 8px;
+  border-radius: 6px;
   padding: 0;
   width: 90%;
-  max-width: 600px;
+  max-width: 500px;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
@@ -26,14 +26,14 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 1.5rem;
+  padding: 1rem;
   border-bottom: 1px solid #e0e0e0;
 }
 
 .modal-header h2 {
   margin: 0;
   color: #333;
-  font-size: 1.5rem;
+  font-size: 1.3rem;
 }
 
 .close-button {
@@ -58,59 +58,33 @@
 }
 
 .settings-status {
-  padding: 1.5rem;
+  padding: 1rem;
   border-bottom: 1px solid #e0e0e0;
   background-color: #f8f9fa;
 }
 
-.current-settings {
-  margin-bottom: 1.5rem;
-}
-
-.current-settings h3 {
-  margin: 0 0 1rem 0;
-  color: #333;
-  font-size: 1.1rem;
-}
-
-.current-settings ul {
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.current-settings li {
-  padding: 0.5rem 0;
-  border-bottom: 1px solid #e0e0e0;
-  font-size: 0.9rem;
-}
-
-.current-settings li:last-child {
-  border-bottom: none;
-}
-
 .settings-form {
-  padding: 1.5rem;
+  padding: 1rem;
 }
 
 .form-group {
-  margin-bottom: 1.5rem;
+  margin-bottom: 1rem;
 }
 
 .form-group label {
   display: block;
-  margin-bottom: 0.5rem;
+  margin-bottom: 0.3rem;
   font-weight: 600;
   color: #333;
-  font-size: 0.9rem;
+  font-size: 0.85rem;
 }
 
 .form-group input {
   width: 100%;
-  padding: 0.75rem;
+  padding: 0.6rem;
   border: 1px solid #ddd;
   border-radius: 4px;
-  font-size: 1rem;
+  font-size: 0.9rem;
   transition: border-color 0.2s, box-shadow 0.2s;
   box-sizing: border-box;
 }
@@ -129,25 +103,25 @@
 .error-message {
   display: block;
   color: #e74c3c;
-  font-size: 0.8rem;
-  margin-top: 0.25rem;
+  font-size: 0.75rem;
+  margin-top: 0.2rem;
 }
 
 .form-actions {
   display: flex;
-  gap: 1rem;
+  gap: 0.75rem;
   justify-content: flex-end;
-  margin-top: 2rem;
-  padding-top: 1rem;
+  margin-top: 1.5rem;
+  padding-top: 0.75rem;
   border-top: 1px solid #e0e0e0;
 }
 
 .cancel-button,
 .save-button {
-  padding: 0.75rem 1.5rem;
+  padding: 0.6rem 1.2rem;
   border: none;
   border-radius: 4px;
-  font-size: 1rem;
+  font-size: 0.9rem;
   cursor: pointer;
   transition: background-color 0.2s, transform 0.1s;
 }

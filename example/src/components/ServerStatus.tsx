@@ -167,29 +167,9 @@ export const ServerStatus: React.FC<ServerStatusProps> = ({ settings, onRefresh 
         )}
       </div>
 
-      {!status?.isConnected && (
-        <div className="status-help">
-          <p>💡 <strong>Connection Issues?</strong></p>
-          <ul>
-            <li>Make sure the agent server is running</li>
-            <li>Check that the server URL is correct</li>
-            <li>Verify the agent server API key if required</li>
-            <li>Check for network connectivity issues</li>
-          </ul>
-        </div>
-      )}
 
-      {status?.isConnected && status?.llmStatus === 'error' && (
-        <div className="status-help">
-          <p>💡 <strong>LLM Configuration Issues?</strong></p>
-          <ul>
-            <li>Verify your LLM API key is correct</li>
-            <li>Check that the model name is supported</li>
-            <li>Ensure you have sufficient API credits</li>
-            <li>Check the agent server logs for more details</li>
-          </ul>
-        </div>
-      )}
+
+
     </div>
   );
 };
