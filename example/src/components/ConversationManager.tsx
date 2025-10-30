@@ -79,9 +79,8 @@ export const ConversationManager: React.FC = () => {
       const agent: AgentBase = {
         name: 'CodeActAgent',
         llm: {
-          model: 'gpt-4o-mini',
-          api_key: settings.apiKey || '',
-          base_url: 'https://api.openai.com/v1'
+          model: settings.modelName,
+          api_key: settings.apiKey || ''
         }
       };
 
