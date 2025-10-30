@@ -13,10 +13,10 @@
   border-bottom: 2px solid #e5e7eb;
 }
 
-.conversation-header h1 {
+.conversation-header h2 {
   margin: 0;
   color: #1f2937;
-  font-size: 2rem;
+  font-size: 1.5rem;
 }
 
 .header-actions {
@@ -24,7 +24,7 @@
   gap: 10px;
 }
 
-.refresh-button, .create-button {
+.refresh-btn, .create-btn {
   padding: 8px 16px;
   border: none;
   border-radius: 6px;
@@ -34,25 +34,25 @@
   transition: all 0.2s;
 }
 
-.refresh-button {
+.refresh-btn {
   background-color: #6b7280;
   color: white;
 }
 
-.refresh-button:hover:not(:disabled) {
+.refresh-btn:hover:not(:disabled) {
   background-color: #4b5563;
 }
 
-.create-button {
+.create-btn {
   background-color: #3b82f6;
   color: white;
 }
 
-.create-button:hover:not(:disabled) {
+.create-btn:hover:not(:disabled) {
   background-color: #2563eb;
 }
 
-.refresh-button:disabled, .create-button:disabled {
+.refresh-btn:disabled, .create-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }
@@ -76,7 +76,7 @@
   text-align: center;
 }
 
-.conversation-layout {
+.conversation-content {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 20px;
@@ -90,7 +90,7 @@
   padding: 20px;
 }
 
-.conversation-list h2 {
+.conversation-list h3 {
   margin: 0 0 15px 0;
   color: #1f2937;
   font-size: 1.25rem;
@@ -175,7 +175,7 @@
   gap: 5px;
 }
 
-.delete-button {
+.delete-btn {
   background: none;
   border: none;
   cursor: pointer;
@@ -185,18 +185,18 @@
   font-size: 16px;
 }
 
-.delete-button:hover {
+.delete-btn:hover {
   background-color: #fee2e2;
 }
 
-.conversation-detail {
+.conversation-details {
   background-color: #f9fafb;
   border: 1px solid #e5e7eb;
   border-radius: 8px;
   padding: 20px;
 }
 
-.conversation-detail h2 {
+.conversation-details h3 {
   margin: 0 0 15px 0;
   color: #1f2937;
   font-size: 1.25rem;
@@ -278,6 +278,28 @@
   cursor: not-allowed;
 }
 
+.send-btn {
+  align-self: flex-start;
+  padding: 8px 16px;
+  background-color: #10b981;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 500;
+  transition: background-color 0.2s;
+}
+
+.send-btn:hover:not(:disabled) {
+  background-color: #059669;
+}
+
+.send-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .empty-state {
   text-align: center;
   padding: 60px 20px;
@@ -287,6 +309,98 @@
 .empty-state h2 {
   color: #374151;
   margin-bottom: 10px;
+}
+
+/* New structure styles */
+.loading {
+  text-align: center;
+  color: #6b7280;
+  padding: 20px;
+  font-style: italic;
+}
+
+.no-selection {
+  text-align: center;
+  color: #6b7280;
+  padding: 40px 20px;
+}
+
+.details-content {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.details-info {
+  background-color: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.detail-row {
+  margin: 8px 0;
+  font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.detail-row strong {
+  color: #374151;
+  min-width: 120px;
+}
+
+.conversation-details .conversation-details {
+  font-size: 12px;
+  color: #6b7280;
+  margin-top: 5px;
+}
+
+.conversation-details .conversation-details > div {
+  margin: 2px 0;
+}
+
+.events-section {
+  background-color: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.events-section h4 {
+  margin: 0 0 15px 0;
+  color: #1f2937;
+  font-size: 1rem;
+}
+
+.no-events {
+  text-align: center;
+  color: #6b7280;
+  padding: 20px;
+  font-style: italic;
+}
+
+.message-section {
+  background-color: white;
+  border: 1px solid #d1d5db;
+  border-radius: 6px;
+  padding: 15px;
+}
+
+.message-section h4 {
+  margin: 0 0 10px 0;
+  color: #1f2937;
+  font-size: 1rem;
+}
+
+.event-message {
+  margin-top: 8px;
+  padding: 8px;
+  background-color: #f3f4f6;
+  border-radius: 4px;
+  font-size: 13px;
+  line-height: 1.4;
 }
 
 /* Events and Messages Styles */
@@ -389,7 +503,7 @@
 
 /* Responsive design */
 @media (max-width: 768px) {
-  .conversation-layout {
+  .conversation-content {
     grid-template-columns: 1fr;
   }
   
