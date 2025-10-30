@@ -93,7 +93,8 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
         },
         workspace: {
           type: 'local',
-          path: '/tmp/test-workspace'
+          path: '/tmp/test-workspace',
+          working_dir: '/tmp/test-workspace'
         }
       }),
       signal: AbortSignal.timeout(10000), // 10 second timeout
