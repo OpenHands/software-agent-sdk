@@ -22,6 +22,8 @@ export const ConversationManager: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [manager, setManager] = useState<SDKConversationManager | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
+  const [selectedConversationDetails, setSelectedConversationDetails] = useState<RemoteConversation | null>(null);
+  const [conversationEvents, setConversationEvents] = useState<any[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [activeConversations, setActiveConversations] = useState<Map<string, RemoteConversation>>(new Map());
   const [currentAgent, setCurrentAgent] = useState<AgentBase | null>(null);
@@ -152,12 +154,44 @@ export const ConversationManager: React.FC = () => {
       // Clear selection if this conversation was selected
       if (selectedConversation === conversationId) {
         setSelectedConversation(null);
+        setSelectedConversationDetails(null);
+        setConversationEvents([]);
       }
 
       // Reload conversations list
       await loadConversations();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to delete conversation');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Load conversation details
+  const loadConversationDetails = async (conversationId: string) => {
+    if (!manager) return;
+
+    setLoading(true);
+    setError(null);
+    try {
+      // Check if we already have this conversation loaded
+      let conversation = activeConversations.get(conversationId);
+      
+      if (!conversation) {
+        // Load the conversation if not already active
+        conversation = await manager.loadConversation(conversationId);
+        setActiveConversations(prev => new Map(prev.set(conversationId, conversation!)));
+      }
+
+      setSelectedConversationDetails(conversation);
+
+      // Load events
+      const events = await conversation.state.events.getEvents();
+      setConversationEvents(events);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load conversation details');
+      setSelectedConversationDetails(null);
+      setConversationEvents([]);
     } finally {
       setLoading(false);
     }
@@ -272,7 +306,10 @@ export const ConversationManager: React.FC = () => {
                 <div 
                   key={conversation.id} 
                   className={`conversation-item ${selectedConversation === conversation.id ? 'selected' : ''}`}
-                  onClick={() => setSelectedConversation(conversation.id)}
+                  onClick={() => {
+                    setSelectedConversation(conversation.id);
+                    loadConversationDetails(conversation.id);
+                  }}
                 >
                   <div className="conversation-info">
                     <div className="conversation-id">
@@ -331,13 +368,72 @@ export const ConversationManager: React.FC = () => {
                     </p>
                     <p><strong>Agent:</strong> {conv.agent?.name}</p>
                     <p><strong>Model:</strong> {conv.agent?.llm?.model}</p>
-                    <p><strong>Total Events:</strong> {conv.conversation_stats?.total_events || 0}</p>
-                    <p><strong>Messages:</strong> {conv.conversation_stats?.message_events || 0}</p>
-                    <p><strong>Actions:</strong> {conv.conversation_stats?.action_events || 0}</p>
-                    <p><strong>Observations:</strong> {conv.conversation_stats?.observation_events || 0}</p>
+                    <p><strong>Total Events:</strong> {conversationEvents.length}</p>
+                    <p><strong>Messages:</strong> {conversationEvents.filter(e => e.event_type === 'message').length}</p>
+                    <p><strong>Actions:</strong> {conversationEvents.filter(e => e.event_type === 'action').length}</p>
+                    <p><strong>Observations:</strong> {conversationEvents.filter(e => e.event_type === 'observation').length}</p>
                   </div>
                 );
               })()}
+            </div>
+
+            {/* Events/Messages Section */}
+            <div className="conversation-events">
+              <h3>Events & Messages</h3>
+              {loading && <p>Loading conversation details...</p>}
+              {conversationEvents.length === 0 && !loading && (
+                <p>No events found in this conversation.</p>
+              )}
+              <div className="events-list">
+                {conversationEvents.map((event, index) => (
+                  <div key={index} className={`event-item event-${event.event_type}`}>
+                    <div className="event-header">
+                      <span className="event-type">{event.event_type}</span>
+                      <span className="event-timestamp">
+                        {event.timestamp ? new Date(event.timestamp).toLocaleString() : 'No timestamp'}
+                      </span>
+                    </div>
+                    <div className="event-content">
+                      {event.event_type === 'message' && event.content && (
+                        <div>
+                          <strong>{event.content.role}:</strong>
+                          <div className="message-content">
+                            {Array.isArray(event.content.content) 
+                              ? event.content.content.map((c: any, i: number) => (
+                                  <div key={i}>{c.text || JSON.stringify(c)}</div>
+                                ))
+                              : event.content.content
+                            }
+                          </div>
+                        </div>
+                      )}
+                      {event.event_type === 'action' && (
+                        <div>
+                          <strong>Action:</strong> {event.action || 'Unknown action'}
+                          {event.args && (
+                            <div className="action-args">
+                              <strong>Args:</strong> <pre>{JSON.stringify(event.args, null, 2)}</pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {event.event_type === 'observation' && (
+                        <div>
+                          <strong>Observation:</strong>
+                          <div className="observation-content">
+                            {event.content || event.observation || 'No content'}
+                          </div>
+                        </div>
+                      )}
+                      {!['message', 'action', 'observation'].includes(event.event_type) && (
+                        <div>
+                          <pre>{JSON.stringify(event, null, 2)}</pre>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
             </div>
 
             <div className="message-input-section">
