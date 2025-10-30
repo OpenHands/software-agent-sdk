@@ -467,7 +467,7 @@ export const ConversationManager: React.FC = () => {
                   }`}
                   onClick={() => selectConversation(conversation.id)}
                 >
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 text-left">
                     <div className="text-sm font-mono text-gray-600 dark:text-gray-400 mb-2">
                       ID: {conversation.id.substring(0, 8)}...
                     </div>
