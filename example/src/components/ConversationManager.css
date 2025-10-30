@@ -344,6 +344,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  color: #374151;
 }
 
 .detail-row strong {
@@ -401,6 +402,7 @@
   border-radius: 4px;
   font-size: 13px;
   line-height: 1.4;
+  color: #374151;
 }
 
 /* Events and Messages Styles */
@@ -469,6 +471,7 @@
 .event-content {
   font-size: 13px;
   line-height: 1.4;
+  color: #374151;
 }
 
 .message-content {
