@@ -81,9 +81,7 @@ export class RemoteConversation {
   }
 
   async conversationStats(): Promise<ConversationStats> {
-    const response = await this.client.get<ConversationInfo>(
-      `/api/conversations/${this.id}`
-    );
+    const response = await this.client.get<ConversationInfo>(`/api/conversations/${this.id}`);
     return response.data.stats;
   }
 
