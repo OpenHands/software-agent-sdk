@@ -25,6 +25,8 @@ export interface ConversationInfo {
   title?: string;
   created_at?: string;
   updated_at?: string;
+  // Add status as an alias for agent_status for backward compatibility
+  status?: AgentExecutionStatus;
   [key: string]: any;
 }
 

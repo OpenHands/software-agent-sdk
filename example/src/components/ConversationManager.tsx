@@ -172,7 +172,8 @@ export const ConversationManager: React.FC = () => {
         agent: conv.agent,
         created_at: conv.created_at,
         updated_at: conv.updated_at,
-        status: conv.status
+        // Map agent_status to status for display
+        status: conv.agent_status || conv.status
       }));
       
       setConversations(conversationData);
@@ -192,7 +193,7 @@ export const ConversationManager: React.FC = () => {
     try {
       // Create a simple agent configuration
       const agent: AgentBase = {
-        name: 'CodeActAgent',
+        kind: 'Agent',
         llm: {
           model: settings.modelName,
           api_key: settings.apiKey || ''
@@ -388,16 +389,18 @@ export const ConversationManager: React.FC = () => {
   };
 
   const getAgentName = (agent: AgentBase) => {
-    return agent.name || 'Unknown Agent';
+    return agent.kind || agent.name || 'Unknown Agent';
   };
 
   const getStatusColorClass = (status?: string) => {
     switch (status) {
       case 'running': return 'text-green-500';
-      case 'stopped': return 'text-red-500';
+      case 'idle': return 'text-gray-500';
       case 'paused': return 'text-orange-500';
+      case 'waiting_for_confirmation': return 'text-yellow-500';
       case 'finished': return 'text-blue-500';
       case 'error': return 'text-red-600';
+      case 'stuck': return 'text-red-500';
       default: return 'text-gray-500';
     }
   };
@@ -405,10 +408,12 @@ export const ConversationManager: React.FC = () => {
   const getStatusIcon = (status?: string) => {
     switch (status) {
       case 'running': return '🔄';
-      case 'stopped': return '⏹️';
+      case 'idle': return '⏸️';
       case 'paused': return '⏸️';
+      case 'waiting_for_confirmation': return '⏳';
       case 'finished': return '✅';
       case 'error': return '❌';
+      case 'stuck': return '🚫';
       default: return '❓';
     }
   };
@@ -455,7 +460,7 @@ export const ConversationManager: React.FC = () => {
               <p>No conversations yet. Create your first conversation!</p>
             </div>
           ) : (
-            <div className="space-y-3 max-h-96 overflow-y-auto">
+            <div className="space-y-3 max-h-[600px] overflow-y-auto">
               {conversations.map((conversation) => (
                 <div 
                   key={conversation.id} 
