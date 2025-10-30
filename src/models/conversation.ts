@@ -9,6 +9,7 @@ import {
   ConfirmationPolicyBase,
   ConversationStats,
   AgentBase,
+  Message,
 } from '../types/base';
 
 export interface ConversationInfo {
@@ -40,7 +41,7 @@ export interface ConfirmationResponseRequest {
 
 export interface CreateConversationRequest {
   agent: AgentBase;
-  initial_message?: string;
+  initial_message?: Message;
   max_iterations: number;
   stuck_detection: boolean;
   workspace: any;
