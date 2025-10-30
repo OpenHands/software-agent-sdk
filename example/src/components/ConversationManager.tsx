@@ -10,270 +10,203 @@ import {
 import { useSettings } from '../contexts/SettingsContext';
 import './ConversationManager.css';
 
-interface ConversationWithDetails extends ConversationInfo {
-  latestEvent?: Event;
-  isLoading?: boolean;
+interface ConversationData extends ConversationInfo {
+  remoteConversation?: RemoteConversation;
+  events?: Event[];
+  agentStatus?: AgentExecutionStatus;
 }
 
 export const ConversationManager: React.FC = () => {
   const { settings } = useSettings();
-  const [conversations, setConversations] = useState<ConversationWithDetails[]>([]);
+  const [conversations, setConversations] = useState<ConversationData[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [manager, setManager] = useState<SDKConversationManager | null>(null);
-  const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
-  const [conversationEvents, setConversationEvents] = useState<any[]>([]);
+  const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
-  const [activeConversations, setActiveConversations] = useState<Map<string, RemoteConversation>>(new Map());
+
+  // Get selected conversation data
+  const selectedConversation = conversations.find(c => c.id === selectedConversationId);
 
   // Initialize conversation manager
   useEffect(() => {
     if (settings.agentServerUrl) {
-      const newManager = new SDKConversationManager({
+      const conversationManager = new SDKConversationManager({
         host: settings.agentServerUrl,
-        apiKey: settings.agentServerApiKey || undefined,
+        apiKey: settings.apiKey
       });
-      setManager(newManager);
-
-      return () => {
-        newManager.close();
-      };
+      setManager(conversationManager);
+      loadConversations(conversationManager);
     }
-  }, [settings.agentServerUrl, settings.agentServerApiKey]);
+  }, [settings.agentServerUrl, settings.apiKey]);
 
-  // Load conversations
-  const loadConversations = async () => {
-    if (!manager) return;
+  const loadConversations = async (conversationManager?: SDKConversationManager) => {
+    const mgr = conversationManager || manager;
+    if (!mgr) return;
 
     setLoading(true);
     setError(null);
     try {
-      const conversationList = await manager.getAllConversations();
-      console.log('Loaded conversations:', conversationList); // Debug log
-      setConversations(conversationList.map(conv => ({ ...conv, isLoading: false })));
+      const conversationList = await mgr.getAllConversations();
+      console.log('Loaded conversations:', conversationList);
+      
+      // Convert to our data structure
+      const conversationData: ConversationData[] = conversationList.map((conv: ConversationInfo) => ({
+        ...conv,
+        // Ensure we have the basic properties
+        id: conv.id,
+        agent: conv.agent,
+        created_at: conv.created_at,
+        updated_at: conv.updated_at,
+        status: conv.status
+      }));
+      
+      setConversations(conversationData);
     } catch (err) {
+      console.error('Failed to load conversations:', err);
       setError(err instanceof Error ? err.message : 'Failed to load conversations');
     } finally {
       setLoading(false);
     }
   };
 
-  // Load conversations when manager is ready
-  useEffect(() => {
-    if (manager) {
-      loadConversations();
-    }
-  }, [manager]);
-
-  // Create new conversation
   const createConversation = async () => {
     if (!manager) return;
-
-    // Validate required settings
-    if (!settings.apiKey.trim()) {
-      setError('LLM API Key is required. Please configure it in settings.');
-      return;
-    }
-
-    if (!settings.modelName.trim()) {
-      setError('Model name is required. Please configure it in settings.');
-      return;
-    }
 
     setLoading(true);
     setError(null);
     try {
-      console.log('Settings values:', {
-        modelName: settings.modelName,
-        apiKey: settings.apiKey ? `${settings.apiKey.substring(0, 10)}...` : 'EMPTY',
-        agentServerUrl: settings.agentServerUrl,
-        agentServerApiKey: settings.agentServerApiKey ? `${settings.agentServerApiKey.substring(0, 10)}...` : 'EMPTY'
-      });
-
+      // Create a simple agent configuration
       const agent: AgentBase = {
         name: 'CodeActAgent',
         llm: {
-          model: settings.modelName,
-          api_key: settings.apiKey,
-        },
+          model: 'gpt-4o-mini',
+          api_key: settings.apiKey || '',
+          base_url: 'https://api.openai.com/v1'
+        }
       };
-
-      console.log('Creating conversation with agent:', {
-        name: agent.name,
-        model: agent.llm.model,
-        hasApiKey: !!agent.llm.api_key,
-        apiKeyValue: agent.llm.api_key
-      });
-
-      // Store the current agent configuration
-      // Agent is now stored in the conversation object
 
       const conversation = await manager.createConversation(agent, {
         initialMessage: 'Hello! I\'m ready to help you with your tasks.',
         maxIterations: 50,
-        stuckDetection: true,
       });
 
-      // Add to active conversations
-      setActiveConversations(prev => new Map(prev.set(conversation.id, conversation)));
-
-      // Reload conversations list
+      console.log('Created conversation:', conversation);
+      
+      // Reload conversations to show the new one
       await loadConversations();
     } catch (err) {
+      console.error('Failed to create conversation:', err);
       setError(err instanceof Error ? err.message : 'Failed to create conversation');
     } finally {
       setLoading(false);
     }
   };
 
-  // Delete conversation
   const deleteConversation = async (conversationId: string) => {
     if (!manager) return;
-
-    if (!confirm('Are you sure you want to delete this conversation?')) {
-      return;
-    }
 
     setLoading(true);
     setError(null);
     try {
       await manager.deleteConversation(conversationId);
       
-      // Remove from active conversations
-      const activeConv = activeConversations.get(conversationId);
-      if (activeConv) {
-        await activeConv.close();
-        setActiveConversations(prev => {
-          const newMap = new Map(prev);
-          newMap.delete(conversationId);
-          return newMap;
-        });
-      }
-
       // Clear selection if this conversation was selected
-      if (selectedConversation === conversationId) {
-        setSelectedConversation(null);
-        // Clear selected conversation
-        setConversationEvents([]);
+      if (selectedConversationId === conversationId) {
+        setSelectedConversationId(null);
       }
 
       // Reload conversations list
       await loadConversations();
     } catch (err) {
+      console.error('Failed to delete conversation:', err);
       setError(err instanceof Error ? err.message : 'Failed to delete conversation');
     } finally {
       setLoading(false);
     }
   };
 
-  // Load conversation details
-  const loadConversationDetails = async (conversationId: string) => {
+  const selectConversation = async (conversationId: string) => {
     if (!manager) return;
 
-    setLoading(true);
-    setError(null);
+    console.log('Selecting conversation:', conversationId);
+    setSelectedConversationId(conversationId);
+    
+    // Load conversation details
     try {
-      // Check if we already have this conversation loaded
-      let conversation = activeConversations.get(conversationId);
+      const remoteConversation = await manager.loadConversation(conversationId);
+      console.log('Loaded remote conversation:', remoteConversation);
       
-      if (!conversation) {
-        // Load the conversation if not already active
-        conversation = await manager.loadConversation(conversationId);
-        setActiveConversations(prev => new Map(prev.set(conversationId, conversation!)));
-      }
-
-      // Store the conversation in activeConversations for later use
-
-      // Load events
-      const events = await conversation.state.events.getEvents();
-      setConversationEvents(events);
+      // Get events
+      const events = await remoteConversation.state.events.getEvents();
+      console.log('Loaded events:', events);
+      
+      // Get agent status
+      const agentStatus = await remoteConversation.state.getAgentStatus();
+      console.log('Agent status:', agentStatus);
+      
+      // Update the conversation in our state with additional details
+      setConversations(prev => prev.map(conv => 
+        conv.id === conversationId 
+          ? { ...conv, remoteConversation, events, agentStatus }
+          : conv
+      ));
+      
     } catch (err) {
+      console.error('Failed to load conversation details:', err);
       setError(err instanceof Error ? err.message : 'Failed to load conversation details');
-      // Clear conversation events on error
-      setConversationEvents([]);
-    } finally {
-      setLoading(false);
     }
   };
 
-  // Send message to conversation
-  const sendMessage = async (conversationId: string, message: string) => {
-    if (!manager || !message.trim()) return;
+  const sendMessage = async () => {
+    if (!selectedConversation?.remoteConversation || !messageInput.trim()) return;
 
-    setError(null);
     try {
-      let conversation = activeConversations.get(conversationId);
-      
-      if (!conversation) {
-        console.log('Loading conversation:', conversationId);
-        // Load the conversation if not already active
-        conversation = await manager.loadConversation(conversationId);
-        setActiveConversations(prev => new Map(prev.set(conversationId, conversation!)));
-      }
-
-      console.log('Sending message to conversation:', conversationId, 'Message:', message);
-      await conversation.sendMessage(message);
-      
-      console.log('Running conversation:', conversationId);
-      await conversation.run();
-      
+      await selectedConversation.remoteConversation.sendMessage(messageInput);
       setMessageInput('');
+      
+      // Reload conversation details to show new events
+      await selectConversation(selectedConversation.id);
     } catch (err) {
-      console.error('Error sending message:', err);
+      console.error('Failed to send message:', err);
       setError(err instanceof Error ? err.message : 'Failed to send message');
     }
   };
 
-  // Get status color
-  const getStatusColor = (status: AgentExecutionStatus): string => {
-    switch (status) {
-      case AgentExecutionStatus.IDLE:
-        return '#6b7280';
-      case AgentExecutionStatus.RUNNING:
-        return '#3b82f6';
-      case AgentExecutionStatus.PAUSED:
-        return '#f59e0b';
-      case AgentExecutionStatus.FINISHED:
-        return '#10b981';
-      case AgentExecutionStatus.ERROR:
-        return '#ef4444';
-      default:
-        return '#6b7280';
-    }
+  const formatDate = (dateString?: string) => {
+    if (!dateString) return 'Unknown';
+    return new Date(dateString).toLocaleString();
   };
 
-  // Format timestamp (for future use)
-  // const formatTimestamp = (timestamp: string): string => {
-  //   return new Date(timestamp).toLocaleString();
-  // };
+  const getAgentName = (agent: AgentBase) => {
+    return agent.name || 'Unknown Agent';
+  };
 
-  if (!settings.agentServerUrl || !settings.apiKey) {
-    return (
-      <div className="conversation-manager">
-        <div className="empty-state">
-          <h2>Configuration Required</h2>
-          <p>Please configure your settings to start using the conversation manager.</p>
-        </div>
-      </div>
-    );
-  }
+  const getStatusColor = (status?: string) => {
+    switch (status) {
+      case 'running': return '#4CAF50';
+      case 'stopped': return '#f44336';
+      case 'paused': return '#ff9800';
+      default: return '#9e9e9e';
+    }
+  };
 
   return (
     <div className="conversation-manager">
       <div className="conversation-header">
-        <h1>Conversation Manager</h1>
+        <h2>Conversation Manager</h2>
         <div className="header-actions">
           <button 
-            onClick={loadConversations} 
+            onClick={() => loadConversations()} 
             disabled={loading}
-            className="refresh-button"
+            className="refresh-btn"
           >
             🔄 Refresh
           </button>
           <button 
             onClick={createConversation} 
             disabled={loading}
-            className="create-button"
+            className="create-btn"
           >
             ➕ New Conversation
           </button>
@@ -286,15 +219,14 @@ export const ConversationManager: React.FC = () => {
         </div>
       )}
 
-      {loading && (
-        <div className="loading-message">
-          Loading conversations...
-        </div>
-      )}
-
-      <div className="conversation-layout">
+      <div className="conversation-content">
         <div className="conversation-list">
-          <h2>Conversations ({conversations.length})</h2>
+          <h3>Conversations ({conversations.length})</h3>
+          
+          {loading && conversations.length === 0 && (
+            <div className="loading">Loading conversations...</div>
+          )}
+          
           {conversations.length === 0 && !loading ? (
             <div className="empty-list">
               <p>No conversations yet. Create your first conversation!</p>
@@ -304,163 +236,137 @@ export const ConversationManager: React.FC = () => {
               {conversations.map((conversation) => (
                 <div 
                   key={conversation.id} 
-                  className={`conversation-item ${selectedConversation === conversation.id ? 'selected' : ''}`}
-                  onClick={() => {
-                    console.log('Selected conversation:', conversation); // Debug log
-                    setSelectedConversation(conversation.id);
-                    loadConversationDetails(conversation.id);
-                  }}
+                  className={`conversation-item ${selectedConversationId === conversation.id ? 'selected' : ''}`}
+                  onClick={() => selectConversation(conversation.id)}
                 >
                   <div className="conversation-info">
                     <div className="conversation-id">
                       ID: {conversation.id.substring(0, 8)}...
                     </div>
-                    <div className="conversation-status">
-                      <span 
-                        className="status-indicator"
-                        style={{ backgroundColor: getStatusColor(conversation.agent_status) }}
-                      ></span>
-                      Status: {conversation.agent_status}
-                    </div>
-                    <div className="conversation-stats">
-                      Created: {conversation.created_at ? new Date(conversation.created_at).toLocaleString() : 'Unknown'}
-                    </div>
-                    <div className="conversation-agent">
-                      Agent: {(conversation.agent as any)?.kind || conversation.agent?.name || 'Unknown'}
+                    <div className="conversation-details">
+                      <div>Agent: {getAgentName(conversation.agent)}</div>
+                      <div>Created: {formatDate(conversation.created_at)}</div>
+                      <div className="conversation-status">
+                        Status: <span 
+                          className="status-indicator" 
+                          style={{ color: getStatusColor(conversation.status) }}
+                        >
+                          ● {conversation.status || 'unknown'}
+                        </span>
+                      </div>
                     </div>
                   </div>
-                  <div className="conversation-actions">
-                    <button 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        deleteConversation(conversation.id);
-                      }}
-                      className="delete-button"
-                      title="Delete conversation"
-                    >
-                      🗑️
-                    </button>
-                  </div>
+                  <button 
+                    className="delete-btn"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      deleteConversation(conversation.id);
+                    }}
+                    disabled={loading}
+                  >
+                    🗑️
+                  </button>
                 </div>
               ))}
             </div>
           )}
         </div>
 
-        {selectedConversation && (
-          <div className="conversation-detail">
-            <h2>Conversation Details</h2>
-            <div className="conversation-info-detail">
-              {(() => {
-                const conv = conversations.find(c => c.id === selectedConversation);
-                console.log('Details section - selectedConversation:', selectedConversation);
-                console.log('Details section - conversations array:', conversations);
-                console.log('Details section - found conv:', conv);
-                console.log('Details section - conv properties:', conv ? Object.keys(conv) : 'no conv');
-                if (!conv) return <p>No conversation found with ID: {selectedConversation}</p>;
-                
-                return (
-                  <div>
-                    <p><strong>ID:</strong> {conv.id}</p>
-                    <p><strong>Status:</strong> 
-                      <span 
-                        className="status-indicator"
-                        style={{ backgroundColor: getStatusColor(conv.agent_status) }}
-                      ></span>
-                      {conv.agent_status}
-                    </p>
-                    <p><strong>Agent:</strong> {(conv.agent as any)?.kind || conv.agent?.name || 'Unknown'}</p>
-                    <p><strong>Model:</strong> {conv.agent?.llm?.model}</p>
-                    <p><strong>Total Events:</strong> {conversationEvents.length}</p>
-                    <p><strong>Messages:</strong> {conversationEvents.filter(e => e.event_type === 'message').length}</p>
-                    <p><strong>Actions:</strong> {conversationEvents.filter(e => e.event_type === 'action').length}</p>
-                    <p><strong>Observations:</strong> {conversationEvents.filter(e => e.event_type === 'observation').length}</p>
-                  </div>
-                );
-              })()}
+        <div className="conversation-details">
+          <h3>Conversation Details</h3>
+          
+          {!selectedConversation ? (
+            <div className="no-selection">
+              <p>Select a conversation to view details</p>
             </div>
-
-            {/* Events/Messages Section */}
-            <div className="conversation-events">
-              <h3>Events & Messages</h3>
-              {loading && <p>Loading conversation details...</p>}
-              {conversationEvents.length === 0 && !loading && (
-                <p>No events found in this conversation.</p>
-              )}
-              <div className="events-list">
-                {conversationEvents.map((event, index) => (
-                  <div key={index} className={`event-item event-${event.event_type}`}>
-                    <div className="event-header">
-                      <span className="event-type">{event.event_type}</span>
-                      <span className="event-timestamp">
-                        {event.timestamp ? new Date(event.timestamp).toLocaleString() : 'No timestamp'}
-                      </span>
-                    </div>
-                    <div className="event-content">
-                      {event.event_type === 'message' && event.content && (
-                        <div>
-                          <strong>{event.content.role}:</strong>
-                          <div className="message-content">
-                            {Array.isArray(event.content.content) 
-                              ? event.content.content.map((c: any, i: number) => (
-                                  <div key={i}>{c.text || JSON.stringify(c)}</div>
-                                ))
-                              : event.content.content
-                            }
-                          </div>
-                        </div>
-                      )}
-                      {event.event_type === 'action' && (
-                        <div>
-                          <strong>Action:</strong> {event.action || 'Unknown action'}
-                          {event.args && (
-                            <div className="action-args">
-                              <strong>Args:</strong> <pre>{JSON.stringify(event.args, null, 2)}</pre>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      {event.event_type === 'observation' && (
-                        <div>
-                          <strong>Observation:</strong>
-                          <div className="observation-content">
-                            {event.content || event.observation || 'No content'}
-                          </div>
-                        </div>
-                      )}
-                      {!['message', 'action', 'observation'].includes(event.event_type) && (
-                        <div>
-                          <pre>{JSON.stringify(event, null, 2)}</pre>
-                        </div>
-                      )}
-                    </div>
+          ) : (
+            <div className="details-content">
+              <div className="details-info">
+                <div className="detail-row">
+                  <strong>ID:</strong> {selectedConversation.id}
+                </div>
+                <div className="detail-row">
+                  <strong>Status:</strong> 
+                  <span 
+                    className="status-indicator" 
+                    style={{ color: getStatusColor(selectedConversation.status) }}
+                  >
+                    ● {selectedConversation.status || 'unknown'}
+                  </span>
+                </div>
+                <div className="detail-row">
+                  <strong>Agent:</strong> {getAgentName(selectedConversation.agent)}
+                </div>
+                <div className="detail-row">
+                  <strong>Model:</strong> {selectedConversation.agent.llm?.model || 'Unknown'}
+                </div>
+                <div className="detail-row">
+                  <strong>Created:</strong> {formatDate(selectedConversation.created_at)}
+                </div>
+                <div className="detail-row">
+                  <strong>Updated:</strong> {formatDate(selectedConversation.updated_at)}
+                </div>
+                {selectedConversation.agentStatus && (
+                  <div className="detail-row">
+                    <strong>Agent Status:</strong> {selectedConversation.agentStatus}
                   </div>
-                ))}
+                )}
+                <div className="detail-row">
+                  <strong>Total Events:</strong> {selectedConversation.events?.length || 0}
+                </div>
+              </div>
+
+              <div className="events-section">
+                <h4>Events & Messages</h4>
+                <div className="events-list">
+                  {selectedConversation.events && selectedConversation.events.length > 0 ? (
+                    selectedConversation.events.map((event, index) => (
+                      <div key={index} className="event-item">
+                        <div className="event-header">
+                          <span className="event-type">{event.type}</span>
+                          <span className="event-timestamp">
+                            {event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}
+                          </span>
+                        </div>
+                        {event.message && (
+                          <div className="event-message">{event.message}</div>
+                        )}
+                        {event.content && (
+                          <div className="event-content">{JSON.stringify(event.content, null, 2)}</div>
+                        )}
+                      </div>
+                    ))
+                  ) : (
+                    <div className="no-events">No events yet</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="message-section">
+                <h4>Send Message</h4>
+                <div className="message-input-container">
+                  <textarea
+                    value={messageInput}
+                    onChange={(e) => setMessageInput(e.target.value)}
+                    placeholder="Type your message here..."
+                    className="message-input"
+                    rows={3}
+                  />
+                  <button 
+                    onClick={sendMessage}
+                    disabled={!messageInput.trim() || loading}
+                    className="send-btn"
+                  >
+                    Send Message
+                  </button>
+                </div>
               </div>
             </div>
-
-            <div className="message-input-section">
-              <h3>Send Message</h3>
-              <div className="message-input-container">
-                <textarea
-                  value={messageInput}
-                  onChange={(e) => setMessageInput(e.target.value)}
-                  placeholder="Type your message here..."
-                  className="message-input"
-                  rows={3}
-                />
-                <button
-                  onClick={() => sendMessage(selectedConversation, messageInput)}
-                  disabled={!messageInput.trim() || loading}
-                  className="send-button"
-                >
-                  Send Message
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
 };
+
+export default ConversationManager;
