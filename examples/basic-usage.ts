@@ -6,13 +6,12 @@ import { Conversation, Agent, Workspace, AgentExecutionStatus } from '../src/ind
 
 async function main() {
   // Define the agent configuration
-  const agent: Agent = {
-    kind: 'CodeActAgent',
+  const agent = new Agent({
     llm: {
       model: 'gpt-4',
       api_key: process.env.OPENAI_API_KEY || 'your-openai-api-key',
     },
-  };
+  });
 
   try {
     // Create a remote workspace
@@ -85,13 +84,12 @@ async function main() {
 
 // Example of loading an existing conversation
 async function loadExistingConversation() {
-  const agent: Agent = {
-    kind: 'CodeActAgent',
+  const agent = new Agent({
     llm: {
       model: 'gpt-4',
       api_key: process.env.OPENAI_API_KEY || 'your-openai-api-key',
     },
-  };
+  });
 
   try {
     // Create a remote workspace for the existing conversation

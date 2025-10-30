@@ -193,7 +193,6 @@ export const ConversationManager: React.FC = () => {
     try {
       // Create a simple agent configuration
       const agent = new Agent({
-        kind: 'Agent',
         llm: {
           model: settings.modelName,
           api_key: settings.apiKey || ''
