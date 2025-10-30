@@ -70,14 +70,18 @@ export class RemoteConversation {
   get state(): RemoteState {
     if (!this._state) {
       if (!this._conversationId) {
-        throw new Error('Conversation not initialized. Call start() to initialize the conversation.');
+        throw new Error(
+          'Conversation not initialized. Call start() to initialize the conversation.'
+        );
       }
       this._state = new RemoteState(this.client, this._conversationId);
     }
     return this._state;
   }
 
-  async start(options: { initialMessage?: string; maxIterations?: number; stuckDetection?: boolean } = {}): Promise<void> {
+  async start(
+    options: { initialMessage?: string; maxIterations?: number; stuckDetection?: boolean } = {}
+  ): Promise<void> {
     if (this._conversationId) {
       // Existing conversation - verify it exists
       await this.client.get<ConversationInfo>(`/api/conversations/${this._conversationId}`);
@@ -211,13 +215,9 @@ export class RemoteConversation {
     }
   }
 
-
-
   async close(): Promise<void> {
     await this.stopWebSocketClient();
     this.client.close();
     this.workspace.close();
   }
 }
-
-

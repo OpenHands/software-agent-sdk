@@ -112,7 +112,10 @@ export class ConversationManager {
   /**
    * Load an existing conversation
    */
-  async loadConversation(conversationId: ConversationID, workingDir: string = '/tmp'): Promise<RemoteConversation> {
+  async loadConversation(
+    conversationId: ConversationID,
+    workingDir: string = '/tmp'
+  ): Promise<RemoteConversation> {
     // Get conversation info to extract the agent
     const conversationInfo = await this.getConversation(conversationId);
 

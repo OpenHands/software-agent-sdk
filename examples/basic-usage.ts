@@ -18,7 +18,7 @@ async function main() {
     const workspace = new Workspace({
       host: 'http://localhost:3000',
       workingDir: '/tmp',
-      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key'
+      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
     });
 
     // Create a new conversation
@@ -31,7 +31,7 @@ async function main() {
 
     // Start the conversation with an initial message
     await conversation.start({
-      initialMessage: 'Hello! Can you help me write a simple Python script?'
+      initialMessage: 'Hello! Can you help me write a simple Python script?',
     });
 
     console.log(`Conversation created with ID: ${conversation.id}`);
@@ -96,11 +96,11 @@ async function loadExistingConversation() {
     const workspace = new Workspace({
       host: 'http://localhost:3000',
       workingDir: '/tmp',
-      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key'
+      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
     });
 
     const conversation = new Conversation(agent, workspace, {
-      conversationId: 'existing-conversation-id'
+      conversationId: 'existing-conversation-id',
     });
 
     // Connect to the existing conversation

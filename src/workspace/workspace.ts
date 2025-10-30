@@ -8,7 +8,7 @@ import { RemoteWorkspace, RemoteWorkspaceOptions } from './remote-workspace';
 /**
  * Workspace class that extends RemoteWorkspace.
  * Provides a cleaner API that matches the Python SDK naming.
- * 
+ *
  * Usage:
  *   const workspace = new Workspace({ host: 'http://localhost:8000', apiKey: 'key' });
  */

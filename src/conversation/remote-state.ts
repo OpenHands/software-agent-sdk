@@ -44,10 +44,8 @@ export class RemoteState {
       }
 
       // Fallback to REST API if no cached state
-      const response = await this.client.get<any>(
-        `/api/conversations/${this.conversationId}`
-      );
-      
+      const response = await this.client.get<any>(`/api/conversations/${this.conversationId}`);
+
       // Handle the case where the API returns a full_state wrapper
       let conversationInfo: ConversationInfo;
       if (response.data.full_state) {
@@ -55,7 +53,7 @@ export class RemoteState {
       } else {
         conversationInfo = response.data as ConversationInfo;
       }
-      
+
       this.cachedState = conversationInfo;
       return conversationInfo;
     });
