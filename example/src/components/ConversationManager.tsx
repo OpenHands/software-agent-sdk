@@ -4,7 +4,6 @@ import {
   ConversationInfo,
   RemoteConversation,
   AgentBase,
-  AgentExecutionStatus,
   Event
 } from '@openhands/agent-server-typescript-client';
 import { useSettings } from '../contexts/SettingsContext';
@@ -12,7 +11,6 @@ import { useSettings } from '../contexts/SettingsContext';
 interface ConversationData extends ConversationInfo {
   remoteConversation?: RemoteConversation;
   events?: Event[];
-  agentStatus?: AgentExecutionStatus;
 }
 
 // Utility function to extract displayable content from events
@@ -136,7 +134,7 @@ export const ConversationManager: React.FC = () => {
         const status = await selectedConversation.remoteConversation!.state.getAgentStatus();
         setConversations(prev => prev.map(conv => 
           conv.id === selectedConversation.id 
-            ? { ...conv, agentStatus: status }
+            ? { ...conv, status: status }
             : conv
         ));
       } catch (err) {
@@ -146,13 +144,13 @@ export const ConversationManager: React.FC = () => {
 
     // Refresh every 2 seconds if the agent is running
     const interval = setInterval(() => {
-      if (selectedConversation.agentStatus === 'running') {
+      if (selectedConversation.status === 'running') {
         refreshStatus();
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [selectedConversation?.id, selectedConversation?.agentStatus]);
+  }, [selectedConversation?.id, selectedConversation?.status]);
 
   const loadConversations = async (conversationManager?: SDKConversationManager) => {
     const mgr = conversationManager || manager;
@@ -313,7 +311,7 @@ export const ConversationManager: React.FC = () => {
               remoteConversation.state.getAgentStatus().then(status => {
                 setConversations(prev => prev.map(conv => 
                   conv.id === conversationId 
-                    ? { ...conv, agentStatus: status }
+                    ? { ...conv, status: status }
                     : conv
                 ));
               }).catch(err => console.warn('Failed to update agent status:', err));
@@ -353,7 +351,7 @@ export const ConversationManager: React.FC = () => {
       // Update the conversation in our state with additional details
       setConversations(prev => prev.map(conv => 
         conv.id === conversationId 
-          ? { ...conv, remoteConversation, events, agentStatus }
+          ? { ...conv, remoteConversation, events, status: agentStatus }
           : conv
       ));
       
@@ -532,12 +530,7 @@ export const ConversationManager: React.FC = () => {
                     <span className="font-medium text-gray-900 dark:text-white">Updated:</span>
                     <span className="text-gray-600 dark:text-gray-400">{formatDate(selectedConversation.updated_at)}</span>
                   </div>
-                  {selectedConversation.agentStatus && (
-                    <div className="flex justify-between">
-                      <span className="font-medium text-gray-900 dark:text-white">Agent Status:</span>
-                      <span className="text-gray-600 dark:text-gray-400">{selectedConversation.agentStatus}</span>
-                    </div>
-                  )}
+
                   <div className="flex justify-between">
                     <span className="font-medium text-gray-900 dark:text-white">Total Events:</span>
                     <span className="text-gray-600 dark:text-gray-400">{selectedConversation.events?.length || 0}</span>
