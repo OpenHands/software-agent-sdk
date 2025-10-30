@@ -109,7 +109,14 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
     }
 
     const conversationData = await createResponse.json();
-    const conversationId = conversationData.conversation_id;
+    const conversationId = conversationData.id;
+
+    if (!conversationId) {
+      return { 
+        success: false, 
+        error: `Failed to get conversation ID from response: ${JSON.stringify(conversationData)}` 
+      };
+    }
 
     try {
       // Send a simple test message
