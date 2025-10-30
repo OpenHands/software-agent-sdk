@@ -23,6 +23,16 @@ A TypeScript client library for the OpenHands Agent Server API that mirrors the 
 
 ## Quick Start
 
+### Start an AgentServer
+You'll need an AgentServer running somewhere for the client to connect to. You can run one in docker:
+```bash
+docker run -p 8000:8000 -p 8001:8001 \
+  -e OH_ENABLE_VNC=false \
+  -e SESSION_API_KEY="$SESSION_API_KEY" \
+  -e OH_ALLOW_CORS_ORIGINS='["*"]' \
+  ghcr.io/all-hands-ai/agent-server:78938ee-python
+```
+
 ### Creating a Conversation
 
 ```typescript
@@ -286,14 +296,3 @@ MIT
 ## Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Development
-```
-docker run -p 8000:8000 -p 8001:8001 \
-  -e OH_ENABLE_VNC=false \
-  -e SESSION_API_KEY="$SESSION_API_KEY" \
-  -e OH_ALLOW_CORS_ORIGINS='["*"]' \
-  ghcr.io/all-hands-ai/agent-server:78938ee-python
-```
-
-Then start the app
