@@ -15,6 +15,82 @@ interface ConversationData extends ConversationInfo {
   agentStatus?: AgentExecutionStatus;
 }
 
+// Utility function to extract displayable content from events
+const getEventDisplayContent = (event: Event): { title: string; content: string; details?: any } => {
+  switch (event.kind) {
+    case 'MessageEvent':
+      const messageEvent = event as any;
+      const message = messageEvent.llm_message;
+      if (message && message.content && Array.isArray(message.content)) {
+        const textContent = message.content
+          .filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join(' ');
+        return {
+          title: `Message from ${messageEvent.source || 'unknown'}`,
+          content: textContent || 'No text content',
+          details: message
+        };
+      }
+      return {
+        title: `Message from ${messageEvent.source || 'unknown'}`,
+        content: 'No message content available',
+        details: messageEvent
+      };
+    
+    case 'ActionEvent':
+      const actionEvent = event as any;
+      const action = actionEvent.action;
+      return {
+        title: `Action: ${action?.kind || 'Unknown Action'}`,
+        content: action?.command || action?.content || JSON.stringify(action, null, 2),
+        details: action
+      };
+    
+    case 'ObservationEvent':
+      const obsEvent = event as any;
+      return {
+        title: `Observation: ${obsEvent.tool_name || 'Unknown Tool'}`,
+        content: typeof obsEvent.observation === 'string' 
+          ? obsEvent.observation 
+          : JSON.stringify(obsEvent.observation, null, 2),
+        details: obsEvent.observation
+      };
+    
+    case 'AgentErrorEvent':
+      const errorEvent = event as any;
+      return {
+        title: `Error: ${errorEvent.tool_name || 'Unknown Tool'}`,
+        content: typeof errorEvent.observation === 'string' 
+          ? errorEvent.observation 
+          : JSON.stringify(errorEvent.observation, null, 2),
+        details: errorEvent.observation
+      };
+    
+    case 'SystemPromptEvent':
+      const sysEvent = event as any;
+      return {
+        title: 'System Prompt',
+        content: sysEvent.system_prompt?.text || 'System prompt updated',
+        details: sysEvent.system_prompt
+      };
+    
+    case 'PauseEvent':
+      return {
+        title: 'Agent Paused',
+        content: 'Agent execution was paused',
+        details: null
+      };
+    
+    default:
+      return {
+        title: event.kind || 'Unknown Event',
+        content: JSON.stringify(event, null, 2),
+        details: event
+      };
+  }
+};
+
 export const ConversationManager: React.FC = () => {
   const { settings } = useSettings();
   const [conversations, setConversations] = useState<ConversationData[]>([]);
@@ -23,6 +99,7 @@ export const ConversationManager: React.FC = () => {
   const [manager, setManager] = useState<SDKConversationManager | null>(null);
   const [selectedConversationId, setSelectedConversationId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
+  const [showAllEvents, setShowAllEvents] = useState(false);
 
   // Get selected conversation data
   const selectedConversation = conversations.find(c => c.id === selectedConversationId);
@@ -472,31 +549,93 @@ export const ConversationManager: React.FC = () => {
               </div>
 
               <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
-                <h4 className="text-base font-semibold text-gray-900 dark:text-white mb-3">Events & Messages</h4>
+                <div className="flex justify-between items-center mb-3">
+                  <h4 className="text-base font-semibold text-gray-900 dark:text-white">Events & Messages</h4>
+                  {selectedConversation.events && selectedConversation.events.length > 1 && (
+                    <button
+                      onClick={() => setShowAllEvents(!showAllEvents)}
+                      className="text-sm text-indigo-600 dark:text-indigo-400 hover:text-indigo-800 dark:hover:text-indigo-300 font-medium transition-colors duration-200"
+                    >
+                      {showAllEvents ? '▼ Show Recent Only' : `▶ Show All (${selectedConversation.events.length})`}
+                    </button>
+                  )}
+                </div>
                 <div className="max-h-64 overflow-y-auto space-y-3">
                   {selectedConversation.events && selectedConversation.events.length > 0 ? (
-                    selectedConversation.events.map((event, index) => (
-                      <div key={index} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-900">
-                        <div className="flex justify-between items-center mb-2">
-                          <span className="text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded">
-                            {event.type}
-                          </span>
-                          <span className="text-xs text-gray-500 dark:text-gray-400">
-                            {event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}
-                          </span>
-                        </div>
-                        {event.message && (
-                          <div className="text-sm text-gray-900 dark:text-white mb-2 p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
-                            {event.message}
+                    (() => {
+                      // Sort events by timestamp (most recent first)
+                      const sortedEvents = [...selectedConversation.events].sort((a, b) => 
+                        new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+                      );
+                      
+                      // Show only the most recent event unless expanded
+                      const eventsToShow = showAllEvents ? sortedEvents : sortedEvents.slice(0, 1);
+                      
+                      return eventsToShow.map((event, index) => {
+                        const displayContent = getEventDisplayContent(event);
+                        const isRecent = index === 0 && !showAllEvents;
+                        
+                        return (
+                          <div 
+                            key={event.id || index} 
+                            className={`border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-900 ${
+                              isRecent ? 'ring-2 ring-indigo-200 dark:ring-indigo-800' : ''
+                            }`}
+                          >
+                            <div className="flex justify-between items-center mb-2 text-left">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded">
+                                  {event.kind}
+                                </span>
+                                {event.source && (
+                                  <span className="text-xs text-gray-500 dark:text-gray-400 bg-gray-100 dark:bg-gray-800 px-2 py-1 rounded">
+                                    {event.source}
+                                  </span>
+                                )}
+                                {isRecent && (
+                                  <span className="text-xs text-green-600 dark:text-green-400 bg-green-50 dark:bg-green-900/30 px-2 py-1 rounded font-medium">
+                                    Latest
+                                  </span>
+                                )}
+                              </div>
+                              <span className="text-xs text-gray-500 dark:text-gray-400">
+                                {event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}
+                              </span>
+                            </div>
+                            
+                            <div className="text-sm font-medium text-gray-900 dark:text-white mb-2 text-left">
+                              {displayContent.title}
+                            </div>
+                            
+                            {displayContent.content && (
+                              <div className="text-sm text-gray-700 dark:text-gray-300 mb-2 p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 text-left">
+                                <div className="max-h-32 overflow-y-auto text-left">
+                                  {displayContent.content.length > 200 ? (
+                                    <>
+                                      {displayContent.content.substring(0, 200)}
+                                      <span className="text-gray-500 dark:text-gray-400">... (truncated)</span>
+                                    </>
+                                  ) : (
+                                    displayContent.content
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            
+                            {displayContent.details && (
+                              <details className="mt-2 text-left">
+                                <summary className="text-xs text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300 text-left">
+                                  Show raw data
+                                </summary>
+                                <div className="text-xs text-gray-600 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto mt-1 text-left">
+                                  <pre className="text-left whitespace-pre-wrap">{JSON.stringify(displayContent.details, null, 2)}</pre>
+                                </div>
+                              </details>
+                            )}
                           </div>
-                        )}
-                        {event.content && (
-                          <div className="text-xs text-gray-600 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto">
-                            <pre>{JSON.stringify(event.content, null, 2)}</pre>
-                          </div>
-                        )}
-                      </div>
-                    ))
+                        );
+                      });
+                    })()
                   ) : (
                     <div className="text-center py-4 text-gray-500 dark:text-gray-400">No events yet</div>
                   )}
