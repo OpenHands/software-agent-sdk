@@ -9,11 +9,7 @@ import {
   ConversationSearchRequest,
   ConversationSearchResponse,
 } from '../models/conversation';
-import {
-  AgentBase,
-  ConversationID,
-  Success,
-} from '../types/base';
+import { AgentBase, ConversationID, Success } from '../types/base';
 
 export interface ConversationManagerOptions {
   host: string;
@@ -39,10 +35,15 @@ export class ConversationManager {
   /**
    * Search/list conversations
    */
-  async searchConversations(options: ConversationSearchRequest = {}): Promise<ConversationSearchResponse> {
-    const response = await this.client.get<ConversationSearchResponse>('/api/conversations/search', {
-      params: options,
-    });
+  async searchConversations(
+    options: ConversationSearchRequest = {}
+  ): Promise<ConversationSearchResponse> {
+    const response = await this.client.get<ConversationSearchResponse>(
+      '/api/conversations/search',
+      {
+        params: options,
+      }
+    );
     return response.data;
   }
 
@@ -58,7 +59,7 @@ export class ConversationManager {
         page_id: nextPageId,
         limit: 100,
       });
-      
+
       conversations.push(...response.items);
       nextPageId = response.next_page_id;
     } while (nextPageId);
@@ -70,7 +71,9 @@ export class ConversationManager {
    * Get a specific conversation by ID
    */
   async getConversation(conversationId: ConversationID): Promise<ConversationInfo> {
-    const response = await this.client.get<ConversationInfo>(`/api/conversations/${conversationId}`);
+    const response = await this.client.get<ConversationInfo>(
+      `/api/conversations/${conversationId}`
+    );
     return response.data;
   }
 
