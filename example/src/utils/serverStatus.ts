@@ -25,7 +25,7 @@ export interface LLMTestResponse {
  */
 export const checkServerHealth = async (serverUrl: string, apiKey?: string): Promise<{ isConnected: boolean; error?: string }> => {
   try {
-    const url = `${serverUrl.replace(/\/$/, '')}/api/health`;
+    const url = `${serverUrl.replace(/\/$/, '')}/health`;
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
     };
