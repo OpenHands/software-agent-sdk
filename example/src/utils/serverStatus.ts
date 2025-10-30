@@ -1,4 +1,5 @@
 import { Settings } from '../components/SettingsModal';
+import { HttpClient, RemoteConversation } from '@openhands/agent-server-typescript-client';
 
 export interface ServerStatus {
   isConnected: boolean;
@@ -21,38 +22,18 @@ export interface LLMTestResponse {
 }
 
 /**
- * Check if the agent server is reachable
+ * Check if the agent server is reachable using the SDK
  */
 export const checkServerHealth = async (serverUrl: string, apiKey?: string): Promise<{ isConnected: boolean; error?: string }> => {
   try {
-    const url = `${serverUrl.replace(/\/$/, '')}/health`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
+    const client = new HttpClient({ baseUrl: serverUrl, apiKey });
     
-    if (apiKey) {
-      headers['X-Session-API-Key'] = apiKey;
-    }
-
-    const response = await fetch(url, {
-      method: 'GET',
-      headers,
-      signal: AbortSignal.timeout(5000), // 5 second timeout
-    });
-
-    if (response.ok) {
-      return { isConnected: true };
-    } else {
-      return { 
-        isConnected: false, 
-        error: `Server responded with ${response.status}: ${response.statusText}` 
-      };
-    }
+    // Use the SDK's HTTP client to check health
+    await client.get('/health');
+    
+    return { isConnected: true };
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        return { isConnected: false, error: 'Connection timeout' };
-      }
       return { isConnected: false, error: error.message };
     }
     return { isConnected: false, error: 'Unknown connection error' };
@@ -60,7 +41,7 @@ export const checkServerHealth = async (serverUrl: string, apiKey?: string): Pro
 };
 
 /**
- * Test LLM configuration with a simple query
+ * Test LLM configuration using the SDK
  */
 export const testLLMConfiguration = async (settings: Settings): Promise<{ success: boolean; error?: string }> => {
   try {
@@ -70,106 +51,47 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
       return { success: false, error: `Server not reachable: ${healthCheck.error}` };
     }
 
-    // Create a test conversation to validate LLM settings
-    const createUrl = `${settings.agentServerUrl.replace(/\/$/, '')}/api/conversations`;
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-    };
-    
-    if (settings.agentServerApiKey) {
-      headers['X-Session-API-Key'] = settings.agentServerApiKey;
-    }
-
-    const createResponse = await fetch(createUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({
-        agent: {
-          name: 'TestAgent',
-          llm: {
-            model: settings.modelName,
-            api_key: settings.apiKey,
-          }
-        },
+    // Create a test conversation using the SDK
+    const conversation = await RemoteConversation.create(
+      settings.agentServerUrl,
+      {
+        name: 'TestAgent',
+        llm: {
+          model: settings.modelName,
+          api_key: settings.apiKey,
+        }
+      },
+      {
+        apiKey: settings.agentServerApiKey,
         workspace: {
           type: 'local',
           path: '/tmp/test-workspace',
           working_dir: '/tmp/test-workspace'
         }
-      }),
-      signal: AbortSignal.timeout(10000), // 10 second timeout
-    });
-
-    if (!createResponse.ok) {
-      const errorText = await createResponse.text();
-      return { 
-        success: false, 
-        error: `Failed to create test conversation: ${createResponse.status} ${errorText}` 
-      };
-    }
-
-    const conversationData = await createResponse.json();
-    const conversationId = conversationData.id;
-
-    if (!conversationId) {
-      return { 
-        success: false, 
-        error: `Failed to get conversation ID from response: ${JSON.stringify(conversationData)}` 
-      };
-    }
+      }
+    );
 
     try {
-      // Send a simple test message
-      const messageUrl = `${settings.agentServerUrl.replace(/\/$/, '')}/events`;
-      const messageResponse = await fetch(messageUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          conversation_id: conversationId,
-          role: 'user',
-          content: [{ type: 'text', text: 'Hello, respond with just "OK" to confirm you are working.' }],
-          run: false
-        }),
-        signal: AbortSignal.timeout(15000), // 15 second timeout
+      // Send a simple test message to validate LLM configuration
+      await conversation.sendMessage({
+        role: 'user',
+        content: [{ type: 'text', text: 'Hello, respond with just "OK" to confirm you are working.' }]
       });
-
-      if (messageResponse.ok) {
-        // Clean up the test conversation
-        try {
-          await fetch(`${settings.agentServerUrl.replace(/\/$/, '')}/api/conversations/${conversationId}`, {
-            method: 'DELETE',
-            headers,
-          });
-        } catch {
-          // Ignore cleanup errors
-        }
-        
-        return { success: true };
-      } else {
-        const errorText = await messageResponse.text();
-        return { 
-          success: false, 
-          error: `LLM test failed: ${messageResponse.status} ${errorText}` 
-        };
-      }
-    } catch (testError) {
-      // Clean up the test conversation even if test failed
+      
+      // If we get here, the LLM configuration is working
+      return { success: true };
+      
+    } finally {
+      // Always try to clean up the test conversation
       try {
-        await fetch(`${settings.agentServerUrl.replace(/\/$/, '')}/api/conversations/${conversationId}`, {
-          method: 'DELETE',
-          headers,
-        });
+        await conversation.close();
       } catch {
         // Ignore cleanup errors
       }
-      throw testError;
     }
   } catch (error) {
     if (error instanceof Error) {
-      if (error.name === 'AbortError') {
-        return { success: false, error: 'LLM test timeout' };
-      }
-      return { success: false, error: `LLM test error: ${error.message}` };
+      return { success: false, error: error.message };
     }
     return { success: false, error: 'Unknown LLM test error' };
   }
