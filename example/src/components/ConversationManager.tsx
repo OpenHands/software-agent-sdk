@@ -33,12 +33,12 @@ export const ConversationManager: React.FC = () => {
     if (settings.agentServerUrl) {
       const conversationManager = new SDKConversationManager({
         host: settings.agentServerUrl,
-        apiKey: settings.apiKey
+        apiKey: settings.agentServerApiKey
       });
       setManager(conversationManager);
       loadConversations(conversationManager);
     }
-  }, [settings.agentServerUrl, settings.apiKey]);
+  }, [settings.agentServerUrl, settings.agentServerApiKey]);
 
   const loadConversations = async (conversationManager?: SDKConversationManager) => {
     const mgr = conversationManager || manager;
