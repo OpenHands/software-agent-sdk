@@ -22,11 +22,9 @@ export const ConversationManager: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [manager, setManager] = useState<SDKConversationManager | null>(null);
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
-  const [selectedConversationDetails, setSelectedConversationDetails] = useState<RemoteConversation | null>(null);
   const [conversationEvents, setConversationEvents] = useState<any[]>([]);
   const [messageInput, setMessageInput] = useState('');
   const [activeConversations, setActiveConversations] = useState<Map<string, RemoteConversation>>(new Map());
-  const [currentAgent, setCurrentAgent] = useState<AgentBase | null>(null);
 
   // Initialize conversation manager
   useEffect(() => {
@@ -108,7 +106,7 @@ export const ConversationManager: React.FC = () => {
       });
 
       // Store the current agent configuration
-      setCurrentAgent(agent);
+      // Agent is now stored in the conversation object
 
       const conversation = await manager.createConversation(agent, {
         initialMessage: 'Hello! I\'m ready to help you with your tasks.',
@@ -155,7 +153,7 @@ export const ConversationManager: React.FC = () => {
       // Clear selection if this conversation was selected
       if (selectedConversation === conversationId) {
         setSelectedConversation(null);
-        setSelectedConversationDetails(null);
+        // Clear selected conversation
         setConversationEvents([]);
       }
 
@@ -184,14 +182,14 @@ export const ConversationManager: React.FC = () => {
         setActiveConversations(prev => new Map(prev.set(conversationId, conversation!)));
       }
 
-      setSelectedConversationDetails(conversation);
+      // Store the conversation in activeConversations for later use
 
       // Load events
       const events = await conversation.state.events.getEvents();
       setConversationEvents(events);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load conversation details');
-      setSelectedConversationDetails(null);
+      // Clear conversation events on error
       setConversationEvents([]);
     } finally {
       setLoading(false);
@@ -355,7 +353,11 @@ export const ConversationManager: React.FC = () => {
             <div className="conversation-info-detail">
               {(() => {
                 const conv = conversations.find(c => c.id === selectedConversation);
-                if (!conv) return null;
+                console.log('Details section - selectedConversation:', selectedConversation);
+                console.log('Details section - conversations array:', conversations);
+                console.log('Details section - found conv:', conv);
+                console.log('Details section - conv properties:', conv ? Object.keys(conv) : 'no conv');
+                if (!conv) return <p>No conversation found with ID: {selectedConversation}</p>;
                 
                 return (
                   <div>
