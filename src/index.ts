@@ -22,6 +22,12 @@ export { HttpClient, HttpError } from './client/http-client';
 export type {
   ConversationID,
   Event,
+  MessageEvent,
+  ActionEvent,
+  ObservationEvent,
+  AgentErrorEvent,
+  SystemPromptEvent,
+  PauseEvent,
   Message,
   MessageContent,
   TextContent,

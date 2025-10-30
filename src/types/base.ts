@@ -8,7 +8,46 @@ export interface Event {
   id: string;
   kind: string;
   timestamp: string;
+  source?: 'agent' | 'user' | 'environment';
   [key: string]: any;
+}
+
+// Specific event types for better type safety
+export interface MessageEvent extends Event {
+  kind: 'MessageEvent';
+  llm_message: Message;
+  activated_skills?: string[];
+}
+
+export interface ActionEvent extends Event {
+  kind: 'ActionEvent';
+  action: any; // The action object varies by action type
+}
+
+export interface ObservationEvent extends Event {
+  kind: 'ObservationEvent';
+  tool_name: string;
+  tool_call_id: string;
+  observation: any;
+  action_id: string;
+}
+
+export interface AgentErrorEvent extends Event {
+  kind: 'AgentErrorEvent';
+  tool_name: string;
+  tool_call_id: string;
+  observation: any;
+  action_id: string;
+}
+
+export interface SystemPromptEvent extends Event {
+  kind: 'SystemPromptEvent';
+  system_prompt: TextContent;
+  tools: any[];
+}
+
+export interface PauseEvent extends Event {
+  kind: 'PauseEvent';
 }
 
 export interface Message {
