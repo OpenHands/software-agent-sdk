@@ -17,7 +17,9 @@ if (typeof window !== 'undefined' && window.WebSocket) {
     const ws = require('ws');
     WebSocketImpl = ws;
   } catch (e) {
-    throw new Error('WebSocket implementation not available. Install ws package for Node.js environments.');
+    throw new Error(
+      'WebSocket implementation not available. Install ws package for Node.js environments.'
+    );
   }
 }
 
