@@ -5,20 +5,21 @@
 import { Event, ConversationCallbackType } from '../types/base';
 
 // Use native WebSocket in browser, ws library in Node.js
-const WebSocketImpl = (() => {
-  if (typeof window !== 'undefined' && window.WebSocket) {
-    // Browser environment
-    return window.WebSocket;
-  } else {
-    // Node.js environment
-    try {
-      const ws = require('ws');
-      return ws;
-    } catch (e) {
-      throw new Error('WebSocket implementation not available. Install ws package for Node.js environments.');
-    }
+let WebSocketImpl: any;
+
+if (typeof window !== 'undefined' && window.WebSocket) {
+  // Browser environment
+  WebSocketImpl = window.WebSocket;
+} else {
+  // Node.js environment
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ws = require('ws');
+    WebSocketImpl = ws;
+  } catch (e) {
+    throw new Error('WebSocket implementation not available. Install ws package for Node.js environments.');
   }
-})();
+}
 
 export interface WebSocketClientOptions {
   host: string;
