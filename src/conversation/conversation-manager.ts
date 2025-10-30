@@ -4,6 +4,7 @@
 
 import { HttpClient } from '../client/http-client';
 import { RemoteConversation } from './remote-conversation';
+import { RemoteWorkspace } from '../workspace/remote-workspace';
 import {
   ConversationInfo,
   ConversationSearchRequest,
@@ -86,22 +87,51 @@ export class ConversationManager {
       initialMessage?: string;
       maxIterations?: number;
       stuckDetection?: boolean;
-      workspace?: any;
+      workingDir?: string;
     } = {}
   ): Promise<RemoteConversation> {
-    return RemoteConversation.create(this.host, agent, {
+    // Create a workspace for the conversation
+    const workspace = new RemoteWorkspace({
+      host: this.host,
+      workingDir: options.workingDir || '/tmp',
       apiKey: this.apiKey,
-      ...options,
     });
+
+    const conversation = new RemoteConversation(agent, workspace, {
+      maxIterations: options.maxIterations,
+      stuckDetection: options.stuckDetection,
+    });
+
+    await conversation.start({
+      initialMessage: options.initialMessage,
+    });
+
+    return conversation;
   }
 
   /**
    * Load an existing conversation
    */
-  async loadConversation(conversationId: ConversationID): Promise<RemoteConversation> {
-    return RemoteConversation.load(this.host, conversationId, {
+  async loadConversation(
+    conversationId: ConversationID,
+    workingDir: string = '/tmp'
+  ): Promise<RemoteConversation> {
+    // Get conversation info to extract the agent
+    const conversationInfo = await this.getConversation(conversationId);
+
+    // Create a workspace for the existing conversation
+    const workspace = new RemoteWorkspace({
+      host: this.host,
+      workingDir,
       apiKey: this.apiKey,
     });
+
+    const conversation = new RemoteConversation(conversationInfo.agent, workspace, {
+      conversationId: conversationId,
+    });
+
+    await conversation.start();
+    return conversation;
   }
 
   /**
