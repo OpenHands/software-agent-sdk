@@ -51,6 +51,7 @@ export const ConversationManager: React.FC = () => {
     setError(null);
     try {
       const conversationList = await manager.getAllConversations();
+      console.log('Loaded conversations:', conversationList); // Debug log
       setConversations(conversationList.map(conv => ({ ...conv, isLoading: false })));
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load conversations');
@@ -307,6 +308,7 @@ export const ConversationManager: React.FC = () => {
                   key={conversation.id} 
                   className={`conversation-item ${selectedConversation === conversation.id ? 'selected' : ''}`}
                   onClick={() => {
+                    console.log('Selected conversation:', conversation); // Debug log
                     setSelectedConversation(conversation.id);
                     loadConversationDetails(conversation.id);
                   }}

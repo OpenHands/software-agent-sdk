@@ -20,7 +20,11 @@ export interface ConversationInfo {
   agent: AgentBase;
   workspace: any;
   persistence_dir: string;
-  conversation_stats: ConversationStats;
+  conversation_stats?: ConversationStats;
+  stats?: any; // API returns stats instead of conversation_stats
+  title?: string;
+  created_at?: string;
+  updated_at?: string;
   [key: string]: any;
 }
 
