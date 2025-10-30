@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     host: '0.0.0.0',
-    port: 12000,
+    port: 12001,
     cors: true,
     allowedHosts: true,
     headers: {
@@ -15,7 +15,7 @@ export default defineConfig({
   },
   preview: {
     host: '0.0.0.0',
-    port: 12000,
+    port: 12001,
     cors: true,
     headers: {
       'X-Frame-Options': 'ALLOWALL',

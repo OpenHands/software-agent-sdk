@@ -58,3 +58,16 @@ export interface GenerateTitleResponse {
 export interface UpdateSecretsRequest {
   secrets: Record<string, string>;
 }
+
+export interface ConversationSearchRequest {
+  page_id?: string;
+  limit?: number;
+  status?: AgentExecutionStatus;
+  sort_order?: string;
+}
+
+export interface ConversationSearchResponse {
+  items: ConversationInfo[];
+  next_page_id?: string;
+  total_count?: number;
+}

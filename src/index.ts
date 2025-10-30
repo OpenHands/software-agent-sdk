@@ -7,6 +7,7 @@
 
 // Main conversation and workspace classes
 export { RemoteConversation } from './conversation/remote-conversation';
+export { ConversationManager } from './conversation/conversation-manager';
 export { RemoteWorkspace } from './workspace/remote-workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
@@ -52,6 +53,8 @@ export type {
   GenerateTitleRequest,
   GenerateTitleResponse,
   UpdateSecretsRequest,
+  ConversationSearchRequest,
+  ConversationSearchResponse,
 } from './models/conversation';
 
 // Client options
@@ -63,8 +66,11 @@ export type { RemoteWorkspaceOptions } from './workspace/remote-workspace';
 
 export type { RemoteConversationOptions } from './conversation/remote-conversation';
 
+export type { ConversationManagerOptions } from './conversation/conversation-manager';
+
 // Re-import for default export
 import { RemoteConversation } from './conversation/remote-conversation';
+import { ConversationManager } from './conversation/conversation-manager';
 import { RemoteWorkspace } from './workspace/remote-workspace';
 import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
@@ -75,6 +81,7 @@ import { EventSortOrder, AgentExecutionStatus } from './types/base';
 // Default export for convenience
 export default {
   RemoteConversation,
+  ConversationManager,
   RemoteWorkspace,
   RemoteState,
   RemoteEventsList,
