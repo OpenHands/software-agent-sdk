@@ -138,10 +138,8 @@ export const ConversationManager: React.FC = () => {
       console.log('Loaded remote conversation:', remoteConversation);
       
       // Get events
-      const eventsResponse = await remoteConversation.state.events.getEvents();
-      console.log('Loaded events response:', eventsResponse);
-      const events = eventsResponse?.items || eventsResponse || [];
-      console.log('Processed events:', events);
+      const events = await remoteConversation.state.events.getEvents();
+      console.log('Loaded events:', events);
       
       // Get agent status
       const agentStatus = await remoteConversation.state.getAgentStatus();

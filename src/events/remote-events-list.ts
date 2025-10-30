@@ -13,12 +13,17 @@ export class RemoteEventsList {
   private cachedEvents: Event[] = [];
   private cachedEventIds = new Set<string>();
   private lock = new AsyncLock();
+  private syncPromise: Promise<void>;
 
   constructor(client: HttpClient, conversationId: string) {
     this.client = client;
     this.conversationId = conversationId;
     // Perform initial sync
-    this.doFullSync();
+    this.syncPromise = this.doFullSync();
+  }
+
+  async ensureSynced(): Promise<void> {
+    await this.syncPromise;
   }
 
   private async doFullSync(): Promise<void> {
@@ -90,6 +95,7 @@ export class RemoteEventsList {
   }
 
   async getEvents(start?: number, end?: number): Promise<Event[]> {
+    await this.ensureSynced();
     return await this.lock.acquire(async () => {
       if (start === undefined && end === undefined) {
         return [...this.cachedEvents];
