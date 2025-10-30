@@ -204,13 +204,26 @@ export class RemoteConversation {
       timeout: 60000,
     });
 
+    // Convert string initialMessage to Message object if provided
+    let initialMessage: Message | undefined;
+    if (options.initialMessage) {
+      initialMessage = {
+        role: 'user',
+        content: [{ type: 'text', text: options.initialMessage }],
+      };
+    }
+
+    console.log('Agent object before request:', JSON.stringify(agent, null, 2));
+
     const request: CreateConversationRequest = {
       agent,
-      initial_message: options.initialMessage,
+      initial_message: initialMessage,
       max_iterations: options.maxIterations || 50,
       stuck_detection: options.stuckDetection ?? true,
       workspace: options.workspace || { type: 'local', working_dir: '/tmp' },
     };
+
+    console.log('Full request object:', JSON.stringify(request, null, 2));
 
     const response = await client.post<ConversationInfo>('/api/conversations', request);
     const conversationInfo = response.data;
