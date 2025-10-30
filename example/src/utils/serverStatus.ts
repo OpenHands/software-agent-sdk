@@ -120,11 +120,12 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
 
     try {
       // Send a simple test message
-      const messageUrl = `${settings.agentServerUrl.replace(/\/$/, '')}/api/conversations/${conversationId}/messages`;
+      const messageUrl = `${settings.agentServerUrl.replace(/\/$/, '')}/events`;
       const messageResponse = await fetch(messageUrl, {
         method: 'POST',
         headers,
         body: JSON.stringify({
+          conversation_id: conversationId,
           role: 'user',
           content: [{ type: 'text', text: 'Hello, respond with just "OK" to confirm you are working.' }],
           run: false
