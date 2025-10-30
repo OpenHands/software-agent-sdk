@@ -2,7 +2,7 @@
  * Basic usage example for the OpenHands Agent Server TypeScript Client
  */
 
-import { Conversation, Agent, RemoteWorkspace, AgentExecutionStatus } from '../src/index.js';
+import { Conversation, Agent, Workspace, AgentExecutionStatus } from '../src/index.js';
 
 async function main() {
   // Define the agent configuration
@@ -16,7 +16,7 @@ async function main() {
 
   try {
     // Create a remote workspace
-    const workspace = new RemoteWorkspace({
+    const workspace = new Workspace({
       host: 'http://localhost:3000',
       workingDir: '/tmp',
       apiKey: process.env.SESSION_API_KEY || 'your-session-api-key'
@@ -24,18 +24,16 @@ async function main() {
 
     // Create a new conversation
     console.log('Creating conversation...');
-    const conversation = await Conversation.create(
-      'http://localhost:3000', // Replace with your agent server URL
-      agent,
-      workspace,
-      {
-        apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
-        initialMessage: 'Hello! Can you help me write a simple Python script?',
-        callback: (event) => {
-          console.log(`Event received: ${event.kind} at ${event.timestamp}`);
-        },
-      }
-    );
+    const conversation = new Conversation(agent, workspace, {
+      callback: (event) => {
+        console.log(`Event received: ${event.kind} at ${event.timestamp}`);
+      },
+    });
+
+    // Start the conversation with an initial message
+    await conversation.start({
+      initialMessage: 'Hello! Can you help me write a simple Python script?'
+    });
 
     console.log(`Conversation created with ID: ${conversation.id}`);
 
@@ -87,22 +85,28 @@ async function main() {
 
 // Example of loading an existing conversation
 async function loadExistingConversation() {
+  const agent: Agent = {
+    kind: 'CodeActAgent',
+    llm: {
+      model: 'gpt-4',
+      api_key: process.env.OPENAI_API_KEY || 'your-openai-api-key',
+    },
+  };
+
   try {
     // Create a remote workspace for the existing conversation
-    const workspace = new RemoteWorkspace({
+    const workspace = new Workspace({
       host: 'http://localhost:3000',
       workingDir: '/tmp',
       apiKey: process.env.SESSION_API_KEY || 'your-session-api-key'
     });
 
-    const conversation = await Conversation.load(
-      'http://localhost:3000',
-      'existing-conversation-id',
-      workspace,
-      {
-        apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
-      }
-    );
+    const conversation = new Conversation(agent, workspace, {
+      conversationId: 'existing-conversation-id'
+    });
+
+    // Connect to the existing conversation
+    await conversation.start();
 
     console.log(`Loaded conversation: ${conversation.id}`);
 

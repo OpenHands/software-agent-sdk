@@ -5,7 +5,7 @@ import {
   Conversation,
   RemoteConversation,
   Agent,
-  RemoteWorkspace,
+  Workspace,
   Event
 } from '@openhands/agent-server-typescript-client';
 import { useSettings } from '../contexts/SettingsContext';
@@ -201,22 +201,16 @@ export const ConversationManager: React.FC = () => {
       };
 
       // Create a remote workspace
-      const workspace = new RemoteWorkspace({
+      const workspace = new Workspace({
         host: manager.host,
         workingDir: '/tmp',
         apiKey: manager.apiKey
       });
 
-      const conversation = await Conversation.create(
-        manager.host,
-        agent,
-        workspace,
-        {
-          apiKey: manager.apiKey,
-          initialMessage: 'Hello! I\'m ready to help you with your tasks.',
-          maxIterations: 50,
-          callback: (event: Event) => {
-            console.log('Received WebSocket event for new conversation:', event);
+      const conversation = new Conversation(agent, workspace, {
+        maxIterations: 50,
+        callback: (event: Event) => {
+          console.log('Received WebSocket event for new conversation:', event);
             
             // Update the conversation's events in real-time
             setConversations(prev => prev.map(conv => {
@@ -231,6 +225,11 @@ export const ConversationManager: React.FC = () => {
       );
 
       console.log('Created conversation:', conversation);
+
+      // Start the conversation with initial message
+      await conversation.start({
+        initialMessage: 'Hello! I\'m ready to help you with your tasks.'
+      });
       
       // Start WebSocket client for real-time updates
       try {
@@ -299,6 +298,12 @@ export const ConversationManager: React.FC = () => {
     
     // Load conversation details
     try {
+      // Get the conversation info to extract the agent
+      const conversationInfo = conversations.find(c => c.id === conversationId);
+      if (!conversationInfo) {
+        throw new Error('Conversation not found');
+      }
+
       // Create a callback to handle real-time events
       const eventCallback = (event: Event) => {
         console.log('Received WebSocket event:', event);
@@ -331,22 +336,20 @@ export const ConversationManager: React.FC = () => {
       };
       
       // Create a remote workspace for the existing conversation
-      const workspace = new RemoteWorkspace({
+      const workspace = new Workspace({
         host: manager.host,
         workingDir: '/tmp',
         apiKey: manager.apiKey
       });
 
       // Load conversation with callback
-      const remoteConversation = await Conversation.load(
-        manager.host,
-        conversationId,
-        workspace,
-        {
-          apiKey: manager.apiKey,
-          callback: eventCallback,
-        }
-      );
+      const remoteConversation = new Conversation(conversationInfo.agent, workspace, {
+        conversationId: conversationId,
+        callback: eventCallback,
+      });
+
+      // Connect to the existing conversation
+      await remoteConversation.start();
       console.log('Loaded remote conversation:', remoteConversation);
       
       // Start WebSocket client for real-time updates

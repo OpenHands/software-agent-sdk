@@ -97,18 +97,25 @@ export class ConversationManager {
       apiKey: this.apiKey,
     });
 
-    return RemoteConversation.create(this.host, agent, workspace, {
-      apiKey: this.apiKey,
-      initialMessage: options.initialMessage,
+    const conversation = new RemoteConversation(agent, workspace, {
       maxIterations: options.maxIterations,
       stuckDetection: options.stuckDetection,
     });
+
+    await conversation.start({
+      initialMessage: options.initialMessage,
+    });
+
+    return conversation;
   }
 
   /**
    * Load an existing conversation
    */
   async loadConversation(conversationId: ConversationID, workingDir: string = '/tmp'): Promise<RemoteConversation> {
+    // Get conversation info to extract the agent
+    const conversationInfo = await this.getConversation(conversationId);
+
     // Create a workspace for the existing conversation
     const workspace = new RemoteWorkspace({
       host: this.host,
@@ -116,9 +123,12 @@ export class ConversationManager {
       apiKey: this.apiKey,
     });
 
-    return RemoteConversation.load(this.host, conversationId, workspace, {
-      apiKey: this.apiKey,
+    const conversation = new RemoteConversation(conversationInfo.agent, workspace, {
+      conversationId: conversationId,
     });
+
+    await conversation.start();
+    return conversation;
   }
 
   /**

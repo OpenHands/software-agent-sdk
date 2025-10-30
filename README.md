@@ -21,7 +21,7 @@ npm install @openhands/agent-server-typescript-client
 ### Creating a Conversation
 
 ```typescript
-import { Conversation, Agent, RemoteWorkspace } from '@openhands/agent-server-typescript-client';
+import { Conversation, Agent, Workspace } from '@openhands/agent-server-typescript-client';
 
 const agent: Agent = {
   kind: 'CodeActAgent',
@@ -32,24 +32,22 @@ const agent: Agent = {
 };
 
 // Create a remote workspace
-const workspace = new RemoteWorkspace({
+const workspace = new Workspace({
   host: 'http://localhost:3000',
   workingDir: '/tmp',
   apiKey: 'your-session-api-key'
 });
 
-const conversation = await Conversation.create(
-  'http://localhost:3000', // Agent server URL
-  agent,
-  workspace,
-  {
-    apiKey: 'your-session-api-key',
-    initialMessage: 'Hello, can you help me write some code?',
-    callback: (event) => {
-      console.log('Received event:', event);
-    }
+const conversation = new Conversation(agent, workspace, {
+  callback: (event) => {
+    console.log('Received event:', event);
   }
-);
+});
+
+// Start the conversation with an initial message
+await conversation.start({
+  initialMessage: 'Hello, can you help me write some code?'
+});
 
 // Start WebSocket for real-time events
 await conversation.startWebSocketClient();
@@ -63,20 +61,18 @@ await conversation.run();
 
 ```typescript
 // Create a remote workspace for the existing conversation
-const workspace = new RemoteWorkspace({
+const workspace = new Workspace({
   host: 'http://localhost:3000',
   workingDir: '/tmp',
   apiKey: 'your-session-api-key'
 });
 
-const conversation = await Conversation.load(
-  'http://localhost:3000',
-  'conversation-id-here',
-  workspace,
-  {
-    apiKey: 'your-session-api-key'
-  }
-);
+const conversation = new Conversation(agent, workspace, {
+  conversationId: 'conversation-id-here'
+});
+
+// Connect to the existing conversation
+await conversation.start();
 ```
 
 ### Using the Workspace
@@ -136,16 +132,17 @@ await conversation.updateSecrets({
 
 ## API Reference
 
-### RemoteConversation
+### Conversation
 
-The main class for managing conversations with OpenHands agents.
+Factory function that creates conversations with OpenHands agents.
 
-#### Static Methods
+#### Constructor
 
-- `RemoteConversation.create(host, agent, options)` - Create a new conversation
-- `RemoteConversation.load(host, conversationId, options)` - Load an existing conversation
+- `new Conversation(agent, workspace, options?)` - Create a new conversation instance
 
 #### Instance Methods
+
+- `start(options?)` - Start the conversation (creates new or connects to existing)
 
 - `sendMessage(message)` - Send a message to the agent
 - `run()` - Start agent execution

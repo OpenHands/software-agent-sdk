@@ -6,9 +6,11 @@
  */
 
 // Main conversation and workspace classes
-export { RemoteConversation, Conversation } from './conversation/remote-conversation';
+export { RemoteConversation } from './conversation/remote-conversation';
+export { Conversation } from './conversation/conversation';
 export { ConversationManager } from './conversation/conversation-manager';
 export { RemoteWorkspace } from './workspace/remote-workspace';
+export { Workspace } from './workspace/workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
 
@@ -76,9 +78,11 @@ export type { RemoteConversationOptions } from './conversation/remote-conversati
 export type { ConversationManagerOptions } from './conversation/conversation-manager';
 
 // Re-import for default export
-import { RemoteConversation, Conversation } from './conversation/remote-conversation';
+import { RemoteConversation } from './conversation/remote-conversation';
+import { Conversation } from './conversation/conversation';
 import { ConversationManager } from './conversation/conversation-manager';
 import { RemoteWorkspace } from './workspace/remote-workspace';
+import { Workspace } from './workspace/workspace';
 import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
@@ -91,6 +95,7 @@ export default {
   Conversation,
   ConversationManager,
   RemoteWorkspace,
+  Workspace,
   RemoteState,
   RemoteEventsList,
   WebSocketCallbackClient,

@@ -59,8 +59,7 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
     });
 
     // Create a test conversation using the SDK
-    const conversation = await RemoteConversation.create(
-      settings.agentServerUrl,
+    const conversation = new RemoteConversation(
       {
         kind: 'Agent',
         llm: {
@@ -68,11 +67,10 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
           api_key: settings.apiKey,
         }
       },
-      workspace,
-      {
-        apiKey: settings.agentServerApiKey,
-      }
+      workspace
     );
+
+    await conversation.start();
 
     try {
       // Send a simple test message to validate LLM configuration
