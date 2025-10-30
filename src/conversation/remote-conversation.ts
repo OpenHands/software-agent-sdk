@@ -81,10 +81,8 @@ export class RemoteConversation {
   }
 
   async conversationStats(): Promise<ConversationStats> {
-    const response = await this.client.get<ConversationStats>(
-      `/api/conversations/${this.id}/stats`
-    );
-    return response.data;
+    const response = await this.client.get<ConversationInfo>(`/api/conversations/${this.id}`);
+    return response.data.stats;
   }
 
   async sendMessage(message: string | Message): Promise<void> {
@@ -104,7 +102,7 @@ export class RemoteConversation {
       };
     }
 
-    await this.client.post(`/api/conversations/${this.id}/send_message`, messageContent);
+    await this.client.post(`/api/conversations/${this.id}/events`, messageContent);
   }
 
   async run(): Promise<void> {
@@ -116,12 +114,12 @@ export class RemoteConversation {
   }
 
   async setConfirmationPolicy(policy: ConfirmationPolicyBase): Promise<void> {
-    await this.client.post(`/api/conversations/${this.id}/set_confirmation_policy`, policy);
+    await this.client.post(`/api/conversations/${this.id}/confirmation_policy`, policy);
   }
 
   async sendConfirmationResponse(accept: boolean, reason?: string): Promise<void> {
     const request: ConfirmationResponseRequest = { accept, reason };
-    await this.client.post(`/api/conversations/${this.id}/send_confirmation_response`, request);
+    await this.client.post(`/api/conversations/${this.id}/events/respond_to_confirmation`, request);
   }
 
   async generateTitle(maxLength: number = 50, llm?: any): Promise<string> {
@@ -145,7 +143,7 @@ export class RemoteConversation {
     }
 
     const request: UpdateSecretsRequest = { secrets: secretStrings };
-    await this.client.post(`/api/conversations/${this.id}/update_secrets`, request);
+    await this.client.post(`/api/conversations/${this.id}/secrets`, request);
   }
 
   async startWebSocketClient(): Promise<void> {
