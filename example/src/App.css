@@ -1,0 +1,76 @@
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.App {
+  padding: 2rem;
+}
+
+.card {
+  padding: 2em;
+  margin: 1em 0;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+  background: #f9f9f9;
+  color: #333;
+}
+
+.status {
+  font-size: 1.2em;
+  font-weight: bold;
+  margin: 1em 0;
+}
+
+.sdk-info {
+  text-align: left;
+  margin-top: 1em;
+}
+
+.sdk-info h3 {
+  color: #646cff;
+  margin-top: 1.5em;
+  margin-bottom: 0.5em;
+}
+
+.sdk-info ul {
+  margin: 0.5em 0;
+  padding-left: 1.5em;
+}
+
+.sdk-info li {
+  margin: 0.25em 0;
+}
+
+.enums {
+  display: flex;
+  gap: 2em;
+  flex-wrap: wrap;
+}
+
+.enums > div {
+  flex: 1;
+  min-width: 200px;
+}
+
+.import-time {
+  margin-top: 1.5em;
+  padding-top: 1em;
+  border-top: 1px solid #ddd;
+  color: #666;
+}
+
+@media (prefers-color-scheme: dark) {
+  .card {
+    background: #1a1a1a;
+    color: #fff;
+    border-color: #333;
+  }
+  
+  .import-time {
+    border-top-color: #333;
+    color: #ccc;
+  }
+}
