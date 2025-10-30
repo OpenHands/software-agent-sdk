@@ -14,6 +14,9 @@ export { Workspace } from './workspace/workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
 
+// Agent classes
+export { Agent } from './agent/agent';
+
 // WebSocket client for real-time events
 export { WebSocketCallbackClient } from './events/websocket-client';
 
@@ -35,7 +38,6 @@ export type {
   TextContent,
   ImageContent,
   AgentBase,
-  Agent,
   LLM,
   ServerInfo,
   Success,
@@ -47,6 +49,8 @@ export type {
   NeverConfirm,
   AlwaysConfirm,
 } from './types/base';
+
+export type { AgentOptions } from './agent/agent';
 
 export { EventSortOrder, AgentExecutionStatus } from './types/base';
 
@@ -88,6 +92,7 @@ import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
 import { EventSortOrder, AgentExecutionStatus } from './types/base';
+import { Agent } from './agent/agent';
 
 // Default export for convenience
 export default {
@@ -103,4 +108,5 @@ export default {
   HttpError,
   EventSortOrder,
   AgentExecutionStatus,
+  Agent,
 };

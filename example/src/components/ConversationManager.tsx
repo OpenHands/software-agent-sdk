@@ -192,13 +192,13 @@ export const ConversationManager: React.FC = () => {
     setError(null);
     try {
       // Create a simple agent configuration
-      const agent: Agent = {
+      const agent = new Agent({
         kind: 'Agent',
         llm: {
           model: settings.modelName,
           api_key: settings.apiKey || ''
         }
-      };
+      });
 
       // Create a remote workspace
       const workspace = new Workspace({

@@ -23,13 +23,13 @@ npm install @openhands/agent-server-typescript-client
 ```typescript
 import { Conversation, Agent, Workspace } from '@openhands/agent-server-typescript-client';
 
-const agent: Agent = {
+const agent = new Agent({
   kind: 'CodeActAgent',
   llm: {
     model: 'gpt-4',
     api_key: 'your-openai-api-key'
   }
-};
+});
 
 // Create a remote workspace
 const workspace = new Workspace({
