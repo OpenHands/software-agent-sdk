@@ -81,3 +81,16 @@ This client is intended for developers who want to:
 - Develop custom frontends for the OpenHands Agent Server
 
 The client abstracts away the complexity of HTTP requests, WebSocket management, and API authentication, providing a clean, type-safe interface for all OpenHands Agent Server functionality.
+
+## Example Application
+
+The `example/` directory contains a React application built with Vite that demonstrates how to integrate the TypeScript SDK into a modern web application. This example serves as both a reference implementation and a verification tool to ensure the SDK works correctly in browser environments.
+
+The example application showcases:
+- Proper SDK integration with ES module compatibility
+- TypeScript configuration for client-side development
+- Build processes that compile the SDK before running the application
+- Import verification of all major SDK classes and enums
+- Modern React development patterns with Vite tooling
+
+This provides developers with a working template for building their own applications using the OpenHands Agent Server TypeScript Client.
