@@ -8,7 +8,6 @@ import {
   Event
 } from '@openhands/agent-server-typescript-client';
 import { useSettings } from '../contexts/SettingsContext';
-import './ConversationManager.css';
 
 interface ConversationData extends ConversationInfo {
   remoteConversation?: RemoteConversation;
@@ -182,31 +181,31 @@ export const ConversationManager: React.FC = () => {
     return agent.name || 'Unknown Agent';
   };
 
-  const getStatusColor = (status?: string) => {
+  const getStatusColorClass = (status?: string) => {
     switch (status) {
-      case 'running': return '#4CAF50';
-      case 'stopped': return '#f44336';
-      case 'paused': return '#ff9800';
-      default: return '#9e9e9e';
+      case 'running': return 'text-green-500';
+      case 'stopped': return 'text-red-500';
+      case 'paused': return 'text-orange-500';
+      default: return 'text-gray-500';
     }
   };
 
   return (
-    <div className="conversation-manager">
-      <div className="conversation-header">
-        <h2>Conversation Manager</h2>
-        <div className="header-actions">
+    <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 m-0">
+      <div className="flex justify-between items-center mb-6 pb-4 border-b border-gray-200 dark:border-gray-700">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white m-0">Conversation Manager</h2>
+        <div className="flex gap-3">
           <button 
             onClick={() => loadConversations()} 
             disabled={loading}
-            className="refresh-btn"
+            className="bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-gray-700 dark:text-gray-300 px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed border border-gray-300 dark:border-gray-600"
           >
             🔄 Refresh
           </button>
           <button 
             onClick={createConversation} 
             disabled={loading}
-            className="create-btn"
+            className="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             ➕ New Conversation
           </button>
@@ -214,55 +213,59 @@ export const ConversationManager: React.FC = () => {
       </div>
 
       {error && (
-        <div className="error-message">
-          <strong>Error:</strong> {error}
+        <div className="bg-red-50 dark:bg-red-900/30 border border-red-200 dark:border-red-700 rounded-md p-4 mb-4">
+          <span className="text-red-700 dark:text-red-300 font-medium">Error:</span> 
+          <span className="text-red-600 dark:text-red-400 ml-2">{error}</span>
         </div>
       )}
 
-      <div className="conversation-content">
-        <div className="conversation-list">
-          <h3>Conversations ({conversations.length})</h3>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Conversations ({conversations.length})</h3>
           
           {loading && conversations.length === 0 && (
-            <div className="loading">Loading conversations...</div>
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">Loading conversations...</div>
           )}
           
           {conversations.length === 0 && !loading ? (
-            <div className="empty-list">
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               <p>No conversations yet. Create your first conversation!</p>
             </div>
           ) : (
-            <div className="conversation-items">
+            <div className="space-y-3 max-h-96 overflow-y-auto">
               {conversations.map((conversation) => (
                 <div 
                   key={conversation.id} 
-                  className={`conversation-item ${selectedConversationId === conversation.id ? 'selected' : ''}`}
+                  className={`border rounded-lg p-3 cursor-pointer transition-all duration-200 flex justify-between items-start ${
+                    selectedConversationId === conversation.id 
+                      ? 'border-indigo-500 bg-indigo-50 dark:bg-indigo-900/30 shadow-md' 
+                      : 'border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 hover:border-gray-300 dark:hover:border-gray-600 hover:shadow-sm'
+                  }`}
                   onClick={() => selectConversation(conversation.id)}
                 >
-                  <div className="conversation-info">
-                    <div className="conversation-id">
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-mono text-gray-600 dark:text-gray-400 mb-2">
                       ID: {conversation.id.substring(0, 8)}...
                     </div>
-                    <div className="conversation-details">
-                      <div>Agent: {getAgentName(conversation.agent)}</div>
-                      <div>Created: {formatDate(conversation.created_at)}</div>
-                      <div className="conversation-status">
-                        Status: <span 
-                          className="status-indicator" 
-                          style={{ color: getStatusColor(conversation.status) }}
-                        >
+                    <div className="space-y-1 text-sm">
+                      <div className="text-gray-900 dark:text-white">Agent: {getAgentName(conversation.agent)}</div>
+                      <div className="text-gray-600 dark:text-gray-400">Created: {formatDate(conversation.created_at)}</div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-gray-600 dark:text-gray-400">Status:</span>
+                        <span className={`font-medium ${getStatusColorClass(conversation.status)}`}>
                           ● {conversation.status || 'unknown'}
                         </span>
                       </div>
                     </div>
                   </div>
                   <button 
-                    className="delete-btn"
+                    className="ml-3 p-2 text-red-500 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-900/30 rounded-md transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={(e) => {
                       e.stopPropagation();
                       deleteConversation(conversation.id);
                     }}
                     disabled={loading}
+                    title="Delete conversation"
                   >
                     🗑️
                   </button>
@@ -272,90 +275,102 @@ export const ConversationManager: React.FC = () => {
           )}
         </div>
 
-        <div className="conversation-details">
-          <h3>Conversation Details</h3>
+        <div className="bg-gray-50 dark:bg-gray-900 rounded-lg p-4">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-white mb-4">Conversation Details</h3>
           
           {!selectedConversation ? (
-            <div className="no-selection">
+            <div className="text-center py-8 text-gray-500 dark:text-gray-400">
               <p>Select a conversation to view details</p>
             </div>
           ) : (
-            <div className="details-content">
-              <div className="details-info">
-                <div className="detail-row">
-                  <strong>ID:</strong> {selectedConversation.id}
-                </div>
-                <div className="detail-row">
-                  <strong>Status:</strong> 
-                  <span 
-                    className="status-indicator" 
-                    style={{ color: getStatusColor(selectedConversation.status) }}
-                  >
-                    ● {selectedConversation.status || 'unknown'}
-                  </span>
-                </div>
-                <div className="detail-row">
-                  <strong>Agent:</strong> {getAgentName(selectedConversation.agent)}
-                </div>
-                <div className="detail-row">
-                  <strong>Model:</strong> {selectedConversation.agent.llm?.model || 'Unknown'}
-                </div>
-                <div className="detail-row">
-                  <strong>Created:</strong> {formatDate(selectedConversation.created_at)}
-                </div>
-                <div className="detail-row">
-                  <strong>Updated:</strong> {formatDate(selectedConversation.updated_at)}
-                </div>
-                {selectedConversation.agentStatus && (
-                  <div className="detail-row">
-                    <strong>Agent Status:</strong> {selectedConversation.agentStatus}
+            <div className="space-y-6">
+              <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                <div className="grid grid-cols-1 gap-3 text-sm">
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">ID:</span>
+                    <span className="text-gray-600 dark:text-gray-400 font-mono text-xs">{selectedConversation.id}</span>
                   </div>
-                )}
-                <div className="detail-row">
-                  <strong>Total Events:</strong> {selectedConversation.events?.length || 0}
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">Status:</span>
+                    <span className={`font-medium ${getStatusColorClass(selectedConversation.status)}`}>
+                      ● {selectedConversation.status || 'unknown'}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">Agent:</span>
+                    <span className="text-gray-600 dark:text-gray-400">{getAgentName(selectedConversation.agent)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">Model:</span>
+                    <span className="text-gray-600 dark:text-gray-400">{selectedConversation.agent.llm?.model || 'Unknown'}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">Created:</span>
+                    <span className="text-gray-600 dark:text-gray-400">{formatDate(selectedConversation.created_at)}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">Updated:</span>
+                    <span className="text-gray-600 dark:text-gray-400">{formatDate(selectedConversation.updated_at)}</span>
+                  </div>
+                  {selectedConversation.agentStatus && (
+                    <div className="flex justify-between">
+                      <span className="font-medium text-gray-900 dark:text-white">Agent Status:</span>
+                      <span className="text-gray-600 dark:text-gray-400">{selectedConversation.agentStatus}</span>
+                    </div>
+                  )}
+                  <div className="flex justify-between">
+                    <span className="font-medium text-gray-900 dark:text-white">Total Events:</span>
+                    <span className="text-gray-600 dark:text-gray-400">{selectedConversation.events?.length || 0}</span>
+                  </div>
                 </div>
               </div>
 
-              <div className="events-section">
-                <h4>Events & Messages</h4>
-                <div className="events-list">
+              <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                <h4 className="text-base font-semibold text-gray-900 dark:text-white mb-3">Events & Messages</h4>
+                <div className="max-h-64 overflow-y-auto space-y-3">
                   {selectedConversation.events && selectedConversation.events.length > 0 ? (
                     selectedConversation.events.map((event, index) => (
-                      <div key={index} className="event-item">
-                        <div className="event-header">
-                          <span className="event-type">{event.type}</span>
-                          <span className="event-timestamp">
+                      <div key={index} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 bg-gray-50 dark:bg-gray-900">
+                        <div className="flex justify-between items-center mb-2">
+                          <span className="text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded">
+                            {event.type}
+                          </span>
+                          <span className="text-xs text-gray-500 dark:text-gray-400">
                             {event.timestamp ? new Date(event.timestamp).toLocaleTimeString() : ''}
                           </span>
                         </div>
                         {event.message && (
-                          <div className="event-message">{event.message}</div>
+                          <div className="text-sm text-gray-900 dark:text-white mb-2 p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
+                            {event.message}
+                          </div>
                         )}
                         {event.content && (
-                          <div className="event-content">{JSON.stringify(event.content, null, 2)}</div>
+                          <div className="text-xs text-gray-600 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto">
+                            <pre>{JSON.stringify(event.content, null, 2)}</pre>
+                          </div>
                         )}
                       </div>
                     ))
                   ) : (
-                    <div className="no-events">No events yet</div>
+                    <div className="text-center py-4 text-gray-500 dark:text-gray-400">No events yet</div>
                   )}
                 </div>
               </div>
 
-              <div className="message-section">
-                <h4>Send Message</h4>
-                <div className="message-input-container">
+              <div className="bg-white dark:bg-gray-800 rounded-lg p-4 border border-gray-200 dark:border-gray-700">
+                <h4 className="text-base font-semibold text-gray-900 dark:text-white mb-3">Send Message</h4>
+                <div className="space-y-3">
                   <textarea
                     value={messageInput}
                     onChange={(e) => setMessageInput(e.target.value)}
                     placeholder="Type your message here..."
-                    className="message-input"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-600 focus:shadow-md transition-all duration-200 resize-vertical"
                     rows={3}
                   />
                   <button 
                     onClick={sendMessage}
                     disabled={!messageInput.trim() || loading}
-                    className="send-btn"
+                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Send Message
                   </button>

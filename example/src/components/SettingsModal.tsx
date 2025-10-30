@@ -1,5 +1,4 @@
 import React, { useState, useEffect } from 'react';
-import './SettingsModal.css';
 import { ServerStatus } from './ServerStatus';
 
 export interface Settings {
@@ -95,85 +94,119 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   if (!isOpen) return null;
 
   return (
-    <div className="modal-overlay" onClick={handleCancel}>
-      <div className="modal-content" onClick={(e) => e.stopPropagation()}>
-        <div className="modal-header">
-          <h2>Settings</h2>
-          <button className="close-button" onClick={handleCancel}>
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-center items-center z-50" onClick={handleCancel}>
+      <div className="bg-white dark:bg-gray-800 rounded-lg p-0 w-[90%] max-w-lg max-h-[90vh] overflow-y-auto shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center p-4 border-b border-gray-200 dark:border-gray-700">
+          <h2 className="text-xl font-semibold text-gray-900 dark:text-white m-0">Settings</h2>
+          <button 
+            className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white text-2xl border-none bg-transparent cursor-pointer transition-colors duration-200"
+            onClick={handleCancel}
+          >
             ×
           </button>
         </div>
         
-        <div className="settings-status">
+        <div className="p-4 border-b border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-900">
           <ServerStatus settings={initialSettings} />
         </div>
         
-        <form onSubmit={handleSubmit} className="settings-form">
-          <div className="form-group">
-            <label htmlFor="agentServerUrl">Agent Server URL</label>
+        <form onSubmit={handleSubmit} className="p-4">
+          <div className="mb-4">
+            <label htmlFor="agentServerUrl" className="block mb-1 font-semibold text-gray-900 dark:text-white text-sm">
+              Agent Server URL
+            </label>
             <input
               type="text"
               id="agentServerUrl"
               value={settings.agentServerUrl}
               onChange={(e) => handleInputChange('agentServerUrl', e.target.value)}
               placeholder="http://localhost:8000"
-              className={errors.agentServerUrl ? 'error' : ''}
+              className={`w-full px-3 py-2 border rounded-md text-sm transition-all duration-200 box-border ${
+                errors.agentServerUrl 
+                  ? 'border-red-500 shadow-red-100 dark:shadow-red-900/20' 
+                  : 'border-gray-300 dark:border-gray-600 focus:border-indigo-600 focus:shadow-indigo-100 dark:focus:shadow-indigo-900/20'
+              } bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:shadow-md`}
             />
             {errors.agentServerUrl && (
-              <span className="error-message">{errors.agentServerUrl}</span>
+              <span className="block text-red-500 text-xs mt-1">{errors.agentServerUrl}</span>
             )}
           </div>
 
-          <div className="form-group">
-            <label htmlFor="modelName">Model Name</label>
+          <div className="mb-4">
+            <label htmlFor="modelName" className="block mb-1 font-semibold text-gray-900 dark:text-white text-sm">
+              Model Name
+            </label>
             <input
               type="text"
               id="modelName"
               value={settings.modelName}
               onChange={(e) => handleInputChange('modelName', e.target.value)}
               placeholder="gpt-4"
-              className={errors.modelName ? 'error' : ''}
+              className={`w-full px-3 py-2 border rounded-md text-sm transition-all duration-200 box-border ${
+                errors.modelName 
+                  ? 'border-red-500 shadow-red-100 dark:shadow-red-900/20' 
+                  : 'border-gray-300 dark:border-gray-600 focus:border-indigo-600 focus:shadow-indigo-100 dark:focus:shadow-indigo-900/20'
+              } bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:shadow-md`}
             />
             {errors.modelName && (
-              <span className="error-message">{errors.modelName}</span>
+              <span className="block text-red-500 text-xs mt-1">{errors.modelName}</span>
             )}
           </div>
 
-          <div className="form-group">
-            <label htmlFor="apiKey">LLM API Key</label>
+          <div className="mb-4">
+            <label htmlFor="apiKey" className="block mb-1 font-semibold text-gray-900 dark:text-white text-sm">
+              LLM API Key
+            </label>
             <input
               type="password"
               id="apiKey"
               value={settings.apiKey}
               onChange={(e) => handleInputChange('apiKey', e.target.value)}
               placeholder="Enter your LLM API key"
-              className={errors.apiKey ? 'error' : ''}
+              className={`w-full px-3 py-2 border rounded-md text-sm transition-all duration-200 box-border ${
+                errors.apiKey 
+                  ? 'border-red-500 shadow-red-100 dark:shadow-red-900/20' 
+                  : 'border-gray-300 dark:border-gray-600 focus:border-indigo-600 focus:shadow-indigo-100 dark:focus:shadow-indigo-900/20'
+              } bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:shadow-md`}
             />
             {errors.apiKey && (
-              <span className="error-message">{errors.apiKey}</span>
+              <span className="block text-red-500 text-xs mt-1">{errors.apiKey}</span>
             )}
           </div>
 
-          <div className="form-group">
-            <label htmlFor="agentServerApiKey">Agent Server API Key</label>
+          <div className="mb-4">
+            <label htmlFor="agentServerApiKey" className="block mb-1 font-semibold text-gray-900 dark:text-white text-sm">
+              Agent Server API Key
+            </label>
             <input
               type="password"
               id="agentServerApiKey"
               value={settings.agentServerApiKey}
               onChange={(e) => handleInputChange('agentServerApiKey', e.target.value)}
               placeholder="Enter your agent server API key (optional)"
-              className={errors.agentServerApiKey ? 'error' : ''}
+              className={`w-full px-3 py-2 border rounded-md text-sm transition-all duration-200 box-border ${
+                errors.agentServerApiKey 
+                  ? 'border-red-500 shadow-red-100 dark:shadow-red-900/20' 
+                  : 'border-gray-300 dark:border-gray-600 focus:border-indigo-600 focus:shadow-indigo-100 dark:focus:shadow-indigo-900/20'
+              } bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:shadow-md`}
             />
             {errors.agentServerApiKey && (
-              <span className="error-message">{errors.agentServerApiKey}</span>
+              <span className="block text-red-500 text-xs mt-1">{errors.agentServerApiKey}</span>
             )}
           </div>
 
-          <div className="form-actions">
-            <button type="button" onClick={handleCancel} className="cancel-button">
+          <div className="flex gap-3 justify-end mt-6 pt-3 border-t border-gray-200 dark:border-gray-700">
+            <button 
+              type="button" 
+              onClick={handleCancel} 
+              className="px-5 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm cursor-pointer transition-all duration-200 bg-gray-50 dark:bg-gray-700 text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-600 hover:text-gray-900 dark:hover:text-white active:translate-y-px"
+            >
               Cancel
             </button>
-            <button type="submit" className="save-button">
+            <button 
+              type="submit" 
+              className="px-5 py-2 border-none rounded-md text-sm cursor-pointer transition-all duration-200 bg-indigo-600 text-white hover:bg-indigo-700 active:translate-y-px"
+            >
               Save Settings
             </button>
           </div>
