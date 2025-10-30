@@ -90,6 +90,10 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
             model: settings.modelName,
             api_key: settings.apiKey,
           }
+        },
+        workspace: {
+          type: 'local',
+          path: '/tmp/test-workspace'
         }
       }),
       signal: AbortSignal.timeout(10000), // 10 second timeout
@@ -174,14 +178,19 @@ export const getServerStatus = async (settings: Settings): Promise<ServerStatus>
   let llmStatus: 'unknown' | 'working' | 'error' = 'unknown';
   let llmError: string | undefined;
   
-  if (healthCheck.isConnected && settings.apiKey && settings.modelName) {
-    // Test LLM configuration if server is reachable and LLM settings are provided
+  // Check if LLM settings are configured
+  if (!settings.apiKey || !settings.modelName) {
+    llmStatus = 'unknown';
+    llmError = 'LLM API key or model name not configured';
+  } else if (!healthCheck.isConnected) {
+    // Settings are configured but server is not reachable
+    llmStatus = 'unknown';
+    llmError = 'Cannot test LLM configuration - server not reachable';
+  } else {
+    // Server is reachable and settings are configured - test LLM
     const llmTest = await testLLMConfiguration(settings);
     llmStatus = llmTest.success ? 'working' : 'error';
     llmError = llmTest.error;
-  } else if (!settings.apiKey || !settings.modelName) {
-    llmStatus = 'unknown';
-    llmError = 'LLM API key or model name not configured';
   }
 
   return {
