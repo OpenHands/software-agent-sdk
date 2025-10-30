@@ -79,27 +79,7 @@
   font-weight: 500;
 }
 
-.settings-info {
-  background-color: #f5f5f5;
-  border-radius: 4px;
-  padding: 1rem;
-  margin-bottom: 1rem;
-}
 
-.settings-info h3 {
-  margin-top: 0;
-  margin-bottom: 0.5rem;
-  color: #333;
-}
-
-.settings-info ul {
-  margin: 0;
-  padding-left: 1.5rem;
-}
-
-.settings-info li {
-  margin: 0.25rem 0;
-}
 
 .card {
   padding: 2em;

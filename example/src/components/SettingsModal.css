@@ -16,7 +16,7 @@
   border-radius: 8px;
   padding: 0;
   width: 90%;
-  max-width: 500px;
+  max-width: 600px;
   max-height: 90vh;
   overflow-y: auto;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
@@ -55,6 +55,38 @@
 .close-button:hover {
   background-color: #f0f0f0;
   color: #333;
+}
+
+.settings-status {
+  padding: 1.5rem;
+  border-bottom: 1px solid #e0e0e0;
+  background-color: #f8f9fa;
+}
+
+.current-settings {
+  margin-bottom: 1.5rem;
+}
+
+.current-settings h3 {
+  margin: 0 0 1rem 0;
+  color: #333;
+  font-size: 1.1rem;
+}
+
+.current-settings ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.current-settings li {
+  padding: 0.5rem 0;
+  border-bottom: 1px solid #e0e0e0;
+  font-size: 0.9rem;
+}
+
+.current-settings li:last-child {
+  border-bottom: none;
 }
 
 .settings-form {
@@ -158,6 +190,20 @@
   
   .modal-header h2 {
     color: #fff;
+  }
+  
+  .settings-status {
+    background-color: #2a2a2a;
+    border-bottom-color: #333;
+  }
+  
+  .current-settings h3 {
+    color: #fff;
+  }
+  
+  .current-settings li {
+    border-bottom-color: #333;
+    color: #ccc;
   }
   
   .close-button {

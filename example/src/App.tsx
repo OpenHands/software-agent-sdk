@@ -12,7 +12,6 @@ import {
 
 // Import settings components
 import { SettingsModal } from './components/SettingsModal'
-import { ServerStatus } from './components/ServerStatus'
 import { useSettings } from './contexts/SettingsContext'
 
 function App() {
@@ -68,18 +67,6 @@ function App() {
             <p>👋 Welcome! Please configure your settings to get started.</p>
           </div>
         )}
-        
-        <div className="settings-info">
-          <h3>Current Settings:</h3>
-          <ul>
-            <li><strong>Agent Server URL:</strong> {settings.agentServerUrl}</li>
-            <li><strong>Model:</strong> {settings.modelName}</li>
-            <li><strong>LLM API Key:</strong> {settings.apiKey ? '***configured***' : 'not set'}</li>
-            <li><strong>Agent Server API Key:</strong> {settings.agentServerApiKey ? '***configured***' : 'not set'}</li>
-          </ul>
-        </div>
-        
-        <ServerStatus settings={settings} />
         
         <div className="card">
           <h2>SDK Import Status</h2>

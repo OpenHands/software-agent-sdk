@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './SettingsModal.css';
+import { ServerStatus } from './ServerStatus';
 
 export interface Settings {
   agentServerUrl: string;
@@ -101,6 +102,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <button className="close-button" onClick={handleCancel}>
             ×
           </button>
+        </div>
+        
+        <div className="settings-status">
+          <div className="current-settings">
+            <h3>Current Configuration:</h3>
+            <ul>
+              <li><strong>Agent Server URL:</strong> {initialSettings.agentServerUrl}</li>
+              <li><strong>Model:</strong> {initialSettings.modelName}</li>
+              <li><strong>LLM API Key:</strong> {initialSettings.apiKey ? '***configured***' : 'not set'}</li>
+              <li><strong>Agent Server API Key:</strong> {initialSettings.agentServerApiKey ? '***configured***' : 'not set'}</li>
+            </ul>
+          </div>
+          
+          <ServerStatus settings={initialSettings} />
         </div>
         
         <form onSubmit={handleSubmit} className="settings-form">
