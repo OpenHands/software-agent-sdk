@@ -8,7 +8,7 @@ export default defineConfig({
     host: '0.0.0.0',
     port: 12000,
     cors: true,
-    allowedHosts: ['work-1-hzoqfnvxjubvyjbc.prod-runtime.all-hands.dev'],
+    allowedHosts: true,
     headers: {
       'X-Frame-Options': 'ALLOWALL',
     },

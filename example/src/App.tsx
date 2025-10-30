@@ -10,9 +10,16 @@ import {
   EventSortOrder 
 } from '@openhands/agent-server-typescript-client'
 
+// Import settings components
+import { SettingsModal } from './components/SettingsModal'
+import { useSettings } from './contexts/SettingsContext'
+
 function App() {
   const [sdkStatus, setSdkStatus] = useState<string>('Loading...')
   const [sdkInfo, setSdkInfo] = useState<any>(null)
+  
+  // Use settings context
+  const { settings, updateSettings, isModalOpen, openModal, closeModal, isFirstVisit } = useSettings()
 
   useEffect(() => {
     // Test that the SDK imports work correctly
@@ -48,7 +55,28 @@ function App() {
   return (
     <div className="App">
       <div>
-        <h1>OpenHands SDK Example</h1>
+        <div className="app-header">
+          <h1>OpenHands SDK Example</h1>
+          <button className="settings-button" onClick={openModal}>
+            ⚙️ Settings
+          </button>
+        </div>
+        
+        {isFirstVisit && (
+          <div className="welcome-message">
+            <p>👋 Welcome! Please configure your settings to get started.</p>
+          </div>
+        )}
+        
+        <div className="settings-info">
+          <h3>Current Settings:</h3>
+          <ul>
+            <li><strong>Agent Server URL:</strong> {settings.agentServerUrl}</li>
+            <li><strong>Model:</strong> {settings.modelName}</li>
+            <li><strong>API Key:</strong> {settings.apiKey ? '***configured***' : 'not set'}</li>
+          </ul>
+        </div>
+        
         <div className="card">
           <h2>SDK Import Status</h2>
           <p className="status">{sdkStatus}</p>
@@ -102,6 +130,13 @@ function App() {
             that the build process works correctly.
           </p>
         </div>
+        
+        <SettingsModal
+          isOpen={isModalOpen}
+          onClose={closeModal}
+          onSave={updateSettings}
+          initialSettings={settings}
+        />
       </div>
     </div>
   )
