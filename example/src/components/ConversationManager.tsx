@@ -388,10 +388,6 @@ export const ConversationManager: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
-  const getAgentName = (agent: AgentBase) => {
-    return agent.kind || agent.name || 'Unknown Agent';
-  };
-
   const getStatusColorClass = (status?: string) => {
     switch (status) {
       case 'running': return 'text-green-500';
@@ -476,7 +472,6 @@ export const ConversationManager: React.FC = () => {
                       ID: {conversation.id.substring(0, 8)}...
                     </div>
                     <div className="space-y-1 text-sm">
-                      <div className="text-gray-900 dark:text-white">Agent: {getAgentName(conversation.agent)}</div>
                       <div className="text-gray-600 dark:text-gray-400">Created: {formatDate(conversation.created_at)}</div>
                       <div className="flex items-center gap-2">
                         <span className="text-gray-600 dark:text-gray-400">Status:</span>
@@ -524,10 +519,7 @@ export const ConversationManager: React.FC = () => {
                       {getStatusIcon(selectedConversation.status)} {selectedConversation.status || 'unknown'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="font-medium text-gray-900 dark:text-white">Agent:</span>
-                    <span className="text-gray-600 dark:text-gray-400">{getAgentName(selectedConversation.agent)}</span>
-                  </div>
+
                   <div className="flex justify-between">
                     <span className="font-medium text-gray-900 dark:text-white">Model:</span>
                     <span className="text-gray-600 dark:text-gray-400">{selectedConversation.agent.llm?.model || 'Unknown'}</span>
