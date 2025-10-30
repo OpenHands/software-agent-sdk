@@ -66,6 +66,16 @@ state = conversation.state
 3. **Testing**: All functionality should be tested against a running OpenHands Agent Server instance
 4. **Documentation**: API changes should be reflected in the README.md and example code
 
+## Agent Behavior Guidelines
+
+**IMPORTANT**: The agent should NEVER start the server or browse to view the app unless the user explicitly asks for it. This includes:
+- Running development servers (e.g., `npm run dev`, `npm start`)
+- Opening browsers or navigating to application URLs
+- Starting any web servers or applications automatically
+- Viewing the running application in a browser
+
+The agent should focus on code development, testing, and documentation tasks. Only when the user specifically requests to run or view the application should the agent start servers or open browsers.
+
 ## Related Repositories
 
 - **[OpenHands/OpenHands](https://github.com/OpenHands/OpenHands)**: Core OpenHands application
