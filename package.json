@@ -1,0 +1,45 @@
+{
+  "name": "@openhands/agent-server-typescript-client",
+  "version": "0.1.0",
+  "description": "TypeScript client for OpenHands Agent Server",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "jest",
+    "lint": "eslint src/**/*.ts",
+    "format": "prettier --write src/**/*.ts"
+  },
+  "keywords": [
+    "openhands",
+    "agent",
+    "typescript",
+    "client",
+    "sdk"
+  ],
+  "author": "OpenHands Team",
+  "license": "MIT",
+  "dependencies": {
+    "uuid": "^9.0.1",
+    "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/uuid": "^9.0.6",
+    "@types/ws": "^8.5.8",
+    "@typescript-eslint/eslint-plugin": "^6.21.0",
+    "@typescript-eslint/parser": "^6.21.0",
+    "eslint": "^8.0.0",
+    "jest": "^29.0.0",
+    "prettier": "^3.0.0",
+    "typescript": "^5.0.0"
+  },
+  "files": [
+    "dist/**/*"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/All-Hands-AI/agent-server-typescript-client.git"
+  }
+}
