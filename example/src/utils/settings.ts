@@ -6,7 +6,8 @@ const FIRST_VISIT_KEY = 'openhands-first-visit';
 export const DEFAULT_SETTINGS: Settings = {
   agentServerUrl: 'http://localhost:8000',
   modelName: 'gpt-4',
-  apiKey: ''
+  apiKey: '',
+  agentServerApiKey: ''
 };
 
 /**
@@ -67,7 +68,8 @@ export const areSettingsConfigured = (settings: Settings): boolean => {
   return (
     settings.agentServerUrl !== DEFAULT_SETTINGS.agentServerUrl ||
     settings.modelName !== DEFAULT_SETTINGS.modelName ||
-    settings.apiKey !== DEFAULT_SETTINGS.apiKey
+    settings.apiKey !== DEFAULT_SETTINGS.apiKey ||
+    settings.agentServerApiKey !== DEFAULT_SETTINGS.agentServerApiKey
   );
 };
 

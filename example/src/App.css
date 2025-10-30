@@ -1,3 +1,32 @@
+:root {
+  /* Color variables for light mode */
+  --card-bg: #ffffff;
+  --border-color: #e0e0e0;
+  --border-light: #f0f0f0;
+  --text-primary: #333333;
+  --text-secondary: #666666;
+  --primary-color: #646cff;
+  --hover-bg: #f5f5f5;
+  --code-bg: #f8f9fa;
+  --error-color: #d32f2f;
+  --warning-color: #f57c00;
+  --info-bg: #e3f2fd;
+  --info-border: #2196f3;
+  --info-text: #1976d2;
+  
+  /* Dark mode variables */
+  --card-bg-dark: #2a2a2a;
+  --border-color-dark: #404040;
+  --border-light-dark: #353535;
+  --text-primary-dark: #ffffff;
+  --text-secondary-dark: #cccccc;
+  --hover-bg-dark: #3a3a3a;
+  --code-bg-dark: #1e1e1e;
+  --info-bg-dark: #1a237e;
+  --info-border-dark: #3f51b5;
+  --info-text-dark: #90caf9;
+}
+
 #root {
   max-width: 1280px;
   margin: 0 auto;

@@ -5,6 +5,7 @@ export interface Settings {
   agentServerUrl: string;
   modelName: string;
   apiKey: string;
+  agentServerApiKey: string;
 }
 
 interface SettingsModalProps {
@@ -17,7 +18,8 @@ interface SettingsModalProps {
 const DEFAULT_SETTINGS: Settings = {
   agentServerUrl: 'http://localhost:8000',
   modelName: 'gpt-4',
-  apiKey: ''
+  apiKey: '',
+  agentServerApiKey: ''
 };
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -133,17 +135,32 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </div>
 
           <div className="form-group">
-            <label htmlFor="apiKey">API Key</label>
+            <label htmlFor="apiKey">LLM API Key</label>
             <input
               type="password"
               id="apiKey"
               value={settings.apiKey}
               onChange={(e) => handleInputChange('apiKey', e.target.value)}
-              placeholder="Enter your API key"
+              placeholder="Enter your LLM API key"
               className={errors.apiKey ? 'error' : ''}
             />
             {errors.apiKey && (
               <span className="error-message">{errors.apiKey}</span>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="agentServerApiKey">Agent Server API Key</label>
+            <input
+              type="password"
+              id="agentServerApiKey"
+              value={settings.agentServerApiKey}
+              onChange={(e) => handleInputChange('agentServerApiKey', e.target.value)}
+              placeholder="Enter your agent server API key (optional)"
+              className={errors.agentServerApiKey ? 'error' : ''}
+            />
+            {errors.agentServerApiKey && (
+              <span className="error-message">{errors.agentServerApiKey}</span>
             )}
           </div>
 
