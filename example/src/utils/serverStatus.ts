@@ -1,5 +1,5 @@
 import { Settings } from '../components/SettingsModal';
-import { HttpClient, RemoteConversation } from '@openhands/agent-server-typescript-client';
+import { HttpClient, RemoteConversation, RemoteWorkspace } from '@openhands/agent-server-typescript-client';
 
 export interface ServerStatus {
   isConnected: boolean;
@@ -51,6 +51,13 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
       return { success: false, error: `Server not reachable: ${healthCheck.error}` };
     }
 
+    // Create a workspace for the test conversation
+    const workspace = new RemoteWorkspace({
+      host: settings.agentServerUrl,
+      workingDir: '/tmp/test-workspace',
+      apiKey: settings.agentServerApiKey,
+    });
+
     // Create a test conversation using the SDK
     const conversation = await RemoteConversation.create(
       settings.agentServerUrl,
@@ -61,13 +68,9 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
           api_key: settings.apiKey,
         }
       },
+      workspace,
       {
         apiKey: settings.agentServerApiKey,
-        workspace: {
-          type: 'local',
-          path: '/tmp/test-workspace',
-          working_dir: '/tmp/test-workspace'
-        }
       }
     );
 

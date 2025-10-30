@@ -4,6 +4,7 @@
 
 import { HttpClient } from '../client/http-client';
 import { RemoteConversation } from './remote-conversation';
+import { RemoteWorkspace } from '../workspace/remote-workspace';
 import {
   ConversationInfo,
   ConversationSearchRequest,
@@ -86,20 +87,36 @@ export class ConversationManager {
       initialMessage?: string;
       maxIterations?: number;
       stuckDetection?: boolean;
-      workspace?: any;
+      workingDir?: string;
     } = {}
   ): Promise<RemoteConversation> {
-    return RemoteConversation.create(this.host, agent, {
+    // Create a workspace for the conversation
+    const workspace = new RemoteWorkspace({
+      host: this.host,
+      workingDir: options.workingDir || '/tmp',
       apiKey: this.apiKey,
-      ...options,
+    });
+
+    return RemoteConversation.create(this.host, agent, workspace, {
+      apiKey: this.apiKey,
+      initialMessage: options.initialMessage,
+      maxIterations: options.maxIterations,
+      stuckDetection: options.stuckDetection,
     });
   }
 
   /**
    * Load an existing conversation
    */
-  async loadConversation(conversationId: ConversationID): Promise<RemoteConversation> {
-    return RemoteConversation.load(this.host, conversationId, {
+  async loadConversation(conversationId: ConversationID, workingDir: string = '/tmp'): Promise<RemoteConversation> {
+    // Create a workspace for the existing conversation
+    const workspace = new RemoteWorkspace({
+      host: this.host,
+      workingDir,
+      apiKey: this.apiKey,
+    });
+
+    return RemoteConversation.load(this.host, conversationId, workspace, {
       apiKey: this.apiKey,
     });
   }

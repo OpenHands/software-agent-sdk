@@ -2,12 +2,12 @@
  * Basic usage example for the OpenHands Agent Server TypeScript Client
  */
 
-import { RemoteConversation, AgentBase, AgentExecutionStatus } from '../src/index.js';
+import { Conversation, Agent, RemoteWorkspace, AgentExecutionStatus } from '../src/index.js';
 
 async function main() {
   // Define the agent configuration
-  const agent: AgentBase = {
-    name: 'CodeActAgent',
+  const agent: Agent = {
+    kind: 'CodeActAgent',
     llm: {
       model: 'gpt-4',
       api_key: process.env.OPENAI_API_KEY || 'your-openai-api-key',
@@ -15,11 +15,19 @@ async function main() {
   };
 
   try {
+    // Create a remote workspace
+    const workspace = new RemoteWorkspace({
+      host: 'http://localhost:3000',
+      workingDir: '/tmp',
+      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key'
+    });
+
     // Create a new conversation
     console.log('Creating conversation...');
-    const conversation = await RemoteConversation.create(
+    const conversation = await Conversation.create(
       'http://localhost:3000', // Replace with your agent server URL
       agent,
+      workspace,
       {
         apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
         initialMessage: 'Hello! Can you help me write a simple Python script?',
@@ -80,9 +88,17 @@ async function main() {
 // Example of loading an existing conversation
 async function loadExistingConversation() {
   try {
-    const conversation = await RemoteConversation.load(
+    // Create a remote workspace for the existing conversation
+    const workspace = new RemoteWorkspace({
+      host: 'http://localhost:3000',
+      workingDir: '/tmp',
+      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key'
+    });
+
+    const conversation = await Conversation.load(
       'http://localhost:3000',
       'existing-conversation-id',
+      workspace,
       {
         apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
       }

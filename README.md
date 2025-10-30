@@ -21,19 +21,27 @@ npm install @openhands/agent-server-typescript-client
 ### Creating a Conversation
 
 ```typescript
-import { RemoteConversation, AgentBase } from '@openhands/agent-server-typescript-client';
+import { Conversation, Agent, RemoteWorkspace } from '@openhands/agent-server-typescript-client';
 
-const agent: AgentBase = {
-  name: 'CodeActAgent',
+const agent: Agent = {
+  kind: 'CodeActAgent',
   llm: {
     model: 'gpt-4',
     api_key: 'your-openai-api-key'
   }
 };
 
-const conversation = await RemoteConversation.create(
+// Create a remote workspace
+const workspace = new RemoteWorkspace({
+  host: 'http://localhost:3000',
+  workingDir: '/tmp',
+  apiKey: 'your-session-api-key'
+});
+
+const conversation = await Conversation.create(
   'http://localhost:3000', // Agent server URL
   agent,
+  workspace,
   {
     apiKey: 'your-session-api-key',
     initialMessage: 'Hello, can you help me write some code?',
@@ -54,9 +62,17 @@ await conversation.run();
 ### Loading an Existing Conversation
 
 ```typescript
-const conversation = await RemoteConversation.load(
+// Create a remote workspace for the existing conversation
+const workspace = new RemoteWorkspace({
+  host: 'http://localhost:3000',
+  workingDir: '/tmp',
+  apiKey: 'your-session-api-key'
+});
+
+const conversation = await Conversation.load(
   'http://localhost:3000',
   'conversation-id-here',
+  workspace,
   {
     apiKey: 'your-session-api-key'
   }

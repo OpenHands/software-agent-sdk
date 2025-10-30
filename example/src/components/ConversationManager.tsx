@@ -2,8 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { 
   ConversationManager as SDKConversationManager,
   ConversationInfo,
+  Conversation,
   RemoteConversation,
-  AgentBase,
+  Agent,
+  RemoteWorkspace,
   Event
 } from '@openhands/agent-server-typescript-client';
 import { useSettings } from '../contexts/SettingsContext';
@@ -118,7 +120,7 @@ export const ConversationManager: React.FC = () => {
   useEffect(() => {
     return () => {
       if (selectedConversation?.remoteConversation) {
-        selectedConversation.remoteConversation.stopWebSocketClient().catch(err => {
+        selectedConversation.remoteConversation.stopWebSocketClient().catch((err: any) => {
           console.warn('Failed to stop WebSocket client on unmount:', err);
         });
       }
@@ -190,7 +192,7 @@ export const ConversationManager: React.FC = () => {
     setError(null);
     try {
       // Create a simple agent configuration
-      const agent: AgentBase = {
+      const agent: Agent = {
         kind: 'Agent',
         llm: {
           model: settings.modelName,
@@ -198,9 +200,17 @@ export const ConversationManager: React.FC = () => {
         }
       };
 
-      const conversation = await RemoteConversation.create(
+      // Create a remote workspace
+      const workspace = new RemoteWorkspace({
+        host: manager.host,
+        workingDir: '/tmp',
+        apiKey: manager.apiKey
+      });
+
+      const conversation = await Conversation.create(
         manager.host,
         agent,
+        workspace,
         {
           apiKey: manager.apiKey,
           initialMessage: 'Hello! I\'m ready to help you with your tasks.',
@@ -320,10 +330,18 @@ export const ConversationManager: React.FC = () => {
         }
       };
       
+      // Create a remote workspace for the existing conversation
+      const workspace = new RemoteWorkspace({
+        host: manager.host,
+        workingDir: '/tmp',
+        apiKey: manager.apiKey
+      });
+
       // Load conversation with callback
-      const remoteConversation = await RemoteConversation.load(
+      const remoteConversation = await Conversation.load(
         manager.host,
         conversationId,
+        workspace,
         {
           apiKey: manager.apiKey,
           callback: eventCallback,

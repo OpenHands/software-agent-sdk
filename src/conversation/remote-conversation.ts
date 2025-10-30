@@ -189,12 +189,12 @@ export class RemoteConversation {
   static async create(
     host: string,
     agent: AgentBase,
+    workspace: RemoteWorkspace,
     options: {
       apiKey?: string;
       initialMessage?: string;
       maxIterations?: number;
       stuckDetection?: boolean;
-      workspace?: any;
       callback?: ConversationCallbackType;
     } = {}
   ): Promise<RemoteConversation> {
@@ -220,7 +220,7 @@ export class RemoteConversation {
       initial_message: initialMessage,
       max_iterations: options.maxIterations || 50,
       stuck_detection: options.stuckDetection ?? true,
-      workspace: options.workspace || { type: 'local', working_dir: '/tmp' },
+      workspace: { type: 'local', working_dir: workspace.workingDir },
     };
 
     console.log('Full request object:', JSON.stringify(request, null, 2));
@@ -235,12 +235,8 @@ export class RemoteConversation {
       callback: options.callback,
     });
 
-    // Initialize workspace
-    conversation._workspace = new RemoteWorkspace({
-      host,
-      workingDir: conversationInfo.workspace?.working_dir || '/tmp',
-      apiKey: options.apiKey,
-    });
+    // Use the provided workspace
+    conversation._workspace = workspace;
 
     return conversation;
   }
@@ -248,6 +244,7 @@ export class RemoteConversation {
   static async load(
     host: string,
     conversationId: string,
+    workspace: RemoteWorkspace,
     options: {
       apiKey?: string;
       callback?: ConversationCallbackType;
@@ -266,12 +263,8 @@ export class RemoteConversation {
     );
     const conversationInfo = response.data;
 
-    // Initialize workspace
-    conversation._workspace = new RemoteWorkspace({
-      host,
-      workingDir: conversationInfo.workspace?.working_dir || '/tmp',
-      apiKey: options.apiKey,
-    });
+    // Use the provided workspace
+    conversation._workspace = workspace;
 
     return conversation;
   }
@@ -284,3 +277,6 @@ export class RemoteConversation {
     }
   }
 }
+
+// Alias for user-facing API
+export const Conversation = RemoteConversation;

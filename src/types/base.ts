@@ -79,6 +79,9 @@ export interface AgentBase {
   [key: string]: any;
 }
 
+// Alias for user-facing API
+export type Agent = AgentBase;
+
 export interface LLM {
   model: string;
   api_key?: string;
