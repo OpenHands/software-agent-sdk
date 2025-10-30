@@ -325,11 +325,10 @@ export const ConversationManager: React.FC = () => {
                       Status: {conversation.agent_status}
                     </div>
                     <div className="conversation-stats">
-                      Events: {conversation.conversation_stats?.total_events || 0} | 
-                      Messages: {conversation.conversation_stats?.message_events || 0}
+                      Created: {conversation.created_at ? new Date(conversation.created_at).toLocaleString() : 'Unknown'}
                     </div>
                     <div className="conversation-agent">
-                      Agent: {conversation.agent?.name || 'Unknown'}
+                      Agent: {(conversation.agent as any)?.kind || conversation.agent?.name || 'Unknown'}
                     </div>
                   </div>
                   <div className="conversation-actions">
@@ -368,7 +367,7 @@ export const ConversationManager: React.FC = () => {
                       ></span>
                       {conv.agent_status}
                     </p>
-                    <p><strong>Agent:</strong> {conv.agent?.name}</p>
+                    <p><strong>Agent:</strong> {(conv.agent as any)?.kind || conv.agent?.name || 'Unknown'}</p>
                     <p><strong>Model:</strong> {conv.agent?.llm?.model}</p>
                     <p><strong>Total Events:</strong> {conversationEvents.length}</p>
                     <p><strong>Messages:</strong> {conversationEvents.filter(e => e.event_type === 'message').length}</p>
