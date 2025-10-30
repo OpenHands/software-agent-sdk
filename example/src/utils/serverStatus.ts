@@ -55,7 +55,7 @@ export const testLLMConfiguration = async (settings: Settings): Promise<{ succes
     const conversation = await RemoteConversation.create(
       settings.agentServerUrl,
       {
-        name: 'TestAgent',
+        kind: 'Agent',
         llm: {
           model: settings.modelName,
           api_key: settings.apiKey,

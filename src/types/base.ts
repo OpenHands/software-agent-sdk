@@ -72,8 +72,10 @@ export interface ImageContent extends MessageContent {
 }
 
 export interface AgentBase {
-  name: string;
+  kind: string;
   llm: LLM;
+  // Keep name for backward compatibility
+  name?: string;
   [key: string]: any;
 }
 
@@ -109,8 +111,10 @@ export enum AgentExecutionStatus {
   IDLE = 'idle',
   RUNNING = 'running',
   PAUSED = 'paused',
+  WAITING_FOR_CONFIRMATION = 'waiting_for_confirmation',
   FINISHED = 'finished',
   ERROR = 'error',
+  STUCK = 'stuck',
 }
 
 export interface ConversationStats {

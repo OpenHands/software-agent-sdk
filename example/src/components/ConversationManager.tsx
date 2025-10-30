@@ -4,7 +4,6 @@ import {
   ConversationInfo,
   RemoteConversation,
   AgentBase,
-  AgentExecutionStatus,
   Event
 } from '@openhands/agent-server-typescript-client';
 import { useSettings } from '../contexts/SettingsContext';
@@ -12,7 +11,6 @@ import { useSettings } from '../contexts/SettingsContext';
 interface ConversationData extends ConversationInfo {
   remoteConversation?: RemoteConversation;
   events?: Event[];
-  agentStatus?: AgentExecutionStatus;
 }
 
 // Utility function to extract displayable content from events
@@ -136,7 +134,7 @@ export const ConversationManager: React.FC = () => {
         const status = await selectedConversation.remoteConversation!.state.getAgentStatus();
         setConversations(prev => prev.map(conv => 
           conv.id === selectedConversation.id 
-            ? { ...conv, agentStatus: status }
+            ? { ...conv, status: status }
             : conv
         ));
       } catch (err) {
@@ -146,13 +144,13 @@ export const ConversationManager: React.FC = () => {
 
     // Refresh every 2 seconds if the agent is running
     const interval = setInterval(() => {
-      if (selectedConversation.agentStatus === 'running') {
+      if (selectedConversation.status === 'running') {
         refreshStatus();
       }
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [selectedConversation?.id, selectedConversation?.agentStatus]);
+  }, [selectedConversation?.id, selectedConversation?.status]);
 
   const loadConversations = async (conversationManager?: SDKConversationManager) => {
     const mgr = conversationManager || manager;
@@ -172,7 +170,8 @@ export const ConversationManager: React.FC = () => {
         agent: conv.agent,
         created_at: conv.created_at,
         updated_at: conv.updated_at,
-        status: conv.status
+        // Map agent_status to status for display
+        status: conv.agent_status || conv.status
       }));
       
       setConversations(conversationData);
@@ -192,7 +191,7 @@ export const ConversationManager: React.FC = () => {
     try {
       // Create a simple agent configuration
       const agent: AgentBase = {
-        name: 'CodeActAgent',
+        kind: 'Agent',
         llm: {
           model: settings.modelName,
           api_key: settings.apiKey || ''
@@ -312,7 +311,7 @@ export const ConversationManager: React.FC = () => {
               remoteConversation.state.getAgentStatus().then(status => {
                 setConversations(prev => prev.map(conv => 
                   conv.id === conversationId 
-                    ? { ...conv, agentStatus: status }
+                    ? { ...conv, status: status }
                     : conv
                 ));
               }).catch(err => console.warn('Failed to update agent status:', err));
@@ -352,7 +351,7 @@ export const ConversationManager: React.FC = () => {
       // Update the conversation in our state with additional details
       setConversations(prev => prev.map(conv => 
         conv.id === conversationId 
-          ? { ...conv, remoteConversation, events, agentStatus }
+          ? { ...conv, remoteConversation, events, status: agentStatus }
           : conv
       ));
       
@@ -387,17 +386,15 @@ export const ConversationManager: React.FC = () => {
     return new Date(dateString).toLocaleString();
   };
 
-  const getAgentName = (agent: AgentBase) => {
-    return agent.name || 'Unknown Agent';
-  };
-
   const getStatusColorClass = (status?: string) => {
     switch (status) {
       case 'running': return 'text-green-500';
-      case 'stopped': return 'text-red-500';
+      case 'idle': return 'text-gray-500';
       case 'paused': return 'text-orange-500';
+      case 'waiting_for_confirmation': return 'text-yellow-500';
       case 'finished': return 'text-blue-500';
       case 'error': return 'text-red-600';
+      case 'stuck': return 'text-red-500';
       default: return 'text-gray-500';
     }
   };
@@ -405,10 +402,12 @@ export const ConversationManager: React.FC = () => {
   const getStatusIcon = (status?: string) => {
     switch (status) {
       case 'running': return '🔄';
-      case 'stopped': return '⏹️';
+      case 'idle': return '⏸️';
       case 'paused': return '⏸️';
+      case 'waiting_for_confirmation': return '⏳';
       case 'finished': return '✅';
       case 'error': return '❌';
+      case 'stuck': return '🚫';
       default: return '❓';
     }
   };
@@ -455,7 +454,7 @@ export const ConversationManager: React.FC = () => {
               <p>No conversations yet. Create your first conversation!</p>
             </div>
           ) : (
-            <div className="space-y-3 max-h-96 overflow-y-auto">
+            <div className="space-y-3 max-h-[600px] overflow-y-auto">
               {conversations.map((conversation) => (
                 <div 
                   key={conversation.id} 
@@ -466,12 +465,11 @@ export const ConversationManager: React.FC = () => {
                   }`}
                   onClick={() => selectConversation(conversation.id)}
                 >
-                  <div className="flex-1 min-w-0">
+                  <div className="flex-1 min-w-0 text-left">
                     <div className="text-sm font-mono text-gray-600 dark:text-gray-400 mb-2">
                       ID: {conversation.id.substring(0, 8)}...
                     </div>
                     <div className="space-y-1 text-sm">
-                      <div className="text-gray-900 dark:text-white">Agent: {getAgentName(conversation.agent)}</div>
                       <div className="text-gray-600 dark:text-gray-400">Created: {formatDate(conversation.created_at)}</div>
                       <div className="flex items-center gap-2">
                         <span className="text-gray-600 dark:text-gray-400">Status:</span>
@@ -519,10 +517,7 @@ export const ConversationManager: React.FC = () => {
                       {getStatusIcon(selectedConversation.status)} {selectedConversation.status || 'unknown'}
                     </span>
                   </div>
-                  <div className="flex justify-between">
-                    <span className="font-medium text-gray-900 dark:text-white">Agent:</span>
-                    <span className="text-gray-600 dark:text-gray-400">{getAgentName(selectedConversation.agent)}</span>
-                  </div>
+
                   <div className="flex justify-between">
                     <span className="font-medium text-gray-900 dark:text-white">Model:</span>
                     <span className="text-gray-600 dark:text-gray-400">{selectedConversation.agent.llm?.model || 'Unknown'}</span>
@@ -535,12 +530,7 @@ export const ConversationManager: React.FC = () => {
                     <span className="font-medium text-gray-900 dark:text-white">Updated:</span>
                     <span className="text-gray-600 dark:text-gray-400">{formatDate(selectedConversation.updated_at)}</span>
                   </div>
-                  {selectedConversation.agentStatus && (
-                    <div className="flex justify-between">
-                      <span className="font-medium text-gray-900 dark:text-white">Agent Status:</span>
-                      <span className="text-gray-600 dark:text-gray-400">{selectedConversation.agentStatus}</span>
-                    </div>
-                  )}
+
                   <div className="flex justify-between">
                     <span className="font-medium text-gray-900 dark:text-white">Total Events:</span>
                     <span className="text-gray-600 dark:text-gray-400">{selectedConversation.events?.length || 0}</span>
