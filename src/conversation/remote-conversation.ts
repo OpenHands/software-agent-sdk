@@ -213,6 +213,8 @@ export class RemoteConversation {
       };
     }
 
+    console.log('Agent object before request:', JSON.stringify(agent, null, 2));
+
     const request: CreateConversationRequest = {
       agent,
       initial_message: initialMessage,
@@ -220,6 +222,8 @@ export class RemoteConversation {
       stuck_detection: options.stuckDetection ?? true,
       workspace: options.workspace || { type: 'local', working_dir: '/tmp' },
     };
+
+    console.log('Full request object:', JSON.stringify(request, null, 2));
 
     const response = await client.post<ConversationInfo>('/api/conversations', request);
     const conversationInfo = response.data;

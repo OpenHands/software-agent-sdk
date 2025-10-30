@@ -24,6 +24,7 @@ export const ConversationManager: React.FC = () => {
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
   const [activeConversations, setActiveConversations] = useState<Map<string, RemoteConversation>>(new Map());
+  const [currentAgent, setCurrentAgent] = useState<AgentBase | null>(null);
 
   // Initialize conversation manager
   useEffect(() => {
@@ -67,9 +68,27 @@ export const ConversationManager: React.FC = () => {
   const createConversation = async () => {
     if (!manager) return;
 
+    // Validate required settings
+    if (!settings.apiKey.trim()) {
+      setError('LLM API Key is required. Please configure it in settings.');
+      return;
+    }
+
+    if (!settings.modelName.trim()) {
+      setError('Model name is required. Please configure it in settings.');
+      return;
+    }
+
     setLoading(true);
     setError(null);
     try {
+      console.log('Settings values:', {
+        modelName: settings.modelName,
+        apiKey: settings.apiKey ? `${settings.apiKey.substring(0, 10)}...` : 'EMPTY',
+        agentServerUrl: settings.agentServerUrl,
+        agentServerApiKey: settings.agentServerApiKey ? `${settings.agentServerApiKey.substring(0, 10)}...` : 'EMPTY'
+      });
+
       const agent: AgentBase = {
         name: 'CodeActAgent',
         llm: {
@@ -77,6 +96,16 @@ export const ConversationManager: React.FC = () => {
           api_key: settings.apiKey,
         },
       };
+
+      console.log('Creating conversation with agent:', {
+        name: agent.name,
+        model: agent.llm.model,
+        hasApiKey: !!agent.llm.api_key,
+        apiKeyValue: agent.llm.api_key
+      });
+
+      // Store the current agent configuration
+      setCurrentAgent(agent);
 
       const conversation = await manager.createConversation(agent, {
         initialMessage: 'Hello! I\'m ready to help you with your tasks.',
@@ -143,16 +172,21 @@ export const ConversationManager: React.FC = () => {
       let conversation = activeConversations.get(conversationId);
       
       if (!conversation) {
+        console.log('Loading conversation:', conversationId);
         // Load the conversation if not already active
         conversation = await manager.loadConversation(conversationId);
         setActiveConversations(prev => new Map(prev.set(conversationId, conversation!)));
       }
 
+      console.log('Sending message to conversation:', conversationId, 'Message:', message);
       await conversation.sendMessage(message);
+      
+      console.log('Running conversation:', conversationId);
       await conversation.run();
       
       setMessageInput('');
     } catch (err) {
+      console.error('Error sending message:', err);
       setError(err instanceof Error ? err.message : 'Failed to send message');
     }
   };
