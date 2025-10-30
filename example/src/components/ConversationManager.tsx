@@ -582,7 +582,7 @@ export const ConversationManager: React.FC = () => {
                               isRecent ? 'ring-2 ring-indigo-200 dark:ring-indigo-800' : ''
                             }`}
                           >
-                            <div className="flex justify-between items-center mb-2">
+                            <div className="flex justify-between items-center mb-2 text-left">
                               <div className="flex items-center gap-2">
                                 <span className="text-sm font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30 px-2 py-1 rounded">
                                   {event.kind}
@@ -603,13 +603,13 @@ export const ConversationManager: React.FC = () => {
                               </span>
                             </div>
                             
-                            <div className="text-sm font-medium text-gray-900 dark:text-white mb-2">
+                            <div className="text-sm font-medium text-gray-900 dark:text-white mb-2 text-left">
                               {displayContent.title}
                             </div>
                             
                             {displayContent.content && (
-                              <div className="text-sm text-gray-700 dark:text-gray-300 mb-2 p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700">
-                                <div className="max-h-32 overflow-y-auto">
+                              <div className="text-sm text-gray-700 dark:text-gray-300 mb-2 p-2 bg-white dark:bg-gray-800 rounded border border-gray-200 dark:border-gray-700 text-left">
+                                <div className="max-h-32 overflow-y-auto text-left">
                                   {displayContent.content.length > 200 ? (
                                     <>
                                       {displayContent.content.substring(0, 200)}
@@ -623,12 +623,12 @@ export const ConversationManager: React.FC = () => {
                             )}
                             
                             {displayContent.details && (
-                              <details className="mt-2">
-                                <summary className="text-xs text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300">
+                              <details className="mt-2 text-left">
+                                <summary className="text-xs text-gray-500 dark:text-gray-400 cursor-pointer hover:text-gray-700 dark:hover:text-gray-300 text-left">
                                   Show raw data
                                 </summary>
-                                <div className="text-xs text-gray-600 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto mt-1">
-                                  <pre>{JSON.stringify(displayContent.details, null, 2)}</pre>
+                                <div className="text-xs text-gray-600 dark:text-gray-400 font-mono bg-gray-100 dark:bg-gray-800 p-2 rounded border border-gray-200 dark:border-gray-700 overflow-x-auto mt-1 text-left">
+                                  <pre className="text-left whitespace-pre-wrap">{JSON.stringify(displayContent.details, null, 2)}</pre>
                                 </div>
                               </details>
                             )}
