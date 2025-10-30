@@ -11,15 +11,8 @@
 > 
 > Please use with caution and expect frequent updates.
 
-A TypeScript client library for the OpenHands Agent Server API that mirrors the structure and functionality of the Python SDK.
-
-## Features
-
-- **RemoteConversation**: Manage conversations with OpenHands agents
-- **RemoteWorkspace**: Execute commands and perform file operations remotely
-- **Real-time Events**: WebSocket support for live event streaming
-- **Type Safety**: Full TypeScript support with comprehensive type definitions
-- **Python SDK Compatibility**: Same class names and method signatures as the Python SDK
+A TypeScript client library for the OpenHands Agent Server API. Mirrors the structure and functionality of the Python [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk),
+but only supports remote conversations.
 
 ## Quick Start
 
