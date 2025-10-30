@@ -118,6 +118,7 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  color: #374151;
 }
 
 .conversation-item:hover {
@@ -149,6 +150,7 @@
   margin-bottom: 5px;
   font-size: 14px;
   font-weight: 500;
+  color: #374151;
 }
 
 .status-indicator {
