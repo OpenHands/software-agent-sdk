@@ -1,0 +1,31 @@
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+    open-pull-requests-limit: 10
+    reviewers:
+      - "All-Hands-AI/core-team"
+    assignees:
+      - "All-Hands-AI/core-team"
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      typescript:
+        patterns:
+          - "typescript"
+          - "@typescript-eslint/*"
+      testing:
+        patterns:
+          - "jest"
+          - "@types/jest"
+          - "@jest/*"
+      linting:
+        patterns:
+          - "eslint"
+          - "prettier"
+          - "@typescript-eslint/*"
