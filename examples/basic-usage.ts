@@ -49,7 +49,7 @@ async function main() {
 
     // Wait for the agent to finish (in a real application, you'd handle this differently)
     while (status === AgentExecutionStatus.RUNNING) {
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise((resolve) => setTimeout(resolve, 1000));
       status = await conversation.state.getAgentStatus();
       console.log(`Current status: ${status}`);
     }
@@ -72,7 +72,6 @@ async function main() {
     // Clean up
     await conversation.close();
     console.log('Conversation closed');
-
   } catch (error) {
     console.error('Error:', error);
   }
@@ -90,14 +89,13 @@ async function loadExistingConversation() {
     );
 
     console.log(`Loaded conversation: ${conversation.id}`);
-    
+
     // Get current status
     const status = await conversation.state.getAgentStatus();
     console.log(`Status: ${status}`);
 
     // Clean up
     await conversation.close();
-
   } catch (error) {
     console.error('Error loading conversation:', error);
   }

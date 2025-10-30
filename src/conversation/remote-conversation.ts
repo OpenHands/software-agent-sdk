@@ -3,28 +3,28 @@
  */
 
 // import { v4 as uuidv4 } from 'uuid'; // Unused for now
-import { HttpClient } from '../client/http-client.js';
-import { WebSocketCallbackClient } from '../events/websocket-client.js';
-import { RemoteState } from './remote-state.js';
-import { RemoteWorkspace } from '../workspace/remote-workspace.js';
-import { 
-  ConversationID, 
-  Message, 
-  ConversationCallbackType, 
+import { HttpClient } from '../client/http-client';
+import { WebSocketCallbackClient } from '../events/websocket-client';
+import { RemoteState } from './remote-state';
+import { RemoteWorkspace } from '../workspace/remote-workspace';
+import {
+  ConversationID,
+  Message,
+  ConversationCallbackType,
   ConfirmationPolicyBase,
   ConversationStats,
   AgentBase,
-  SecretValue
-} from '../types/base.js';
-import { 
+  SecretValue,
+} from '../types/base';
+import {
   ConversationInfo,
   SendMessageRequest,
   ConfirmationResponseRequest,
   CreateConversationRequest,
   GenerateTitleRequest,
   GenerateTitleResponse,
-  UpdateSecretsRequest
-} from '../models/conversation.js';
+  UpdateSecretsRequest,
+} from '../models/conversation';
 
 export interface RemoteConversationOptions {
   host: string;
@@ -48,7 +48,7 @@ export class RemoteConversation {
     this.apiKey = options.apiKey;
     this._conversationId = options.conversationId;
     this.callback = options.callback;
-    
+
     this.client = new HttpClient({
       baseUrl: this.host,
       apiKey: this.apiKey,
@@ -81,13 +81,15 @@ export class RemoteConversation {
   }
 
   async conversationStats(): Promise<ConversationStats> {
-    const response = await this.client.get<ConversationStats>(`/api/conversations/${this.id}/stats`);
+    const response = await this.client.get<ConversationStats>(
+      `/api/conversations/${this.id}/stats`
+    );
     return response.data;
   }
 
   async sendMessage(message: string | Message): Promise<void> {
     let messageContent: SendMessageRequest;
-    
+
     if (typeof message === 'string') {
       messageContent = {
         role: 'user',
@@ -127,9 +129,9 @@ export class RemoteConversation {
     if (llm) {
       request.llm = llm;
     }
-    
+
     const response = await this.client.post<GenerateTitleResponse>(
-      `/api/conversations/${this.id}/generate_title`, 
+      `/api/conversations/${this.id}/generate_title`,
       request
     );
     return response.data.title;
@@ -141,7 +143,7 @@ export class RemoteConversation {
     for (const [key, value] of Object.entries(secrets)) {
       secretStrings[key] = typeof value === 'function' ? value() : value;
     }
-    
+
     const request: UpdateSecretsRequest = { secrets: secretStrings };
     await this.client.post(`/api/conversations/${this.id}/update_secrets`, request);
   }
@@ -154,7 +156,7 @@ export class RemoteConversation {
     // Create combined callback that handles both user callback and state updates
     const combinedCallback: ConversationCallbackType = (event) => {
       // Add event to the events list
-      this.state.events.addEvent(event).catch(error => {
+      this.state.events.addEvent(event).catch((error) => {
         console.error('Error adding event to events list:', error);
       });
 
@@ -248,7 +250,9 @@ export class RemoteConversation {
     });
 
     // Verify conversation exists and get workspace info
-    const response = await conversation.client.get<ConversationInfo>(`/api/conversations/${conversationId}`);
+    const response = await conversation.client.get<ConversationInfo>(
+      `/api/conversations/${conversationId}`
+    );
     const conversationInfo = response.data;
 
     // Initialize workspace

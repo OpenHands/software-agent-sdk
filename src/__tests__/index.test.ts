@@ -16,37 +16,40 @@ describe('OpenHands Agent Server TypeScript Client', () => {
   describe('RemoteConversation', () => {
     it('should create instance with config', () => {
       const config = {
-        baseUrl: 'http://localhost:8000',
-        apiKey: 'test-key'
+        host: 'http://localhost:8000',
+        apiKey: 'test-key',
       };
-      
+
       const conversation = new RemoteConversation(config);
       expect(conversation).toBeInstanceOf(RemoteConversation);
     });
 
-    it('should have workspace property', () => {
+    it('should throw error when accessing workspace before initialization', () => {
       const config = {
-        baseUrl: 'http://localhost:8000',
-        apiKey: 'test-key'
+        host: 'http://localhost:8000',
+        apiKey: 'test-key',
       };
-      
+
       const conversation = new RemoteConversation(config);
-      expect(conversation.workspace).toBeDefined();
-      expect(conversation.workspace).toBeInstanceOf(RemoteWorkspace);
+      expect(() => conversation.workspace).toThrow(
+        'Workspace not initialized. Create or load a conversation first.'
+      );
     });
   });
 
   describe('RemoteWorkspace', () => {
-    it('should create instance with http client', () => {
-      const mockHttpClient = {
-        get: jest.fn(),
-        post: jest.fn(),
-        put: jest.fn(),
-        delete: jest.fn()
+    it('should create instance with options', () => {
+      const options = {
+        host: 'http://localhost:8000',
+        workingDir: '/tmp',
+        apiKey: 'test-key',
       };
-      
-      const workspace = new RemoteWorkspace(mockHttpClient as any);
+
+      const workspace = new RemoteWorkspace(options);
       expect(workspace).toBeInstanceOf(RemoteWorkspace);
+      expect(workspace.host).toBe('http://localhost:8000');
+      expect(workspace.workingDir).toBe('/tmp');
+      expect(workspace.apiKey).toBe('test-key');
     });
   });
 });

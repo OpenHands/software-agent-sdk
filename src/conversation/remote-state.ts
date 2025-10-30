@@ -2,18 +2,18 @@
  * Remote conversation state management
  */
 
-import { HttpClient } from '../client/http-client.js';
-import { RemoteEventsList } from '../events/remote-events-list.js';
-import { 
-  ConversationID, 
-  Event, 
-  AgentExecutionStatus, 
-  ConfirmationPolicyBase, 
+import { HttpClient } from '../client/http-client';
+import { RemoteEventsList } from '../events/remote-events-list';
+import {
+  ConversationID,
+  Event,
+  AgentExecutionStatus,
+  ConfirmationPolicyBase,
   // ConversationStats, // Unused for now
   AgentBase,
-  ConversationCallbackType
-} from '../types/base.js';
-import { ConversationInfo } from '../models/conversation.js';
+  ConversationCallbackType,
+} from '../types/base';
+import { ConversationInfo } from '../models/conversation';
 
 const FULL_STATE_KEY = '__full_state__';
 
@@ -44,7 +44,9 @@ export class RemoteState {
       }
 
       // Fallback to REST API if no cached state
-      const response = await this.client.get<ConversationInfo>(`/api/conversations/${this.conversationId}`);
+      const response = await this.client.get<ConversationInfo>(
+        `/api/conversations/${this.conversationId}`
+      );
       const state = response.data;
       this.cachedState = state;
       return state;
@@ -73,7 +75,7 @@ export class RemoteState {
   createStateUpdateCallback(): ConversationCallbackType {
     return (event: Event) => {
       if (event.kind === 'ConversationStateUpdateEvent') {
-        this.updateStateFromEvent(event as ConversationStateUpdateEvent).catch(error => {
+        this.updateStateFromEvent(event as ConversationStateUpdateEvent).catch((error) => {
           console.error('Error updating state from event:', error);
         });
       }
@@ -100,7 +102,7 @@ export class RemoteState {
   async setAgentStatus(value: AgentExecutionStatus): Promise<void> {
     throw new Error(
       `Setting agent_status on RemoteState has no effect. ` +
-      `Remote agent status is managed server-side. Attempted to set: ${value}`
+        `Remote agent status is managed server-side. Attempted to set: ${value}`
     );
   }
 

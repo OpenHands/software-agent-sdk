@@ -1,21 +1,21 @@
 /**
  * OpenHands Agent Server TypeScript Client
- * 
+ *
  * A TypeScript client library for the OpenHands Agent Server API that mirrors
  * the structure and functionality of the Python SDK.
  */
 
 // Main conversation and workspace classes
-export { RemoteConversation } from './conversation/remote-conversation.js';
-export { RemoteWorkspace } from './workspace/remote-workspace.js';
-export { RemoteState } from './conversation/remote-state.js';
-export { RemoteEventsList } from './events/remote-events-list.js';
+export { RemoteConversation } from './conversation/remote-conversation';
+export { RemoteWorkspace } from './workspace/remote-workspace';
+export { RemoteState } from './conversation/remote-state';
+export { RemoteEventsList } from './events/remote-events-list';
 
 // WebSocket client for real-time events
-export { WebSocketCallbackClient } from './events/websocket-client.js';
+export { WebSocketCallbackClient } from './events/websocket-client';
 
 // HTTP client
-export { HttpClient, HttpError } from './client/http-client.js';
+export { HttpClient, HttpError } from './client/http-client';
 
 // Types and interfaces
 export type {
@@ -36,20 +36,12 @@ export type {
   ConfirmationPolicyBase,
   NeverConfirm,
   AlwaysConfirm,
-} from './types/base.js';
+} from './types/base';
 
-export {
-  EventSortOrder,
-  AgentExecutionStatus,
-} from './types/base.js';
+export { EventSortOrder, AgentExecutionStatus } from './types/base';
 
 // Workspace models
-export type {
-  CommandResult,
-  FileOperationResult,
-  GitChange,
-  GitDiff,
-} from './models/workspace.js';
+export type { CommandResult, FileOperationResult, GitChange, GitDiff } from './models/workspace';
 
 // Conversation models
 export type {
@@ -60,35 +52,25 @@ export type {
   GenerateTitleRequest,
   GenerateTitleResponse,
   UpdateSecretsRequest,
-} from './models/conversation.js';
+} from './models/conversation';
 
 // Client options
-export type {
-  HttpClientOptions,
-  RequestOptions,
-  HttpResponse,
-} from './client/http-client.js';
+export type { HttpClientOptions, RequestOptions, HttpResponse } from './client/http-client';
 
-export type {
-  WebSocketClientOptions,
-} from './events/websocket-client.js';
+export type { WebSocketClientOptions } from './events/websocket-client';
 
-export type {
-  RemoteWorkspaceOptions,
-} from './workspace/remote-workspace.js';
+export type { RemoteWorkspaceOptions } from './workspace/remote-workspace';
 
-export type {
-  RemoteConversationOptions,
-} from './conversation/remote-conversation.js';
+export type { RemoteConversationOptions } from './conversation/remote-conversation';
 
 // Re-import for default export
-import { RemoteConversation } from './conversation/remote-conversation.js';
-import { RemoteWorkspace } from './workspace/remote-workspace.js';
-import { RemoteState } from './conversation/remote-state.js';
-import { RemoteEventsList } from './events/remote-events-list.js';
-import { WebSocketCallbackClient } from './events/websocket-client.js';
-import { HttpClient, HttpError } from './client/http-client.js';
-import { EventSortOrder, AgentExecutionStatus } from './types/base.js';
+import { RemoteConversation } from './conversation/remote-conversation';
+import { RemoteWorkspace } from './workspace/remote-workspace';
+import { RemoteState } from './conversation/remote-state';
+import { RemoteEventsList } from './events/remote-events-list';
+import { WebSocketCallbackClient } from './events/websocket-client';
+import { HttpClient, HttpError } from './client/http-client';
+import { EventSortOrder, AgentExecutionStatus } from './types/base';
 
 // Default export for convenience
 export default {

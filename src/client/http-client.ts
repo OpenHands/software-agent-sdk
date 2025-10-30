@@ -50,7 +50,7 @@ export class HttpClient {
 
   async request<T = any>(options: RequestOptions): Promise<HttpResponse<T>> {
     const url = new URL(options.url, this.baseUrl);
-    
+
     // Add query parameters
     if (options.params) {
       Object.entries(options.params).forEach(([key, value]) => {
@@ -89,11 +89,12 @@ export class HttpClient {
 
     try {
       const response = await fetch(url.toString(), requestInit);
-      
+
       // Check if status code is acceptable
-      const isAcceptable = options.acceptableStatusCodes?.has(response.status) || 
-                          (!options.acceptableStatusCodes && response.ok);
-      
+      const isAcceptable =
+        options.acceptableStatusCodes?.has(response.status) ||
+        (!options.acceptableStatusCodes && response.ok);
+
       if (!isAcceptable) {
         let errorContent: any;
         try {
@@ -106,7 +107,7 @@ export class HttpClient {
         } catch {
           errorContent = null;
         }
-        
+
         throw new HttpError(
           response.status,
           response.statusText,
@@ -140,31 +141,45 @@ export class HttpClient {
       if (error instanceof HttpError) {
         throw error;
       }
-      
+
       if (error instanceof Error) {
         if (error.name === 'AbortError') {
           throw new Error(`Request timeout after ${options.timeout || this.timeout}ms`);
         }
         throw new Error(`Request failed: ${error.message}`);
       }
-      
+
       throw new Error('Unknown request error');
     }
   }
 
-  async get<T = any>(url: string, options?: Omit<RequestOptions, 'method' | 'url'>): Promise<HttpResponse<T>> {
+  async get<T = any>(
+    url: string,
+    options?: Omit<RequestOptions, 'method' | 'url'>
+  ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'GET', url, ...options });
   }
 
-  async post<T = any>(url: string, data?: any, options?: Omit<RequestOptions, 'method' | 'url' | 'data'>): Promise<HttpResponse<T>> {
+  async post<T = any>(
+    url: string,
+    data?: any,
+    options?: Omit<RequestOptions, 'method' | 'url' | 'data'>
+  ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'POST', url, data, ...options });
   }
 
-  async put<T = any>(url: string, data?: any, options?: Omit<RequestOptions, 'method' | 'url' | 'data'>): Promise<HttpResponse<T>> {
+  async put<T = any>(
+    url: string,
+    data?: any,
+    options?: Omit<RequestOptions, 'method' | 'url' | 'data'>
+  ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'PUT', url, data, ...options });
   }
 
-  async delete<T = any>(url: string, options?: Omit<RequestOptions, 'method' | 'url'>): Promise<HttpResponse<T>> {
+  async delete<T = any>(
+    url: string,
+    options?: Omit<RequestOptions, 'method' | 'url'>
+  ): Promise<HttpResponse<T>> {
     return this.request<T>({ method: 'DELETE', url, ...options });
   }
 

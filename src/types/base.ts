@@ -63,7 +63,7 @@ export interface EventPage {
 
 export enum EventSortOrder {
   TIMESTAMP = 'TIMESTAMP',
-  REVERSE_TIMESTAMP = 'REVERSE_TIMESTAMP'
+  REVERSE_TIMESTAMP = 'REVERSE_TIMESTAMP',
 }
 
 export enum AgentExecutionStatus {
@@ -71,7 +71,7 @@ export enum AgentExecutionStatus {
   RUNNING = 'running',
   PAUSED = 'paused',
   FINISHED = 'finished',
-  ERROR = 'error'
+  ERROR = 'error',
 }
 
 export interface ConversationStats {

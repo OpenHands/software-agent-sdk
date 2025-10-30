@@ -3,7 +3,7 @@
  */
 
 import WebSocket from 'ws';
-import { Event, ConversationCallbackType } from '../types/base.js';
+import { Event, ConversationCallbackType } from '../types/base';
 
 export interface WebSocketClientOptions {
   host: string;
@@ -35,19 +35,19 @@ export class WebSocketCallbackClient {
     if (this.ws) {
       return;
     }
-    
+
     this.shouldReconnect = true;
     this.connect();
   }
 
   stop(): void {
     this.shouldReconnect = false;
-    
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = undefined;
     }
-    
+
     if (this.ws) {
       this.ws.close();
       this.ws = undefined;
@@ -60,17 +60,17 @@ export class WebSocketCallbackClient {
       const url = new URL(this.host);
       const wsScheme = url.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${wsScheme}//${url.host}${url.pathname.replace(/\/$/, '')}/sockets/events/${this.conversationId}`;
-      
+
       // Add API key as query parameter if provided
       const finalUrl = this.apiKey ? `${wsUrl}?session_api_key=${this.apiKey}` : wsUrl;
-      
+
       this.ws = new WebSocket(finalUrl);
-      
+
       this.ws.on('open', () => {
         console.debug(`WebSocket connected to ${finalUrl}`);
         this.currentDelay = this.reconnectDelay; // Reset delay on successful connection
       });
-      
+
       this.ws.on('message', (data: WebSocket.Data) => {
         try {
           const message = data.toString();
@@ -80,23 +80,22 @@ export class WebSocketCallbackClient {
           console.error('Error processing WebSocket message:', error);
         }
       });
-      
+
       this.ws.on('close', (code: number, reason: Buffer) => {
         console.debug(`WebSocket closed: ${code} ${reason.toString()}`);
         this.ws = undefined;
-        
+
         if (this.shouldReconnect) {
           this.scheduleReconnect();
         }
       });
-      
+
       this.ws.on('error', (error: Error) => {
         console.debug('WebSocket error:', error);
         if (this.shouldReconnect) {
           this.scheduleReconnect();
         }
       });
-      
     } catch (error) {
       console.error('Failed to create WebSocket connection:', error);
       if (this.shouldReconnect) {
@@ -109,9 +108,9 @@ export class WebSocketCallbackClient {
     if (this.reconnectTimer) {
       return;
     }
-    
+
     console.debug(`Scheduling WebSocket reconnect in ${this.currentDelay}ms`);
-    
+
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = undefined;
       if (this.shouldReconnect) {

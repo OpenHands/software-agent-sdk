@@ -2,8 +2,8 @@
  * Remote workspace implementation for executing commands and file operations
  */
 
-import { HttpClient } from '../client/http-client.js';
-import { CommandResult, FileOperationResult, GitChange, GitDiff } from '../models/workspace.js';
+import { HttpClient } from '../client/http-client';
+import { CommandResult, FileOperationResult, GitChange, GitDiff } from '../models/workspace';
 
 export interface RemoteWorkspaceOptions {
   host: string;
@@ -21,7 +21,7 @@ export class RemoteWorkspace {
     this.host = options.host.replace(/\/$/, '');
     this.workingDir = options.workingDir;
     this.apiKey = options.apiKey;
-    
+
     this.client = new HttpClient({
       baseUrl: this.host,
       apiKey: this.apiKey,
@@ -42,20 +42,18 @@ export class RemoteWorkspace {
         command,
         timeout: Math.floor(timeout),
       };
-      
+
       if (cwd) {
         payload.cwd = cwd;
       }
 
-      const startResponse = await this.client.post(
-        '/api/bash/start_bash_command',
-        payload,
-        { timeout: (timeout + 5) * 1000 }
-      );
-      
+      const startResponse = await this.client.post('/api/bash/start_bash_command', payload, {
+        timeout: (timeout + 5) * 1000,
+      });
+
       const bashCommand = startResponse.data;
       const commandId = bashCommand.id;
-      
+
       console.debug(`Started command with ID: ${commandId}`);
 
       // Step 2: Poll for output until command completes
@@ -74,7 +72,7 @@ export class RemoteWorkspace {
           },
           timeout: timeout * 1000,
         });
-        
+
         const searchResult = searchResponse.data;
 
         // Filter for BashOutput events for this command
@@ -98,7 +96,7 @@ export class RemoteWorkspace {
         }
 
         // Wait a bit before polling again
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise((resolve) => setTimeout(resolve, 100));
       }
 
       // If we timed out waiting for completion
@@ -119,7 +117,6 @@ export class RemoteWorkspace {
         stderr,
         timeout_occurred: exitCode === -1 && stderr.includes('timed out'),
       };
-
     } catch (error) {
       console.error(`Remote command execution failed: ${error}`);
       return {
@@ -140,10 +137,10 @@ export class RemoteWorkspace {
       // For Node.js environments, we can read the file
       const fs = await import('fs');
       const path = await import('path');
-      
+
       const fileContent = await fs.promises.readFile(sourcePath);
       const fileName = path.basename(sourcePath);
-      
+
       // Create FormData for file upload
       const formData = new FormData();
       const blob = new Blob([fileContent]);
@@ -166,7 +163,6 @@ export class RemoteWorkspace {
         file_size: resultData.file_size,
         error: resultData.error,
       };
-
     } catch (error) {
       console.error(`Remote file upload failed: ${error}`);
       return {
@@ -182,22 +178,26 @@ export class RemoteWorkspace {
     console.debug(`Remote file download: ${sourcePath} -> ${destinationPath}`);
 
     try {
-      const response = await this.client.get(`/api/file/download/${encodeURIComponent(sourcePath)}`, {
-        timeout: 60000,
-      });
+      const response = await this.client.get(
+        `/api/file/download/${encodeURIComponent(sourcePath)}`,
+        {
+          timeout: 60000,
+        }
+      );
 
       // For Node.js environments, write the file
       const fs = await import('fs');
       const path = await import('path');
-      
+
       // Ensure destination directory exists
       const destDir = path.dirname(destinationPath);
       await fs.promises.mkdir(destDir, { recursive: true });
-      
+
       // Write the file content
-      const content = typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
+      const content =
+        typeof response.data === 'string' ? response.data : JSON.stringify(response.data);
       await fs.promises.writeFile(destinationPath, content);
-      
+
       const stats = await fs.promises.stat(destinationPath);
 
       return {
@@ -206,7 +206,6 @@ export class RemoteWorkspace {
         destination_path: destinationPath,
         file_size: stats.size,
       };
-
     } catch (error) {
       console.error(`Remote file download failed: ${error}`);
       return {
@@ -225,7 +224,9 @@ export class RemoteWorkspace {
       });
       return response.data;
     } catch (error) {
-      throw new Error(`Failed to get git changes: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to get git changes: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 
@@ -236,7 +237,9 @@ export class RemoteWorkspace {
       });
       return response.data;
     } catch (error) {
-      throw new Error(`Failed to get git diff: ${error instanceof Error ? error.message : String(error)}`);
+      throw new Error(
+        `Failed to get git diff: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
   }
 

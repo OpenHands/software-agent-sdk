@@ -2,14 +2,14 @@
  * Conversation-related models and interfaces
  */
 
-import { 
-  ConversationID, 
-  // Event, // Unused for now 
-  AgentExecutionStatus, 
-  ConfirmationPolicyBase, 
+import {
+  ConversationID,
+  // Event, // Unused for now
+  AgentExecutionStatus,
+  ConfirmationPolicyBase,
   ConversationStats,
-  AgentBase
-} from '../types/base.js';
+  AgentBase,
+} from '../types/base';
 
 export interface ConversationInfo {
   id: ConversationID;

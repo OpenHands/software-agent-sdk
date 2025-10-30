@@ -2,10 +2,10 @@
  * Remote events list implementation with caching and synchronization
  */
 
-import { HttpClient } from '../client/http-client.js';
-import { Event, ConversationCallbackType } from '../types/base.js';
-// import { EventSortOrder } from '../types/base.js'; // Unused for now
-import { EventPage } from '../types/base.js';
+import { HttpClient } from '../client/http-client';
+import { Event, ConversationCallbackType } from '../types/base';
+// import { EventSortOrder } from '../types/base'; // Unused for now
+import { EventPage } from '../types/base';
 
 export class RemoteEventsList {
   private client: HttpClient;
@@ -23,7 +23,7 @@ export class RemoteEventsList {
 
   private async doFullSync(): Promise<void> {
     console.debug(`Performing full sync for conversation ${this.conversationId}`);
-    
+
     const events: Event[] = [];
     let pageId: string | undefined;
 
@@ -38,7 +38,7 @@ export class RemoteEventsList {
         `/api/conversations/${this.conversationId}/events/search`,
         { params }
       );
-      
+
       const data = response.data;
       events.push(...data.items);
 
@@ -51,7 +51,7 @@ export class RemoteEventsList {
     await this.lock.acquire(async () => {
       this.cachedEvents = events;
       this.cachedEventIds.clear();
-      events.forEach(e => this.cachedEventIds.add(e.id));
+      events.forEach((e) => this.cachedEventIds.add(e.id));
     });
 
     console.debug(`Full sync completed, ${events.length} events cached`);
@@ -75,7 +75,7 @@ export class RemoteEventsList {
 
   createDefaultCallback(): ConversationCallbackType {
     return (event: Event) => {
-      this.addEvent(event).catch(error => {
+      this.addEvent(event).catch((error) => {
         console.error('Error adding event to cache:', error);
       });
     };
