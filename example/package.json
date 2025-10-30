@@ -6,12 +6,12 @@
   "scripts": {
     "dev": "npm run build:sdk && vite --host 0.0.0.0 --port 12000",
     "build": "npm run build:sdk && tsc && vite build",
-    "build:sdk": "cd ../agent-server-typescript-client && npm run build",
+    "build:sdk": "cd ../ && npm run build",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview"
   },
   "dependencies": {
-    "@openhands/agent-server-typescript-client": "file:../agent-server-typescript-client",
+    "@openhands/agent-server-typescript-client": "file:../",
     "react": "^18.2.0",
     "react-dom": "^18.2.0"
   },
