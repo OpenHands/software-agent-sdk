@@ -10,12 +10,6 @@ A TypeScript client library for the OpenHands Agent Server API that mirrors the 
 - **Type Safety**: Full TypeScript support with comprehensive type definitions
 - **Python SDK Compatibility**: Same class names and method signatures as the Python SDK
 
-## Installation
-
-```bash
-npm install @openhands/agent-server-typescript-client
-```
-
 ## Quick Start
 
 ### Creating a Conversation
