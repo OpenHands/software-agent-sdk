@@ -2,8 +2,26 @@
  * WebSocket client for real-time event streaming
  */
 
-import WebSocket from 'ws';
 import { Event, ConversationCallbackType } from '../types/base';
+
+// Use native WebSocket in browser, ws library in Node.js
+let WebSocketImpl: any;
+
+if (typeof window !== 'undefined' && window.WebSocket) {
+  // Browser environment
+  WebSocketImpl = window.WebSocket;
+} else {
+  // Node.js environment
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const ws = require('ws');
+    WebSocketImpl = ws;
+  } catch (e) {
+    throw new Error(
+      'WebSocket implementation not available. Install ws package for Node.js environments.'
+    );
+  }
+}
 
 export interface WebSocketClientOptions {
   host: string;
@@ -17,7 +35,7 @@ export class WebSocketCallbackClient {
   private conversationId: string;
   private callback: ConversationCallbackType;
   private apiKey?: string;
-  private ws?: WebSocket;
+  private ws?: any; // WebSocket instance (browser or Node.js)
   private reconnectDelay = 1000;
   private maxReconnectDelay = 30000;
   private currentDelay = 1000;
@@ -64,38 +82,74 @@ export class WebSocketCallbackClient {
       // Add API key as query parameter if provided
       const finalUrl = this.apiKey ? `${wsUrl}?session_api_key=${this.apiKey}` : wsUrl;
 
-      this.ws = new WebSocket(finalUrl);
+      this.ws = new WebSocketImpl(finalUrl);
 
-      this.ws.on('open', () => {
-        console.debug(`WebSocket connected to ${finalUrl}`);
-        this.currentDelay = this.reconnectDelay; // Reset delay on successful connection
-      });
+      // Handle events differently for browser vs Node.js
+      if (typeof window !== 'undefined') {
+        // Browser WebSocket API
+        this.ws.onopen = () => {
+          console.debug(`WebSocket connected to ${finalUrl}`);
+          this.currentDelay = this.reconnectDelay; // Reset delay on successful connection
+        };
 
-      this.ws.on('message', (data: WebSocket.Data) => {
-        try {
-          const message = data.toString();
-          const event: Event = JSON.parse(message);
-          this.callback(event);
-        } catch (error) {
-          console.error('Error processing WebSocket message:', error);
-        }
-      });
+        this.ws.onmessage = (event: MessageEvent) => {
+          try {
+            const message = event.data;
+            const eventData: Event = JSON.parse(message);
+            this.callback(eventData);
+          } catch (error) {
+            console.error('Error processing WebSocket message:', error);
+          }
+        };
 
-      this.ws.on('close', (code: number, reason: Buffer) => {
-        console.debug(`WebSocket closed: ${code} ${reason.toString()}`);
-        this.ws = undefined;
+        this.ws.onclose = (event: CloseEvent) => {
+          console.debug(`WebSocket closed: ${event.code} ${event.reason}`);
+          this.ws = undefined;
 
-        if (this.shouldReconnect) {
-          this.scheduleReconnect();
-        }
-      });
+          if (this.shouldReconnect) {
+            this.scheduleReconnect();
+          }
+        };
 
-      this.ws.on('error', (error: Error) => {
-        console.debug('WebSocket error:', error);
-        if (this.shouldReconnect) {
-          this.scheduleReconnect();
-        }
-      });
+        this.ws.onerror = (error: Event) => {
+          console.debug('WebSocket error:', error);
+          if (this.shouldReconnect) {
+            this.scheduleReconnect();
+          }
+        };
+      } else {
+        // Node.js ws library API
+        this.ws.on('open', () => {
+          console.debug(`WebSocket connected to ${finalUrl}`);
+          this.currentDelay = this.reconnectDelay; // Reset delay on successful connection
+        });
+
+        this.ws.on('message', (data: any) => {
+          try {
+            const message = data.toString();
+            const event: Event = JSON.parse(message);
+            this.callback(event);
+          } catch (error) {
+            console.error('Error processing WebSocket message:', error);
+          }
+        });
+
+        this.ws.on('close', (code: number, reason: any) => {
+          console.debug(`WebSocket closed: ${code} ${reason ? reason.toString() : ''}`);
+          this.ws = undefined;
+
+          if (this.shouldReconnect) {
+            this.scheduleReconnect();
+          }
+        });
+
+        this.ws.on('error', (error: Error) => {
+          console.debug('WebSocket error:', error);
+          if (this.shouldReconnect) {
+            this.scheduleReconnect();
+          }
+        });
+      }
     } catch (error) {
       console.error('Failed to create WebSocket connection:', error);
       if (this.shouldReconnect) {

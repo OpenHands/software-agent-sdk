@@ -39,6 +39,44 @@ export const ConversationManager: React.FC = () => {
     }
   }, [settings.agentServerUrl, settings.agentServerApiKey]);
 
+  // Cleanup WebSocket connections on unmount
+  useEffect(() => {
+    return () => {
+      if (selectedConversation?.remoteConversation) {
+        selectedConversation.remoteConversation.stopWebSocketClient().catch(err => {
+          console.warn('Failed to stop WebSocket client on unmount:', err);
+        });
+      }
+    };
+  }, [selectedConversation?.remoteConversation]);
+
+  // Periodic status refresh for running conversations
+  useEffect(() => {
+    if (!selectedConversation?.remoteConversation) return;
+
+    const refreshStatus = async () => {
+      try {
+        const status = await selectedConversation.remoteConversation!.state.getAgentStatus();
+        setConversations(prev => prev.map(conv => 
+          conv.id === selectedConversation.id 
+            ? { ...conv, agentStatus: status }
+            : conv
+        ));
+      } catch (err) {
+        console.warn('Failed to refresh agent status:', err);
+      }
+    };
+
+    // Refresh every 2 seconds if the agent is running
+    const interval = setInterval(() => {
+      if (selectedConversation.agentStatus === 'running') {
+        refreshStatus();
+      }
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [selectedConversation?.id, selectedConversation?.agentStatus]);
+
   const loadConversations = async (conversationManager?: SDKConversationManager) => {
     const mgr = conversationManager || manager;
     if (!mgr) return;
@@ -84,12 +122,45 @@ export const ConversationManager: React.FC = () => {
         }
       };
 
-      const conversation = await manager.createConversation(agent, {
-        initialMessage: 'Hello! I\'m ready to help you with your tasks.',
-        maxIterations: 50,
-      });
+      const conversation = await RemoteConversation.create(
+        manager.host,
+        agent,
+        {
+          apiKey: manager.apiKey,
+          initialMessage: 'Hello! I\'m ready to help you with your tasks.',
+          maxIterations: 50,
+          callback: (event: Event) => {
+            console.log('Received WebSocket event for new conversation:', event);
+            
+            // Update the conversation's events in real-time
+            setConversations(prev => prev.map(conv => {
+              if (conv.id === conversation.id && conv.events) {
+                const updatedEvents = [...conv.events, event];
+                return { ...conv, events: updatedEvents };
+              }
+              return conv;
+            }));
+          },
+        }
+      );
 
       console.log('Created conversation:', conversation);
+      
+      // Start WebSocket client for real-time updates
+      try {
+        await conversation.startWebSocketClient();
+        console.log('WebSocket client started for new conversation');
+      } catch (wsErr) {
+        console.warn('Failed to start WebSocket client for new conversation:', wsErr);
+      }
+      
+      // Run the initial message to start the conversation
+      try {
+        await conversation.run();
+        console.log('Started conversation with initial message');
+      } catch (runErr) {
+        console.warn('Failed to run initial message:', runErr);
+      }
       
       // Reload conversations to show the new one
       await loadConversations();
@@ -127,13 +198,71 @@ export const ConversationManager: React.FC = () => {
   const selectConversation = async (conversationId: string) => {
     if (!manager) return;
 
+    // Clean up previous conversation's WebSocket if any
+    if (selectedConversation?.remoteConversation) {
+      try {
+        await selectedConversation.remoteConversation.stopWebSocketClient();
+        console.log('Stopped WebSocket client for previous conversation');
+      } catch (err) {
+        console.warn('Failed to stop previous WebSocket client:', err);
+      }
+    }
+
     console.log('Selecting conversation:', conversationId);
     setSelectedConversationId(conversationId);
     
     // Load conversation details
     try {
-      const remoteConversation = await manager.loadConversation(conversationId);
+      // Create a callback to handle real-time events
+      const eventCallback = (event: Event) => {
+        console.log('Received WebSocket event:', event);
+        
+        // Update the conversation's events in real-time
+        setConversations(prev => prev.map(conv => {
+          if (conv.id === conversationId && conv.events) {
+            // Add the new event to the existing events
+            const updatedEvents = [...conv.events, event];
+            return { ...conv, events: updatedEvents };
+          }
+          return conv;
+        }));
+        
+        // If it's a status change event, update the agent status
+        if (event.type === 'agent_status_change' || event.type === 'agent_state_changed') {
+          // Refresh agent status after a short delay to ensure the server has updated
+          setTimeout(() => {
+            if (remoteConversation) {
+              remoteConversation.state.getAgentStatus().then(status => {
+                setConversations(prev => prev.map(conv => 
+                  conv.id === conversationId 
+                    ? { ...conv, agentStatus: status }
+                    : conv
+                ));
+              }).catch(err => console.warn('Failed to update agent status:', err));
+            }
+          }, 100);
+        }
+      };
+      
+      // Load conversation with callback
+      const remoteConversation = await RemoteConversation.load(
+        manager.host,
+        conversationId,
+        {
+          apiKey: manager.apiKey,
+          callback: eventCallback,
+        }
+      );
       console.log('Loaded remote conversation:', remoteConversation);
+      
+      // Start WebSocket client for real-time updates
+      try {
+        await remoteConversation.startWebSocketClient();
+        console.log('WebSocket client started for conversation:', conversationId);
+      } catch (wsErr) {
+        console.warn('Failed to start WebSocket client:', wsErr);
+        // Don't fail the whole operation if WebSocket fails
+      }
       
       // Get events
       const events = await remoteConversation.state.events.getEvents();
@@ -160,14 +289,19 @@ export const ConversationManager: React.FC = () => {
     if (!selectedConversation?.remoteConversation || !messageInput.trim()) return;
 
     try {
+      // Send the message
       await selectedConversation.remoteConversation.sendMessage(messageInput);
       setMessageInput('');
       
-      // Reload conversation details to show new events
-      await selectConversation(selectedConversation.id);
+      // Start the agent to process the message (non-blocking)
+      await selectedConversation.remoteConversation.run();
+      console.log('Agent started to process the message');
+      
+      // The WebSocket will receive events as the agent works
+      // No need to reload immediately - events will come via WebSocket
     } catch (err) {
-      console.error('Failed to send message:', err);
-      setError(err instanceof Error ? err.message : 'Failed to send message');
+      console.error('Failed to send message or start agent:', err);
+      setError(err instanceof Error ? err.message : 'Failed to send message or start agent');
     }
   };
 
@@ -185,7 +319,20 @@ export const ConversationManager: React.FC = () => {
       case 'running': return 'text-green-500';
       case 'stopped': return 'text-red-500';
       case 'paused': return 'text-orange-500';
+      case 'finished': return 'text-blue-500';
+      case 'error': return 'text-red-600';
       default: return 'text-gray-500';
+    }
+  };
+
+  const getStatusIcon = (status?: string) => {
+    switch (status) {
+      case 'running': return '🔄';
+      case 'stopped': return '⏹️';
+      case 'paused': return '⏸️';
+      case 'finished': return '✅';
+      case 'error': return '❌';
+      default: return '❓';
     }
   };
 
@@ -252,7 +399,7 @@ export const ConversationManager: React.FC = () => {
                       <div className="flex items-center gap-2">
                         <span className="text-gray-600 dark:text-gray-400">Status:</span>
                         <span className={`font-medium ${getStatusColorClass(conversation.status)}`}>
-                          ● {conversation.status || 'unknown'}
+                          {getStatusIcon(conversation.status)} {conversation.status || 'unknown'}
                         </span>
                       </div>
                     </div>
@@ -292,7 +439,7 @@ export const ConversationManager: React.FC = () => {
                   <div className="flex justify-between">
                     <span className="font-medium text-gray-900 dark:text-white">Status:</span>
                     <span className={`font-medium ${getStatusColorClass(selectedConversation.status)}`}>
-                      ● {selectedConversation.status || 'unknown'}
+                      {getStatusIcon(selectedConversation.status)} {selectedConversation.status || 'unknown'}
                     </span>
                   </div>
                   <div className="flex justify-between">
@@ -366,13 +513,55 @@ export const ConversationManager: React.FC = () => {
                     className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-md text-sm bg-white dark:bg-gray-700 text-gray-900 dark:text-white focus:outline-none focus:border-indigo-600 focus:shadow-md transition-all duration-200 resize-vertical"
                     rows={3}
                   />
-                  <button 
-                    onClick={sendMessage}
-                    disabled={!messageInput.trim() || loading}
-                    className="w-full bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    Send Message
-                  </button>
+                  <div className="flex gap-2">
+                    <button 
+                      onClick={sendMessage}
+                      disabled={!messageInput.trim() || loading}
+                      className="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Send & Run
+                    </button>
+                    <button 
+                      onClick={async () => {
+                        if (selectedConversation?.remoteConversation) {
+                          try {
+                            await selectedConversation.remoteConversation.run();
+                            console.log('Agent started manually');
+                            // Reload conversation details
+                            await selectConversation(selectedConversation.id);
+                          } catch (err) {
+                            console.error('Failed to start agent:', err);
+                            setError(err instanceof Error ? err.message : 'Failed to start agent');
+                          }
+                        }
+                      }}
+                      disabled={loading}
+                      className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Start/Resume the agent"
+                    >
+                      ▶️ Run
+                    </button>
+                    <button 
+                      onClick={async () => {
+                        if (selectedConversation?.remoteConversation) {
+                          try {
+                            await selectedConversation.remoteConversation.pause();
+                            console.log('Agent paused manually');
+                            // Reload conversation details
+                            await selectConversation(selectedConversation.id);
+                          } catch (err) {
+                            console.error('Failed to pause agent:', err);
+                            setError(err instanceof Error ? err.message : 'Failed to pause agent');
+                          }
+                        }
+                      }}
+                      disabled={loading}
+                      className="bg-orange-600 hover:bg-orange-700 text-white px-4 py-2 rounded-md font-medium transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                      title="Pause the agent"
+                    >
+                      ⏸️ Pause
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
