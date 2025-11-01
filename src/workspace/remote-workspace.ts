@@ -3,7 +3,13 @@
  */
 
 import { HttpClient } from '../client/http-client';
-import { CommandResult, FileOperationResult, FileDownloadResult, GitChange, GitDiff } from '../models/workspace';
+import {
+  CommandResult,
+  FileOperationResult,
+  FileDownloadResult,
+  GitChange,
+  GitDiff,
+} from '../models/workspace';
 
 export interface RemoteWorkspaceOptions {
   host: string;
@@ -130,8 +136,8 @@ export class RemoteWorkspace {
   }
 
   async fileUpload(
-    content: string | Blob | File, 
-    destinationPath: string, 
+    content: string | Blob | File,
+    destinationPath: string,
     fileName?: string
   ): Promise<FileOperationResult> {
     console.debug(`Remote file upload to: ${destinationPath}`);
@@ -139,10 +145,10 @@ export class RemoteWorkspace {
     try {
       // Create FormData for file upload
       const formData = new FormData();
-      
+
       let blob: Blob;
       let finalFileName: string;
-      
+
       if (content instanceof File) {
         blob = content;
         finalFileName = fileName || content.name;
@@ -199,7 +205,7 @@ export class RemoteWorkspace {
       // Convert response data to appropriate format
       let content: string | Blob;
       let fileSize: number;
-      
+
       if (typeof response.data === 'string') {
         content = response.data;
         fileSize = new Blob([response.data]).size;
@@ -262,7 +268,11 @@ export class RemoteWorkspace {
   /**
    * Convenience method to upload text content as a file
    */
-  async uploadText(text: string, destinationPath: string, fileName?: string): Promise<FileOperationResult> {
+  async uploadText(
+    text: string,
+    destinationPath: string,
+    fileName?: string
+  ): Promise<FileOperationResult> {
     return this.fileUpload(text, destinationPath, fileName);
   }
 
@@ -281,13 +291,13 @@ export class RemoteWorkspace {
     if (!result.success) {
       throw new Error(result.error || 'Download failed');
     }
-    
+
     if (typeof result.content === 'string') {
       return result.content;
     } else if (result.content instanceof Blob) {
       return await result.content.text();
     }
-    
+
     return '';
   }
 
@@ -299,13 +309,13 @@ export class RemoteWorkspace {
     if (!result.success) {
       throw new Error(result.error || 'Download failed');
     }
-    
+
     if (result.content instanceof Blob) {
       return result.content;
     } else if (typeof result.content === 'string') {
       return new Blob([result.content], { type: 'text/plain' });
     }
-    
+
     return new Blob();
   }
 
@@ -314,10 +324,10 @@ export class RemoteWorkspace {
    */
   async downloadAndSave(sourcePath: string, saveAsFileName?: string): Promise<void> {
     const blob = await this.downloadAsBlob(sourcePath);
-    
+
     // Create a temporary URL for the blob
     const url = URL.createObjectURL(blob);
-    
+
     // Create a temporary anchor element to trigger download
     const a = document.createElement('a');
     a.href = url;
@@ -325,7 +335,7 @@ export class RemoteWorkspace {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    
+
     // Clean up the temporary URL
     URL.revokeObjectURL(url);
   }
