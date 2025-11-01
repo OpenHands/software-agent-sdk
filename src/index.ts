@@ -55,7 +55,13 @@ export type { AgentOptions } from './agent/agent';
 export { EventSortOrder, AgentExecutionStatus } from './types/base';
 
 // Workspace models
-export type { CommandResult, FileOperationResult, GitChange, GitDiff } from './models/workspace';
+export type {
+  CommandResult,
+  FileOperationResult,
+  FileDownloadResult,
+  GitChange,
+  GitDiff,
+} from './models/workspace';
 
 // Conversation models
 export type {

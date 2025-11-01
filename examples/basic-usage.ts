@@ -6,10 +6,11 @@ import { Conversation, Agent, Workspace, AgentExecutionStatus } from '../src/ind
 
 async function main() {
   // Define the agent configuration
+  // Note: In a browser environment, you would get these values from your app's configuration
   const agent = new Agent({
     llm: {
       model: 'gpt-4',
-      api_key: process.env.OPENAI_API_KEY || 'your-openai-api-key',
+      api_key: 'your-openai-api-key', // Replace with your actual API key
     },
   });
 
@@ -18,7 +19,7 @@ async function main() {
     const workspace = new Workspace({
       host: 'http://localhost:3000',
       workingDir: '/tmp',
-      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
+      apiKey: 'your-session-api-key', // Replace with your actual session API key
     });
 
     // Create a new conversation
@@ -87,7 +88,7 @@ async function loadExistingConversation() {
   const agent = new Agent({
     llm: {
       model: 'gpt-4',
-      api_key: process.env.OPENAI_API_KEY || 'your-openai-api-key',
+      api_key: 'your-openai-api-key', // Replace with your actual API key
     },
   });
 
@@ -96,7 +97,7 @@ async function loadExistingConversation() {
     const workspace = new Workspace({
       host: 'http://localhost:3000',
       workingDir: '/tmp',
-      apiKey: process.env.SESSION_API_KEY || 'your-session-api-key',
+      apiKey: 'your-session-api-key', // Replace with your actual session API key
     });
 
     const conversation = new Conversation(agent, workspace, {
@@ -120,6 +121,6 @@ async function loadExistingConversation() {
 }
 
 // Run the example
-if (require.main === module) {
-  main().catch(console.error);
-}
+// Note: In a browser environment, you would call main() directly or from an event handler
+// For Node.js environments, you can use import.meta.main (ES modules) or check if this is the main module
+main().catch(console.error);

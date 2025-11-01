@@ -18,6 +18,14 @@ export interface FileOperationResult {
   error?: string;
 }
 
+export interface FileDownloadResult {
+  success: boolean;
+  source_path: string;
+  content: string | Blob;
+  file_size?: number;
+  error?: string;
+}
+
 export interface GitChange {
   path: string;
   status: 'added' | 'modified' | 'deleted' | 'renamed';
