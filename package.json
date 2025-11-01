@@ -1,5 +1,5 @@
 {
-  "name": "@openhands/agent-server-typescript-client",
+  "name": "@openhands/typescript-client",
   "version": "0.1.0",
   "description": "TypeScript client for OpenHands Agent Server",
   "main": "dist/index.js",
@@ -50,6 +50,6 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/All-Hands-AI/agent-server-typescript-client.git"
+    "url": "https://github.com/OpenHands/typescript-client.git"
   }
 }

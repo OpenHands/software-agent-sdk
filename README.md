@@ -14,6 +14,26 @@
 A TypeScript client library for the OpenHands Agent Server API. Mirrors the structure and functionality of the Python [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk),
 but only supports remote conversations.
 
+## Installation
+
+This package is published to GitHub Packages. You have two installation options:
+
+### Option 1: Configure .npmrc (Recommended)
+Add this to your `.npmrc` file:
+```
+@openhands:registry=https://npm.pkg.github.com
+```
+
+Then install normally:
+```bash
+npm install @openhands/typescript-client
+```
+
+### Option 2: Direct install with registry flag
+```bash
+npm install @openhands/typescript-client --registry=https://npm.pkg.github.com
+```
+
 ## Quick Start
 
 ### Start an AgentServer
@@ -29,7 +49,7 @@ docker run -p 8000:8000 -p 8001:8001 \
 ### Creating a Conversation
 
 ```typescript
-import { Conversation, Agent, Workspace } from '@openhands/agent-server-typescript-client';
+import { Conversation, Agent, Workspace } from '@openhands/typescript-client';
 
 const agent = new Agent({
   llm: {
@@ -242,7 +262,7 @@ The library includes comprehensive TypeScript type definitions:
 The client includes proper error handling with custom error types:
 
 ```typescript
-import { HttpError } from '@openhands/agent-server-typescript-client';
+import { HttpError } from '@openhands/typescript-client';
 
 try {
   await conversation.sendMessage('Hello');
