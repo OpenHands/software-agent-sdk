@@ -14,6 +14,12 @@
 A TypeScript client library for the OpenHands Agent Server API. Mirrors the structure and functionality of the Python [OpenHands Software Agent SDK](https://github.com/OpenHands/software-agent-sdk),
 but only supports remote conversations.
 
+## ✨ Browser Compatible
+
+This client is **fully browser-compatible** and works without Node.js dependencies. File operations use browser-native APIs like `Blob`, `File`, and `FormData` instead of file system operations. Perfect for web applications, React apps, and other browser-based projects.
+
+See [BROWSER_COMPATIBILITY.md](./BROWSER_COMPATIBILITY.md) for detailed usage examples.
+
 ## Installation
 
 This package is published to GitHub Packages. You have two installation options:
