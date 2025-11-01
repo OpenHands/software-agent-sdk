@@ -6,22 +6,28 @@ custom headers for enterprise API gateways.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
-from litellm.types.utils import ModelResponse
 from pydantic import Field
 
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.logger import get_logger
 
 
 __all__ = ["LLMWithGateway"]
+
+
+logger = get_logger(__name__)
 
 
 class LLMWithGateway(LLM):
     """LLM subclass with enterprise gateway support.
 
     Supports adding custom headers on each request with optional template
-    rendering against LLM attributes.
+    rendering against LLM attributes. If you include ``{{llm_api_key}}`` in a
+    header value, the decrypted API key is sent to the gateway—treat the
+    gateway as a trusted recipient and avoid logging those headers.
     """
 
     custom_headers: dict[str, str] | None = Field(
@@ -29,43 +35,66 @@ class LLMWithGateway(LLM):
         description="Custom headers to include with every LLM request.",
     )
 
-    def responses(self, *args, **kwargs):
-        """Override to inject gateway headers before calling LiteLLM."""
-        self._prepare_gateway_call(kwargs)
-        return super().responses(*args, **kwargs)
+    def _prepare_request_kwargs(self, call_kwargs: dict[str, Any]) -> dict[str, Any]:
+        prepared = dict(super()._prepare_request_kwargs(call_kwargs))
 
-    def _transport_call(
-        self, *, messages: list[dict[str, Any]], **kwargs
-    ) -> ModelResponse:
-        """Inject gateway headers just before delegating to LiteLLM."""
-        self._prepare_gateway_call(kwargs)
-        return super()._transport_call(messages=messages, **kwargs)
-
-    def _prepare_gateway_call(self, call_kwargs: dict[str, Any]) -> None:
-        """Augment LiteLLM kwargs with gateway headers.
-
-        This method:
-        1. Adds custom headers
-        2. Performs basic template variable replacement
-        """
         if not self.custom_headers:
-            return
+            return prepared
 
-        # Start with existing headers
-        headers: dict[str, str] = {}
-        existing_headers = call_kwargs.get("extra_headers")
-        if isinstance(existing_headers, dict):
-            headers.update(existing_headers)
+        rendered = self._render_templates(self.custom_headers)
+        if not isinstance(rendered, dict):
+            return prepared
 
-        # Add custom headers (with template replacement)
-        if self.custom_headers:
-            rendered_headers = self._render_templates(self.custom_headers)
-            if isinstance(rendered_headers, dict):
-                headers.update(rendered_headers)
+        existing = prepared.get("extra_headers")
+        base_headers: dict[str, Any]
+        if isinstance(existing, Mapping):
+            base_headers = dict(existing)
+        elif existing is None:
+            base_headers = {}
+        else:
+            base_headers = {}
 
-        # Set headers on the call
-        if headers:
-            call_kwargs["extra_headers"] = headers
+        merged, collisions = self._merge_headers(base_headers, rendered)
+        for header, old_val, new_val in collisions:
+            logger.warning(
+                "LLMWithGateway overriding header %s (existing=%r, new=%r)",
+                header,
+                old_val,
+                new_val,
+            )
+
+        if merged:
+            prepared["extra_headers"] = merged
+
+        return prepared
+
+    @staticmethod
+    def _merge_headers(
+        existing: dict[str, Any], new_headers: dict[str, Any]
+    ) -> tuple[dict[str, Any], list[tuple[str, Any, Any]]]:
+        """Merge header dictionaries case-insensitively.
+
+        Returns the merged headers and a list of collisions where an existing
+        header was replaced with a different value.
+        """
+
+        merged = dict(existing)
+        lower_map = {k.lower(): k for k in merged}
+        collisions: list[tuple[str, Any, Any]] = []
+
+        for key, value in new_headers.items():
+            lower = key.lower()
+            if lower in lower_map:
+                canonical = lower_map[lower]
+                old_value = merged[canonical]
+                if old_value != value:
+                    collisions.append((canonical, old_value, value))
+                merged[canonical] = value
+            else:
+                merged[key] = value
+                lower_map[lower] = key
+
+        return merged, collisions
 
     def _render_templates(self, value: Any) -> Any:
         """Replace template variables in strings with actual values.

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from openai.types.responses.response_output_message import ResponseOutputMessage
+from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLMWithGateway, Message, TextContent
@@ -19,6 +22,35 @@ def create_llm(custom_headers: dict[str, str] | None = None) -> LLMWithGateway:
         custom_headers=custom_headers,
         usage_id="gateway-test-llm",
         num_retries=0,
+    )
+
+
+def make_responses_api_response(text: str) -> ResponsesAPIResponse:
+    """Construct a minimal ResponsesAPIResponse for testing."""
+
+    message = ResponseOutputMessage.model_construct(
+        id="msg",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[  # type: ignore[arg-type]
+            ResponseOutputText(type="output_text", text=text, annotations=[])
+        ],
+    )
+
+    usage = ResponseAPIUsage(input_tokens=1, output_tokens=1, total_tokens=2)
+
+    return ResponsesAPIResponse(
+        id="resp",
+        created_at=0,
+        output=[message],  # type: ignore[arg-type]
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        usage=usage,
+        instructions=None,
+        status="completed",
     )
 
 
@@ -66,6 +98,16 @@ class TestHeaderInjection:
         headers = mock_completion.call_args.kwargs["extra_headers"]
         assert headers["X-Test"] == "value"
         assert headers["Existing"] == "1"
+
+    @patch("openhands.sdk.llm.llm.litellm_responses")
+    def test_responses_headers_passed_to_litellm(self, mock_responses) -> None:
+        llm = create_llm(custom_headers={"X-Test": "value"})
+        mock_responses.return_value = make_responses_api_response("ok")
+
+        llm.responses([Message(role="user", content=[TextContent(text="Hi")])])
+
+        headers = mock_responses.call_args.kwargs["extra_headers"]
+        assert headers["X-Test"] == "value"
 
 
 class TestTemplateReplacement:

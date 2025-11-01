@@ -454,15 +454,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         has_tools_flag = bool(cc_tools) and use_native_fc
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
+        call_kwargs = self._prepare_request_kwargs(call_kwargs)
 
         # 4) optional request logging context (kept small)
         assert self._telemetry is not None
         log_ctx = None
         if self._telemetry.log_enabled:
+            sanitized_kwargs = {
+                k: v for k, v in call_kwargs.items() if k != "extra_headers"
+            }
             log_ctx = {
                 "messages": formatted_messages[:],  # already simple dicts
                 "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
+                "kwargs": sanitized_kwargs,
                 "context_window": self.max_input_tokens or 0,
             }
             if tools and not use_native_fc:
@@ -481,7 +485,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
             # Merge retry-modified kwargs (like temperature) with call_kwargs
-            final_kwargs = {**call_kwargs, **retry_kwargs}
+            final_kwargs = self._prepare_request_kwargs({**call_kwargs, **retry_kwargs})
             resp = self._transport_call(messages=formatted_messages, **final_kwargs)
             raw_resp: ModelResponse | None = None
             if use_mock_tools:
@@ -565,16 +569,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         call_kwargs = select_responses_options(
             self, kwargs, include=include, store=store
         )
+        call_kwargs = self._prepare_request_kwargs(call_kwargs)
 
         # Optional request logging
         assert self._telemetry is not None
         log_ctx = None
         if self._telemetry.log_enabled:
+            sanitized_kwargs = {
+                k: v for k, v in call_kwargs.items() if k != "extra_headers"
+            }
             log_ctx = {
                 "llm_path": "responses",
                 "input": input_items[:],
                 "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
+                "kwargs": sanitized_kwargs,
                 "context_window": self.max_input_tokens or 0,
             }
         self._telemetry.on_request(log_ctx=log_ctx)
@@ -589,37 +597,37 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_listener=self.retry_listener,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
-            final_kwargs = {**call_kwargs, **retry_kwargs}
+            final_kwargs = self._prepare_request_kwargs({**call_kwargs, **retry_kwargs})
             with self._litellm_modify_params_ctx(self.modify_params):
-                with self._litellm_ssl_verify_ctx():
-                    with warnings.catch_warnings():
-                        warnings.filterwarnings("ignore", category=DeprecationWarning)
-                        typed_input: ResponseInputParam | str = (
-                            cast(ResponseInputParam, input_items) if input_items else ""
-                        )
-                        ret = litellm_responses(
-                            model=self.model,
-                            input=typed_input,
-                            instructions=instructions,
-                            tools=resp_tools,
-                            api_key=self.api_key.get_secret_value()
-                            if self.api_key
-                            else None,
-                            api_base=self.base_url,
-                            api_version=self.api_version,
-                            custom_llm_provider=self.custom_llm_provider,
-                            timeout=self.timeout,
-                            drop_params=self.drop_params,
-                            seed=self.seed,
-                            **final_kwargs,
-                        )
-                        assert isinstance(ret, ResponsesAPIResponse), (
-                            f"Expected ResponsesAPIResponse, got {type(ret)}"
-                        )
-                        # telemetry (latency, cost). Token usage handled after.
-                        assert self._telemetry is not None
-                        self._telemetry.on_response(ret)
-                        return ret
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=DeprecationWarning)
+                    typed_input: ResponseInputParam | str = (
+                        cast(ResponseInputParam, input_items) if input_items else ""
+                    )
+                    ret = litellm_responses(
+                        model=self.model,
+                        input=typed_input,
+                        instructions=instructions,
+                        tools=resp_tools,
+                        api_key=self.api_key.get_secret_value()
+                        if self.api_key
+                        else None,
+                        api_base=self.base_url,
+                        api_version=self.api_version,
+                        custom_llm_provider=self.custom_llm_provider,
+                        timeout=self.timeout,
+                        ssl_verify=self.ssl_verify,
+                        drop_params=self.drop_params,
+                        seed=self.seed,
+                        **final_kwargs,
+                    )
+                    assert isinstance(ret, ResponsesAPIResponse), (
+                        f"Expected ResponsesAPIResponse, got {type(ret)}"
+                    )
+                    # telemetry (latency, cost). Token usage handled after.
+                    assert self._telemetry is not None
+                    self._telemetry.on_response(ret)
+                    return ret
 
         try:
             resp: ResponsesAPIResponse = _one_attempt()
@@ -647,50 +655,52 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Transport + helpers
     # =========================================================================
+    def _prepare_request_kwargs(self, call_kwargs: dict[str, Any]) -> dict[str, Any]:
+        """Hook for subclasses to adjust final LiteLLM kwargs."""
+
+        return call_kwargs
+
     def _transport_call(
         self, *, messages: list[dict[str, Any]], **kwargs
     ) -> ModelResponse:
         # litellm.modify_params is GLOBAL; guard it for thread-safety
         with self._litellm_modify_params_ctx(self.modify_params):
-            with self._litellm_ssl_verify_ctx():
-                with warnings.catch_warnings():
-                    warnings.filterwarnings(
-                        "ignore", category=DeprecationWarning, module="httpx.*"
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        message=r".*content=.*upload.*",
-                        category=DeprecationWarning,
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        message=r"There is no current event loop",
-                        category=DeprecationWarning,
-                    )
-                    warnings.filterwarnings(
-                        "ignore",
-                        category=UserWarning,
-                    )
-                    # Some providers need renames handled in _normalize_call_kwargs.
-                    ret = litellm_completion(
-                        model=self.model,
-                        api_key=self.api_key.get_secret_value()
-                        if self.api_key
-                        else None,
-                        base_url=self.base_url,
-                        api_version=self.api_version,
-                        custom_llm_provider=self.custom_llm_provider,
-                        timeout=self.timeout,
-                        ssl_verify=self.ssl_verify,
-                        drop_params=self.drop_params,
-                        seed=self.seed,
-                        messages=messages,
-                        **kwargs,
-                    )
-                    assert isinstance(ret, ModelResponse), (
-                        f"Expected ModelResponse, got {type(ret)}"
-                    )
-                    return ret
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", category=DeprecationWarning, module="httpx.*"
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r".*content=.*upload.*",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    message=r"There is no current event loop",
+                    category=DeprecationWarning,
+                )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=UserWarning,
+                )
+                # Some providers need renames handled in _normalize_call_kwargs.
+                ret = litellm_completion(
+                    model=self.model,
+                    api_key=self.api_key.get_secret_value() if self.api_key else None,
+                    base_url=self.base_url,
+                    api_version=self.api_version,
+                    custom_llm_provider=self.custom_llm_provider,
+                    timeout=self.timeout,
+                    ssl_verify=self.ssl_verify,
+                    drop_params=self.drop_params,
+                    seed=self.seed,
+                    messages=messages,
+                    **kwargs,
+                )
+                assert isinstance(ret, ModelResponse), (
+                    f"Expected ModelResponse, got {type(ret)}"
+                )
+                return ret
 
     @contextmanager
     def _litellm_modify_params_ctx(self, flag: bool):
@@ -700,18 +710,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             yield
         finally:
             litellm.modify_params = old
-
-    @contextmanager
-    def _litellm_ssl_verify_ctx(self):
-        if self.ssl_verify is None:
-            yield
-            return
-        old = getattr(litellm, "ssl_verify", None)
-        try:
-            litellm.ssl_verify = self.ssl_verify
-            yield
-        finally:
-            litellm.ssl_verify = old
 
     # =========================================================================
     # Capabilities, formatting, and info
@@ -955,6 +953,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @classmethod
     def load_from_env(cls, prefix: str = "LLM_") -> LLM:
         TRUTHY = {"true", "1", "yes", "on"}
+        FALSY = {"false", "0", "no", "off"}
 
         def _unwrap_type(t: Any) -> Any:
             origin = get_origin(t)
@@ -963,20 +962,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             args = [a for a in get_args(t) if a is not type(None)]
             return args[0] if args else t
 
-        def _cast_value(raw: str, t: Any) -> Any:
-            t = _unwrap_type(t)
+        def _cast_value(field_name: str, raw: str, annotation: Any) -> Any:
+            stripped = raw.strip()
+            lowered = stripped.lower()
+            if field_name == "ssl_verify":
+                if lowered in TRUTHY:
+                    return True
+                if lowered in FALSY:
+                    return False
+                return stripped
+
+            t = _unwrap_type(annotation)
             if t is SecretStr:
-                return SecretStr(raw)
+                return SecretStr(stripped)
             if t is bool:
-                return raw.lower() in TRUTHY
+                if lowered in TRUTHY:
+                    return True
+                if lowered in FALSY:
+                    return False
+                return None
             if t is int:
                 try:
-                    return int(raw)
+                    return int(stripped)
                 except ValueError:
                     return None
             if t is float:
                 try:
-                    return float(raw)
+                    return float(stripped)
                 except ValueError:
                     return None
             origin = get_origin(t)
@@ -984,10 +996,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 isinstance(t, type) and issubclass(t, BaseModel)
             ):
                 try:
-                    return json.loads(raw)
+                    return json.loads(stripped)
                 except Exception:
                     pass
-            return raw
+            return stripped
 
         data: dict[str, Any] = {}
         fields: dict[str, Any] = {
@@ -1002,7 +1014,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             field_name = key[len(prefix) :].lower()
             if field_name not in fields:
                 continue
-            v = _cast_value(value, fields[field_name])
+            v = _cast_value(field_name, value, fields[field_name])
             if v is not None:
                 data[field_name] = v
         return cls(**data)
