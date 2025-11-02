@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from litellm.exceptions import BadRequestError, ContextWindowExceededError, OpenAIError
 
+from .types import LLMContextWindowExceedError
+
 
 # Minimal, provider-agnostic context-window detection
 LONG_PROMPT_PATTERNS: list[str] = [
@@ -15,7 +17,7 @@ LONG_PROMPT_PATTERNS: list[str] = [
 
 
 def is_context_window_exceeded(exception: Exception) -> bool:
-    if isinstance(exception, ContextWindowExceededError):
+    if isinstance(exception, (ContextWindowExceededError, LLMContextWindowExceedError)):
         return True
 
     if not isinstance(exception, (BadRequestError, OpenAIError)):
