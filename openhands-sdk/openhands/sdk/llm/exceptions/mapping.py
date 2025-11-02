@@ -4,7 +4,6 @@ from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
     InternalServerError,
-    OpenAIError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout as LiteLLMTimeout,
@@ -32,9 +31,7 @@ def map_provider_exception(exception: Exception) -> Exception:
         return LLMContextWindowExceedError(str(exception))
 
     # Auth-like errors often appear as BadRequest/OpenAIError with specific text
-    if isinstance(exception, (BadRequestError, OpenAIError)) and looks_like_auth_error(
-        exception
-    ):
+    if looks_like_auth_error(exception):
         return LLMAuthenticationError(str(exception))
 
     if isinstance(exception, RateLimitError):

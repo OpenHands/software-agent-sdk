@@ -59,7 +59,7 @@ class LLMContextWindowExceedError(LLMError):
         self,
         message: str = (
             "Conversation history longer than LLM context window limit. "
-            "Consider turning on enable_history_truncation config to avoid this error"
+            "Consider enabling a condenser or shortening inputs."
         ),
     ) -> None:
         super().__init__(message)
