@@ -231,10 +231,12 @@ def test_responses_api_support(model, expected_responses):
 def test_force_string_serializer_full_model_names():
     """Ensure full model names match substring patterns for string serializer.
 
-    Regression coverage for patterns like deepseek/glm/kimi-k2-instruct without
-    wildcards. model_matches uses case-insensitive substring matching on raw
-    model names.
+    Regression coverage for patterns like deepseek/glm without wildcards; Kimi
+    should only match when provider-prefixed with groq/.
     """
     assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
     assert get_features("GLM-4.5").force_string_serializer is True
-    assert get_features("Kimi K2-Instruct-0905").force_string_serializer is True
+    # Provider-agnostic Kimi should not force string serializer
+    assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
+    # Groq-prefixed Kimi should force string serializer
+    assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True

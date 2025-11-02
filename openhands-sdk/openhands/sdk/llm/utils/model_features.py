@@ -94,8 +94,7 @@ RESPONSES_API_PATTERNS: list[str] = [
 FORCE_STRING_SERIALIZER_PATTERNS: list[str] = [
     "deepseek",  # e.g., DeepSeek-V3.2-Exp
     "glm",  # e.g., GLM-4.5 / GLM-4.6
-    "k2-instruct",  # e.g., Kimi K2-Instruct-0905 (hyphenated segment)
-    "kimi-k2-instruct",  # provider-agnostic hyphenated form
+    # Kimi K2-Instruct requires string serialization only on Groq
     "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs
 ]
 
