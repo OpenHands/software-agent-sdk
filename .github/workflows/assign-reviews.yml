@@ -51,7 +51,7 @@ jobs:
                 # Need Author Action
 
                 Find all open PRs where the most recent change or comment was made on the pull
-                request more than 5 days ago (use 14 days if the PR is marked as draft). Then do the following in order:
+                request more than 5 days ago (use 14 days if the PR is marked as draft).
 
                 And send a message to the author:
 
