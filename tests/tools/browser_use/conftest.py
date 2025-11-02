@@ -43,9 +43,12 @@ def assert_browser_observation_success(
     assert isinstance(observation, BrowserObservation)
     assert observation.error is None
     if expected_output:
-        output_text = "".join(
-            [c.text for c in observation.output if isinstance(c, TextContent)]
-        )
+        if isinstance(observation.output, str):
+            output_text = observation.output
+        else:
+            output_text = "".join(
+                [c.text for c in observation.output if isinstance(c, TextContent)]
+            )
         assert expected_output in output_text
 
 

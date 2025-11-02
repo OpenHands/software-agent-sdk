@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
-from openhands.sdk.tool.schema import TextContent
 
 
 if TYPE_CHECKING:
@@ -181,7 +180,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             search_path=str(search_path),
             include_pattern=action.include,
             truncated=truncated,
-            output=[TextContent(text=output)],
+            output=output,
         )
 
     def _execute_with_grep(
@@ -244,5 +243,5 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             search_path=str(search_path),
             include_pattern=action.include,
             truncated=truncated,
-            output=[TextContent(text=output)],
+            output=output,
         )

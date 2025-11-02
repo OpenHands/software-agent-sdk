@@ -93,11 +93,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         files: set[str] = set()
 
         # grep returns exit code 1 when no matches; treat as empty
-        if isinstance(result.output, str):
-            output_text = result.output
-        else:
-            first_item = result.output[0] if result.output else None
-            output_text = first_item.text if isinstance(first_item, TextContent) else ""
+        assert isinstance(result.output, str)
+        output_text = result.output
 
         if output_text.strip():
             for line in output_text.strip().splitlines():

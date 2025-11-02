@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
-from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
@@ -119,7 +118,7 @@ class DelegateExecutor(ToolExecutor):
             message = f"Successfully spawned {len(action.ids)} sub-agents: {agent_list}"
             return DelegateObservation(
                 command=action.command,
-                output=[TextContent(text=message)],
+                output=message,
             )
 
         except Exception as e:
@@ -225,7 +224,7 @@ class DelegateExecutor(ToolExecutor):
 
             return DelegateObservation(
                 command=action.command,
-                output=[TextContent(text=output_text)],
+                output=output_text,
             )
 
         except Exception as e:

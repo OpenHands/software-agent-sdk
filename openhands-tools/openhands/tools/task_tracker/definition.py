@@ -11,7 +11,6 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 from rich.text import Text
 
-from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import (
     Action,
@@ -170,14 +169,9 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
             if self.save_dir:
                 self._save_tasks()
             return TaskTrackerObservation(
-                output=[
-                    TextContent(
-                        text=(
-                            f"Task list has been updated with "
-                            f"{len(self._task_list)} item(s)."
-                        )
-                    )
-                ],
+                output=(
+                    f"Task list has been updated with {len(self._task_list)} item(s)."
+                ),
                 command=action.command,
                 task_list=self._task_list,
             )
@@ -185,20 +179,15 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
             # Return the current task list
             if not self._task_list:
                 return TaskTrackerObservation(
-                    output=[
-                        TextContent(
-                            text=(
-                                "No task list found. Use the "
-                                '"plan" command to create one.'
-                            )
-                        )
-                    ],
+                    output=(
+                        'No task list found. Use the "plan" command to create one.'
+                    ),
                     command=action.command,
                     task_list=[],
                 )
             output = self._format_task_list(self._task_list)
             return TaskTrackerObservation(
-                output=[TextContent(text=output)],
+                output=output,
                 command=action.command,
                 task_list=self._task_list,
             )
