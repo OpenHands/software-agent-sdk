@@ -129,7 +129,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
 
-        if action.reset:
+        if action.reset or self.session._closed:
             reset_result = self.reset()
 
             # Handle command execution after reset

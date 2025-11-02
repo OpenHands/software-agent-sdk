@@ -60,13 +60,36 @@ jobs:
 
                 # Need Reviewers
 
-                Find all open pull requests that:
-                1. Have no reviewers assigned to them.
-                2. Are not marked as draft.
-                3. Were created more than 1 day ago.
-                4. CI is passing and there are no merge conflicts.
+                Find all open pull requests that TRULY have NO reviewers assigned. To do this correctly:
 
-                For each of these pull requests, read the git blame information for the files,
+                1. Use the GitHub API to fetch PR details: GET /repos/{owner}/{repo}/pulls/{pull_number}
+                2. Check the "requested_reviewers" and "requested_teams" arrays
+                3. ALSO check for submitted reviews: GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+                4. A PR needs reviewers ONLY if ALL of these are true:
+                   - The "requested_reviewers" array is empty (no pending review requests)
+                   - The "requested_teams" array is empty (no pending team review requests)
+                   - The reviews array is empty (no reviews have been submitted yet)
+                5. IMPORTANT: If ANY of these has entries, SKIP this PR - it already has or had reviewers!
+
+                Example API responses showing a PR that DOES NOT need reviewers (skip this):
+
+                Case 1 - Has requested reviewers:
+                GET /pulls/{number}: {"requested_reviewers": [{"login": "someuser"}], "requested_teams": []}
+
+                Case 2 - Has submitted reviews (even if requested_reviewers is empty):
+                GET /pulls/{number}: {"requested_reviewers": [], "requested_teams": []}
+                GET /pulls/{number}/reviews: [{"user": {"login": "someuser"}, "state": "COMMENTED"}]
+
+                Example API response showing a PR that DOES need reviewers (process this):
+                GET /pulls/{number}: {"requested_reviewers": [], "requested_teams": []}
+                GET /pulls/{number}/reviews: []
+
+                Additional criteria for PRs that need reviewers:
+                1. Are not marked as draft (draft: false)
+                2. Were created more than 1 day ago
+                3. CI is passing and there are no merge conflicts
+
+                For each PR that truly has NO reviewers, read the git blame information for the files,
                 and find the most recent and active contributors to the file/location of the changes.
                 Assign one of these people as a reviewer, but try not to assign too many reviews to
                 any single person. Add this message:
