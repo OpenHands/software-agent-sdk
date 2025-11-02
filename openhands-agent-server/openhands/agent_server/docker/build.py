@@ -324,6 +324,7 @@ def _extract_tarball(tarball: Path, dest: Path) -> None:
 
 
 def _make_build_context(sdk_project_root: Path) -> Path:
+    dockerfile_path = _get_dockerfile_path(sdk_project_root)
     tmp_root = Path(tempfile.mkdtemp(prefix="agent-build-", dir=None)).resolve()
     sdist_dir = Path(tempfile.mkdtemp(prefix="agent-sdist-", dir=None)).resolve()
     try:
@@ -349,6 +350,8 @@ def _make_build_context(sdk_project_root: Path) -> Path:
             "Expected single folder in sdist"
         )
         tmp_root = entries[0].resolve()
+        # copy Dockerfile into place
+        shutil.copy2(dockerfile_path, tmp_root / "Dockerfile")
         logger.debug(f"[build] Clean context ready at {tmp_root}")
         return tmp_root
     except Exception:
@@ -379,13 +382,9 @@ def _default_local_cache_dir() -> Path:
     return Path(xdg) / "openhands" / "buildx-cache"
 
 
-# --- single entry point ---
-
-
-def build(opts: BuildOptions) -> list[str]:
-    """Single entry point for building the agent-server image."""
+def _get_dockerfile_path(sdk_project_root: Path) -> Path:
     dockerfile_path = (
-        opts.sdk_project_root
+        sdk_project_root
         / "openhands-agent-server"
         / "openhands"
         / "agent_server"
@@ -394,7 +393,15 @@ def build(opts: BuildOptions) -> list[str]:
     )
     if not dockerfile_path.exists():
         raise FileNotFoundError(f"Dockerfile not found at {dockerfile_path}")
+    return dockerfile_path
 
+
+# --- single entry point ---
+
+
+def build(opts: BuildOptions) -> list[str]:
+    """Single entry point for building the agent-server image."""
+    dockerfile_path = _get_dockerfile_path(opts.sdk_project_root)
     push = opts.push
     if push is None:
         push = IN_CI
