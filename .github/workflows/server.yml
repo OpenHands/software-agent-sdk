@@ -219,46 +219,33 @@ jobs:
                   uv sync --frozen
 
                   # Generate build context and metadata using the build script (build-ctx-only mode)
-                  # The script outputs JSON with build_context, dockerfile, tags, etc.
-                  # Filter out logs/warnings and extract only the JSON line
-                  BUILD_OUTPUT=$(CUSTOM_TAGS="${VARIANT}" \
+                  # The script writes directly to $GITHUB_OUTPUT when running in CI
+                  BUILD_CTX=$(CUSTOM_TAGS="${VARIANT}" \
                       BASE_IMAGE="${BASE_IMAGE}" \
                       TARGET="${TARGET}" \
                       IMAGE="${IMAGE}" \
-                      uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only 2>&1 | \
-                      grep -v "DeprecationWarning" | \
-                      grep -v "warning:" | \
-                      grep "^{" | \
-                      head -n 1)
+                      uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only)
 
-                  if [ -z "$BUILD_OUTPUT" ]; then
-                      echo "Error: Failed to get build output from build.py"
-                      exit 1
-                  fi
-
-                  # Parse JSON output
-                  BUILD_CTX=$(echo "$BUILD_OUTPUT" | jq -r '.build_context')
-                  DOCKERFILE=$(echo "$BUILD_OUTPUT" | jq -r '.dockerfile')
-                  BASE_TAGS=$(echo "$BUILD_OUTPUT" | jq -r '.tags | join(",")')
-
+                  # Validate the build context directory was created
                   if [ -z "$BUILD_CTX" ] || [ ! -d "$BUILD_CTX" ]; then
                       echo "Error: Invalid build context directory: $BUILD_CTX"
                       exit 1
                   fi
 
+                  # Read base tags from what build.py wrote to GITHUB_OUTPUT
+                  BASE_TAGS=$(grep "^tags_csv=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2-)
+
                   # For per-architecture builds, append architecture suffix to each tag
                   # Transform: "image:sha-variant" -> "image:sha-variant-amd64"
-                  # Replace commas with space, add suffix to each, then join with commas
                   ARCH_TAGS=$(echo "$BASE_TAGS" | tr ',' '\n' | sed "s/$/-${ARCH}/" | paste -sd ',')
 
-                  echo "build_context=$BUILD_CTX" >> $GITHUB_OUTPUT
-                  echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
                   echo "tags=$ARCH_TAGS" >> $GITHUB_OUTPUT
                   echo "variant_arch=${VARIANT}-${ARCH}" >> $GITHUB_OUTPUT
 
                   echo "Using build context: $BUILD_CTX"
-                  echo "Using Dockerfile: $DOCKERFILE"
-                  echo "Computed tags: $ARCH_TAGS"
+                  echo "Using Dockerfile: $BUILD_CTX/Dockerfile"
+                  echo "Base tags from build.py: $BASE_TAGS"
+                  echo "Computed arch-specific tags: $ARCH_TAGS"
                   echo "Variant-Arch: ${VARIANT}-${ARCH}"
 
             - name: Build & Push with Blacksmith (${{ matrix.variant }}-${{ matrix.arch }})

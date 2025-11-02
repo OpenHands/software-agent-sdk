@@ -14,7 +14,6 @@ Single-entry build helper for agent-server images.
 """
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -594,15 +593,19 @@ def main(argv: list[str]) -> int:
             sdk_project_root=sdk_project_root,
         )
 
-        # Output structured JSON for GitHub Actions to parse
-        output = {
-            "build_context": str(ctx),
-            "dockerfile": str(ctx / "Dockerfile"),
-            "tags": opts.all_tags,
-            "versioned_tag": opts.versioned_tag,
-            "base_image_slug": opts.base_image_slug,
-        }
-        print(json.dumps(output))
+        # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a") as fh:
+                fh.write(f"build_context={ctx}\n")
+                fh.write(f"dockerfile={ctx / 'Dockerfile'}\n")
+                fh.write(f"tags_csv={','.join(opts.all_tags)}\n")
+                fh.write(f"versioned_tag={opts.versioned_tag}\n")
+                fh.write(f"base_image_slug={opts.base_image_slug}\n")
+            logger.info("[build] Wrote outputs to $GITHUB_OUTPUT")
+
+        # Also print to stdout for debugging/local use
+        print(str(ctx))
         return 0
 
     # ---- push/load resolution (CLI wins over env, else auto) ----
