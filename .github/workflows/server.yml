@@ -234,6 +234,8 @@ jobs:
 
                   echo "build_context=$BUILD_CTX" >> $GITHUB_OUTPUT
                   echo "dockerfile=$BUILD_CTX/Dockerfile" >> $GITHUB_OUTPUT
+                  echo "Using build context: $BUILD_CTX"
+                  echo "Using Dockerfile: $BUILD_CTX/Dockerfile"
 
                   # Compute tags and metadata
                   SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
@@ -249,8 +251,9 @@ jobs:
                   fi
 
                   echo "tags=$TAGS" >> $GITHUB_OUTPUT
-                  echo "dockerfile=$BUILD_CTX/Dockerfile" >> $GITHUB_OUTPUT
                   echo "variant_arch=${VARIANT}-${ARCH}" >> $GITHUB_OUTPUT
+                  echo "Computed tags: $TAGS"
+                  echo "Variant-Arch: ${VARIANT}-${ARCH}"
 
             - name: Build & Push with Blacksmith (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
