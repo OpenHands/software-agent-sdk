@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from litellm.exceptions import (
-    APIConnectionError,
     BadRequestError,
     InternalServerError,
     RateLimitError,
@@ -40,9 +39,9 @@ def map_provider_exception(exception: Exception) -> Exception:
     if isinstance(exception, LiteLLMTimeout):
         return LLMTimeoutError(str(exception))
 
-    if isinstance(
-        exception, (APIConnectionError, ServiceUnavailableError, InternalServerError)
-    ):
+    # Treat true service-side availability issues as service unavailable
+    # but keep APIConnectionError as-is for backward compatibility / caller expectations
+    if isinstance(exception, (ServiceUnavailableError, InternalServerError)):
         return LLMServiceUnavailableError(str(exception))
 
     # Generic client-side 4xx errors
