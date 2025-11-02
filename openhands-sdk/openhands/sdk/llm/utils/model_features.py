@@ -90,12 +90,9 @@ RESPONSES_API_PATTERNS: list[str] = [
 # These models don't support structured content format [{"type":"text","text":"..."}]
 # and need plain strings instead
 FORCE_STRING_SERIALIZER_PATTERNS: list[str] = [
-    "*deepseek*",
-    "glm*",
-    # kimi-k2-instruct on groq provider requires string serialization
-    # Pattern contains '/' so it matches against full model string
-    # (e.g., "groq/kimi-k2-instruct")
-    "*groq*/kimi-k2-instruct*",
+    "deepseek",
+    "glm",
+    "groq/kimi-k2-instruct",
 ]
 
 
