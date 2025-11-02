@@ -68,7 +68,7 @@ def test_normalize_responses_kwargs_policy():
     out = select_responses_options(
         llm, {"temperature": 0.3}, include=["text.output_text"], store=None
     )
-    # Temperature should NOT be set for reasoning models like gpt-5-mini
+    # Temperature should NOT be set for Responses API models like gpt-5-mini
     assert "temperature" not in out
     assert out["tool_choice"] == "auto"
     # include should contain original and encrypted_content
@@ -92,8 +92,8 @@ def test_normalize_responses_kwargs_non_reasoning_model():
     out = select_responses_options(
         llm, {"temperature": 0.3}, include=["text.output_text"], store=None
     )
-    # Temperature forced to 1.0 for non-reasoning Responses path
-    assert out["temperature"] == 1.0
+    # Temperature should NOT be set for Responses API models
+    assert "temperature" not in out
     assert out["tool_choice"] == "auto"
     # include should contain original and encrypted_content
     assert set(out["include"]) >= {"text.output_text", "reasoning.encrypted_content"}

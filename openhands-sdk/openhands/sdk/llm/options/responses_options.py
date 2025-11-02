@@ -23,11 +23,9 @@ def select_responses_options(
     )
 
     # Enforce sampling/tool behavior for Responses path
-    # Reasoning models (e.g., GPT-5, o1) don't support temperature
-    if get_features(llm.model).supports_reasoning_effort:
+    # Models that use Responses API don't need temperature set
+    if get_features(llm.model).supports_responses_api:
         out.pop("temperature", None)
-    else:
-        out["temperature"] = 1.0
     out["tool_choice"] = "auto"
 
     # Store defaults to False (stateless) unless explicitly provided
