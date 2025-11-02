@@ -41,7 +41,7 @@ jobs:
                 Find all open PRs where:
                 1. The PR is waiting for review (there are no open review comments or change requests)
                 2. The PR is in a "clean" state (CI passing, no merge conflicts)
-                3. The PR has had no activity (comments, commits, reviews) for more than 3 days.
+                3. The PR has had no activity (comments, commits, reviews) for more than 3 days (use 14 days if the PR is marked as draft).
 
                 In this case, send a message to the reviewers:
                 [Automatic Post]: This PR seems to be currently waiting for review.
@@ -50,7 +50,7 @@ jobs:
                 # Need Author Action
 
                 Find all open PRs where the most recent change or comment was made on the pull
-                request more than 5 days ago. Then do the following in order:
+                request more than 5 days ago (use 14 days if the PR is marked as draft). Then do the following in order:
 
                 And send a message to the author:
 
