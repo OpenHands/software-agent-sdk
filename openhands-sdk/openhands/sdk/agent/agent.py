@@ -169,7 +169,8 @@ class Agent(AgentBase):
             on_event(error_message)
             return
         except Exception as e:
-            # If condenser is available and error is context window exceeded, trigger condensation
+            # If condenser is available and error is context window exceeded, trigger
+            # condensation
             if (
                 self.condenser is not None
                 and self.condenser.handles_condensation_requests()

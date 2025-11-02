@@ -403,32 +403,38 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Preserves original exception via chaining at call sites.
         """
         from litellm.exceptions import (
+            APIConnectionError,
             BadRequestError,
-            ContextWindowExceededError,
+            InternalServerError,
             OpenAIError,
             RateLimitError,
-            Timeout as LiteLLMTimeout,
             ServiceUnavailableError,
-            APIConnectionError,
-            InternalServerError,
+            Timeout as LiteLLMTimeout,
         )
+
         from openhands.sdk.llm.exceptions import (
             LLMAuthenticationError,
+            LLMBadRequestError,
             LLMContextWindowExceedError,
             LLMRateLimitError,
-            LLMTimeoutError,
             LLMServiceUnavailableError,
-            LLMBadRequestError,
+            LLMTimeoutError,
         )
 
         # First, explicit context window detection
         if self.is_context_window_exceeded_exception(exception):
             return LLMContextWindowExceedError(str(exception))
 
-        # Authentication (401/403 patterns) live inside BadRequest/OpenAIError text in many providers
+        # Auth (401/403) patterns often live inside BadRequest/OpenAIError text
         def _looks_like_auth(err: Exception) -> bool:
             s = str(err).lower()
-            for p in ["invalid api key", "unauthorized", "missing api key", "invalid authentication", "access denied"]:
+            for p in [
+                "invalid api key",
+                "unauthorized",
+                "missing api key",
+                "invalid authentication",
+                "access denied",
+            ]:
                 if p in s:
                     return True
             # Some providers return explicit status
@@ -437,7 +443,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     return True
             return False
 
-        if isinstance(exception, (BadRequestError, OpenAIError)) and _looks_like_auth(exception):
+        if isinstance(exception, (BadRequestError, OpenAIError)) and _looks_like_auth(
+            exception
+        ):
             return LLMAuthenticationError(str(exception))
 
         if isinstance(exception, RateLimitError):
