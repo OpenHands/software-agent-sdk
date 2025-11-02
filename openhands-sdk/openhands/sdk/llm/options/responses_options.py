@@ -24,8 +24,7 @@ def select_responses_options(
 
     # Enforce sampling/tool behavior for Responses path
     # Models that use Responses API don't need temperature set
-    if get_features(llm.model).supports_responses_api:
-        out.pop("temperature", None)
+    out.pop("temperature", None)
     out["tool_choice"] = "auto"
 
     # Store defaults to False (stateless) unless explicitly provided
