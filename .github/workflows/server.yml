@@ -218,41 +218,47 @@ jobs:
               run: |
                   uv sync --frozen
 
-                  # Generate build context using the build script (build-ctx-only mode)
-                  # Filter out all non-path lines (logs, warnings, etc.) and extract just the directory path
-                  BUILD_CTX=$(uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only 2>&1 | \
+                  # Generate build context and metadata using the build script (build-ctx-only mode)
+                  # The script outputs JSON with build_context, dockerfile, tags, etc.
+                  # Filter out logs/warnings and extract only the JSON line
+                  BUILD_OUTPUT=$(CUSTOM_TAGS="${VARIANT}" \
+                      BASE_IMAGE="${BASE_IMAGE}" \
+                      TARGET="${TARGET}" \
+                      IMAGE="${IMAGE}" \
+                      uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only 2>&1 | \
                       grep -v "DeprecationWarning" | \
                       grep -v "warning:" | \
-                      grep -v "^{" | \
-                      grep "^/tmp/" | \
+                      grep "^{" | \
                       head -n 1)
 
-                  if [ -z "$BUILD_CTX" ] || [ ! -d "$BUILD_CTX" ]; then
-                      echo "Error: Failed to get valid build context directory"
+                  if [ -z "$BUILD_OUTPUT" ]; then
+                      echo "Error: Failed to get build output from build.py"
                       exit 1
                   fi
 
-                  echo "build_context=$BUILD_CTX" >> $GITHUB_OUTPUT
-                  echo "dockerfile=$BUILD_CTX/Dockerfile" >> $GITHUB_OUTPUT
-                  echo "Using build context: $BUILD_CTX"
-                  echo "Using Dockerfile: $BUILD_CTX/Dockerfile"
+                  # Parse JSON output
+                  BUILD_CTX=$(echo "$BUILD_OUTPUT" | jq -r '.build_context')
+                  DOCKERFILE=$(echo "$BUILD_OUTPUT" | jq -r '.dockerfile')
+                  BASE_TAGS=$(echo "$BUILD_OUTPUT" | jq -r '.tags | join(",")')
 
-                  # Compute tags and metadata
-                  SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-                  echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
-
-                  # Build per-architecture tags for this variant
-                  # Format: image:sha-variant-arch (e.g., image:abc1234-python-amd64)
-                  TAGS="${IMAGE}:${SHORT_SHA}-${VARIANT}-${ARCH}"
-
-                  # Add latest tags for main branch
-                  if [ "${{ github.ref }}" == "refs/heads/main" ]; then
-                      TAGS="${TAGS},${IMAGE}:latest-${VARIANT}-${ARCH}"
+                  if [ -z "$BUILD_CTX" ] || [ ! -d "$BUILD_CTX" ]; then
+                      echo "Error: Invalid build context directory: $BUILD_CTX"
+                      exit 1
                   fi
 
-                  echo "tags=$TAGS" >> $GITHUB_OUTPUT
+                  # For per-architecture builds, append architecture suffix to each tag
+                  # Transform: "image:sha-variant" -> "image:sha-variant-amd64"
+                  # Replace commas with space, add suffix to each, then join with commas
+                  ARCH_TAGS=$(echo "$BASE_TAGS" | tr ',' '\n' | sed "s/$/-${ARCH}/" | paste -sd ',')
+
+                  echo "build_context=$BUILD_CTX" >> $GITHUB_OUTPUT
+                  echo "dockerfile=$DOCKERFILE" >> $GITHUB_OUTPUT
+                  echo "tags=$ARCH_TAGS" >> $GITHUB_OUTPUT
                   echo "variant_arch=${VARIANT}-${ARCH}" >> $GITHUB_OUTPUT
-                  echo "Computed tags: $TAGS"
+
+                  echo "Using build context: $BUILD_CTX"
+                  echo "Using Dockerfile: $DOCKERFILE"
+                  echo "Computed tags: $ARCH_TAGS"
                   echo "Variant-Arch: ${VARIANT}-${ARCH}"
 
             - name: Build & Push with Blacksmith (${{ matrix.variant }}-${{ matrix.arch }})

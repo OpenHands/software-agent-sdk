@@ -14,6 +14,7 @@ Single-entry build helper for agent-server images.
 """
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -581,8 +582,27 @@ def main(argv: list[str]) -> int:
     if args.build_ctx_only:
         ctx = _make_build_context(sdk_project_root)
         logger.info(f"[build] Clean build context (kept for debugging): {ctx}")
-        # Print path to stdout so other tooling can capture it
-        print(str(ctx))
+
+        # Create BuildOptions to generate tags
+        opts = BuildOptions(
+            base_image=args.base_image,
+            custom_tags=args.custom_tags,
+            image=args.image,
+            target=args.target,  # type: ignore
+            platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
+            push=None,  # Not relevant for build-ctx-only
+            sdk_project_root=sdk_project_root,
+        )
+
+        # Output structured JSON for GitHub Actions to parse
+        output = {
+            "build_context": str(ctx),
+            "dockerfile": str(ctx / "Dockerfile"),
+            "tags": opts.all_tags,
+            "versioned_tag": opts.versioned_tag,
+            "base_image_slug": opts.base_image_slug,
+        }
+        print(json.dumps(output))
         return 0
 
     # ---- push/load resolution (CLI wins over env, else auto) ----
