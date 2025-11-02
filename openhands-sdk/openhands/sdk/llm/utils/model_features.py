@@ -89,13 +89,14 @@ RESPONSES_API_PATTERNS: list[str] = [
 # Models that require string serializer for tool messages
 # These models don't support structured content format [{"type":"text","text":"..."}]
 # and need plain strings instead
+# NOTE: model_matches uses case-insensitive substring matching, not globbing.
+#       Keep these entries as bare substrings without wildcards.
 FORCE_STRING_SERIALIZER_PATTERNS: list[str] = [
-    "*deepseek*",
-    "glm*",
-    # kimi-k2-instruct on groq provider requires string serialization
-    # Pattern contains '/' so it matches against full model string
-    # (e.g., "groq/kimi-k2-instruct")
-    "*groq*/kimi-k2-instruct*",
+    "deepseek",  # e.g., DeepSeek-V3.2-Exp
+    "glm",  # e.g., GLM-4.5 / GLM-4.6
+    "k2-instruct",  # e.g., Kimi K2-Instruct-0905 (hyphenated segment)
+    "kimi-k2-instruct",  # provider-agnostic hyphenated form
+    "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs
 ]
 
 

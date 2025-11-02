@@ -226,3 +226,15 @@ def test_supports_stop_words_false_models(model):
 def test_responses_api_support(model, expected_responses):
     features = get_features(model)
     assert features.supports_responses_api is expected_responses
+
+
+def test_force_string_serializer_full_model_names():
+    """Ensure full model names match substring patterns for string serializer.
+
+    Regression coverage for patterns like deepseek/glm/kimi-k2-instruct without
+    wildcards. model_matches uses case-insensitive substring matching on raw
+    model names.
+    """
+    assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
+    assert get_features("GLM-4.5").force_string_serializer is True
+    assert get_features("Kimi K2-Instruct-0905").force_string_serializer is True
