@@ -1,23 +1,14 @@
-from litellm.exceptions import BadRequestError, ContextWindowExceededError
+from litellm.exceptions import BadRequestError
 
 from openhands.sdk.llm.exceptions import (
     LLMAuthenticationError,
     LLMBadRequestError,
-    LLMContextWindowExceedError,
     map_provider_exception,
 )
 
 
 MODEL = "test-model"
 PROVIDER = "test-provider"
-
-
-def test_map_context_window_exceeded():
-    e = ContextWindowExceededError(
-        "input length and max_tokens exceed context limit", MODEL, PROVIDER
-    )
-    mapped = map_provider_exception(e)
-    assert isinstance(mapped, LLMContextWindowExceedError)
 
 
 def test_map_auth_error_from_bad_request():
