@@ -367,3 +367,62 @@ def test_bash_command_endpoint_with_live_server(server_env):
     assert "8" in result.stdout, (
         f"Expected '8' (result of 5+3) not found in stdout: {result.stdout}"
     )
+
+
+def test_file_upload_endpoint_with_live_server(server_env, tmp_path: Path):
+    """Integration test for file upload through live server.
+
+    This test validates that the /api/file/upload/{path} endpoint works
+    correctly end-to-end by:
+    1. Starting a real FastAPI server with file upload endpoints
+    2. Creating a RemoteWorkspace pointing to that server
+    3. Creating a test file and uploading it
+    4. Verifying the file was uploaded to the correct location with correct content
+
+    This is a regression test for the file upload issue where the client was
+    calling /api/file/upload (without the path parameter) instead of
+    /api/file/upload/{path} as the server expects.
+    """
+    # Create a RemoteWorkspace pointing to the live server
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/test_workspace"
+    )
+
+    # Create a test file to upload
+    test_file = tmp_path / "test_upload.txt"
+    test_content = "Hello from file upload test!\nThis is line 2.\n"
+    test_file.write_text(test_content)
+
+    # Define the destination path (must be absolute for the server)
+    destination = "/tmp/test_workspace/uploaded_file.txt"
+
+    # Upload the file
+    result = workspace.file_upload(str(test_file), destination)
+
+    # Verify the upload was successful
+    assert result.success is True, (
+        f"File upload failed. Error: {result.error}, "
+        f"Source: {result.source_path}, Destination: {result.destination_path}"
+    )
+    assert result.source_path == str(test_file), (
+        f"Expected source_path to be {test_file}, got {result.source_path}"
+    )
+    assert result.destination_path == destination, (
+        f"Expected destination_path to be {destination}, got {result.destination_path}"
+    )
+
+    # Verify the file exists at the destination with correct content
+    # Use bash command to check file existence and read content
+    check_cmd = f"test -f {destination} && cat {destination}"
+    check_result = workspace.execute_command(check_cmd, timeout=5.0)
+
+    assert check_result.exit_code == 0, (
+        f"File does not exist at destination or could not be read. "
+        f"Exit code: {check_result.exit_code}, "
+        f"stderr: {check_result.stderr}"
+    )
+
+    # Verify the content matches what we uploaded
+    assert check_result.stdout == test_content, (
+        f"File content mismatch. Expected:\n{test_content}\nGot:\n{check_result.stdout}"
+    )
