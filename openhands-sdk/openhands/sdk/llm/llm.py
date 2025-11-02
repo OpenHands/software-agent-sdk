@@ -398,13 +398,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
 
-    def _map_exception(self, exception: Exception) -> Exception:
-        """Thin wrapper around shared mapper in openhands.sdk.llm.exceptions.
-
-        Kept for backward compatibility and to minimize churn in call sites.
-        """
-        return map_provider_exception(exception)
-
     def completion(
         self,
         messages: list[Message],
@@ -521,7 +514,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
-            mapped = self._map_exception(e)
+            mapped = map_provider_exception(e)
             if mapped is not e:
                 raise mapped from e
             raise
@@ -643,7 +636,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
-            mapped = self._map_exception(e)
+            mapped = map_provider_exception(e)
             if mapped is not e:
                 raise mapped from e
             raise
