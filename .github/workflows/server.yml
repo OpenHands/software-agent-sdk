@@ -220,11 +220,27 @@ jobs:
 
                   # Generate build context and metadata using the build script (build-ctx-only mode)
                   # The script writes directly to $GITHUB_OUTPUT when running in CI
-                  BUILD_CTX=$(CUSTOM_TAGS="${VARIANT}" \
+                  echo "Running build.py --build-ctx-only..."
+                  set -o pipefail
+                  BUILD_OUTPUT=$(CUSTOM_TAGS="${VARIANT}" \
                       BASE_IMAGE="${BASE_IMAGE}" \
                       TARGET="${TARGET}" \
                       IMAGE="${IMAGE}" \
-                      uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only)
+                      uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only 2>&1)
+                  BUILD_EXIT_CODE=$?
+
+                  echo "$BUILD_OUTPUT"
+                  echo "build.py exit code: $BUILD_EXIT_CODE"
+
+                  # Check exit code
+                  if [ $BUILD_EXIT_CODE -ne 0 ]; then
+                      echo "Error: build.py failed with exit code $BUILD_EXIT_CODE"
+                      exit 1
+                  fi
+
+                  # Extract build context path from output (last line starting with /tmp/)
+                  BUILD_CTX=$(echo "$BUILD_OUTPUT" | grep "^/tmp/" | tail -n 1)
+                  echo "Captured BUILD_CTX: $BUILD_CTX"
 
                   # Validate the build context directory was created
                   if [ -z "$BUILD_CTX" ] || [ ! -d "$BUILD_CTX" ]; then
@@ -232,12 +248,31 @@ jobs:
                       exit 1
                   fi
 
+                  # Debug: Show what build.py wrote to GITHUB_OUTPUT
+                  echo "=== GITHUB_OUTPUT contents ==="
+                  grep "^build_context=\|^dockerfile=\|^tags_csv=\|^versioned_tag=\|^base_image_slug=" "$GITHUB_OUTPUT" || echo "No matching lines found"
+                  echo "=============================="
+
                   # Read base tags from what build.py wrote to GITHUB_OUTPUT
                   BASE_TAGS=$(grep "^tags_csv=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2-)
+
+                  # Validate that we got tags
+                  if [ -z "$BASE_TAGS" ]; then
+                      echo "Error: No tags found in GITHUB_OUTPUT"
+                      echo "GITHUB_OUTPUT file contents:"
+                      cat "$GITHUB_OUTPUT"
+                      exit 1
+                  fi
 
                   # For per-architecture builds, append architecture suffix to each tag
                   # Transform: "image:sha-variant" -> "image:sha-variant-amd64"
                   ARCH_TAGS=$(echo "$BASE_TAGS" | tr ',' '\n' | sed "s/$/-${ARCH}/" | paste -sd ',')
+
+                  # Validate arch tags aren't empty
+                  if [ -z "$ARCH_TAGS" ]; then
+                      echo "Error: Failed to generate arch-specific tags"
+                      exit 1
+                  fi
 
                   echo "tags=$ARCH_TAGS" >> $GITHUB_OUTPUT
                   echo "variant_arch=${VARIANT}-${ARCH}" >> $GITHUB_OUTPUT
