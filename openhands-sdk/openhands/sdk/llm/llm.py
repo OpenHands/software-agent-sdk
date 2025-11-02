@@ -61,8 +61,8 @@ from litellm.utils import (
 
 from openhands.sdk.llm.exceptions import (
     LLMNoResponseError,
-    is_context_window_exceeded as _exc_is_ctx_exceeded,
-    map_provider_exception as _map_exc,
+    is_context_window_exceeded,
+    map_provider_exception,
 )
 
 # OpenHands utilities
@@ -403,7 +403,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Kept for backward compatibility and to minimize churn in call sites.
         """
-        return _map_exc(exception)
+        return map_provider_exception(exception)
 
     def completion(
         self,
@@ -1033,4 +1033,4 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @staticmethod
     def is_context_window_exceeded_exception(exception: Exception) -> bool:
         """Back-compat wrapper delegating to exceptions.classifier."""
-        return _exc_is_ctx_exceeded(exception)
+        return is_context_window_exceeded(exception)
