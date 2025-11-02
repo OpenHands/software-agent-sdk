@@ -25,6 +25,8 @@ from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 def get_output_text(observation: BrowserObservation) -> str:
     """Extract text from observation output."""
+    if isinstance(observation.output, str):
+        return observation.output
     return "".join([c.text for c in observation.output if isinstance(c, TextContent)])
 
 

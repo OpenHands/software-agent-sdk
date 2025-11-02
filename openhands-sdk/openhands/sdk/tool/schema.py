@@ -196,11 +196,11 @@ class ObservationStatus(str, Enum):
 class Observation(Schema, ABC):
     """Base schema for output observation."""
 
-    output: list[TextContent | ImageContent] = Field(
-        default_factory=list,
+    output: str | list[TextContent | ImageContent] = Field(
+        default="",
         description=(
-            "Output returned from the tool converted to LLM Ready "
-            "TextContent or ImageContent"
+            "Output returned from the tool. Can be a simple string for most tools, "
+            "or a list of TextContent/ImageContent for tools that need rich content."
         ),
     )
     error: str | None = Field(
@@ -235,7 +235,12 @@ class Observation(Schema, ABC):
         if self.error:
             llm_content.append(self.format_error())
         if self.output:
-            llm_content.extend(self.output)
+            # Handle both str and list types
+            if isinstance(self.output, str):
+                llm_content.append(TextContent(text=self.output))
+            else:
+                # It's a list of TextContent | ImageContent
+                llm_content.extend(self.output)
         return llm_content
 
     @property

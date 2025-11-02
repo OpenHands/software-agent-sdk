@@ -37,10 +37,14 @@ class BrowserObservation(Observation):
         if self.error:
             return [self.format_error()]
 
-        # Extract text from output list
-        output_text = "".join(
-            [c.text for c in self.output if isinstance(c, TextContent)]
-        )
+        # Extract text from output (handle both str and list types)
+        if isinstance(self.output, str):
+            output_text = self.output
+        else:
+            output_text = "".join(
+                [c.text for c in self.output if isinstance(c, TextContent)]
+            )
+
         content: list[TextContent | ImageContent] = [
             TextContent(text=maybe_truncate(output_text, MAX_BROWSER_OUTPUT_SIZE))
         ]

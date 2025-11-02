@@ -8,7 +8,6 @@ from typing import get_args
 from binaryornot.check import is_binary
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.tool.schema import TextContent
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
@@ -114,7 +113,7 @@ class FileEditor:
                 path=str(_path),
                 new_content=file_text,
                 prev_exist=False,
-                output=[TextContent(text=f"File created successfully at: {_path}")],
+                output=f"File created successfully at: {_path}",
             )
         elif command == "str_replace":
             if old_str is None:
@@ -256,7 +255,7 @@ class FileEditor:
         )
         return FileEditorObservation(
             command="str_replace",
-            output=[TextContent(text=success_message)],
+            output=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_content,
@@ -316,7 +315,7 @@ class FileEditor:
                 stdout = "\n".join(msg)
             return FileEditorObservation(
                 command="view",
-                output=[TextContent(text=stdout)],
+                output=stdout,
                 error=stderr,
                 path=str(path),
                 prev_exist=True,
@@ -333,7 +332,7 @@ class FileEditor:
 
             return FileEditorObservation(
                 command="view",
-                output=[TextContent(text=output)],
+                output=output,
                 path=str(path),
                 prev_exist=True,
             )
@@ -387,7 +386,7 @@ class FileEditor:
         return FileEditorObservation(
             command="view",
             path=str(path),
-            output=[TextContent(text=output)],
+            output=output,
             prev_exist=True,
         )
 
@@ -499,7 +498,7 @@ class FileEditor:
         )
         return FileEditorObservation(
             command="insert",
-            output=[TextContent(text=success_message)],
+            output=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_text,
@@ -568,14 +567,10 @@ class FileEditor:
 
         return FileEditorObservation(
             command="undo_edit",
-            output=[
-                TextContent(
-                    text=(
-                        f"Last edit to {path} undone successfully. "
-                        f"{self._make_output(old_text, str(path))}"
-                    )
-                )
-            ],
+            output=(
+                f"Last edit to {path} undone successfully. "
+                f"{self._make_output(old_text, str(path))}"
+            ),
             path=str(path),
             prev_exist=True,
             old_content=current_text,
