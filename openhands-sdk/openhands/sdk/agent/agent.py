@@ -181,10 +181,8 @@ class Agent(AgentBase):
                 )
                 on_event(CondensationRequest())
                 return
-            # Otherwise, map to SDK-typed errors and rethrow for clients
-            mapped = self.llm._map_exception(e)
-            if mapped is not e:
-                raise mapped from e
+            # Otherwise, re-raise. LLM.completion/responses already map provider
+            # exceptions to SDK-typed errors.
             raise
 
         # LLMResponse already contains the converted message and metrics snapshot
