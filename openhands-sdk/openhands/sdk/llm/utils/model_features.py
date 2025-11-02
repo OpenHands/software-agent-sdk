@@ -73,6 +73,7 @@ class ModelFeatures:
     supports_prompt_cache: bool
     supports_stop_words: bool
     supports_responses_api: bool
+    force_string_serializer: bool
 
 
 # Pattern tables capturing current behavior. Keep patterns lowercase.
@@ -132,6 +133,18 @@ RESPONSES_API_PATTERNS: list[str] = [
     "codex-mini-latest",
 ]
 
+# Models that require string serializer for tool messages
+# These models don't support structured content format [{"type":"text","text":"..."}]
+# and need plain strings instead
+FORCE_STRING_SERIALIZER_PATTERNS: list[str] = [
+    "*deepseek*",
+    "glm*",
+    # kimi-k2-instruct on groq provider requires string serialization
+    # Pattern contains '/' so it matches against full model string
+    # (e.g., "groq/kimi-k2-instruct")
+    "*groq*/kimi-k2-instruct*",
+]
+
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
@@ -143,4 +156,5 @@ def get_features(model: str) -> ModelFeatures:
             model, SUPPORTS_STOP_WORDS_FALSE_PATTERNS
         ),
         supports_responses_api=model_matches(model, RESPONSES_API_PATTERNS),
+        force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_PATTERNS),
     )
