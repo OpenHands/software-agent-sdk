@@ -452,6 +452,116 @@ def convert_tool_call_to_string(tool_call: dict) -> str:
     return ret
 
 
+def _summarize_schema_type(schema: object | None) -> str:
+    """
+    Capture array, union, enum, and nested type info.
+    """
+    if not isinstance(schema, dict):
+        return "unknown" if schema is None else str(schema)
+
+    union_keys = ("anyOf", "oneOf", "allOf")
+    for key in union_keys:
+        if key in schema:
+            return " or ".join(_summarize_schema_type(option) for option in schema[key])
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        return " or ".join(str(t) for t in schema_type)
+    if schema_type == "array":
+        items = schema.get("items")
+        if isinstance(items, list):
+            item_types = ", ".join(_summarize_schema_type(item) for item in items)
+            return f"array[{item_types}]"
+        if isinstance(items, dict):
+            return f"array[{_summarize_schema_type(items)}]"
+        return "array"
+    if schema_type:
+        return str(schema_type)
+    if "enum" in schema:
+        return "enum"
+    return "unknown"
+
+
+def _format_schema_detail(schema: object | None, indent: int = 4) -> list[str]:
+    """
+    Recursively describe arrays, objects, unions, and additional properties.
+    """
+    if not isinstance(schema, dict):
+        return []
+
+    indent_str = " " * indent
+    lines: list[str] = []
+
+    # Handle union types
+    union_keys = ("anyOf", "oneOf", "allOf")
+    for key in union_keys:
+        if key in schema:
+            lines.append(f"{indent_str}{key} options:")
+            for option in schema[key]:
+                option_type = _summarize_schema_type(option)
+                option_line = f"{' ' * (indent + 2)}- {option_type}"
+                option_desc = (
+                    option.get("description") if isinstance(option, dict) else None
+                )
+                if option_desc:
+                    option_line += f": {option_desc}"
+                lines.append(option_line)
+                lines.extend(_format_schema_detail(option, indent + 4))
+            return lines
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        lines.append(
+            f"{indent_str}Allowed types: {', '.join(str(t) for t in schema_type)}"
+        )
+        return lines
+
+    # Handle array type
+    if schema_type == "array":
+        items = schema.get("items")
+        lines.append(f"{indent_str}Array items:")
+        if isinstance(items, list):
+            for index, item_schema in enumerate(items):
+                item_type = _summarize_schema_type(item_schema)
+                lines.append(f"{' ' * (indent + 2)}- index {index}: {item_type}")
+                lines.extend(_format_schema_detail(item_schema, indent + 4))
+        elif isinstance(items, dict):
+            lines.append(f"{' ' * (indent + 2)}Type: {_summarize_schema_type(items)}")
+            lines.extend(_format_schema_detail(items, indent + 4))
+        else:
+            lines.append(f"{' ' * (indent + 2)}Type: unknown")
+        return lines
+
+    if schema_type == "object":
+        properties = schema.get("properties", {})
+        required = set(schema.get("required", []))
+        if isinstance(properties, dict) and properties:
+            lines.append(f"{indent_str}Object properties:")
+            for name, prop in properties.items():
+                prop_type = _summarize_schema_type(prop)
+                required_flag = "required" if name in required else "optional"
+                prop_desc = prop.get("description", "No description provided")
+                lines.append(
+                    f"{' ' * (indent + 2)}- {name} ({prop_type}, {required_flag}):"
+                    f" {prop_desc}"
+                )
+                lines.extend(_format_schema_detail(prop, indent + 4))
+        additional_props = schema.get("additionalProperties")
+        if isinstance(additional_props, dict):
+            lines.append(
+                f"{indent_str}Additional properties allowed: "
+                f"{_summarize_schema_type(additional_props)}"
+            )
+            lines.extend(_format_schema_detail(additional_props, indent + 2))
+        elif additional_props is True:
+            lines.append(f"{indent_str}Additional properties allowed.")
+        elif additional_props is False:
+            lines.append(f"{indent_str}Additional properties not allowed.")
+        return lines
+
+    return lines
+
+
 def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
     ret = ""
     for i, tool in enumerate(tools):
@@ -469,15 +579,12 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
             required_params = set(fn["parameters"].get("required", []))
 
             for j, (param_name, param_info) in enumerate(properties.items()):
-                # Indicate required/optional in parentheses with type
                 is_required = param_name in required_params
                 param_status = "required" if is_required else "optional"
-                param_type = param_info.get("type", "string")
+                param_type = _summarize_schema_type(param_info)
 
-                # Get parameter description
                 desc = param_info.get("description", "No description provided")
 
-                # Handle enum values if present
                 if "enum" in param_info:
                     enum_values = ", ".join(f"`{v}`" for v in param_info["enum"])
                     desc += f"\nAllowed values: [{enum_values}]"
@@ -485,6 +592,10 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                 ret += (
                     f"  ({j + 1}) {param_name} ({param_type}, {param_status}): {desc}\n"
                 )
+
+                detail_lines = _format_schema_detail(param_info, indent=6)
+                if detail_lines:
+                    ret += "\n".join(detail_lines) + "\n"
         else:
             ret += "No parameters are required for this function.\n"
 
