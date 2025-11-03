@@ -208,9 +208,15 @@ class ConversationVisualizer:
             )
 
             if event.llm_message.role == "user":
-                title_text = f"[bold {role_color}]User Message to {agent_name}Agent[/bold {role_color}]"
+                title_text = (
+                    f"[bold {role_color}]User Message to "
+                    f"{agent_name}Agent[/bold {role_color}]"
+                )
             else:
-                title_text = f"[bold {role_color}]Message from {agent_name}Agent[/bold {role_color}]"
+                title_text = (
+                    f"[bold {role_color}]Message from "
+                    f"{agent_name}Agent[/bold {role_color}]"
+                )
             return Panel(
                 content,
                 title=title_text,
