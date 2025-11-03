@@ -36,12 +36,20 @@ class ToolMockObservation(Observation):
         return [TextContent(text=self.result)]
 
 
+class MockTestTool(ToolDefinition[ToolMockAction, ToolMockObservation]):
+    """Concrete mock tool for testing."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["MockTestTool"]:
+        return [cls(**params)]
+
+
 class TestTool:
     """Test cases for the Tool class."""
 
     def test_tool_creation_basic(self):
         """Test basic tool creation."""
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -61,7 +69,7 @@ class TestTool:
             def __call__(self, action, conversation=None) -> ToolMockObservation:
                 return ToolMockObservation(result=f"Executed: {action.command}")
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -84,7 +92,7 @@ class TestTool:
             destructiveHint=False,
         )
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -100,7 +108,7 @@ class TestTool:
 
     def test_to_mcp_tool_basic(self):
         """Test conversion to MCP tool format."""
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -129,7 +137,7 @@ class TestTool:
             readOnlyHint=True,
         )
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -147,7 +155,7 @@ class TestTool:
 
     def test_call_without_executor(self):
         """Test calling tool without executor raises error."""
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -167,7 +175,7 @@ class TestTool:
             def __call__(self, action, conversation=None) -> ToolMockObservation:
                 return ToolMockObservation(result=f"Processed: {action.command}")
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -193,7 +201,7 @@ class TestTool:
                 default_factory=list, description="List of strings"
             )
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="complex_tool",
             description="Tool with complex types",
             action_type=ComplexAction,
@@ -217,7 +225,7 @@ class TestTool:
             def __call__(self, action, conversation=None) -> ToolMockObservation:
                 return ToolMockObservation(result="success")
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -239,7 +247,7 @@ class TestTool:
             def __call__(self, action, conversation=None) -> ToolMockObservation:
                 return ToolMockObservation(result="test", extra_field="extra_data")
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -256,7 +264,7 @@ class TestTool:
 
     def test_action_validation_with_nested_data(self):
         """Test action validation with nested data structures."""
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -282,7 +290,7 @@ class TestTool:
         original_schema = ToolMockAction.to_mcp_schema()
 
         # Create tool and get its schema
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -298,7 +306,7 @@ class TestTool:
 
     def test_tool_with_no_observation_type(self):
         """Test tool creation with None observation type."""
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -321,7 +329,7 @@ class TestTool:
 
         executor = MockExecutor()
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -339,7 +347,7 @@ class TestTool:
     def test_tool_name_validation(self):
         """Test tool name validation."""
         # Valid names should work
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="valid_tool_name",
             description="A test tool",
             action_type=ToolMockAction,
@@ -348,7 +356,7 @@ class TestTool:
         assert tool.name == "valid_tool_name"
 
         # Empty name should still work (validation might be elsewhere)
-        tool2 = ToolDefinition(
+        tool2 = MockTestTool(
             name="",
             description="A test tool",
             action_type=ToolMockAction,
@@ -376,7 +384,7 @@ class TestTool:
                     count=len(action.command) if hasattr(action, "command") else 0,
                 )
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="complex_tool",
             description="Tool with complex observation",
             action_type=ToolMockAction,
@@ -398,7 +406,7 @@ class TestTool:
             def __call__(self, action, conversation=None) -> ToolMockObservation:
                 raise RuntimeError("Executor failed")
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="failing_tool",
             description="Tool that fails",
             action_type=ToolMockAction,
@@ -425,7 +433,7 @@ class TestTool:
             def __call__(self, action, conversation=None) -> StrictObservation:
                 return StrictObservation(message="success", value=42)
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="strict_tool",
             description="Tool with strict observation",
             action_type=ToolMockAction,
@@ -441,14 +449,14 @@ class TestTool:
 
     def test_tool_equality_and_hashing(self):
         """Test tool equality and hashing behavior."""
-        tool1 = ToolDefinition(
+        tool1 = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
         )
 
-        tool2 = ToolDefinition(
+        tool2 = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -469,7 +477,7 @@ class TestTool:
                 default=None, description="This field is optional"
             )
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="required_tool",
             description="Tool with required fields",
             action_type=RequiredFieldAction,
@@ -488,7 +496,7 @@ class TestTool:
         """Test tool creation with metadata."""
         meta_data = {"version": "1.0", "author": "test"}
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="meta_tool",
             description="Tool with metadata",
             action_type=ToolMockAction,
@@ -525,7 +533,7 @@ class TestTool:
                 default=None, description="Optional array"
             )
 
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="complex_nested_tool",
             description="Tool with complex nested types",
             action_type=ComplexNestedAction,
@@ -574,7 +582,7 @@ class TestTool:
             readOnlyHint=True,
         )
 
-        readonly_tool = ToolDefinition(
+        readonly_tool = MockTestTool(
             name="readonly_tool",
             description="A read-only tool",
             action_type=ToolMockAction,
@@ -588,7 +596,7 @@ class TestTool:
             readOnlyHint=False,
         )
 
-        writable_tool = ToolDefinition(
+        writable_tool = MockTestTool(
             name="writable_tool",
             description="A writable tool",
             action_type=ToolMockAction,
@@ -597,7 +605,7 @@ class TestTool:
         )
 
         # Test with tool that has no annotations (should be treated as writable)
-        no_annotations_tool = ToolDefinition(
+        no_annotations_tool = MockTestTool(
             name="no_annotations_tool",
             description="A tool with no annotations",
             action_type=ToolMockAction,
@@ -662,7 +670,7 @@ class TestTool:
         assert "security_risk" in schema["required"]
 
         # Test via to_openai_tool method
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -686,7 +694,7 @@ class TestTool:
             readOnlyHint=False,
         )
 
-        writable_tool = ToolDefinition(
+        writable_tool = MockTestTool(
             name="writable_tool",
             description="A writable tool",
             action_type=ToolMockAction,
@@ -713,7 +721,7 @@ class TestTool:
                 return ToolMockObservation(result=f"Executed: {action.command}")
 
         executor = MockExecutor()
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
@@ -734,7 +742,7 @@ class TestTool:
 
     def test_as_executable_without_executor(self):
         """Test as_executable() method with a tool that has no executor."""
-        tool = ToolDefinition(
+        tool = MockTestTool(
             name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,

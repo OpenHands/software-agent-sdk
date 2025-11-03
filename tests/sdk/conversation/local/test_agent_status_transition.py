@@ -78,21 +78,35 @@ class StatusCheckingExecutor(
         return StatusTransitionMockObservation(result=f"Executed: {action.command}")
 
 
+class StatusTransitionTestTool(
+    ToolDefinition[StatusTransitionMockAction, StatusTransitionMockObservation]
+):
+    """Concrete tool for status transition testing."""
+
+    @classmethod
+    def create(
+        cls, conv_state=None, *, executor: ToolExecutor, **params
+    ) -> Sequence["StatusTransitionTestTool"]:
+        return [
+            cls(
+                name="test_tool",
+                description="A test tool",
+                action_type=StatusTransitionMockAction,
+                observation_type=StatusTransitionMockObservation,
+                executor=executor,
+            )
+        ]
+
+
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_agent_status_transitions_to_running_from_idle(mock_completion):
     """Test that agent status transitions to RUNNING when run() is called from IDLE."""
     status_during_execution: list[AgentExecutionStatus] = []
 
     def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return [
-            ToolDefinition(
-                name="test_tool",
-                description="A test tool",
-                action_type=StatusTransitionMockAction,
-                observation_type=StatusTransitionMockObservation,
-                executor=StatusCheckingExecutor(status_during_execution),
-            )
-        ]
+        return StatusTransitionTestTool.create(
+            executor=StatusCheckingExecutor(status_during_execution)
+        )
 
     register_tool("test_tool", _make_tool)
 
@@ -137,15 +151,9 @@ def test_agent_status_is_running_during_execution_from_idle(mock_completion):
     execution_started = threading.Event()
 
     def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return [
-            ToolDefinition(
-                name="test_tool",
-                description="A test tool",
-                action_type=StatusTransitionMockAction,
-                observation_type=StatusTransitionMockObservation,
-                executor=StatusCheckingExecutor(status_during_execution),
-            )
-        ]
+        return StatusTransitionTestTool.create(
+            executor=StatusCheckingExecutor(status_during_execution)
+        )
 
     register_tool("test_tool", _make_tool)
 
@@ -293,15 +301,7 @@ def test_agent_status_transitions_from_waiting_for_confirmation(mock_completion)
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
 
     def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-        return [
-            ToolDefinition(
-                name="test_tool",
-                description="A test tool",
-                action_type=StatusTransitionMockAction,
-                observation_type=StatusTransitionMockObservation,
-                executor=StatusCheckingExecutor([]),
-            )
-        ]
+        return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
 
     register_tool("test_tool", _make_tool)
 

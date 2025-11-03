@@ -14,7 +14,6 @@ from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import (
     ExecutableTool,
     ToolAnnotations,
-    ToolBase,
     ToolDefinition,
     ToolExecutor,
 )
@@ -23,7 +22,6 @@ from openhands.sdk.tool.tool import (
 __all__ = [
     "Tool",
     "ToolDefinition",
-    "ToolBase",
     "ToolAnnotations",
     "ToolExecutor",
     "ExecutableTool",

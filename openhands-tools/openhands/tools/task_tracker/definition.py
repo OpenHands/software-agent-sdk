@@ -393,20 +393,6 @@ When uncertain, favor using this tool. Proactive task management demonstrates
 systematic approach and ensures comprehensive requirement fulfillment."""  # noqa: E501
 
 
-task_tracker_tool = ToolDefinition(
-    name="task_tracker",
-    description=TASK_TRACKER_DESCRIPTION,
-    action_type=TaskTrackerAction,
-    observation_type=TaskTrackerObservation,
-    annotations=ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-
-
 class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation]):
     """A ToolDefinition subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
 
@@ -428,7 +414,12 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
                 description=TASK_TRACKER_DESCRIPTION,
                 action_type=TaskTrackerAction,
                 observation_type=TaskTrackerObservation,
-                annotations=task_tracker_tool.annotations,
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
                 executor=executor,
             )
         ]

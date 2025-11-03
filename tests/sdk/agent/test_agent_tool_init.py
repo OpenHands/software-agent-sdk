@@ -27,16 +27,24 @@ class _Exec(ToolExecutor[_Action, _Obs]):
         return _Obs(out=action.text.upper())
 
 
+class _UpperTool(ToolDefinition[_Action, _Obs]):
+    """Concrete tool for uppercase testing."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_UpperTool"]:
+        return [
+            cls(
+                name="upper",
+                description="Uppercase",
+                action_type=_Action,
+                observation_type=_Obs,
+                executor=_Exec(),
+            )
+        ]
+
+
 def _make_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-    return [
-        ToolDefinition(
-            name="upper",
-            description="Uppercase",
-            action_type=_Action,
-            observation_type=_Obs,
-            executor=_Exec(),
-        )
-    ]
+    return _UpperTool.create(conv_state, **kwargs)
 
 
 def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
