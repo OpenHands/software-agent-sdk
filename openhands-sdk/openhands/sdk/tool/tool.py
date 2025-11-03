@@ -123,12 +123,26 @@ class ExecutableTool(Protocol):
 
 
 class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
-    """Tool that wraps an executor function with input/output validation and schema.
+    """Base class for tools that agents can use to perform actions.
 
-    - Normalize input/output schemas (class or dict) into both model+schema.
-    - Validate inputs before execute.
-    - Coerce outputs only if an output model is defined; else return vanilla JSON.
-    - Export MCP tool description.
+    Tools wrap executor functions with input/output validation and schema definition.
+    They provide a standardized interface for agents to interact with external systems,
+    APIs, or perform specific operations.
+
+    Features:
+    - Normalize input/output schemas (class or dict) into both model+schema
+    - Validate inputs before execution
+    - Coerce outputs only if an output model is defined; else return vanilla JSON
+    - Export MCP (Model Context Protocol) tool descriptions
+
+    Example:
+        >>> from openhands.sdk.tool import ToolDefinition
+        >>> tool = ToolDefinition(
+        ...     name="echo",
+        ...     description="Echo the input message",
+        ...     action_type=EchoAction,
+        ...     executor=echo_executor
+        ... )
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
