@@ -290,14 +290,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if not model_val:
             raise ValueError("model must be specified in LLM")
 
-        # default reasoning_effort unless Gemini 2.5
-        # (we keep consistent with old behavior)
-        excluded_models = ["gemini-2.5-pro", "claude-sonnet-4-5", "claude-haiku-4-5"]
-        if d.get("reasoning_effort") is None and not any(
-            model in model_val for model in excluded_models
-        ):
-            d["reasoning_effort"] = "high"
-
         # Azure default version
         if model_val.startswith("azure") and not d.get("api_version"):
             d["api_version"] = "2024-12-01-preview"
