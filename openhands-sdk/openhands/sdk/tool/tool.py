@@ -2,13 +2,11 @@ from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import (
     TYPE_CHECKING,
-    Annotated,
     Any,
     ClassVar,
     Protocol,
     Self,
     TypeVar,
-    Union,
 )
 
 from litellm import (
@@ -19,9 +17,7 @@ from openai.types.responses import FunctionToolParam
 from pydantic import (
     BaseModel,
     ConfigDict,
-    Discriminator,
     Field,
-    Tag,
     computed_field,
     field_serializer,
     field_validator,
@@ -133,7 +129,7 @@ class ExecutableTool(Protocol):
         ...
 
 
-class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin):
+class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     """Base class for all tool implementations.
 
     This class serves as a base for the discriminated union of all tool types.
@@ -158,7 +154,8 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin):
                 @classmethod
                 def create(cls, conv_state, **params):
                     executor = BashExecutor(
-                        working_dir=conv_state.workspace.working_dir
+                        working_dir=conv_state.workspace.working_dir,
+                        **params,
                     )
                     return [cls(name="execute_bash", ..., executor=executor)]
     """
@@ -166,9 +163,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin):
     model_config: ClassVar[ConfigDict] = ConfigDict(
         frozen=True, arbitrary_types_allowed=True
     )
-
-    # Override kind with a default value for direct instantiation
-    kind: str = Field(default="ToolDefinition")
 
     name: str
     description: str
@@ -182,21 +176,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin):
     executor: SkipJsonSchema[ToolExecutor | None] = Field(
         default=None, repr=False, exclude=True
     )
-
-    def model_post_init(self, _context):  # noqa: ANN001, ANN201
-        """Validate that ToolDefinition is not instantiated directly.
-
-        This enforces the pattern that all tools must be subclasses of ToolDefinition,
-        not direct instances of ToolDefinition itself.
-        """
-        if type(self) is ToolDefinition:
-            raise TypeError(
-                "ToolDefinition cannot be instantiated directly. "
-                "Create a subclass that inherits from ToolDefinition and implements "
-                "the .create() method. See FinishTool, ThinkTool, or GlobTool "
-                "for examples."
-            )
-        super().model_post_init(_context)
 
     @classmethod
     @abstractmethod
@@ -215,69 +194,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin):
             A sequence of Tool instances. Even single tools are returned as a sequence
             to provide a consistent interface and eliminate union return types.
         """
-        ...
-
-    @classmethod
-    def model_validate(cls, obj: Any, **kwargs) -> Self:
-        """Override to always perform polymorphic resolution for ToolDefinition."""
-
-        from openhands.sdk.utils.models import kind_of
-
-        # If called on ToolDefinition itself (not a subclass), do polymorphic resolution
-        if cls is ToolDefinition:
-            try:
-                resolved = cls.resolve_kind(kind_of(obj))
-            except ValueError as e:
-                from pydantic import ValidationError as PydanticValidationError
-
-                raise PydanticValidationError.from_exception_data(
-                    title=cls.__name__,
-                    line_errors=[
-                        {
-                            "type": "value_error",
-                            "loc": ("kind",),
-                            "input": kind_of(obj),
-                            "ctx": {"error": str(e)},
-                        }
-                    ],
-                )
-            return resolved.model_validate(obj, **kwargs)  # type: ignore
-        # If called on a subclass, use normal validation
-        return super().model_validate(obj, **kwargs)  # type: ignore
-
-    @classmethod
-    def model_validate_json(
-        cls,
-        json_data: str | bytes | bytearray,
-        **kwargs,
-    ) -> Self:
-        """Override to always perform polymorphic resolution for ToolDefinition."""
-        import json
-
-        from openhands.sdk.utils.models import kind_of
-
-        data = json.loads(json_data)
-        # If called on ToolDefinition itself (not a subclass), do polymorphic resolution
-        if cls is ToolDefinition:
-            try:
-                resolved = cls.resolve_kind(kind_of(data))
-            except ValueError as e:
-                from pydantic import ValidationError as PydanticValidationError
-
-                raise PydanticValidationError.from_exception_data(
-                    title=cls.__name__,
-                    line_errors=[
-                        {
-                            "type": "value_error",
-                            "loc": ("kind",),
-                            "input": kind_of(data),
-                            "ctx": {"error": str(e)},
-                        }
-                    ],
-                )
-            return resolved.model_validate(data, **kwargs)  # type: ignore
-        # If called on a subclass, use normal validation
-        return super().model_validate_json(json_data, **kwargs)  # type: ignore
+        raise NotImplementedError("ToolDefinition subclasses must implement .create()")
 
     @computed_field(return_type=str, alias="title")
     @property
@@ -520,32 +437,3 @@ def _create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
     )
     _action_types_with_risk[action_type] = action_type_with_risk
     return action_type_with_risk
-
-
-def get_polymorphic_tool_type():
-    """Create a type annotation for polymorphic ToolDefinition fields.
-
-    Use this when you need a field that can hold any ToolDefinition subclass and
-    deserialize polymorphically based on the `kind` discriminator.
-
-    Example:
-        class Container(BaseModel):
-            tool: get_polymorphic_tool_type()  # Will deserialize to correct subclass
-
-    Returns:
-        An Annotated type that represents a discriminated union of all ToolDefinition
-        subclasses.
-    """
-    from openhands.sdk.utils.models import get_known_concrete_subclasses, kind_of
-
-    subclasses = list(get_known_concrete_subclasses(ToolDefinition))
-    if not subclasses:
-        return ToolDefinition
-
-    if len(subclasses) == 1:
-        return subclasses[0]
-
-    return Annotated[
-        Union[*tuple(Annotated[t, Tag(t.__name__)] for t in subclasses)],
-        Discriminator(kind_of),
-    ]
