@@ -37,7 +37,7 @@ def test_llm_config_defaults():
     assert config.log_completions is False
     assert config.custom_tokenizer is None
     assert config.native_tool_calling is True
-    assert config.reasoning_effort == "high"  # Default for non-Gemini models
+    assert config.reasoning_effort is None  # No default, must be explicitly set
     assert config.seed is None
     assert config.safety_settings is None
 
@@ -170,13 +170,17 @@ def test_llm_config_post_init_openrouter_env_vars():
 
 
 def test_llm_config_post_init_reasoning_effort_default():
-    """Test that reasoning_effort is set to 'high' by default for non-Gemini models."""
+    """Test that reasoning_effort is None by default for all models unless explicitly set."""
     config = LLM(model="gpt-4", usage_id="test-llm")
-    assert config.reasoning_effort == "high"
+    assert config.reasoning_effort is None
 
-    # Test that Gemini models don't get default reasoning_effort
+    # Test that Gemini models also default to None
     config = LLM(model="gemini-2.5-pro-experimental", usage_id="test-llm")
     assert config.reasoning_effort is None
+
+    # Test that explicit reasoning_effort is preserved
+    config = LLM(model="gpt-4", reasoning_effort="high", usage_id="test-llm")
+    assert config.reasoning_effort == "high"
 
 
 def test_llm_config_post_init_azure_api_version():
@@ -364,7 +368,7 @@ def test_llm_config_optional_fields():
     assert config.disable_stop_word is None
     assert config.custom_tokenizer is None
     assert (
-        config.reasoning_effort == "high"
-    )  # Even when set to None, post_init sets it to "high" for non-Gemini models
+        config.reasoning_effort is None
+    )  # When set to None, it remains None (no automatic default)
     assert config.seed is None
     assert config.safety_settings is None
