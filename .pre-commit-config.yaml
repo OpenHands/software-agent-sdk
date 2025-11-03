@@ -17,7 +17,7 @@ repos:
           - id: ruff-check
             name: Ruff lint
             entry: uv
-            args: [run, ruff, check, --fix, --exit-non-zero-on-fix, --verbose]
+            args: [run, ruff, check, --fix, --exit-non-zero-on-fix]
             language: system
             types: [python]
             pass_filenames: true

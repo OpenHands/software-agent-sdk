@@ -37,6 +37,11 @@ with warnings.catch_warnings():
 
 from typing import cast
 
+from litellm import (
+    ChatCompletionToolParam,
+    ResponseInputParam,
+    completion as litellm_completion,
+)
 from litellm.exceptions import (
     APIConnectionError,
     BadRequestError,
@@ -57,11 +62,6 @@ from litellm.utils import (
     token_counter,
 )
 
-from litellm import (
-    ChatCompletionToolParam,
-    ResponseInputParam,
-    completion as litellm_completion,
-)
 from openhands.sdk.llm.exceptions import LLMNoResponseError
 
 # OpenHands utilities
