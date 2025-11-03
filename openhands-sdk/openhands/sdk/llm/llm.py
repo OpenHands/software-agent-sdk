@@ -690,6 +690,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Capabilities, formatting, and info
     # =========================================================================
     def _init_model_info_and_caps(self) -> None:
+        # Check if this model doesn't support native tool calling
+        from openhands.sdk.llm.utils.model_features import (
+            NO_NATIVE_TOOL_CALLING_PATTERNS,
+            model_matches,
+        )
+
+        if model_matches(self.model, NO_NATIVE_TOOL_CALLING_PATTERNS):
+            if self.native_tool_calling:
+                logger.info(
+                    f"Model {self.model} does not support native tool calling. "
+                    f"Setting native_tool_calling=False."
+                )
+            self.native_tool_calling = False
+
         # Try to get model info via openrouter or litellm proxy first
         tried = False
         try:

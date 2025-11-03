@@ -91,9 +91,14 @@ RESPONSES_API_PATTERNS: list[str] = [
 # and need plain strings instead
 FORCE_STRING_SERIALIZER_PATTERNS: list[str] = [
     "deepseek",
-    "glm",
     "groq/kimi-k2-instruct",
 ]
+
+# Models that don't support native tool calling
+# These models return tool call arguments with arrays/objects as JSON strings
+# instead of properly structured data (e.g., "[1, 100]" instead of [1, 100])
+# This causes Pydantic validation errors when parsing tool arguments
+NO_NATIVE_TOOL_CALLING_PATTERNS: list[str] = []
 
 
 def get_features(model: str) -> ModelFeatures:
