@@ -184,14 +184,6 @@ class Agent(AgentBase):
                 return
             # No condenser available; re-raise for client handling
             raise
-        except Exception as e:
-            # Keep cause chaining; map provider exceptions for client handling
-            from openhands.sdk.llm.exceptions import map_provider_exception
-
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
-            raise
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
