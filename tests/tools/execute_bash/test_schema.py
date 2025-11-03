@@ -1,8 +1,15 @@
-from openhands.tools.execute_bash import execute_bash_tool
+from openhands.sdk.conversation import ConversationState
+from openhands.tools.execute_bash import BashTool
 
 
 def test_to_mcp_tool_detailed_type_validation_bash():
     """Test detailed type validation for MCP tool schema generation (execute_bash)."""  # noqa: E501
+
+    state = ConversationState(workspace="./tests/tmp")  # TODO FIX MOCKS
+    execute_bash_tool = BashTool.create(conv_state=state)
+    assert len(execute_bash_tool) == 1
+    execute_bash_tool = execute_bash_tool[0]
+    assert isinstance(execute_bash_tool, BashTool)
 
     # Test execute_bash tool schema
     bash_mcp = execute_bash_tool.to_mcp_tool()
