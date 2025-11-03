@@ -45,7 +45,6 @@ class LocalFileStore(FileStore):
             with open(full_path, "wb") as f:
                 f.write(contents)
 
-    @observe(name="LocalFileStore.read", span_type="TOOL")
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
         with open(full_path, encoding="utf-8") as f:
