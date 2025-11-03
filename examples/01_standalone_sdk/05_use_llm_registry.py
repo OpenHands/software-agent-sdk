@@ -76,15 +76,16 @@ same_llm = llm_registry.get("agent")
 print(f"Same LLM instance: {llm is same_llm}")
 
 # Demonstrate requesting a completion directly from an LLM
-completion_response = llm.completion(
+resp = llm.completion(
     messages=[
         Message(role="user", content=[TextContent(text="Say hello in one word.")])
     ]
 )
-# Access the response content
-raw_response = completion_response.raw_response
-if raw_response.choices and raw_response.choices[0].message:  # type: ignore
-    content = raw_response.choices[0].message.content  # type: ignore
-    print(f"Direct completion response: {content}")
-else:
-    print("No response content available")
+# Access the response content via OpenHands LLMResponse
+msg = resp.message
+texts = [c.text for c in msg.content if isinstance(c, TextContent)]
+print(f"Direct completion response: {texts[0] if texts else str(msg)}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

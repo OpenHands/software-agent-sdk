@@ -3,40 +3,17 @@ import pytest
 from openhands.sdk.llm.utils.model_features import (
     get_features,
     model_matches,
-    normalize_model_name,
 )
-
-
-@pytest.mark.parametrize(
-    "raw,expected",
-    [
-        ("  OPENAI/gpt-4o  ", "gpt-4o"),
-        ("anthropic/claude-3-7-sonnet", "claude-3-7-sonnet"),
-        ("litellm_proxy/gemini-2.5-pro", "gemini-2.5-pro"),
-        ("qwen3-coder-480b-a35b-instruct", "qwen3-coder-480b-a35b-instruct"),
-        ("gpt-5", "gpt-5"),
-        ("openai/GLM-4.5-GGUF", "glm-4.5"),
-        ("openrouter/gpt-4o-mini", "gpt-4o-mini"),
-        (
-            "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
-            "claude-3-5-sonnet-20241022-v2",
-        ),
-        ("", ""),
-        (None, ""),  # type: ignore[arg-type]
-    ],
-)
-def test_normalize_model_name(raw, expected):
-    assert normalize_model_name(raw) == expected
 
 
 @pytest.mark.parametrize(
     "name,pattern,expected",
     [
-        ("gpt-4o", "gpt-4o*", True),
-        ("openai/gpt-4o", "gpt-4o*", True),
-        ("litellm_proxy/gpt-4o-mini", "gpt-4o*", True),
-        ("claude-3-7-sonnet-20250219", "claude-3-7-sonnet*", True),
-        ("o1-2024-12-17", "o1*", True),
+        ("gpt-4o", "gpt-4o", True),
+        ("openai/gpt-4o", "gpt-4o", True),
+        ("litellm_proxy/gpt-4o-mini", "gpt-4o", True),
+        ("claude-3-7-sonnet-20250219", "claude-3-7-sonnet", True),
+        ("o1-2024-12-17", "o1", True),
         ("grok-4-0709", "grok-4-0709", True),
         ("grok-4-0801", "grok-4-0709", False),
     ],
@@ -70,10 +47,22 @@ def test_reasoning_effort_support(model, expected_reasoning):
         ("claude-3-7-sonnet", True),
         ("claude-3-haiku-20240307", True),
         ("claude-3-opus-20240229", True),
-        # AWS Bedrock models
+        # AWS Bedrock model ids (provider-prefixed)
         ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", True),
         ("bedrock/anthropic.claude-3-haiku-20240307-v1:0", True),
+        # Anthropic Haiku 4.5 variants (dot and dash)
+        ("claude-haiku-4.5", True),
+        ("claude-haiku-4-5", True),
+        ("us.anthropic.claude-haiku-4.5-20251001", True),
+        ("us.anthropic.claude-haiku-4-5-20251001", True),
         ("bedrock/anthropic.claude-3-opus-20240229-v1:0", True),
+        # Anthropic 4.5 variants (dash and dot)
+        ("claude-sonnet-4-5", True),
+        ("claude-sonnet-4.5", True),
+        # User-facing model names (no provider prefix)
+        ("anthropic.claude-3-5-sonnet-20241022", True),
+        ("anthropic.claude-3-haiku-20240307", True),
+        ("anthropic.claude-3-opus-20240229", True),
         ("gpt-4o", False),  # OpenAI doesn't support explicit prompt caching
         ("gemini-1.5-pro", False),
         ("unknown-model", False),
@@ -152,7 +141,7 @@ def test_get_features_with_version_suffixes():
 
 def test_model_matches_multiple_patterns():
     """Test model_matches with multiple patterns."""
-    patterns = ["gpt-4*", "claude-3*", "gemini-*"]
+    patterns = ["gpt-4", "claude-3", "gemini-"]
 
     assert model_matches("gpt-4o", patterns) is True
     assert model_matches("claude-3-5-sonnet", patterns) is True
@@ -160,29 +149,15 @@ def test_model_matches_multiple_patterns():
     assert model_matches("llama-3.1-70b", patterns) is False
 
 
-def test_model_matches_exact_match():
-    """Test model_matches with exact patterns (no wildcards)."""
+def test_model_matches_substring_semantics():
+    """Test model_matches uses substring semantics (no globbing)."""
     patterns = ["gpt-4o", "claude-3-5-sonnet"]
 
     assert model_matches("gpt-4o", patterns) is True
     assert model_matches("claude-3-5-sonnet", patterns) is True
-    assert model_matches("gpt-4o-mini", patterns) is False
+    # Substring match: 'gpt-4o' matches 'gpt-4o-mini'
+    assert model_matches("gpt-4o-mini", patterns) is True
     assert model_matches("claude-3-haiku", patterns) is False
-
-
-def test_normalize_model_name_edge_cases():
-    """Test normalize_model_name with edge cases."""
-    # Test with multiple slashes
-    assert normalize_model_name("provider/sub/model-name") == "model-name"
-
-    # Test with colons and special characters
-    assert normalize_model_name("provider/model:version:tag") == "model"
-
-    # Test with whitespace and case
-    assert normalize_model_name("  PROVIDER/Model-Name  ") == "model-name"
-
-    # Test with underscores and hyphens
-    assert normalize_model_name("provider/model_name-v1") == "model_name-v1"
 
 
 def test_get_features_unknown_model():
@@ -208,11 +183,10 @@ def test_get_features_empty_model():
 
 
 def test_model_matches_with_provider_pattern():
-    """Test model_matches with pattern containing '/' matches raw model string."""
-    # Test pattern with '/' matches against raw model string (lines 43-44)
-    assert model_matches("openai/gpt-4", ["openai/*"])
-    assert model_matches("anthropic/claude-3", ["anthropic/claude*"])
-    assert not model_matches("openai/gpt-4", ["anthropic/*"])
+    """model_matches uses substring on raw model name incl. provider prefixes."""
+    assert model_matches("openai/gpt-4", ["openai/"])
+    assert model_matches("anthropic/claude-3", ["anthropic/claude"])
+    assert not model_matches("openai/gpt-4", ["anthropic/"])
 
 
 def test_stop_words_grok_provider_prefixed():
@@ -236,3 +210,33 @@ def test_supports_stop_words_false_models(model):
     """Test models that don't support stop words."""
     features = get_features(model)
     assert features.supports_stop_words is False
+
+
+@pytest.mark.parametrize(
+    "model,expected_responses",
+    [
+        ("gpt-5", True),
+        ("openai/gpt-5-mini", True),
+        ("codex-mini-latest", True),
+        ("openai/codex-mini-latest", True),
+        ("gpt-4o", False),
+        ("unknown-model", False),
+    ],
+)
+def test_responses_api_support(model, expected_responses):
+    features = get_features(model)
+    assert features.supports_responses_api is expected_responses
+
+
+def test_force_string_serializer_full_model_names():
+    """Ensure full model names match substring patterns for string serializer.
+
+    Regression coverage for patterns like deepseek/glm without wildcards; Kimi
+    should only match when provider-prefixed with groq/.
+    """
+    assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
+    assert get_features("GLM-4.5").force_string_serializer is True
+    # Provider-agnostic Kimi should not force string serializer
+    assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
+    # Groq-prefixed Kimi should force string serializer
+    assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True

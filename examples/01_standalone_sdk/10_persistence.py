@@ -98,3 +98,7 @@ conversation = Conversation(
 print("Sending message to deserialized conversation...")
 conversation.send_message("Hey what did you create? Return an agent finish action")
 conversation.run()
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

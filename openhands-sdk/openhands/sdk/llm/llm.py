@@ -848,10 +848,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
-            if "deepseek" in self.model or (
-                "kimi-k2-instruct" in self.model and "groq" in self.model
-            ):
-                message.force_string_serializer = True
+            message.force_string_serializer = get_features(
+                self.model
+            ).force_string_serializer
 
         formatted_messages = [message.to_chat_dict() for message in messages]
 
