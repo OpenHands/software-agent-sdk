@@ -338,6 +338,9 @@ jobs:
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
                   echo "Using SHORT_SHA: $SHORT_SHA"
 
+            - name: Set up Docker Buildx with Blacksmith
+              uses: useblacksmith/setup-docker-builder@v1
+
             - name: Log in to GHCR
               uses: docker/login-action@v3
               with:
