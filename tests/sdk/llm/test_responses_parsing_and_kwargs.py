@@ -75,10 +75,10 @@ def test_normalize_responses_kwargs_policy():
     assert set(out["include"]) >= {"text.output_text", "reasoning.encrypted_content"}
     # store default to False when None passed
     assert out["store"] is False
-    # reasoning config included when reasoning_effort is set
+    # reasoning config included when reasoning_effort is set (without summary to avoid requiring verified org)
     r = out["reasoning"]
     assert r["effort"] in {"low", "medium", "high", "none"}
-    assert r["summary"] == "detailed"
+    assert "summary" not in r  # Summary not included to support unverified orgs
     # max_output_tokens preserved
     assert out["max_output_tokens"] == 128
 
