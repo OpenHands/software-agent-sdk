@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
 from openhands.sdk import LLM, Conversation
@@ -30,11 +31,12 @@ class _Exec(ToolExecutor[_Action, _Obs]):
 class _UpperTool(ToolDefinition[_Action, _Obs]):
     """Concrete tool for uppercase testing."""
 
+    name: ClassVar[str] = "upper"
+
     @classmethod
     def create(cls, conv_state=None, **params) -> Sequence["_UpperTool"]:
         return [
             cls(
-                name="upper",
                 description="Uppercase",
                 action_type=_Action,
                 observation_type=_Obs,
@@ -63,5 +65,5 @@ def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map
         assert "upper" in runtime_tools
-        assert "finish" in runtime_tools
-        assert "think" in runtime_tools
+        assert "finish_tool" in runtime_tools
+        assert "think_tool" in runtime_tools
