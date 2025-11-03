@@ -1,12 +1,10 @@
-from openhands.sdk.conversation import ConversationState
 from openhands.tools.file_editor import FileEditorTool
 
 
-def test_to_mcp_tool_detailed_type_validation_editor():
+def test_to_mcp_tool_detailed_type_validation_editor(mock_conversation_state):
     """Test detailed type validation for MCP tool schema generation."""
 
-    state = ConversationState(workspace="./tests/tmp")  # TODO FIX MOCKS
-    file_editor_tool = FileEditorTool.create(conv_state=state)
+    file_editor_tool = FileEditorTool.create(conv_state=mock_conversation_state)
     assert len(file_editor_tool) == 1
     file_editor_tool = file_editor_tool[0]
     assert isinstance(file_editor_tool, FileEditorTool)

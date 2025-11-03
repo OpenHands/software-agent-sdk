@@ -1,12 +1,10 @@
-from openhands.sdk.conversation import ConversationState
 from openhands.tools.execute_bash import BashTool
 
 
-def test_to_mcp_tool_detailed_type_validation_bash():
+def test_to_mcp_tool_detailed_type_validation_bash(mock_conversation_state):
     """Test detailed type validation for MCP tool schema generation (execute_bash)."""  # noqa: E501
 
-    state = ConversationState(workspace="./tests/tmp")  # TODO FIX MOCKS
-    execute_bash_tool = BashTool.create(conv_state=state)
+    execute_bash_tool = BashTool.create(conv_state=mock_conversation_state)
     assert len(execute_bash_tool) == 1
     execute_bash_tool = execute_bash_tool[0]
     assert isinstance(execute_bash_tool, BashTool)

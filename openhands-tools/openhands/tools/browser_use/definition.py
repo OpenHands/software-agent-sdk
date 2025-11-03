@@ -543,16 +543,19 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
         executor = BrowserToolExecutor(**executor_config)
-        tools = [
-            BrowserNavigateTool.create(executor),
-            BrowserClickTool.create(executor),
-            BrowserGetStateTool.create(executor),
-            BrowserGetContentTool.create(executor),
-            BrowserTypeTool.create(executor),
-            BrowserScrollTool.create(executor),
-            BrowserGoBackTool.create(executor),
-            BrowserListTabsTool.create(executor),
-            BrowserSwitchTabTool.create(executor),
-            BrowserCloseTabTool.create(executor),
-        ]
+        # Each tool.create() returns a Sequence[Self], so we flatten the results
+        tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
+        for tool_class in [
+            BrowserNavigateTool,
+            BrowserClickTool,
+            BrowserGetStateTool,
+            BrowserGetContentTool,
+            BrowserTypeTool,
+            BrowserScrollTool,
+            BrowserGoBackTool,
+            BrowserListTabsTool,
+            BrowserSwitchTabTool,
+            BrowserCloseTabTool,
+        ]:
+            tools.extend(tool_class.create(executor))
         return tools
