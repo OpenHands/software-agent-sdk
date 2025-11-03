@@ -363,36 +363,28 @@ jobs:
                   SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
                   VARIANT=${{ matrix.variant }}
 
-                  # Create multi-arch manifest combining amd64 and arm64
+                  # Create multi-arch manifest combining amd64 and arm64 using buildx imagetools
+                  # This properly handles manifest lists from Blacksmith builds
                   echo "Creating multi-arch manifest: ${IMAGE}:${SHORT_SHA}-${VARIANT}"
-                  docker manifest create ${IMAGE}:${SHORT_SHA}-${VARIANT} \
+                  docker buildx imagetools create -t ${IMAGE}:${SHORT_SHA}-${VARIANT} \
                     ${IMAGE}:${SHORT_SHA}-${VARIANT}-amd64 \
                     ${IMAGE}:${SHORT_SHA}-${VARIANT}-arm64
 
-                  # Annotate architectures explicitly
-                  docker manifest annotate ${IMAGE}:${SHORT_SHA}-${VARIANT} \
-                    ${IMAGE}:${SHORT_SHA}-${VARIANT}-amd64 --arch amd64
-                  docker manifest annotate ${IMAGE}:${SHORT_SHA}-${VARIANT} \
-                    ${IMAGE}:${SHORT_SHA}-${VARIANT}-arm64 --arch arm64
-
-                  # Push the multi-arch manifest
-                  docker manifest push ${IMAGE}:${SHORT_SHA}-${VARIANT}
+                  # Verify the multi-arch manifest
+                  echo "Inspecting multi-arch manifest:"
+                  docker buildx imagetools inspect ${IMAGE}:${SHORT_SHA}-${VARIANT}
 
                   echo "✓ Multi-arch manifest created: ${IMAGE}:${SHORT_SHA}-${VARIANT}"
 
                   # Create latest manifest if on main branch
                   if [ "${{ github.ref }}" == "refs/heads/main" ]; then
                       echo "Creating latest multi-arch manifest: ${IMAGE}:latest-${VARIANT}"
-                      docker manifest create ${IMAGE}:latest-${VARIANT} \
+                      docker buildx imagetools create -t ${IMAGE}:latest-${VARIANT} \
                         ${IMAGE}:latest-${VARIANT}-amd64 \
                         ${IMAGE}:latest-${VARIANT}-arm64
                       
-                      docker manifest annotate ${IMAGE}:latest-${VARIANT} \
-                        ${IMAGE}:latest-${VARIANT}-amd64 --arch amd64
-                      docker manifest annotate ${IMAGE}:latest-${VARIANT} \
-                        ${IMAGE}:latest-${VARIANT}-arm64 --arch arm64
-                      
-                      docker manifest push ${IMAGE}:latest-${VARIANT}
+                      echo "Inspecting latest multi-arch manifest:"
+                      docker buildx imagetools inspect ${IMAGE}:latest-${VARIANT}
                       echo "✓ Latest multi-arch manifest created: ${IMAGE}:latest-${VARIANT}"
                   fi
 
