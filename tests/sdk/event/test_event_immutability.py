@@ -220,7 +220,9 @@ def test_pause_event_is_frozen():
 def test_condensation_is_frozen():
     """Test that Condensation instances are frozen."""
     event = Condensation(
-        forgotten_event_ids=["event1", "event2"], summary="Test summary"
+        forgotten_event_ids=["event1", "event2"],
+        summary="Test summary",
+        llm_response_id="condensation_response_1",
     )
 
     # Test that we cannot modify any field

@@ -151,6 +151,7 @@ def test_condensation_serialization() -> None:
     event = Condensation(
         summary="This is a summary",
         forgotten_event_ids=["event1", "event2", "event3", "event4", "event5"],
+        llm_response_id="condensation_response_1",
     )
 
     # Serialize

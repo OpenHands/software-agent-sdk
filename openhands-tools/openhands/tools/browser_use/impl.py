@@ -121,6 +121,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _config: dict[str, Any]
     _initialized: bool
     _async_executor: AsyncExecutor
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -169,6 +170,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
         self._initialized = False
         self._async_executor = AsyncExecutor()
+        self._cleanup_initiated = False
 
     def __call__(
         self,
@@ -331,6 +333,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def close(self):
         """Close the browser executor and cleanup resources."""
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
         try:
             # Run cleanup in the async executor with a shorter timeout
             self._async_executor.run_async(self.cleanup, timeout=30.0)

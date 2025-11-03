@@ -1,17 +1,26 @@
 ---
-name: Run Examples Scripts on PR
+name: Run Examples Scripts
 
 on:
     pull_request:
         types: [labeled]
+    workflow_dispatch:
+        inputs:
+            reason:
+                description: Reason for manual trigger
+                required: true
+                default: ''
+    schedule:
+        - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
 permissions:
     contents: read
     pull-requests: write
+    issues: write
 
 jobs:
     test-examples:
-        if: github.event.label.name == 'test-examples'
+        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 60
         steps:
@@ -75,11 +84,18 @@ jobs:
                       "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py"
                   )
 
-                  # GitHub API setup
-                  API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
+                  # GitHub API setup (only for PR events)
+                  if [ "${{ github.event_name }}" = "pull_request" ]; then
+                      API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
+                  fi
 
                   # Function to update PR comment
                   update_comment() {
+                      # Skip if not a PR event
+                      if [ "${{ github.event_name }}" != "pull_request" ]; then
+                          return
+                      fi
+                      
                       local comment_body="$1"
                       local response
                       
@@ -102,19 +118,31 @@ jobs:
                       fi
                   }
 
+                  # Function to format cost with 2 decimal places
+                  format_cost() {
+                      local cost="$1"
+                      if [ -z "$cost" ] || [ "$cost" = "N/A" ]; then
+                          echo "N/A"
+                      else
+                          printf "\$%.2f" "$cost" 2>/dev/null || echo "N/A"
+                      fi
+                  }
+
                   # Function to generate markdown table
                   generate_table() {
                       local header="## 🔄 Running Examples with \`${LLM_MODEL}\`\n\n"
                       header+="_Last updated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')_\n\n"
-                      header+="| Example | Status | Duration |\n"
-                      header+="|---------|--------|----------|\n"
+                      header+="| Example | Status | Duration | Cost |\n"
+                      header+="|---------|--------|----------|------|\n"
                       
                       local rows=""
                       for example in "${EXAMPLES[@]}"; do
-                          local short_name="${example#examples/01_standalone_sdk/}"
+                          # Strip examples/ prefix and show relative path from there
+                          local short_name="${example#examples/}"
                           local status="${TEST_STATUS[$example]:-⏳ Pending}"
                           local duration="${TEST_DURATION[$example]:--}"
-                          rows+="| ${short_name} | ${status} | ${duration} |\n"
+                          local cost="${TEST_COST[$example]:--}"
+                          rows+="| ${short_name} | ${status} | ${duration} | ${cost} |\n"
                       done
                       
                       local summary="\n---\n\n"
@@ -124,8 +152,14 @@ jobs:
                           else
                               summary+="### ❌ Some tests failed\n\n"
                           fi
-                          summary+="**Total:** ${#EXAMPLES[@]} | **Passed:** ${PASSED} | **Failed:** ${FAILED}\n\n"
-                          summary+="[View full workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
+                          summary+="**Total:** ${#EXAMPLES[@]} | **Passed:** ${PASSED} | **Failed:** ${FAILED}"
+                          
+                          # Calculate and display total cost if available
+                          if [ -n "$TOTAL_COST" ]; then
+                              summary+=" | **Total Cost:** $(format_cost $TOTAL_COST)"
+                          fi
+                          
+                          summary+="\n\n[View full workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
                       else
                           summary+="**Progress:** ${COMPLETED}/${#EXAMPLES[@]} completed | **Passed:** ${PASSED} | **Failed:** ${FAILED}"
                       fi
@@ -136,9 +170,11 @@ jobs:
                   # Initialize tracking variables
                   declare -A TEST_STATUS
                   declare -A TEST_DURATION
+                  declare -A TEST_COST
                   FAILED=0
                   PASSED=0
                   COMPLETED=0
+                  TOTAL_COST=0
                   FAILED_EXAMPLES=()
                   RESULTS_FILE="test-results.txt"
                   COMMENT_ID=""
@@ -146,9 +182,11 @@ jobs:
                   # Clear results file
                   > "$RESULTS_FILE"
 
-                  # Create initial comment with all tests pending
-                  echo "Creating initial PR comment..."
-                  update_comment "$(generate_table)"
+                  # Create initial comment with all tests pending (only for PR events)
+                  if [ "${{ github.event_name }}" = "pull_request" ]; then
+                      echo "Creating initial PR comment..."
+                      update_comment "$(generate_table)"
+                  fi
 
                   echo "=========================================="
                   echo "Running ${#EXAMPLES[@]} examples with $LLM_MODEL"
@@ -161,32 +199,59 @@ jobs:
                       
                       START_TIME=$(date +%s)
                       
+                      # Create temp file to capture output
+                      OUTPUT_FILE=$(mktemp)
+                      
                       # Run example with timeout (20 minutes per example)
-                      if timeout 1200 uv run python "$example"; then
+                      # Capture output while still displaying it
+                      if timeout 1200 uv run python "$example" 2>&1 | tee "$OUTPUT_FILE"; then
                           END_TIME=$(date +%s)
                           DURATION=$((END_TIME - START_TIME))
                           DURATION_STR="${DURATION}s"
                           
-                          echo "✓ PASSED: $example (${DURATION_STR})"
+                          # Extract cost from output
+                          COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1)
+                          if [ -z "$COST" ]; then
+                              COST="0.00"
+                          fi
+                          
+                          # Accumulate total cost
+                          TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l)
+                          
+                          echo "✓ PASSED: $example (${DURATION_STR}, cost: \$${COST})"
                           PASSED=$((PASSED + 1))
                           COMPLETED=$((COMPLETED + 1))
                           TEST_STATUS[$example]="✅ PASS"
                           TEST_DURATION[$example]="${DURATION_STR}"
-                          echo "PASS|$example|${DURATION}" >> "$RESULTS_FILE"
+                          TEST_COST[$example]="$(format_cost $COST)"
+                          echo "PASS|$example|${DURATION}|${COST}" >> "$RESULTS_FILE"
                       else
                           EXIT_CODE=$?
                           END_TIME=$(date +%s)
                           DURATION=$((END_TIME - START_TIME))
                           DURATION_STR="${DURATION}s"
                           
-                          echo "✗ FAILED: $example (exit code: $EXIT_CODE, ${DURATION_STR})"
+                          # Try to extract cost even for failed tests
+                          COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1)
+                          if [ -z "$COST" ]; then
+                              COST="0.00"
+                          fi
+                          
+                          # Accumulate total cost
+                          TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l)
+                          
+                          echo "✗ FAILED: $example (exit code: $EXIT_CODE, ${DURATION_STR}, cost: \$${COST})"
                           FAILED=$((FAILED + 1))
                           COMPLETED=$((COMPLETED + 1))
                           FAILED_EXAMPLES+=("$example")
                           TEST_STATUS[$example]="❌ FAIL (exit: ${EXIT_CODE})"
                           TEST_DURATION[$example]="${DURATION_STR}"
-                          echo "FAIL|$example|$EXIT_CODE|${DURATION}" >> "$RESULTS_FILE"
+                          TEST_COST[$example]="$(format_cost $COST)"
+                          echo "FAIL|$example|$EXIT_CODE|${DURATION}|${COST}" >> "$RESULTS_FILE"
                       fi
+                      
+                      # Clean up temp file
+                      rm -f "$OUTPUT_FILE"
                       
                       # Update PR comment after each test
                       echo "Updating PR comment..."
@@ -200,6 +265,12 @@ jobs:
                   echo "Total: ${#EXAMPLES[@]}"
                   echo "Passed: $PASSED"
                   echo "Failed: $FAILED"
+                  echo "Total Cost: $(format_cost $TOTAL_COST)"
+
+                  # Generate final report and save to file
+                  FINAL_REPORT=$(generate_table)
+                  echo "$FINAL_REPORT" > examples_report.md
+                  echo "Final report saved to examples_report.md"
 
                   if [ $FAILED -gt 0 ]; then
                       echo ""
@@ -212,3 +283,29 @@ jobs:
 
                   echo ""
                   echo "All examples passed! ✓"
+
+            - name: Read examples report for issue comment
+              if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+              id: read_report
+              run: |
+                  if [ -f examples_report.md ]; then
+                      REPORT_CONTENT=$(cat examples_report.md)
+                      echo "report<<EOF" >> $GITHUB_OUTPUT
+                      echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
+                      echo "EOF" >> $GITHUB_OUTPUT
+                  else
+                      echo "report=Report file not found" >> $GITHUB_OUTPUT
+                  fi
+
+            - name: Comment with results on tracker issue
+              if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  number: 976
+                  unique: false
+                  comment: |
+                      **Trigger:** ${{ github.event_name == 'schedule' && 'Nightly Scheduled Run' || format('Manual Trigger: {0}', github.event.inputs.reason) }}
+                      **Commit:** ${{ github.sha }}
+                      **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+                      ${{ steps.read_report.outputs.report }}
