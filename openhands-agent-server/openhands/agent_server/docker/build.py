@@ -258,6 +258,10 @@ class BuildOptions(BaseModel):
     push: bool | None = Field(
         default=None, description="None=auto (CI push, local load)"
     )
+    arch: str | None = Field(
+        default=None,
+        description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
+    )
 
     @field_validator("target")
     @classmethod
@@ -295,12 +299,14 @@ class BuildOptions(BaseModel):
     @property
     def all_tags(self) -> list[str]:
         tags: list[str] = []
+        arch_suffix = f"-{self.arch}" if self.arch else ""
+
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{SHORT_SHA}-{t}")
+            tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
-                tags.append(f"{self.image}:main-{t}")
-        tags.append(f"{self.image}:{self.versioned_tag}")
+                tags.append(f"{self.image}:main-{t}{arch_suffix}")
+        tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
         if self.is_dev:
             tags = [f"{t}-dev" for t in tags]
         return tags
@@ -543,6 +549,13 @@ def main(argv: list[str]) -> int:
         default=_env("PLATFORMS", "linux/amd64,linux/arm64"),
         help="Comma-separated platforms (default from $PLATFORMS).",
     )
+    parser.add_argument(
+        "--arch",
+        default=_env("ARCH", ""),
+        help=(
+            "Architecture suffix for tags (e.g., 'amd64', 'arm64', default from $ARCH)."
+        ),
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--push",
@@ -591,6 +604,7 @@ def main(argv: list[str]) -> int:
             platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
             push=None,  # Not relevant for build-ctx-only
             sdk_project_root=sdk_project_root,
+            arch=args.arch or None,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -632,6 +646,7 @@ def main(argv: list[str]) -> int:
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
         sdk_project_root=sdk_project_root,
+        arch=args.arch or None,
     )
     tags = build(opts)
 

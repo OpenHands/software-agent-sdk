@@ -155,29 +155,45 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Build each platform on native hardware for maximum performance
-                variant: [python, java, golang]
-                arch: [amd64, arm64]
+                # Explicit matrix: 3 variants × 2 architectures = 6 jobs
+                # Each job specifies exactly what it builds and where it runs
                 include:
-                    # Python + Node.js variant
+                    # Python variant
                     - variant: python
+                      arch: amd64
                       base_image: nikolaik/python-nodejs:python3.12-nodejs22
-
-                    # Java variant (OpenJDK base)
-                    - variant: java
-                      base_image: eclipse-temurin:17-jdk
-
-                    # Golang variant (Go base)
-                    - variant: golang
-                      base_image: golang:1.21-bookworm
-
-                    # amd64 uses standard x86_64 runners
-                    - arch: amd64
                       runner: blacksmith-8vcpu-ubuntu-2404
                       platform: linux/amd64
 
-                    # arm64 uses ARM-specific runners
-                    - arch: arm64
+                    - variant: python
+                      arch: arm64
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      platform: linux/arm64
+
+                    # Java variant
+                    - variant: java
+                      arch: amd64
+                      base_image: eclipse-temurin:17-jdk
+                      runner: blacksmith-8vcpu-ubuntu-2404
+                      platform: linux/amd64
+
+                    - variant: java
+                      arch: arm64
+                      base_image: eclipse-temurin:17-jdk
+                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      platform: linux/arm64
+
+                    # Golang variant
+                    - variant: golang
+                      arch: amd64
+                      base_image: golang:1.21-bookworm
+                      runner: blacksmith-8vcpu-ubuntu-2404
+                      platform: linux/amd64
+
+                    - variant: golang
+                      arch: arm64
+                      base_image: golang:1.21-bookworm
                       runner: blacksmith-8vcpu-ubuntu-2404-arm
                       platform: linux/arm64
 
@@ -218,70 +234,24 @@ jobs:
               run: |
                   uv sync --frozen
 
-                  # Generate build context and metadata using the build script (build-ctx-only mode)
-                  # The script writes directly to $GITHUB_OUTPUT when running in CI
-                  echo "Running build.py --build-ctx-only..."
-                  set -o pipefail
-                  BUILD_OUTPUT=$(CUSTOM_TAGS="${VARIANT}" \
-                      BASE_IMAGE="${BASE_IMAGE}" \
-                      TARGET="${TARGET}" \
-                      IMAGE="${IMAGE}" \
-                      uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only 2>&1)
-                  BUILD_EXIT_CODE=$?
+                  # Generate build context and tags with arch suffix
+                  # build.py now handles architecture tagging internally via --arch flag
+                  uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only
 
-                  echo "$BUILD_OUTPUT"
-                  echo "build.py exit code: $BUILD_EXIT_CODE"
+                  # Alias tags_csv output to tags for the build action
+                  TAGS=$(grep '^tags_csv=' $GITHUB_OUTPUT | cut -d= -f2-)
+                  echo "tags=$TAGS" >> $GITHUB_OUTPUT
 
-                  # Check exit code
-                  if [ $BUILD_EXIT_CODE -ne 0 ]; then
-                      echo "Error: build.py failed with exit code $BUILD_EXIT_CODE"
-                      exit 1
-                  fi
+                  # Extract short SHA for consolidation
+                  SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+                  echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
-                  # Extract build context path from output (last line starting with /tmp/)
-                  BUILD_CTX=$(echo "$BUILD_OUTPUT" | grep "^/tmp/" | tail -n 1)
-                  echo "Captured BUILD_CTX: $BUILD_CTX"
-
-                  # Validate the build context directory was created
-                  if [ -z "$BUILD_CTX" ] || [ ! -d "$BUILD_CTX" ]; then
-                      echo "Error: Invalid build context directory: $BUILD_CTX"
-                      exit 1
-                  fi
-
-                  # Debug: Show what build.py wrote to GITHUB_OUTPUT
-                  echo "=== GITHUB_OUTPUT contents ==="
-                  grep "^build_context=\|^dockerfile=\|^tags_csv=\|^versioned_tag=\|^base_image_slug=" "$GITHUB_OUTPUT" || echo "No matching lines found"
-                  echo "=============================="
-
-                  # Read base tags from what build.py wrote to GITHUB_OUTPUT
-                  BASE_TAGS=$(grep "^tags_csv=" "$GITHUB_OUTPUT" | tail -n 1 | cut -d= -f2-)
-
-                  # Validate that we got tags
-                  if [ -z "$BASE_TAGS" ]; then
-                      echo "Error: No tags found in GITHUB_OUTPUT"
-                      echo "GITHUB_OUTPUT file contents:"
-                      cat "$GITHUB_OUTPUT"
-                      exit 1
-                  fi
-
-                  # For per-architecture builds, append architecture suffix to each tag
-                  # Transform: "image:sha-variant" -> "image:sha-variant-amd64"
-                  ARCH_TAGS=$(echo "$BASE_TAGS" | tr ',' '\n' | sed "s/$/-${ARCH}/" | paste -sd ',')
-
-                  # Validate arch tags aren't empty
-                  if [ -z "$ARCH_TAGS" ]; then
-                      echo "Error: Failed to generate arch-specific tags"
-                      exit 1
-                  fi
-
-                  echo "tags=$ARCH_TAGS" >> $GITHUB_OUTPUT
-                  echo "variant_arch=${VARIANT}-${ARCH}" >> $GITHUB_OUTPUT
-
-                  echo "Using build context: $BUILD_CTX"
-                  echo "Using Dockerfile: $BUILD_CTX/Dockerfile"
-                  echo "Base tags from build.py: $BASE_TAGS"
-                  echo "Computed arch-specific tags: $ARCH_TAGS"
-                  echo "Variant-Arch: ${VARIANT}-${ARCH}"
+                  # Verify outputs
+                  echo "=== Build outputs ==="
+                  echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
+                  echo "Tags: $TAGS"
+                  echo "Short SHA: $SHORT_SHA"
+                  echo "===================="
 
             - name: Build & Push with Blacksmith (${{ matrix.variant }}-${{ matrix.arch }})
               id: build
@@ -359,34 +329,57 @@ jobs:
                   password: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Create and push multi-arch manifest for ${{ matrix.variant }}
+              id: create_manifest
               run: |
                   SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
                   VARIANT=${{ matrix.variant }}
+                  MANIFEST_TAG="${SHORT_SHA}-${VARIANT}"
 
                   # Create multi-arch manifest combining amd64 and arm64 using buildx imagetools
                   # This properly handles manifest lists from Blacksmith builds
-                  echo "Creating multi-arch manifest: ${IMAGE}:${SHORT_SHA}-${VARIANT}"
-                  docker buildx imagetools create -t ${IMAGE}:${SHORT_SHA}-${VARIANT} \
+                  echo "Creating multi-arch manifest: ${IMAGE}:${MANIFEST_TAG}"
+                  docker buildx imagetools create -t ${IMAGE}:${MANIFEST_TAG} \
                     ${IMAGE}:${SHORT_SHA}-${VARIANT}-amd64 \
                     ${IMAGE}:${SHORT_SHA}-${VARIANT}-arm64
 
                   # Verify the multi-arch manifest
                   echo "Inspecting multi-arch manifest:"
-                  docker buildx imagetools inspect ${IMAGE}:${SHORT_SHA}-${VARIANT}
+                  docker buildx imagetools inspect ${IMAGE}:${MANIFEST_TAG}
 
-                  echo "✓ Multi-arch manifest created: ${IMAGE}:${SHORT_SHA}-${VARIANT}"
+                  echo "✓ Multi-arch manifest created: ${IMAGE}:${MANIFEST_TAG}"
 
                   # Create latest manifest if on main branch
                   if [ "${{ github.ref }}" == "refs/heads/main" ]; then
-                      echo "Creating latest multi-arch manifest: ${IMAGE}:latest-${VARIANT}"
-                      docker buildx imagetools create -t ${IMAGE}:latest-${VARIANT} \
+                      LATEST_TAG="latest-${VARIANT}"
+                      echo "Creating latest multi-arch manifest: ${IMAGE}:${LATEST_TAG}"
+                      docker buildx imagetools create -t ${IMAGE}:${LATEST_TAG} \
                         ${IMAGE}:latest-${VARIANT}-amd64 \
                         ${IMAGE}:latest-${VARIANT}-arm64
                       
                       echo "Inspecting latest multi-arch manifest:"
-                      docker buildx imagetools inspect ${IMAGE}:latest-${VARIANT}
-                      echo "✓ Latest multi-arch manifest created: ${IMAGE}:latest-${VARIANT}"
+                      docker buildx imagetools inspect ${IMAGE}:${LATEST_TAG}
+                      echo "✓ Latest multi-arch manifest created: ${IMAGE}:${LATEST_TAG}"
+                      
+                      MANIFEST_TAG="${MANIFEST_TAG},${LATEST_TAG}"
                   fi
+
+                  # Save manifest info for consolidation
+                  mkdir -p manifest-info
+                  cat > "manifest-info/${VARIANT}.json" << EOF
+                  {
+                    "variant": "${VARIANT}",
+                    "image": "${IMAGE}",
+                    "short_sha": "${SHORT_SHA}",
+                    "manifest_tag": "${MANIFEST_TAG}"
+                  }
+                  EOF
+
+            - name: Upload manifest info artifact
+              uses: actions/upload-artifact@v5
+              with:
+                  name: manifest-info-${{ matrix.variant }}
+                  path: manifest-info/${{ matrix.variant }}.json
+                  retention-days: 1
 
     consolidate-build-info:
         name: Consolidate Build Information
@@ -398,12 +391,19 @@ jobs:
         outputs:
             build_summary: ${{ steps.consolidate.outputs.build_summary }}
         steps:
-            - name: Download all build info artifacts
+            - name: Download build info artifacts
               uses: actions/download-artifact@v6
               with:
                   pattern: build-info-*
                   merge-multiple: true
                   path: build-info
+
+            - name: Download manifest info artifacts
+              uses: actions/download-artifact@v6
+              with:
+                  pattern: manifest-info-*
+                  merge-multiple: true
+                  path: manifest-info
 
             - name: Consolidate build information from artifacts
               id: consolidate
@@ -480,18 +480,31 @@ jobs:
                       echo "$VARIANTS_JSON" | jq .
                   done
 
-                  # Add multi-arch manifest tags
+                  # Process manifest info artifacts
+                  echo "Processing manifest info artifacts..."
+                  ls -la manifest-info/ 2>/dev/null || echo "No manifest-info directory found"
+
                   MANIFEST_TAGS=""
-                  for VARIANT in "${!VARIANT_BASE_IMAGE[@]}"; do
-                      if [[ -n "$MANIFEST_TAGS" ]]; then
-                          MANIFEST_TAGS="${MANIFEST_TAGS}"$'\n'"${IMAGE}:${SHORT_SHA}-${VARIANT}"
-                      else
-                          MANIFEST_TAGS="${IMAGE}:${SHORT_SHA}-${VARIANT}"
+                  for manifest_file in manifest-info/*.json 2>/dev/null; do
+                      if [[ -f "$manifest_file" ]]; then
+                          echo "=== Processing $manifest_file ==="
+                          cat "$manifest_file"
+                          
+                          MANIFEST_TAG_CSV=$(jq -r '.manifest_tag' "$manifest_file")
+                          # Convert comma-separated tags to newline-separated
+                          MANIFEST_TAG_LIST=$(echo "$MANIFEST_TAG_CSV" | tr ',' '\n' | sed "s|^|${IMAGE}:|")
+                          
+                          if [[ -n "$MANIFEST_TAGS" ]]; then
+                              MANIFEST_TAGS="${MANIFEST_TAGS}"$'\n'"${MANIFEST_TAG_LIST}"
+                          else
+                              MANIFEST_TAGS="$MANIFEST_TAG_LIST"
+                          fi
                       fi
                   done
 
                   # Add manifest tags to ALL_TAGS
                   if [[ -n "$MANIFEST_TAGS" ]]; then
+                      echo "Adding manifest tags to output"
                       if [[ -n "$ALL_TAGS" ]]; then
                           ALL_TAGS="${ALL_TAGS}"$'\n'"${MANIFEST_TAGS}"
                       else
