@@ -101,7 +101,6 @@ class PlanningFileEditorTool(
 
         return [
             cls(
-                name="planning_file_editor",
                 description=enhanced_description,
                 action_type=PlanningFileEditorAction,
                 observation_type=PlanningFileEditorObservation,
@@ -118,4 +117,4 @@ class PlanningFileEditorTool(
 
 
 # Automatically register the tool when this module is imported
-register_tool(PlanningFileEditorTool.tool_name, PlanningFileEditorTool)
+register_tool(PlanningFileEditorTool.name, PlanningFileEditorTool)

@@ -264,7 +264,6 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="execute_bash",
                 action_type=ExecuteBashAction,
                 observation_type=ExecuteBashObservation,
                 description=TOOL_DESCRIPTION,
@@ -281,4 +280,4 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
 
 # Automatically register the tool when this module is imported
-register_tool(BashTool.tool_name, BashTool)
+register_tool(BashTool.name, BashTool)

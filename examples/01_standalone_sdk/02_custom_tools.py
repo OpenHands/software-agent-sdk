@@ -141,7 +141,6 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
 
         return [
             cls(
-                name="grep",
                 description=_GREP_DESCRIPTION,
                 action_type=GrepAction,
                 observation_type=GrepObservation,
@@ -182,7 +181,7 @@ def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
 register_tool("BashAndGrepToolSet", _make_bash_and_grep_tools)
 
 tools = [
-    Tool(name=FileEditorTool.tool_name),
+    Tool(name=FileEditorTool.name),
     Tool(name="BashAndGrepToolSet"),
 ]
 

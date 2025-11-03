@@ -118,9 +118,9 @@ def get_planning_tools() -> list[Tool]:
     from openhands.tools.planning_file_editor import PlanningFileEditorTool
 
     return [
-        Tool(name=GlobTool.tool_name),
-        Tool(name=GrepTool.tool_name),
-        Tool(name=PlanningFileEditorTool.tool_name),
+        Tool(name=GlobTool.name),
+        Tool(name=GrepTool.name),
+        Tool(name=PlanningFileEditorTool.name),
     ]
 
 

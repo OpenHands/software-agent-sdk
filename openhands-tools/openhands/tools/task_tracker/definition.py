@@ -410,7 +410,6 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name="task_tracker",
                 description=TASK_TRACKER_DESCRIPTION,
                 action_type=TaskTrackerAction,
                 observation_type=TaskTrackerObservation,
@@ -426,4 +425,4 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
 
 
 # Automatically register the tool when this module is imported
-register_tool(TaskTrackerTool.tool_name, TaskTrackerTool)
+register_tool(TaskTrackerTool.name, TaskTrackerTool)

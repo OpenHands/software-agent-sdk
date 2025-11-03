@@ -180,16 +180,15 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     )
 
     # Automatic tool naming - set by __init_subclass__
-    tool_name: ClassVar[str] = ""
+    name: ClassVar[str] = ""
 
     def __init_subclass__(cls, **kwargs):
-        """Automatically set tool_name from class name when subclass is created."""
+        """Automatically set name from class name when subclass is created."""
         super().__init_subclass__(**kwargs)
         # Only set automatically if not explicitly defined in the current class
-        if "tool_name" not in cls.__dict__:
-            cls.tool_name = _camel_to_snake(cls.__name__)
+        if "name" not in cls.__dict__:
+            cls.name = _camel_to_snake(cls.__name__)
 
-    name: str
     description: str
     action_type: type[Action] = Field(repr=False)
     observation_type: type[Observation] | None = Field(default=None, repr=False)

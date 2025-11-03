@@ -106,7 +106,6 @@ class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_navigate",
                 description=BROWSER_NAVIGATE_DESCRIPTION,
                 action_type=BrowserNavigateAction,
                 observation_type=BrowserObservation,
@@ -157,7 +156,6 @@ class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_click",
                 description=BROWSER_CLICK_DESCRIPTION,
                 action_type=BrowserClickAction,
                 observation_type=BrowserObservation,
@@ -205,7 +203,6 @@ class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_type",
                 description=BROWSER_TYPE_DESCRIPTION,
                 action_type=BrowserTypeAction,
                 observation_type=BrowserObservation,
@@ -250,7 +247,6 @@ class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_get_state",
                 description=BROWSER_GET_STATE_DESCRIPTION,
                 action_type=BrowserGetStateAction,
                 observation_type=BrowserObservation,
@@ -298,7 +294,6 @@ class BrowserGetContentTool(
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_get_content",
                 description=BROWSER_GET_CONTENT_DESCRIPTION,
                 action_type=BrowserGetContentAction,
                 observation_type=BrowserObservation,
@@ -343,7 +338,6 @@ class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation])
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_scroll",
                 description=BROWSER_SCROLL_DESCRIPTION,
                 action_type=BrowserScrollAction,
                 observation_type=BrowserObservation,
@@ -382,7 +376,6 @@ class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation])
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_go_back",
                 description=BROWSER_GO_BACK_DESCRIPTION,
                 action_type=BrowserGoBackAction,
                 observation_type=BrowserObservation,
@@ -421,7 +414,6 @@ class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_list_tabs",
                 description=BROWSER_LIST_TABS_DESCRIPTION,
                 action_type=BrowserListTabsAction,
                 observation_type=BrowserObservation,
@@ -465,7 +457,6 @@ class BrowserSwitchTabTool(ToolDefinition[BrowserSwitchTabAction, BrowserObserva
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_switch_tab",
                 description=BROWSER_SWITCH_TAB_DESCRIPTION,
                 action_type=BrowserSwitchTabAction,
                 observation_type=BrowserObservation,
@@ -508,7 +499,6 @@ class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name="browser_close_tab",
                 description=BROWSER_CLOSE_TAB_DESCRIPTION,
                 action_type=BrowserCloseTabAction,
                 observation_type=BrowserObservation,
@@ -562,4 +552,4 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         return tools
 
 
-register_tool(BrowserToolSet.tool_name, BrowserToolSet)
+register_tool(BrowserToolSet.name, BrowserToolSet)

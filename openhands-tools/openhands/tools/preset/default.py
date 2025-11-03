@@ -21,14 +21,14 @@ def register_default_tools(enable_browser: bool = True) -> None:
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.task_tracker import TaskTrackerTool
 
-    logger.debug(f"Tool: {BashTool.tool_name} registered.")
-    logger.debug(f"Tool: {FileEditorTool.tool_name} registered.")
-    logger.debug(f"Tool: {TaskTrackerTool.tool_name} registered.")
+    logger.debug(f"Tool: {BashTool.name} registered.")
+    logger.debug(f"Tool: {FileEditorTool.name} registered.")
+    logger.debug(f"Tool: {TaskTrackerTool.name} registered.")
 
     if enable_browser:
         from openhands.tools.browser_use import BrowserToolSet
 
-        logger.debug(f"Tool: {BrowserToolSet.tool_name} registered.")
+        logger.debug(f"Tool: {BrowserToolSet.name} registered.")
 
 
 def get_default_tools(
@@ -47,14 +47,14 @@ def get_default_tools(
     from openhands.tools.task_tracker import TaskTrackerTool
 
     tools = [
-        Tool(name=BashTool.tool_name),
-        Tool(name=FileEditorTool.tool_name),
-        Tool(name=TaskTrackerTool.tool_name),
+        Tool(name=BashTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
     ]
     if enable_browser:
         from openhands.tools.browser_use import BrowserToolSet
 
-        tools.append(Tool(name=BrowserToolSet.tool_name))
+        tools.append(Tool(name=BrowserToolSet.name))
     return tools
 
 

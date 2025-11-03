@@ -223,7 +223,6 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name="str_replace_editor",
                 action_type=FileEditorAction,
                 observation_type=FileEditorObservation,
                 description=enhanced_description,
@@ -240,4 +239,4 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
 
 
 # Automatically register the tool when this module is imported
-register_tool(FileEditorTool.tool_name, FileEditorTool)
+register_tool(FileEditorTool.name, FileEditorTool)
