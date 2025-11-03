@@ -116,7 +116,6 @@ class DelegateToolTemplate(ToolDefinition[DelegateAction, DelegateObservation]):
         ]
 
 
-# Create a singleton instance for backward compatibility
 delegate_tool = DelegateToolTemplate.create()[0]
 
 

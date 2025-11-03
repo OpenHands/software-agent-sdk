@@ -431,7 +431,6 @@ class TaskTrackerToolTemplate(
         ]
 
 
-# Create a singleton instance for backward compatibility
 task_tracker_tool = TaskTrackerToolTemplate.create()[0]
 
 

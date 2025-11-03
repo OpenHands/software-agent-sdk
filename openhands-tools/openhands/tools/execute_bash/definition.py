@@ -256,7 +256,6 @@ class ExecuteBashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation])
         ]
 
 
-# Create a singleton instance for backward compatibility
 execute_bash_tool = ExecuteBashTool.create()[0]
 
 

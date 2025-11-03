@@ -226,7 +226,6 @@ class StrReplaceEditorTool(ToolDefinition[FileEditorAction, FileEditorObservatio
         ]
 
 
-# Create a singleton instance for backward compatibility
 file_editor_tool = StrReplaceEditorTool.create()[0]
 
 
