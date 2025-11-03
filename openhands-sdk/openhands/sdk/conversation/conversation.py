@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.secrets_manager import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace

@@ -213,7 +213,7 @@ async def update_conversation_secrets(
     # Strings are valid SecretValue (SecretValue = str | SecretProvider)
     from typing import cast
 
-    from openhands.sdk.conversation.secrets_manager import SecretValue
+    from openhands.sdk.conversation.secret_registry import SecretValue
 
     secrets = cast(dict[str, SecretValue], request.secrets)
     await event_service.update_secrets(secrets)

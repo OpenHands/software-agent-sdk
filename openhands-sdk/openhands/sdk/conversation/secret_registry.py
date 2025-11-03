@@ -17,10 +17,10 @@ logger = get_logger(__name__)
 SecretValue = str | SecretSource
 
 
-class SecretsManager(OpenHandsModel):
+class SecretRegistry(OpenHandsModel):
     """Manages secrets and injects them into bash commands when needed.
 
-    The secrets manager stores a mapping of secret keys to SecretSources
+    The secret registry stores a mapping of secret keys to SecretSources
     that retrieve the actual secret values. When a bash command is about to be
     executed, it scans the command for any secret keys and injects the corresponding
     environment variables.

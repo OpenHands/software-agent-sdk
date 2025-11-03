@@ -304,7 +304,7 @@ class ConversationVisualizer:
         reasoning_tokens = usage.reasoning_tokens or 0
 
         # Cost
-        cost_str = f"{cost:.4f}" if cost > 0 else "$0.00"
+        cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
 
         # Build with fixed color scheme
         parts: list[str] = []

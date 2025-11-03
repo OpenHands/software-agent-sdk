@@ -232,6 +232,7 @@ class Agent(AgentBase):
             msg_event = MessageEvent(
                 source="agent",
                 llm_message=message,
+                llm_response_id=llm_response.id,
             )
             on_event(msg_event)
 

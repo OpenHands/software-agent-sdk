@@ -1,3 +1,4 @@
+import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
@@ -5,7 +6,7 @@ from pathlib import Path
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.conversation.secrets_manager import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
@@ -40,6 +41,7 @@ class LocalConversation(BaseConversation):
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -132,6 +134,9 @@ class LocalConversation(BaseConversation):
             # Convert dict[str, str] to dict[str, SecretValue]
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
+
+        self._cleanup_initiated = False
+        atexit.register(self.close)
 
     @property
     def id(self) -> ConversationID:
@@ -353,12 +358,15 @@ class LocalConversation(BaseConversation):
                      when a command references the secret key.
         """
 
-        secrets_manager = self._state.secrets_manager
-        secrets_manager.update_secrets(secrets)
+        secret_registry = self._state.secret_registry
+        secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
         for tool in self.agent.tools_map.values():
             try:
