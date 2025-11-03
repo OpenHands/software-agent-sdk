@@ -42,7 +42,7 @@ llm = llm_registry.get("agent")
 
 # Tools
 cwd = os.getcwd()
-tools = [Tool(name=BashTool.tool_name)]
+tools = [Tool(name=BashTool.name)]
 
 # Agent
 agent = Agent(llm=llm, tools=tools)

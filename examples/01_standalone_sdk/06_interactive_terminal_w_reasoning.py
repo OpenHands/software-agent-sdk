@@ -32,7 +32,7 @@ llm = LLM(
 cwd = os.getcwd()
 tools = [
     Tool(
-        name=BashTool.tool_name,
+        name=BashTool.name,
         params={"no_change_timeout_seconds": 3},
     )
 ]

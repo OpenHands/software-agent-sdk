@@ -27,8 +27,8 @@ llm = LLM(
 
 # Tools
 tools = [
-    Tool(name=BashTool.tool_name),
-    Tool(name=FileEditorTool.tool_name),
+    Tool(name=BashTool.name),
+    Tool(name=FileEditorTool.name),
 ]
 
 # Agent

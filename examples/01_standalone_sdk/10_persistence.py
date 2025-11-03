@@ -33,8 +33,8 @@ llm = LLM(
 # Tools
 cwd = os.getcwd()
 tools = [
-    Tool(name=BashTool.tool_name),
-    Tool(name=FileEditorTool.tool_name),
+    Tool(name=BashTool.name),
+    Tool(name=FileEditorTool.name),
 ]
 
 # Add MCP Tools

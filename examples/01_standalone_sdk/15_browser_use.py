@@ -34,10 +34,10 @@ llm = LLM(
 cwd = os.getcwd()
 tools = [
     Tool(
-        name=BashTool.tool_name,
+        name=BashTool.name,
     ),
-    Tool(name=FileEditorTool.tool_name),
-    Tool(name=BrowserToolSet.tool_name),
+    Tool(name=FileEditorTool.name),
+    Tool(name=BrowserToolSet.name),
 ]
 
 # If you need fine-grained browser control, you can manually register individual browser
