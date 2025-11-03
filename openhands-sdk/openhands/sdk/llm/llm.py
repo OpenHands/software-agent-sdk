@@ -459,7 +459,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             }
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
-        self._telemetry.on_request(log_ctx=log_ctx)
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -472,6 +471,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
+            self._telemetry.on_request(log_ctx=log_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(messages=formatted_messages, **final_kwargs)
