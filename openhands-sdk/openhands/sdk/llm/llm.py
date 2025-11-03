@@ -459,7 +459,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             }
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
-        self._telemetry.on_request(log_ctx=log_ctx)
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -472,6 +471,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
+            self._telemetry.on_request(log_ctx=log_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(messages=formatted_messages, **final_kwargs)
@@ -848,10 +848,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
-            if "deepseek" in self.model or (
-                "kimi-k2-instruct" in self.model and "groq" in self.model
-            ):
-                message.force_string_serializer = True
+            message.force_string_serializer = get_features(
+                self.model
+            ).force_string_serializer
 
         formatted_messages = [message.to_chat_dict() for message in messages]
 

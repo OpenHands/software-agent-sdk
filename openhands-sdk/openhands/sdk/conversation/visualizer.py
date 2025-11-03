@@ -199,15 +199,24 @@ class ConversationVisualizer:
             }
             role_color = role_colors.get(event.llm_message.role, "white")
 
-            # Use "to" for user messages (user sending to agent)
-            # and "from" for assistant messages
-            direction = "to" if event.llm_message.role == "user" else "from"
-            title_text = f"[bold {role_color}]Message {direction} "
-            if self._name_for_visualization:
-                title_text += f"{self._name_for_visualization} Agent"
+            # "User Message To [Name] Agent" for user
+            # "Message from [Name] Agent" for agent
+            agent_name = (
+                f"{self._name_for_visualization} "
+                if self._name_for_visualization
+                else ""
+            )
+
+            if event.llm_message.role == "user":
+                title_text = (
+                    f"[bold {role_color}]User Message to "
+                    f"{agent_name}Agent[/bold {role_color}]"
+                )
             else:
-                title_text += event.source.capitalize()
-            title_text += f"[/bold {role_color}]"
+                title_text = (
+                    f"[bold {role_color}]Message from "
+                    f"{agent_name}Agent[/bold {role_color}]"
+                )
             return Panel(
                 content,
                 title=title_text,

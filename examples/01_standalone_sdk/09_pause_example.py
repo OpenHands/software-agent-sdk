@@ -92,3 +92,7 @@ print(f"Status before resume: {conversation.state.agent_status}")
 conversation.run()
 
 print(f"Final status: {conversation.state.agent_status}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

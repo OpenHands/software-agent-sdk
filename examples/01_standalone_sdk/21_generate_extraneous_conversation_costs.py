@@ -116,3 +116,7 @@ print(
         tablefmt="github",
     )
 )
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
