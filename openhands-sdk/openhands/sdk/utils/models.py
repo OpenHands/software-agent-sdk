@@ -49,7 +49,7 @@ def rebuild_all():
 def kind_of(obj) -> str:
     """Get the string value for the kind tag"""
     if isinstance(obj, dict):
-        return obj.get("kind", "")
+        return obj["kind"]
     if not hasattr(obj, "__name__"):
         obj = obj.__class__
     return obj.__name__
@@ -241,22 +241,7 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
     @classmethod
     def model_validate(cls, obj: Any, **kwargs) -> Self:
         if _is_abstract(cls):
-            try:
-                resolved = cls.resolve_kind(kind_of(obj))
-            except ValueError as e:
-                from pydantic import ValidationError as PydanticValidationError
-
-                raise PydanticValidationError.from_exception_data(
-                    title=cls.__name__,
-                    line_errors=[
-                        {
-                            "type": "value_error",
-                            "loc": ("kind",),
-                            "input": kind_of(obj),
-                            "ctx": {"error": str(e)},
-                        }
-                    ],
-                )
+            resolved = cls.resolve_kind(kind_of(obj))
         else:
             resolved = super()
         result = resolved.model_validate(obj, **kwargs)
@@ -270,22 +255,7 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
     ) -> Self:
         data = json.loads(json_data)
         if _is_abstract(cls):
-            try:
-                resolved = cls.resolve_kind(kind_of(data))
-            except ValueError as e:
-                from pydantic import ValidationError as PydanticValidationError
-
-                raise PydanticValidationError.from_exception_data(
-                    title=cls.__name__,
-                    line_errors=[
-                        {
-                            "type": "value_error",
-                            "loc": ("kind",),
-                            "input": kind_of(data),
-                            "ctx": {"error": str(e)},
-                        }
-                    ],
-                )
+            resolved = cls.resolve_kind(kind_of(data))
         else:
             resolved = super()
         result = resolved.model_validate(data, **kwargs)
