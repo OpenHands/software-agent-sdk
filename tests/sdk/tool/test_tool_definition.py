@@ -11,7 +11,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
 )
 
@@ -36,7 +36,7 @@ class ToolMockObservation(Observation):
         return [TextContent(text=self.result)]
 
 
-class MockTestTool(ToolBase[ToolMockAction, ToolMockObservation]):
+class MockTestTool(ToolDefinition[ToolMockAction, ToolMockObservation]):
     """Concrete mock tool for testing."""
 
     @classmethod

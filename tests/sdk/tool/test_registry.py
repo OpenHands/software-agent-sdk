@@ -6,7 +6,7 @@ import pytest
 from openhands.sdk import register_tool
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolBase
+from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.registry import resolve_tool
 from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.tool.spec import Tool
@@ -38,7 +38,7 @@ class _HelloExec(ToolExecutor[_HelloAction, _HelloObservation]):
         return _HelloObservation(message=f"Hello, {action.name}!")
 
 
-class _ConfigurableHelloTool(ToolBase):
+class _ConfigurableHelloTool(ToolDefinition):
     @classmethod
     def create(
         cls,
@@ -69,7 +69,7 @@ class _ConfigurableHelloTool(ToolBase):
         ]
 
 
-class _SimpleHelloTool(ToolBase[_HelloAction, _HelloObservation]):
+class _SimpleHelloTool(ToolDefinition[_HelloAction, _HelloObservation]):
     """Simple concrete tool for registry testing."""
 
     @classmethod
@@ -85,7 +85,7 @@ class _SimpleHelloTool(ToolBase[_HelloAction, _HelloObservation]):
         ]
 
 
-def _hello_tool_factory(conv_state=None, **params) -> list[ToolBase]:
+def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
     return list(_SimpleHelloTool.create(conv_state, **params))
 
 
@@ -93,7 +93,7 @@ def test_register_and_resolve_callable_factory():
     register_tool("say_hello", _hello_tool_factory)
     tools = resolve_tool(Tool(name="say_hello"), _create_mock_conv_state())
     assert len(tools) == 1
-    assert isinstance(tools[0], ToolBase)
+    assert isinstance(tools[0], ToolDefinition)
     assert tools[0].name == "say_hello"
 
 

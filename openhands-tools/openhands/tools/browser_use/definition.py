@@ -10,7 +10,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
 )
 from openhands.sdk.utils import maybe_truncate
 
@@ -85,7 +85,9 @@ Examples:
 """  # noqa: E501
 
 
-class BrowserNavigateToolTemplate(ToolBase[BrowserNavigateAction, BrowserObservation]):
+class BrowserNavigateToolTemplate(
+    ToolDefinition[BrowserNavigateAction, BrowserObservation]
+):
     """Tool template for browser navigation without an executor."""
 
     @classmethod
@@ -112,7 +114,7 @@ class BrowserNavigateToolTemplate(ToolBase[BrowserNavigateAction, BrowserObserva
 browser_navigate_tool = BrowserNavigateToolTemplate.create()[0]
 
 
-class BrowserNavigateTool(ToolBase[BrowserNavigateAction, BrowserObservation]):
+class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservation]):
     """Tool for browser navigation."""
 
     @classmethod
@@ -157,7 +159,7 @@ Important: Only use indices that appear in your current browser_get_state output
 """  # noqa: E501
 
 
-class BrowserClickToolTemplate(ToolBase[BrowserClickAction, BrowserObservation]):
+class BrowserClickToolTemplate(ToolDefinition[BrowserClickAction, BrowserObservation]):
     """Tool template for browser click without an executor."""
 
     @classmethod
@@ -184,7 +186,7 @@ class BrowserClickToolTemplate(ToolBase[BrowserClickAction, BrowserObservation])
 browser_click_tool = BrowserClickToolTemplate.create()[0]
 
 
-class BrowserClickTool(ToolBase[BrowserClickAction, BrowserObservation]):
+class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
     """Tool for clicking browser elements."""
 
     @classmethod
@@ -226,7 +228,7 @@ Important: Only use indices that appear in your current browser_get_state output
 """  # noqa: E501
 
 
-class BrowserTypeToolTemplate(ToolBase[BrowserTypeAction, BrowserObservation]):
+class BrowserTypeToolTemplate(ToolDefinition[BrowserTypeAction, BrowserObservation]):
     """Tool template for browser_type without an executor."""
 
     @classmethod
@@ -253,7 +255,7 @@ class BrowserTypeToolTemplate(ToolBase[BrowserTypeAction, BrowserObservation]):
 browser_type_tool = BrowserTypeToolTemplate.create()[0]
 
 
-class BrowserTypeTool(ToolBase[BrowserTypeAction, BrowserObservation]):
+class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
     """Tool for typing text into browser elements."""
 
     @classmethod
@@ -292,7 +294,9 @@ Parameters:
 """  # noqa: E501
 
 
-class BrowserGetStateToolTemplate(ToolBase[BrowserGetStateAction, BrowserObservation]):
+class BrowserGetStateToolTemplate(
+    ToolDefinition[BrowserGetStateAction, BrowserObservation]
+):
     """Tool template for browser_get_state without an executor."""
 
     @classmethod
@@ -319,7 +323,7 @@ class BrowserGetStateToolTemplate(ToolBase[BrowserGetStateAction, BrowserObserva
 browser_get_state_tool = BrowserGetStateToolTemplate.create()[0]
 
 
-class BrowserGetStateTool(ToolBase[BrowserGetStateAction, BrowserObservation]):
+class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservation]):
     """Tool for getting browser state."""
 
     @classmethod
@@ -360,7 +364,7 @@ If the content was truncated and you need more information, use start_from_char 
 
 
 class BrowserGetContentToolTemplate(
-    ToolBase[BrowserGetContentAction, BrowserObservation]
+    ToolDefinition[BrowserGetContentAction, BrowserObservation]
 ):
     """Tool template for browser_get_content without an executor."""
 
@@ -388,7 +392,9 @@ class BrowserGetContentToolTemplate(
 browser_get_content_tool = BrowserGetContentToolTemplate.create()[0]
 
 
-class BrowserGetContentTool(ToolBase[BrowserGetContentAction, BrowserObservation]):
+class BrowserGetContentTool(
+    ToolDefinition[BrowserGetContentAction, BrowserObservation]
+):
     """Tool for getting page content in markdown."""
 
     @classmethod
@@ -427,7 +433,9 @@ Parameters:
 """  # noqa: E501
 
 
-class BrowserScrollToolTemplate(ToolBase[BrowserScrollAction, BrowserObservation]):
+class BrowserScrollToolTemplate(
+    ToolDefinition[BrowserScrollAction, BrowserObservation]
+):
     """Tool template for browser_scroll without an executor."""
 
     @classmethod
@@ -454,7 +462,7 @@ class BrowserScrollToolTemplate(ToolBase[BrowserScrollAction, BrowserObservation
 browser_scroll_tool = BrowserScrollToolTemplate.create()[0]
 
 
-class BrowserScrollTool(ToolBase[BrowserScrollAction, BrowserObservation]):
+class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation]):
     """Tool for scrolling the browser page."""
 
     @classmethod
@@ -487,7 +495,9 @@ browser's back button.
 """  # noqa: E501
 
 
-class BrowserGoBackToolTemplate(ToolBase[BrowserGoBackAction, BrowserObservation]):
+class BrowserGoBackToolTemplate(
+    ToolDefinition[BrowserGoBackAction, BrowserObservation]
+):
     """Tool template for browser_go_back without an executor."""
 
     @classmethod
@@ -514,7 +524,7 @@ class BrowserGoBackToolTemplate(ToolBase[BrowserGoBackAction, BrowserObservation
 browser_go_back_tool = BrowserGoBackToolTemplate.create()[0]
 
 
-class BrowserGoBackTool(ToolBase[BrowserGoBackAction, BrowserObservation]):
+class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation]):
     """Tool for going back in browser history."""
 
     @classmethod
@@ -547,7 +557,9 @@ with browser_switch_tab or browser_close_tab.
 """  # noqa: E501
 
 
-class BrowserListTabsToolTemplate(ToolBase[BrowserListTabsAction, BrowserObservation]):
+class BrowserListTabsToolTemplate(
+    ToolDefinition[BrowserListTabsAction, BrowserObservation]
+):
     """Tool template for browser_list_tabs without an executor."""
 
     @classmethod
@@ -574,7 +586,7 @@ class BrowserListTabsToolTemplate(ToolBase[BrowserListTabsAction, BrowserObserva
 browser_list_tabs_tool = BrowserListTabsToolTemplate.create()[0]
 
 
-class BrowserListTabsTool(ToolBase[BrowserListTabsAction, BrowserObservation]):
+class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservation]):
     """Tool for listing browser tabs."""
 
     @classmethod
@@ -613,7 +625,7 @@ Parameters:
 
 
 class BrowserSwitchTabToolTemplate(
-    ToolBase[BrowserSwitchTabAction, BrowserObservation]
+    ToolDefinition[BrowserSwitchTabAction, BrowserObservation]
 ):
     """Tool template for browser_switch_tab without an executor."""
 
@@ -641,7 +653,7 @@ class BrowserSwitchTabToolTemplate(
 browser_switch_tab_tool = BrowserSwitchTabToolTemplate.create()[0]
 
 
-class BrowserSwitchTabTool(ToolBase[BrowserSwitchTabAction, BrowserObservation]):
+class BrowserSwitchTabTool(ToolDefinition[BrowserSwitchTabAction, BrowserObservation]):
     """Tool for switching browser tabs."""
 
     # Override executor to be non-optional for initialized BrowserSwitchTabTool
@@ -681,7 +693,9 @@ Parameters:
 """
 
 
-class BrowserCloseTabToolTemplate(ToolBase[BrowserCloseTabAction, BrowserObservation]):
+class BrowserCloseTabToolTemplate(
+    ToolDefinition[BrowserCloseTabAction, BrowserObservation]
+):
     """Tool template for browser_close_tab without an executor."""
 
     @classmethod
@@ -708,7 +722,7 @@ class BrowserCloseTabToolTemplate(ToolBase[BrowserCloseTabAction, BrowserObserva
 browser_close_tab_tool = BrowserCloseTabToolTemplate.create()[0]
 
 
-class BrowserCloseTabTool(ToolBase[BrowserCloseTabAction, BrowserObservation]):
+class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservation]):
     """Tool for closing browser tabs."""
 
     @classmethod
@@ -740,7 +754,7 @@ BrowserAction = (
 )
 
 
-class BrowserToolSet(ToolBase[BrowserAction, BrowserObservation]):
+class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
     This tool set includes all available browser-related tools
@@ -754,7 +768,7 @@ class BrowserToolSet(ToolBase[BrowserAction, BrowserObservation]):
     def create(
         cls,
         **executor_config,
-    ) -> list[ToolBase[BrowserAction, BrowserObservation]]:
+    ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
         # Import executor only when actually needed to
         # avoid hanging during module import
         from openhands.tools.browser_use.impl import BrowserToolExecutor

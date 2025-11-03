@@ -1,6 +1,6 @@
 """Test BrowserToolSet functionality."""
 
-from openhands.sdk.tool import ToolBase
+from openhands.sdk.tool import ToolDefinition
 from openhands.tools.browser_use import (
     BrowserToolSet,
     browser_click_tool,
@@ -26,7 +26,7 @@ def test_browser_toolset_create_returns_list():
 
     # Verify all items are Tool instances
     for tool in tools:
-        assert isinstance(tool, ToolBase)
+        assert isinstance(tool, ToolDefinition)
 
 
 def test_browser_toolset_create_includes_all_browser_tools():
@@ -133,11 +133,11 @@ def test_browser_toolset_create_no_parameters():
 
 def test_browser_toolset_inheritance():
     """Test that BrowserToolSet properly inherits from Tool."""
-    assert issubclass(BrowserToolSet, ToolBase)
+    assert issubclass(BrowserToolSet, ToolDefinition)
 
     # BrowserToolSet should not be instantiable directly (it's a factory)
     # The create method returns a list, not an instance of BrowserToolSet
     tools = BrowserToolSet.create()
     for tool in tools:
         assert not isinstance(tool, BrowserToolSet)
-        assert isinstance(tool, ToolBase)
+        assert isinstance(tool, ToolDefinition)

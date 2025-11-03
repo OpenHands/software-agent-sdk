@@ -14,14 +14,14 @@ from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import (
     ExecutableTool,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
 )
 
 
 __all__ = [
     "Tool",
-    "ToolBase",
+    "ToolDefinition",
     "ToolAnnotations",
     "ToolExecutor",
     "ExecutableTool",

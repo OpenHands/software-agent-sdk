@@ -37,7 +37,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     Tool,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
     register_tool,
 )
@@ -79,7 +79,7 @@ class StatusCheckingExecutor(
 
 
 class StatusTransitionTestTool(
-    ToolBase[StatusTransitionMockAction, StatusTransitionMockObservation]
+    ToolDefinition[StatusTransitionMockAction, StatusTransitionMockObservation]
 ):
     """Concrete tool for status transition testing."""
 
@@ -103,7 +103,7 @@ def test_agent_status_transitions_to_running_from_idle(mock_completion):
     """Test that agent status transitions to RUNNING when run() is called from IDLE."""
     status_during_execution: list[AgentExecutionStatus] = []
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolBase]:
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
         return StatusTransitionTestTool.create(
             executor=StatusCheckingExecutor(status_during_execution)
         )
@@ -150,7 +150,7 @@ def test_agent_status_is_running_during_execution_from_idle(mock_completion):
     status_during_execution: list[AgentExecutionStatus] = []
     execution_started = threading.Event()
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolBase]:
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
         return StatusTransitionTestTool.create(
             executor=StatusCheckingExecutor(status_during_execution)
         )
@@ -300,7 +300,7 @@ def test_agent_status_transitions_from_waiting_for_confirmation(mock_completion)
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
 
-    def _make_tool(conv_state=None, **params) -> Sequence[ToolBase]:
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
         return StatusTransitionTestTool.create(executor=StatusCheckingExecutor([]))
 
     register_tool("test_tool", _make_tool)

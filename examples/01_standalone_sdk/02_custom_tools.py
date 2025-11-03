@@ -16,7 +16,7 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     Observation,
     TextContent,
-    ToolBase,
+    ToolDefinition,
     get_logger,
 )
 from openhands.sdk.tool import (
@@ -119,13 +119,13 @@ _GREP_DESCRIPTION = """Fast content search tool.
 # --- Tool Definition ---
 
 
-class GrepTool(ToolBase[GrepAction, GrepObservation]):
+class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     """A custom grep tool that searches file contents using regular expressions."""
 
     @classmethod
     def create(
         cls, conv_state, bash_executor: BashExecutor | None = None
-    ) -> Sequence[ToolBase]:
+    ) -> Sequence[ToolDefinition]:
         """Create GrepTool instance with a GrepExecutor.
 
         Args:
@@ -167,7 +167,7 @@ llm = LLM(
 cwd = os.getcwd()
 
 
-def _make_bash_and_grep_tools(conv_state) -> list[ToolBase]:
+def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
     """Create execute_bash and custom grep tools sharing one executor."""
 
     bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)

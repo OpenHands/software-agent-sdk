@@ -20,7 +20,7 @@ from openhands.sdk.llm import (
     TextContent,
 )
 from openhands.sdk.tool.schema import Action
-from openhands.sdk.tool.tool import ToolBase
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -49,7 +49,7 @@ class _ArgsBasic(Action):
     param: str
 
 
-class _MockTool(ToolBase[_ArgsBasic, None]):
+class _MockTool(ToolDefinition[_ArgsBasic, None]):
     """Mock tool for LLM completion testing."""
 
     @classmethod

@@ -35,7 +35,7 @@ from openhands.sdk.llm.utils.metrics import TokenUsage
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
 from openhands.sdk.tool import (
     Tool,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
     register_tool,
 )
@@ -72,7 +72,7 @@ class TestExecutor(
 
 
 class ConfirmationTestTool(
-    ToolBase[MockConfirmationModeAction, MockConfirmationModeObservation]
+    ToolDefinition[MockConfirmationModeAction, MockConfirmationModeObservation]
 ):
     """Concrete tool for confirmation mode testing."""
 
@@ -89,7 +89,7 @@ class ConfirmationTestTool(
         ]
 
 
-def _make_tool(conv_state=None, **params) -> Sequence[ToolBase]:
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
     """Factory function for creating test tools."""
     return ConfirmationTestTool.create(conv_state, **params)
 

@@ -16,7 +16,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
 )
 from openhands.sdk.utils import maybe_truncate
 from openhands.tools.execute_bash.constants import (
@@ -217,7 +217,7 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-class ExecuteBashTool(ToolBase[ExecuteBashAction, ExecuteBashObservation]):
+class ExecuteBashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
     """Tool definition for bash command execution without an executor.
 
     This is a template tool that needs an executor to be set via .set_executor()
@@ -260,8 +260,8 @@ class ExecuteBashTool(ToolBase[ExecuteBashAction, ExecuteBashObservation]):
 execute_bash_tool = ExecuteBashTool.create()[0]
 
 
-class BashTool(ToolBase[ExecuteBashAction, ExecuteBashObservation]):
-    """A ToolBase subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
+class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
+    """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
 
     @classmethod
     def create(
@@ -300,7 +300,7 @@ class BashTool(ToolBase[ExecuteBashAction, ExecuteBashObservation]):
             terminal_type=terminal_type,
         )
 
-        # Initialize the parent ToolBase with the executor
+        # Initialize the parent ToolDefinition with the executor
         return [
             cls(
                 name=execute_bash_tool.name,

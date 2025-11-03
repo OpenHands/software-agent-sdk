@@ -10,7 +10,7 @@ from openhands.sdk.tool.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
 )
 
 
@@ -77,7 +77,7 @@ This tool provides two commands:
 """  # noqa
 
 
-class DelegateToolTemplate(ToolBase[DelegateAction, DelegateObservation]):
+class DelegateToolTemplate(ToolDefinition[DelegateAction, DelegateObservation]):
     """Tool definition for delegation operations without an executor.
 
     This is a template tool that needs an executor to be set via .set_executor()
@@ -120,8 +120,8 @@ class DelegateToolTemplate(ToolBase[DelegateAction, DelegateObservation]):
 delegate_tool = DelegateToolTemplate.create()[0]
 
 
-class DelegateTool(ToolBase[DelegateAction, DelegateObservation]):
-    """A ToolBase subclass that automatically initializes a DelegateExecutor."""
+class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
+    """A ToolDefinition subclass that automatically initializes a DelegateExecutor."""
 
     @classmethod
     def create(

@@ -9,7 +9,7 @@ from openhands.sdk.tool.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
 )
 
@@ -84,7 +84,7 @@ class ThinkExecutor(ToolExecutor):
         return ThinkObservation()
 
 
-class ThinkTool(ToolBase[ThinkAction, ThinkObservation]):
+class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):
     """Tool for logging thoughts without making changes."""
 
     @classmethod

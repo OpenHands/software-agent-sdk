@@ -4,7 +4,7 @@ from unittest.mock import patch
 from openhands.sdk import LLM, Conversation
 from openhands.sdk.agent import Agent
 from openhands.sdk.llm.message import ImageContent, TextContent
-from openhands.sdk.tool import ToolBase
+from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import Action, Observation, ToolExecutor
@@ -27,7 +27,7 @@ class _Exec(ToolExecutor[_Action, _Obs]):
         return _Obs(out=action.text.upper())
 
 
-class _UpperTool(ToolBase[_Action, _Obs]):
+class _UpperTool(ToolDefinition[_Action, _Obs]):
     """Concrete tool for uppercase testing."""
 
     @classmethod
@@ -43,7 +43,7 @@ class _UpperTool(ToolBase[_Action, _Obs]):
         ]
 
 
-def _make_tool(conv_state=None, **kwargs) -> Sequence[ToolBase]:
+def _make_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
     return _UpperTool.create(conv_state, **kwargs)
 
 

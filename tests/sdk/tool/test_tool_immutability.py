@@ -11,7 +11,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
 )
 
@@ -37,7 +37,7 @@ class ToolImmutabilityMockObservation(Observation):
 
 
 class MockImmutableTool(
-    ToolBase[ToolImmutabilityMockAction, ToolImmutabilityMockObservation]
+    ToolDefinition[ToolImmutabilityMockAction, ToolImmutabilityMockObservation]
 ):
     """Concrete mock tool for immutability testing."""
 

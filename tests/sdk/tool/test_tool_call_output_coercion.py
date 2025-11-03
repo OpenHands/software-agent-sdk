@@ -3,7 +3,7 @@ from collections.abc import Sequence
 import pytest
 from pydantic import Field
 
-from openhands.sdk.tool import Observation, ToolBase, ToolExecutor
+from openhands.sdk.tool import Observation, ToolDefinition, ToolExecutor
 from openhands.sdk.tool.schema import Action
 
 
@@ -21,7 +21,7 @@ class OCAObs(Observation):
         return [TextContent(text=str(self.value))]
 
 
-class MockCoercionTool(ToolBase[OCAAction, OCAObs]):
+class MockCoercionTool(ToolDefinition[OCAAction, OCAObs]):
     """Concrete mock tool for output coercion testing."""
 
     @classmethod

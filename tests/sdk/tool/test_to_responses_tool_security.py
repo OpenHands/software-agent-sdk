@@ -2,14 +2,14 @@ from collections.abc import Sequence
 
 from pydantic import Field
 
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolBase
+from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
 
 
 class TRTSAction(Action):
     x: int = Field(description="x")
 
 
-class MockSecurityTool(ToolBase[TRTSAction, Observation]):
+class MockSecurityTool(ToolDefinition[TRTSAction, Observation]):
     """Concrete mock tool for security testing."""
 
     @classmethod

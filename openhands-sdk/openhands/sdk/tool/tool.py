@@ -133,7 +133,7 @@ class ExecutableTool(Protocol):
         ...
 
 
-class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
+class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin):
     """Base class for all tool implementations.
 
     This class serves as a base for the discriminated union of all tool types.
@@ -148,13 +148,13 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
 
     Examples:
         Simple tool with no parameters:
-            class FinishTool(ToolBase[FinishAction, FinishObservation]):
+            class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
                 @classmethod
                 def create(cls, conv_state=None, **params):
                     return [cls(name="finish", ..., executor=FinishExecutor())]
 
         Complex tool with initialization parameters:
-            class BashTool(ToolBase[ExecuteBashAction, ExecuteBashObservation]):
+            class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 @classmethod
                 def create(cls, conv_state, **params):
                     executor = BashExecutor(
@@ -168,7 +168,7 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
     )
 
     # Override kind with a default value for direct instantiation
-    kind: str = Field(default="ToolBase")
+    kind: str = Field(default="ToolDefinition")
 
     name: str
     description: str
@@ -184,31 +184,28 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
     )
 
     def model_post_init(self, _context):  # noqa: ANN001, ANN201
-        """Validate that ToolBase is not instantiated directly.
+        """Validate that ToolDefinition is not instantiated directly.
 
-        This enforces the pattern that all tools must be subclasses of ToolBase,
-        not direct instances of ToolBase itself.
+        This enforces the pattern that all tools must be subclasses of ToolDefinition,
+        not direct instances of ToolDefinition itself.
         """
-        if type(self) is ToolBase:
+        if type(self) is ToolDefinition:
             raise TypeError(
-                "ToolBase cannot be instantiated directly. "
-                "Create a subclass that inherits from ToolBase and implements "
+                "ToolDefinition cannot be instantiated directly. "
+                "Create a subclass that inherits from ToolDefinition and implements "
                 "the .create() method. See FinishTool, ThinkTool, or GlobTool "
                 "for examples."
             )
         super().model_post_init(_context)
 
     @classmethod
+    @abstractmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:
         """Create a sequence of Tool instances.
 
-        This method can be overridden by subclasses to provide custom initialization
-        logic, typically initializing the executor with parameters from conv_state
-        and other optional parameters.
-
-        The default implementation raises NotImplementedError, which is appropriate
-        for tools that are instantiated directly rather than through the .create()
-        method.
+        This method must be implemented by all subclasses to provide custom
+        initialization logic, typically initializing the executor with parameters
+        from conv_state and other optional parameters.
 
         Args:
             *args: Variable positional arguments (typically conv_state as first arg).
@@ -217,25 +214,17 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
         Returns:
             A sequence of Tool instances. Even single tools are returned as a sequence
             to provide a consistent interface and eliminate union return types.
-
-        Raises:
-            NotImplementedError: If the tool doesn't support the .create() pattern
-                and should be instantiated directly instead.
         """
-        raise NotImplementedError(
-            f"{cls.__name__} does not implement .create(). "
-            "If you're seeing this error, either implement .create() in your tool "
-            "subclass, or instantiate the tool directly."
-        )
+        ...
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs) -> Self:
-        """Override to always perform polymorphic resolution for ToolBase."""
+        """Override to always perform polymorphic resolution for ToolDefinition."""
 
         from openhands.sdk.utils.models import kind_of
 
-        # If called on ToolBase itself (not a subclass), do polymorphic resolution
-        if cls is ToolBase:
+        # If called on ToolDefinition itself (not a subclass), do polymorphic resolution
+        if cls is ToolDefinition:
             try:
                 resolved = cls.resolve_kind(kind_of(obj))
             except ValueError as e:
@@ -262,14 +251,14 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
         json_data: str | bytes | bytearray,
         **kwargs,
     ) -> Self:
-        """Override to always perform polymorphic resolution for ToolBase."""
+        """Override to always perform polymorphic resolution for ToolDefinition."""
         import json
 
         from openhands.sdk.utils.models import kind_of
 
         data = json.loads(json_data)
-        # If called on ToolBase itself (not a subclass), do polymorphic resolution
-        if cls is ToolBase:
+        # If called on ToolDefinition itself (not a subclass), do polymorphic resolution
+        if cls is ToolDefinition:
             try:
                 resolved = cls.resolve_kind(kind_of(data))
             except ValueError as e:
@@ -534,9 +523,9 @@ def _create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
 
 
 def get_polymorphic_tool_type():
-    """Create a type annotation for polymorphic ToolBase fields.
+    """Create a type annotation for polymorphic ToolDefinition fields.
 
-    Use this when you need a field that can hold any ToolBase subclass and
+    Use this when you need a field that can hold any ToolDefinition subclass and
     deserialize polymorphically based on the `kind` discriminator.
 
     Example:
@@ -544,14 +533,14 @@ def get_polymorphic_tool_type():
             tool: get_polymorphic_tool_type()  # Will deserialize to correct subclass
 
     Returns:
-        An Annotated type that represents a discriminated union of all ToolBase
+        An Annotated type that represents a discriminated union of all ToolDefinition
         subclasses.
     """
     from openhands.sdk.utils.models import get_known_concrete_subclasses, kind_of
 
-    subclasses = list(get_known_concrete_subclasses(ToolBase))
+    subclasses = list(get_known_concrete_subclasses(ToolDefinition))
     if not subclasses:
-        return ToolBase
+        return ToolDefinition
 
     if len(subclasses) == 1:
         return subclasses[0]

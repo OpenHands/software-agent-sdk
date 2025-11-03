@@ -11,7 +11,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
 from openhands.sdk.llm import ImageContent, TextContent
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolBase
+from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
 
 
 class GlobAction(Action):
@@ -82,8 +82,8 @@ Examples:
 """  # noqa
 
 
-class GlobTool(ToolBase[GlobAction, GlobObservation]):
-    """A ToolBase subclass that automatically initializes a GlobExecutor."""
+class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
+    """A ToolDefinition subclass that automatically initializes a GlobExecutor."""
 
     @classmethod
     def create(
@@ -114,7 +114,7 @@ class GlobTool(ToolBase[GlobAction, GlobObservation]):
             f"When searching for files, patterns are relative to this directory."
         )
 
-        # Initialize the parent ToolBase with the executor
+        # Initialize the parent ToolDefinition with the executor
         return [
             cls(
                 name="glob",

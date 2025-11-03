@@ -66,7 +66,7 @@ from openhands.sdk.tool import (  # noqa: E402
     Action,
     Observation,
     Tool,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
     register_tool,
 )
@@ -129,7 +129,7 @@ class SleepExecutor(ToolExecutor):
         return SleepObservation(message=action.message)
 
 
-class SleepTool(ToolBase[SleepAction, SleepObservation]):
+class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
     """Sleep tool for testing message processing during finish."""
 
     @classmethod
@@ -145,7 +145,7 @@ class SleepTool(ToolBase[SleepAction, SleepObservation]):
         ]
 
 
-def _make_sleep_tool(conv_state=None, **kwargs) -> Sequence[ToolBase]:
+def _make_sleep_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
     """Create sleep tool for testing."""
     return SleepTool.create(conv_state, **kwargs)
 

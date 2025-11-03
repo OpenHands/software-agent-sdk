@@ -39,7 +39,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     Tool,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
     register_tool,
 )
@@ -91,7 +91,7 @@ class TestExecutor(
 
 
 class PauseFunctionalityTestTool(
-    ToolBase[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+    ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
 ):
     """Concrete tool for pause functionality testing."""
 
@@ -110,13 +110,13 @@ class PauseFunctionalityTestTool(
         ]
 
 
-def _make_tool(conv_state=None, **params) -> Sequence[ToolBase]:
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
     """Factory function for creating test tools."""
     return PauseFunctionalityTestTool.create(conv_state, **params)
 
 
 class BlockingTestTool(
-    ToolBase[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+    ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
 ):
     """Concrete tool for blocking pause testing."""
 
@@ -343,7 +343,7 @@ class TestPauseFunctionality:
     def test_pause_while_running_continuous_actions(self, mock_completion):
         step_entered = threading.Event()
 
-        def _make_blocking_tool(conv_state=None, **kwargs) -> Sequence[ToolBase]:
+        def _make_blocking_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
             return BlockingTestTool.create(
                 conv_state, step_entered=step_entered, **kwargs
             )

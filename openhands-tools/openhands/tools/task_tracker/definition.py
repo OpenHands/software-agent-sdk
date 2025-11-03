@@ -17,7 +17,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
 )
 
@@ -391,7 +391,9 @@ When uncertain, favor using this tool. Proactive task management demonstrates
 systematic approach and ensures comprehensive requirement fulfillment."""  # noqa: E501
 
 
-class TaskTrackerToolTemplate(ToolBase[TaskTrackerAction, TaskTrackerObservation]):
+class TaskTrackerToolTemplate(
+    ToolDefinition[TaskTrackerAction, TaskTrackerObservation]
+):
     """Tool definition for task tracking without an executor.
 
     This is a template tool that needs an executor to be set via .set_executor()
@@ -433,8 +435,8 @@ class TaskTrackerToolTemplate(ToolBase[TaskTrackerAction, TaskTrackerObservation
 task_tracker_tool = TaskTrackerToolTemplate.create()[0]
 
 
-class TaskTrackerTool(ToolBase[TaskTrackerAction, TaskTrackerObservation]):
-    """A ToolBase subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
+class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation]):
+    """A ToolDefinition subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
 
     @classmethod
     def create(cls, conv_state: "ConversationState") -> Sequence["TaskTrackerTool"]:

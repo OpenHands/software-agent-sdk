@@ -10,7 +10,7 @@ if TYPE_CHECKING:
 
 from openhands.sdk.tool import (
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
 )
 from openhands.tools.file_editor.definition import (
     TOOL_DESCRIPTION as FILE_EDITOR_TOOL_DESCRIPTION,
@@ -53,7 +53,7 @@ IMPORTANT RESTRICTION FOR PLANNING AGENT:
 
 
 class PlanningFileEditorTool(
-    ToolBase[PlanningFileEditorAction, PlanningFileEditorObservation]
+    ToolDefinition[PlanningFileEditorAction, PlanningFileEditorObservation]
 ):
     """A planning file editor tool with read-all, edit-PLAN.md-only access."""
 

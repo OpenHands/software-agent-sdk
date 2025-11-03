@@ -20,7 +20,7 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
-    ToolBase,
+    ToolDefinition,
     ToolExecutor,
 )
 from openhands.sdk.tool.schema import Schema
@@ -114,7 +114,7 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     return mcp_action_type
 
 
-class MCPToolDefinition(ToolBase[MCPToolAction, MCPToolObservation]):
+class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     """MCP Tool that wraps an MCP client and provides tool functionality."""
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")

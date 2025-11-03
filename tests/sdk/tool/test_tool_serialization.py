@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from openhands.sdk.tool.builtins import FinishTool, ThinkTool
-from openhands.sdk.tool.tool import ToolBase
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 def test_tool_serialization_deserialization() -> None:
@@ -18,7 +18,7 @@ def test_tool_serialization_deserialization() -> None:
     tool_json = tool.model_dump_json()
 
     # Deserialize from JSON using the abstract base class (for polymorphism)
-    deserialized_tool = ToolBase.model_validate_json(tool_json)
+    deserialized_tool = ToolDefinition.model_validate_json(tool_json)
 
     # Should deserialize to the correct type with same serializable data
     assert isinstance(deserialized_tool, FinishTool)
@@ -93,7 +93,7 @@ def test_tool_model_validate_json_dict() -> None:
     tool_dict = json.loads(tool_json)
 
     # Deserialize from dict using abstract base class (for polymorphism)
-    deserialized_tool = ToolBase.model_validate(tool_dict)
+    deserialized_tool = ToolDefinition.model_validate(tool_dict)
 
     # Should have same serializable data
     assert isinstance(deserialized_tool, FinishTool)
@@ -113,7 +113,7 @@ def test_tool_no_fallback_behavior_json() -> None:
     tool_json = json.dumps(tool_dict)
 
     with pytest.raises(ValidationError):
-        ToolBase.model_validate_json(tool_json)
+        ToolDefinition.model_validate_json(tool_json)
 
 
 def test_tool_type_annotation_works_json() -> None:
@@ -158,7 +158,7 @@ def test_tool_kind_field_json() -> None:
     tool_json = tool.model_dump_json()
 
     # Deserialize from JSON using abstract base class (for polymorphism)
-    deserialized_tool = ToolBase.model_validate_json(tool_json)
+    deserialized_tool = ToolDefinition.model_validate_json(tool_json)
 
     # Should preserve kind field and correct type
     assert hasattr(deserialized_tool, "kind")

@@ -26,7 +26,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
-    from openhands.sdk.tool.tool import ToolBase
+    from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -400,7 +400,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def completion(
         self,
         messages: list[Message],
-        tools: Sequence[ToolBase] | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         **kwargs,
@@ -521,7 +521,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def responses(
         self,
         messages: list[Message],
-        tools: Sequence[ToolBase] | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
         _return_metrics: bool = False,
