@@ -34,6 +34,7 @@ from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
+    FinishTool,
     Observation,
 )
 from openhands.sdk.tool.builtins import FinishAction, ThinkAction
@@ -417,6 +418,6 @@ class Agent(AgentBase):
         on_event(obs_event)
 
         # Set conversation state
-        if tool.name == "finish":
+        if tool.name == FinishTool.name:
             state.agent_status = AgentExecutionStatus.FINISHED
         return obs_event
