@@ -1,7 +1,7 @@
 """Browser-use tool implementation for web automation."""
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Literal, Self, cast
+from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field
 
@@ -60,9 +60,22 @@ class BrowserObservation(Observation):
 
 
 # ============================================
+# Base Browser Action
+# ============================================
+class BrowserAction(Action):
+    """Base class for all browser actions.
+
+    This base class serves as the parent for all browser-related actions,
+    enabling proper type hierarchy and eliminating the need for union types.
+    """
+
+    pass
+
+
+# ============================================
 # `go_to_url`
 # ============================================
-class BrowserNavigateAction(Action):
+class BrowserNavigateAction(BrowserAction):
     """Schema for browser navigation."""
 
     url: str = Field(description="The URL to navigate to")
@@ -111,7 +124,7 @@ class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservati
 # ============================================
 # `browser_click`
 # ============================================
-class BrowserClickAction(Action):
+class BrowserClickAction(BrowserAction):
     """Schema for clicking elements."""
 
     index: int = Field(
@@ -162,7 +175,7 @@ class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
 # ============================================
 # `browser_type`
 # ============================================
-class BrowserTypeAction(Action):
+class BrowserTypeAction(BrowserAction):
     """Schema for typing text into elements."""
 
     index: int = Field(
@@ -210,7 +223,7 @@ class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
 # ============================================
 # `browser_get_state`
 # ============================================
-class BrowserGetStateAction(Action):
+class BrowserGetStateAction(BrowserAction):
     """Schema for getting browser state."""
 
     include_screenshot: bool = Field(
@@ -255,7 +268,7 @@ class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservati
 # ============================================
 # `browser_get_content`
 # ============================================
-class BrowserGetContentAction(Action):
+class BrowserGetContentAction(BrowserAction):
     """Schema for getting page content in markdown."""
 
     extract_links: bool = Field(
@@ -303,7 +316,7 @@ class BrowserGetContentTool(
 # ============================================
 # `browser_scroll`
 # ============================================
-class BrowserScrollAction(Action):
+class BrowserScrollAction(BrowserAction):
     """Schema for scrolling the page."""
 
     direction: Literal["up", "down"] = Field(
@@ -348,7 +361,7 @@ class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation])
 # ============================================
 # `browser_go_back`
 # ============================================
-class BrowserGoBackAction(Action):
+class BrowserGoBackAction(BrowserAction):
     """Schema for going back in browser history."""
 
     pass
@@ -387,7 +400,7 @@ class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation])
 # ============================================
 # `browser_list_tabs`
 # ============================================
-class BrowserListTabsAction(Action):
+class BrowserListTabsAction(BrowserAction):
     """Schema for listing browser tabs."""
 
     pass
@@ -426,7 +439,7 @@ class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservati
 # ============================================
 # `browser_switch_tab`
 # ============================================
-class BrowserSwitchTabAction(Action):
+class BrowserSwitchTabAction(BrowserAction):
     """Schema for switching browser tabs."""
 
     tab_id: str = Field(
@@ -470,7 +483,7 @@ class BrowserSwitchTabTool(ToolDefinition[BrowserSwitchTabAction, BrowserObserva
 # ============================================
 # `browser_close_tab`
 # ============================================
-class BrowserCloseTabAction(Action):
+class BrowserCloseTabAction(BrowserAction):
     """Schema for closing browser tabs."""
 
     tab_id: str = Field(
@@ -510,21 +523,6 @@ class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservati
         ]
 
 
-# Union type for all browser actions
-BrowserAction = (
-    BrowserNavigateAction
-    | BrowserClickAction
-    | BrowserTypeAction
-    | BrowserGetStateAction
-    | BrowserGetContentAction
-    | BrowserScrollAction
-    | BrowserGoBackAction
-    | BrowserListTabsAction
-    | BrowserSwitchTabAction
-    | BrowserCloseTabAction
-)
-
-
 class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
@@ -546,64 +544,14 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
 
         executor = BrowserToolExecutor(**executor_config)
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserNavigateTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserClickTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserGetStateTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserGetContentTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserTypeTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserScrollTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserGoBackTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserListTabsTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserSwitchTabTool.create(executor),
-            )
-        )
-        tools.extend(
-            cast(
-                list[ToolDefinition[BrowserAction, BrowserObservation]],
-                BrowserCloseTabTool.create(executor),
-            )
-        )
+        tools.extend(BrowserNavigateTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserClickTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserGetStateTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserGetContentTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserTypeTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserScrollTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserGoBackTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserListTabsTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserSwitchTabTool.create(executor))  # type: ignore[arg-type]
+        tools.extend(BrowserCloseTabTool.create(executor))  # type: ignore[arg-type]
         return tools
