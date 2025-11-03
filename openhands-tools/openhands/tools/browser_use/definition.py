@@ -543,15 +543,16 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
         executor = BrowserToolExecutor(**executor_config)
-        tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
-        tools.extend(BrowserNavigateTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserClickTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserGetStateTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserGetContentTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserTypeTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserScrollTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserGoBackTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserListTabsTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserSwitchTabTool.create(executor))  # type: ignore[arg-type]
-        tools.extend(BrowserCloseTabTool.create(executor))  # type: ignore[arg-type]
+        tools = [
+            BrowserNavigateTool.create(executor),
+            BrowserClickTool.create(executor),
+            BrowserGetStateTool.create(executor),
+            BrowserGetContentTool.create(executor),
+            BrowserTypeTool.create(executor),
+            BrowserScrollTool.create(executor),
+            BrowserGoBackTool.create(executor),
+            BrowserListTabsTool.create(executor),
+            BrowserSwitchTabTool.create(executor),
+            BrowserCloseTabTool.create(executor),
+        ]
         return tools
