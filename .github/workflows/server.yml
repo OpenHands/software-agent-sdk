@@ -236,7 +236,9 @@ jobs:
 
                   # Generate build context and tags with arch suffix
                   # build.py now handles architecture tagging internally via --arch flag
-                  uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only
+                  uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
+                      --build-ctx-only \
+                      --arch ${{ matrix.arch }}
 
                   # Alias tags_csv output to tags for the build action
                   TAGS=$(grep '^tags_csv=' $GITHUB_OUTPUT | cut -d= -f2-)
@@ -321,6 +323,21 @@ jobs:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 
         steps:
+            - name: Download build info to extract SHORT_SHA
+              uses: actions/download-artifact@v6
+              with:
+                  pattern: build-info-${{ matrix.variant }}-*
+                  merge-multiple: true
+                  path: build-info
+
+            - name: Extract SHORT_SHA from build info
+              id: get_sha
+              run: |
+                  # Get SHORT_SHA from any build info artifact for this variant
+                  SHORT_SHA=$(jq -r '.short_sha' build-info/${{ matrix.variant }}-amd64.json)
+                  echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
+                  echo "Using SHORT_SHA: $SHORT_SHA"
+
             - name: Log in to GHCR
               uses: docker/login-action@v3
               with:
@@ -331,7 +348,7 @@ jobs:
             - name: Create and push multi-arch manifest for ${{ matrix.variant }}
               id: create_manifest
               run: |
-                  SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+                  SHORT_SHA=${{ steps.get_sha.outputs.short_sha }}
                   VARIANT=${{ matrix.variant }}
                   MANIFEST_TAG="${SHORT_SHA}-${VARIANT}"
 
@@ -482,34 +499,38 @@ jobs:
 
                   # Process manifest info artifacts
                   echo "Processing manifest info artifacts..."
-                  ls -la manifest-info/ 2>/dev/null || echo "No manifest-info directory found"
+                  if [[ -d "manifest-info" ]]; then
+                      ls -la manifest-info/
+                      
+                      MANIFEST_TAGS=""
+                      for manifest_file in manifest-info/*.json; do
+                          if [[ -f "$manifest_file" ]]; then
+                              echo "=== Processing $manifest_file ==="
+                              cat "$manifest_file"
+                              
+                              MANIFEST_TAG_CSV=$(jq -r '.manifest_tag' "$manifest_file")
+                              # Convert comma-separated tags to newline-separated
+                              MANIFEST_TAG_LIST=$(echo "$MANIFEST_TAG_CSV" | tr ',' '\n' | sed "s|^|${IMAGE}:|")
+                              
+                              if [[ -n "$MANIFEST_TAGS" ]]; then
+                                  MANIFEST_TAGS="${MANIFEST_TAGS}"$'\n'"${MANIFEST_TAG_LIST}"
+                              else
+                                  MANIFEST_TAGS="$MANIFEST_TAG_LIST"
+                              fi
+                          fi
+                      done
 
-                  MANIFEST_TAGS=""
-                  for manifest_file in manifest-info/*.json 2>/dev/null; do
-                      if [[ -f "$manifest_file" ]]; then
-                          echo "=== Processing $manifest_file ==="
-                          cat "$manifest_file"
-                          
-                          MANIFEST_TAG_CSV=$(jq -r '.manifest_tag' "$manifest_file")
-                          # Convert comma-separated tags to newline-separated
-                          MANIFEST_TAG_LIST=$(echo "$MANIFEST_TAG_CSV" | tr ',' '\n' | sed "s|^|${IMAGE}:|")
-                          
-                          if [[ -n "$MANIFEST_TAGS" ]]; then
-                              MANIFEST_TAGS="${MANIFEST_TAGS}"$'\n'"${MANIFEST_TAG_LIST}"
+                      # Add manifest tags to ALL_TAGS
+                      if [[ -n "$MANIFEST_TAGS" ]]; then
+                          echo "Adding manifest tags to output"
+                          if [[ -n "$ALL_TAGS" ]]; then
+                              ALL_TAGS="${ALL_TAGS}"$'\n'"${MANIFEST_TAGS}"
                           else
-                              MANIFEST_TAGS="$MANIFEST_TAG_LIST"
+                              ALL_TAGS="$MANIFEST_TAGS"
                           fi
                       fi
-                  done
-
-                  # Add manifest tags to ALL_TAGS
-                  if [[ -n "$MANIFEST_TAGS" ]]; then
-                      echo "Adding manifest tags to output"
-                      if [[ -n "$ALL_TAGS" ]]; then
-                          ALL_TAGS="${ALL_TAGS}"$'\n'"${MANIFEST_TAGS}"
-                      else
-                          ALL_TAGS="$MANIFEST_TAGS"
-                      fi
+                  else
+                      echo "No manifest-info directory found (merge-manifests may not have run)"
                   fi
 
                   # Create consolidated build summary
