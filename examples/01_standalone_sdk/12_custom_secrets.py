@@ -54,3 +54,7 @@ conversation.run()
 conversation.send_message("just echo $SECRET_FUNCTION_TOKEN")
 
 conversation.run()
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

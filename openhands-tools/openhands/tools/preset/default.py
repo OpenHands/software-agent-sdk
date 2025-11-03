@@ -75,13 +75,6 @@ def get_default_agent(
     agent = Agent(
         llm=llm,
         tools=tools,
-        mcp_config={
-            "mcpServers": {
-                "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
-                "repomix": {"command": "npx", "args": ["-y", "repomix@1.4.2", "--mcp"]},
-            }
-        },
-        filter_tools_regex="^(?!repomix)(.*)|^repomix.*pack_codebase.*$",
         system_prompt_kwargs={"cli_mode": cli_mode},
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})
