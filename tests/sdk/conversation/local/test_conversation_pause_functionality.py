@@ -11,6 +11,7 @@ Key requirements:
 
 import threading
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -95,13 +96,14 @@ class PauseFunctionalityTestTool(
 ):
     """Concrete tool for pause functionality testing."""
 
+    name: ClassVar[str] = "test_tool"
+
     @classmethod
     def create(
         cls, conv_state=None, **params
     ) -> Sequence["PauseFunctionalityTestTool"]:
         return [
             cls(
-                name="test_tool",
                 description="A test tool",
                 action_type=PauseFunctionalityMockAction,
                 observation_type=PauseFunctionalityMockObservation,
@@ -120,6 +122,8 @@ class BlockingTestTool(
 ):
     """Concrete tool for blocking pause testing."""
 
+    name: ClassVar[str] = "test_tool"
+
     @classmethod
     def create(
         cls, conv_state=None, step_entered=None, **params
@@ -128,7 +132,6 @@ class BlockingTestTool(
             raise ValueError("step_entered is required for BlockingTestTool")
         return [
             cls(
-                name="test_tool",
                 description="Blocking tool for pause test",
                 action_type=PauseFunctionalityMockAction,
                 observation_type=PauseFunctionalityMockObservation,

@@ -17,6 +17,7 @@ State transition matrix tested:
 
 import threading
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
 from litellm import ChatCompletionMessageToolCall
@@ -83,13 +84,14 @@ class StatusTransitionTestTool(
 ):
     """Concrete tool for status transition testing."""
 
+    name: ClassVar[str] = "test_tool"
+
     @classmethod
     def create(
         cls, conv_state=None, *, executor: ToolExecutor, **params
     ) -> Sequence["StatusTransitionTestTool"]:
         return [
             cls(
-                name="test_tool",
                 description="A test tool",
                 action_type=StatusTransitionMockAction,
                 observation_type=StatusTransitionMockObservation,

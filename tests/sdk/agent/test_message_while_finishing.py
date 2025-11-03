@@ -30,7 +30,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 
 # Ensure repo root on sys.path when running this file as a script
@@ -132,11 +132,12 @@ class SleepExecutor(ToolExecutor):
 class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
     """Sleep tool for testing message processing during finish."""
 
+    name: ClassVar[str] = "sleep_tool"
+
     @classmethod
     def create(cls, conv_state=None, **params) -> Sequence["SleepTool"]:
         return [
             cls(
-                name="sleep_tool",
                 action_type=SleepAction,
                 observation_type=SleepObservation,
                 description="Sleep for specified duration and return a message",
