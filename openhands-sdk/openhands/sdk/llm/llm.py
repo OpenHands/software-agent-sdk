@@ -61,7 +61,6 @@ from litellm.utils import (
 
 from openhands.sdk.llm.exceptions import (
     LLMNoResponseError,
-    is_context_window_exceeded,
     map_provider_exception,
 )
 
@@ -1022,8 +1021,3 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"Diff: {pretty_pydantic_diff(self, reconciled)}"
             )
         return reconciled
-
-    @staticmethod
-    def is_context_window_exceeded_exception(exception: Exception) -> bool:
-        """Back-compat wrapper delegating to exceptions.classifier."""
-        return is_context_window_exceeded(exception)
