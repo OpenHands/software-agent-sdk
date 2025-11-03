@@ -47,6 +47,19 @@ logger = get_logger(__name__)
 
 
 class Agent(AgentBase):
+    """Main agent implementation for OpenHands.
+
+    The Agent class provides the core functionality for running AI agents that can
+    interact with tools, process messages, and execute actions. It inherits from
+    AgentBase and implements the agent execution logic.
+
+    Example:
+        >>> from openhands.sdk import LLM, Agent, Tool
+        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        >>> tools = [Tool(name="BashTool"), Tool(name="FileEditorTool")]
+        >>> agent = Agent(llm=llm, tools=tools)
+    """
+
     @property
     def _add_security_risk_prediction(self) -> bool:
         return isinstance(self.security_analyzer, LLMSecurityAnalyzer)

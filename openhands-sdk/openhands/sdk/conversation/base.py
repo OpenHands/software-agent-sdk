@@ -69,6 +69,13 @@ class ConversationStateProtocol(Protocol):
 
 
 class BaseConversation(ABC):
+    """Abstract base class for conversation implementations.
+
+    This class defines the interface that all conversation implementations must follow.
+    Conversations manage the interaction between users and agents, handling message
+    exchange, execution control, and state management.
+    """
+
     @property
     @abstractmethod
     def id(self) -> ConversationID: ...
@@ -82,13 +89,23 @@ class BaseConversation(ABC):
     def conversation_stats(self) -> ConversationStats: ...
 
     @abstractmethod
-    def send_message(self, message: str | Message) -> None: ...
+    def send_message(self, message: str | Message) -> None:
+        """Send a message to the agent."""
+        ...
 
     @abstractmethod
-    def run(self) -> None: ...
+    def run(self) -> None:
+        """Execute the agent to process messages and perform actions.
+
+        This method runs the agent until it finishes processing the current
+        message or reaches the maximum iteration limit.
+        """
+        ...
 
     @abstractmethod
-    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None: ...
+    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
+        """Set the confirmation policy for the conversation."""
+        ...
 
     @property
     def confirmation_policy_active(self) -> bool:

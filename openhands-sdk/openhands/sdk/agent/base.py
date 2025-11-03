@@ -28,8 +28,11 @@ logger = get_logger(__name__)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
-    """Abstract base class for agents.
+    """Abstract base class for OpenHands agents.
+
     Agents are stateless and should be fully defined by their configuration.
+    This base class provides the common interface and functionality that all
+    agent implementations must follow.
     """
 
     model_config = ConfigDict(
