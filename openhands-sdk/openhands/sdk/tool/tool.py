@@ -137,9 +137,8 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
     """Base class for all tool implementations.
 
     This class serves as a base for the discriminated union of all tool types.
-    ToolBase can be directly instantiated for simple cases, and production tools
-    can inherit from this class and implement the .create() method for proper
-    initialization with executors and parameters.
+    All tools must inherit from this class and implement the .create() method for
+    proper initialization with executors and parameters.
 
     Features:
     - Normalize input/output schemas (class or dict) into both model+schema.
@@ -183,6 +182,21 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin):
     executor: SkipJsonSchema[ToolExecutor | None] = Field(
         default=None, repr=False, exclude=True
     )
+
+    def model_post_init(self, _context):  # noqa: ANN001, ANN201
+        """Validate that ToolBase is not instantiated directly.
+
+        This enforces the pattern that all tools must be subclasses of ToolBase,
+        not direct instances of ToolBase itself.
+        """
+        if type(self) is ToolBase:
+            raise TypeError(
+                "ToolBase cannot be instantiated directly. "
+                "Create a subclass that inherits from ToolBase and implements "
+                "the .create() method. See FinishTool, ThinkTool, or GlobTool "
+                "for examples."
+            )
+        super().model_post_init(_context)
 
     @classmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:

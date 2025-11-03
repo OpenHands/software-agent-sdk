@@ -76,19 +76,48 @@ This tool provides two commands:
 - Sub-agents work in the same workspace as the main agent: {workspace_path}
 """  # noqa
 
-delegate_tool = ToolBase(
-    name="delegate",
-    action_type=DelegateAction,
-    observation_type=DelegateObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="delegate",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+
+class DelegateToolTemplate(ToolBase[DelegateAction, DelegateObservation]):
+    """Tool definition for delegation operations without an executor.
+
+    This is a template tool that needs an executor to be set via .set_executor()
+    before it can be used. For automatic initialization with a DelegateExecutor,
+    use DelegateTool.create() instead.
+    """
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["DelegateToolTemplate"]:  # noqa: ARG003
+        """Create DelegateToolTemplate without an executor.
+
+        This returns a tool template that needs an executor set via .set_executor().
+        For automatic executor initialization, use DelegateTool.create() instead.
+
+        Args:
+            conv_state: Unused for this template tool.
+            **params: Unused for this template tool.
+
+        Returns:
+            A sequence containing a single DelegateToolTemplate without executor.
+        """
+        return [
+            cls(
+                name="delegate",
+                action_type=DelegateAction,
+                observation_type=DelegateObservation,
+                description=TOOL_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="delegate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+delegate_tool = DelegateToolTemplate.create()[0]
 
 
 class DelegateTool(ToolBase[DelegateAction, DelegateObservation]):

@@ -187,19 +187,47 @@ Remember: when making multiple file edits in a row to the same file, you should 
 """  # noqa: E501
 
 
-file_editor_tool = ToolBase(
-    name="str_replace_editor",
-    action_type=FileEditorAction,
-    observation_type=FileEditorObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="str_replace_editor",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
+class StrReplaceEditorTool(ToolBase[FileEditorAction, FileEditorObservation]):
+    """Tool definition for file editor operations without an executor.
+
+    This is a template tool that needs an executor to be set via .set_executor()
+    before it can be used. For automatic initialization with a FileEditorExecutor,
+    use FileEditorTool.create() instead.
+    """
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["StrReplaceEditorTool"]:  # noqa: ARG003
+        """Create StrReplaceEditorTool without an executor.
+
+        This returns a tool template that needs an executor set via .set_executor().
+        For automatic executor initialization, use FileEditorTool.create() instead.
+
+        Args:
+            conv_state: Unused for this template tool.
+            **params: Unused for this template tool.
+
+        Returns:
+            A sequence containing a single StrReplaceEditorTool without executor.
+        """
+        return [
+            cls(
+                name="str_replace_editor",
+                action_type=FileEditorAction,
+                observation_type=FileEditorObservation,
+                description=TOOL_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="str_replace_editor",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+file_editor_tool = StrReplaceEditorTool.create()[0]
 
 
 class FileEditorTool(ToolBase[FileEditorAction, FileEditorObservation]):

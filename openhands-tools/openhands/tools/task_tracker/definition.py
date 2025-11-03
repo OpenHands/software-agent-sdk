@@ -391,18 +391,46 @@ When uncertain, favor using this tool. Proactive task management demonstrates
 systematic approach and ensures comprehensive requirement fulfillment."""  # noqa: E501
 
 
-task_tracker_tool = ToolBase(
-    name="task_tracker",
-    description=TASK_TRACKER_DESCRIPTION,
-    action_type=TaskTrackerAction,
-    observation_type=TaskTrackerObservation,
-    annotations=ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
+class TaskTrackerToolTemplate(ToolBase[TaskTrackerAction, TaskTrackerObservation]):
+    """Tool definition for task tracking without an executor.
+
+    This is a template tool that needs an executor to be set via .set_executor()
+    before it can be used. For automatic initialization with a TaskTrackerExecutor,
+    use TaskTrackerTool.create() instead.
+    """
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["TaskTrackerToolTemplate"]:  # noqa: ARG003
+        """Create TaskTrackerToolTemplate without an executor.
+
+        This returns a tool template that needs an executor set via .set_executor().
+        For automatic executor initialization, use TaskTrackerTool.create() instead.
+
+        Args:
+            conv_state: Unused for this template tool.
+            **params: Unused for this template tool.
+
+        Returns:
+            A sequence containing a single TaskTrackerToolTemplate without executor.
+        """
+        return [
+            cls(
+                name="task_tracker",
+                description=TASK_TRACKER_DESCRIPTION,
+                action_type=TaskTrackerAction,
+                observation_type=TaskTrackerObservation,
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+task_tracker_tool = TaskTrackerToolTemplate.create()[0]
 
 
 class TaskTrackerTool(ToolBase[TaskTrackerAction, TaskTrackerObservation]):

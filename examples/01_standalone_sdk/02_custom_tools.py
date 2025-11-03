@@ -115,6 +115,42 @@ _GREP_DESCRIPTION = """Fast content search tool.
 * When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead
 """  # noqa: E501
 
+
+# --- Tool Definition ---
+
+
+class GrepTool(ToolBase[GrepAction, GrepObservation]):
+    """A custom grep tool that searches file contents using regular expressions."""
+
+    @classmethod
+    def create(
+        cls, conv_state, bash_executor: BashExecutor | None = None
+    ) -> Sequence[ToolBase]:
+        """Create GrepTool instance with a GrepExecutor.
+
+        Args:
+            conv_state: Conversation state to get working directory from.
+            bash_executor: Optional bash executor to reuse. If not provided,
+                         a new one will be created.
+
+        Returns:
+            A sequence containing a single GrepTool instance.
+        """
+        if bash_executor is None:
+            bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
+        grep_executor = GrepExecutor(bash_executor)
+
+        return [
+            cls(
+                name="grep",
+                description=_GREP_DESCRIPTION,
+                action_type=GrepAction,
+                observation_type=GrepObservation,
+                executor=grep_executor,
+            )
+        ]
+
+
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
@@ -137,14 +173,8 @@ def _make_bash_and_grep_tools(conv_state) -> list[ToolBase]:
     bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
     bash_tool = execute_bash_tool.set_executor(executor=bash_executor)
 
-    grep_executor = GrepExecutor(bash_executor)
-    grep_tool = ToolBase(
-        name="grep",
-        description=_GREP_DESCRIPTION,
-        action_type=GrepAction,
-        observation_type=GrepObservation,
-        executor=grep_executor,
-    )
+    # Use the GrepTool.create() method with shared bash_executor
+    grep_tool = GrepTool.create(conv_state, bash_executor=bash_executor)[0]
 
     return [bash_tool, grep_tool]
 

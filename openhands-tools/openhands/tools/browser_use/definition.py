@@ -84,19 +84,32 @@ Examples:
 - Open GitHub in new tab: url="https://github.com", new_tab=True
 """  # noqa: E501
 
-browser_navigate_tool = ToolBase(
-    name="browser_navigate",
-    action_type=BrowserNavigateAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_NAVIGATE_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_navigate",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserNavigateToolTemplate(ToolBase[BrowserNavigateAction, BrowserObservation]):
+    """Tool template for browser navigation without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserNavigateToolTemplate"]:
+        """Create BrowserNavigateToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_navigate",
+                action_type=BrowserNavigateAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_NAVIGATE_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_navigate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_navigate_tool = BrowserNavigateToolTemplate.create()[0]
 
 
 class BrowserNavigateTool(ToolBase[BrowserNavigateAction, BrowserObservation]):
@@ -143,19 +156,32 @@ Parameters:
 Important: Only use indices that appear in your current browser_get_state output.
 """  # noqa: E501
 
-browser_click_tool = ToolBase(
-    name="browser_click",
-    action_type=BrowserClickAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_CLICK_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_click",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserClickToolTemplate(ToolBase[BrowserClickAction, BrowserObservation]):
+    """Tool template for browser click without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserClickToolTemplate"]:
+        """Create BrowserClickToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_click",
+                action_type=BrowserClickAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_CLICK_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_click",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_click_tool = BrowserClickToolTemplate.create()[0]
 
 
 class BrowserClickTool(ToolBase[BrowserClickAction, BrowserObservation]):
@@ -199,19 +225,32 @@ Parameters:
 Important: Only use indices that appear in your current browser_get_state output.
 """  # noqa: E501
 
-browser_type_tool = ToolBase(
-    name="browser_type",
-    action_type=BrowserTypeAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_TYPE_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_type",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserTypeToolTemplate(ToolBase[BrowserTypeAction, BrowserObservation]):
+    """Tool template for browser_type without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserTypeToolTemplate"]:
+        """Create BrowserTypeToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_type",
+                action_type=BrowserTypeAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_TYPE_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_type",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_type_tool = BrowserTypeToolTemplate.create()[0]
 
 
 class BrowserTypeTool(ToolBase[BrowserTypeAction, BrowserObservation]):
@@ -252,19 +291,32 @@ Parameters:
 - include_screenshot: Whether to include a screenshot (optional, default: False)
 """  # noqa: E501
 
-browser_get_state_tool = ToolBase(
-    name="browser_get_state",
-    action_type=BrowserGetStateAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_GET_STATE_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_get_state",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserGetStateToolTemplate(ToolBase[BrowserGetStateAction, BrowserObservation]):
+    """Tool template for browser_get_state without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserGetStateToolTemplate"]:
+        """Create BrowserGetStateToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_get_state",
+                action_type=BrowserGetStateAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_GET_STATE_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_get_state",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_get_state_tool = BrowserGetStateToolTemplate.create()[0]
 
 
 class BrowserGetStateTool(ToolBase[BrowserGetStateAction, BrowserObservation]):
@@ -306,19 +358,34 @@ BROWSER_GET_CONTENT_DESCRIPTION = """Extract the main content of the current pag
 If the content was truncated and you need more information, use start_from_char parameter to continue from where truncation occurred.
 """  # noqa: E501
 
-browser_get_content_tool = ToolBase(
-    name="browser_get_content",
-    action_type=BrowserGetContentAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_GET_CONTENT_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_get_content",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserGetContentToolTemplate(
+    ToolBase[BrowserGetContentAction, BrowserObservation]
+):
+    """Tool template for browser_get_content without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserGetContentToolTemplate"]:
+        """Create BrowserGetContentToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_get_content",
+                action_type=BrowserGetContentAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_GET_CONTENT_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_get_content",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_get_content_tool = BrowserGetContentToolTemplate.create()[0]
 
 
 class BrowserGetContentTool(ToolBase[BrowserGetContentAction, BrowserObservation]):
@@ -359,19 +426,32 @@ Parameters:
 - direction: Direction to scroll - "up" or "down" (optional, default: "down")
 """  # noqa: E501
 
-browser_scroll_tool = ToolBase(
-    name="browser_scroll",
-    action_type=BrowserScrollAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_SCROLL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_scroll",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserScrollToolTemplate(ToolBase[BrowserScrollAction, BrowserObservation]):
+    """Tool template for browser_scroll without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserScrollToolTemplate"]:
+        """Create BrowserScrollToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_scroll",
+                action_type=BrowserScrollAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_SCROLL_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_scroll",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_scroll_tool = BrowserScrollToolTemplate.create()[0]
 
 
 class BrowserScrollTool(ToolBase[BrowserScrollAction, BrowserObservation]):
@@ -406,19 +486,32 @@ Use this tool to navigate back to the previously visited page, similar to clicki
 browser's back button.
 """  # noqa: E501
 
-browser_go_back_tool = ToolBase(
-    name="browser_go_back",
-    action_type=BrowserGoBackAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_GO_BACK_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_go_back",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+
+class BrowserGoBackToolTemplate(ToolBase[BrowserGoBackAction, BrowserObservation]):
+    """Tool template for browser_go_back without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserGoBackToolTemplate"]:
+        """Create BrowserGoBackToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_go_back",
+                action_type=BrowserGoBackAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_GO_BACK_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_go_back",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_go_back_tool = BrowserGoBackToolTemplate.create()[0]
 
 
 class BrowserGoBackTool(ToolBase[BrowserGoBackAction, BrowserObservation]):
@@ -453,19 +546,32 @@ This tool shows all currently open tabs with their IDs, titles, and URLs. Use th
 with browser_switch_tab or browser_close_tab.
 """  # noqa: E501
 
-browser_list_tabs_tool = ToolBase(
-    name="browser_list_tabs",
-    action_type=BrowserListTabsAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_LIST_TABS_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_list_tabs",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
+
+class BrowserListTabsToolTemplate(ToolBase[BrowserListTabsAction, BrowserObservation]):
+    """Tool template for browser_list_tabs without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserListTabsToolTemplate"]:
+        """Create BrowserListTabsToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_list_tabs",
+                action_type=BrowserListTabsAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_LIST_TABS_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_list_tabs",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_list_tabs_tool = BrowserListTabsToolTemplate.create()[0]
 
 
 class BrowserListTabsTool(ToolBase[BrowserListTabsAction, BrowserObservation]):
@@ -505,19 +611,34 @@ Parameters:
 - tab_id: 4 Character Tab ID of the tab to switch to
 """
 
-browser_switch_tab_tool = ToolBase(
-    name="browser_switch_tab",
-    action_type=BrowserSwitchTabAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_SWITCH_TAB_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_switch_tab",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
+
+class BrowserSwitchTabToolTemplate(
+    ToolBase[BrowserSwitchTabAction, BrowserObservation]
+):
+    """Tool template for browser_switch_tab without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserSwitchTabToolTemplate"]:
+        """Create BrowserSwitchTabToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_switch_tab",
+                action_type=BrowserSwitchTabAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_SWITCH_TAB_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_switch_tab",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_switch_tab_tool = BrowserSwitchTabToolTemplate.create()[0]
 
 
 class BrowserSwitchTabTool(ToolBase[BrowserSwitchTabAction, BrowserObservation]):
@@ -559,19 +680,32 @@ Parameters:
 - tab_id: 4 Character Tab ID of the tab to close
 """
 
-browser_close_tab_tool = ToolBase(
-    name="browser_close_tab",
-    action_type=BrowserCloseTabAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_CLOSE_TAB_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_close_tab",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
+
+class BrowserCloseTabToolTemplate(ToolBase[BrowserCloseTabAction, BrowserObservation]):
+    """Tool template for browser_close_tab without an executor."""
+
+    @classmethod
+    def create(cls) -> Sequence["BrowserCloseTabToolTemplate"]:
+        """Create BrowserCloseTabToolTemplate without an executor."""
+        return [
+            cls(
+                name="browser_close_tab",
+                action_type=BrowserCloseTabAction,
+                observation_type=BrowserObservation,
+                description=BROWSER_CLOSE_TAB_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="browser_close_tab",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+            )
+        ]
+
+
+# Create a singleton instance for backward compatibility
+browser_close_tab_tool = BrowserCloseTabToolTemplate.create()[0]
 
 
 class BrowserCloseTabTool(ToolBase[BrowserCloseTabAction, BrowserObservation]):
@@ -626,7 +760,7 @@ class BrowserToolSet(ToolBase[BrowserAction, BrowserObservation]):
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
         executor = BrowserToolExecutor(**executor_config)
-        return [
+        return [  # type: ignore[return-value]
             browser_navigate_tool.set_executor(executor),
             browser_click_tool.set_executor(executor),
             browser_get_state_tool.set_executor(executor),
