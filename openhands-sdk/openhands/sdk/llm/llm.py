@@ -432,7 +432,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> LLMResponse:
         """Generate a completion from the language model.
 
-        This is the main method for getting responses from the language model.
+        This is the method for getting responses from the model via Completion API.
         It handles message formatting, tool calling, and response processing.
 
         Returns:
