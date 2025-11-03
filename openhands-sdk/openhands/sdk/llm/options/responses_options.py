@@ -19,7 +19,7 @@ def select_responses_options(
             "The 'temperature' parameter is not supported by the SDK for "
             "Responses API. While temperature is officially supported by "
             "OpenAI's Responses API, the SDK only routes reasoning models "
-            "(GPT-5, Codex, o1, o3) to this API, and these models do not "
+            "(GPT-5, Codex) to this API, and these models do not "
             "support temperature settings."
         )
 
