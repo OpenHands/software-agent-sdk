@@ -37,7 +37,8 @@ while IFS= read -r -d '' pkg; do
     echo "[gen_api_doc] Skipping package: $name"
     continue
   fi
-  PYTHONPATH="$REPO_ROOT/openhands-sdk:$PYTHONPATH" uvx --from griffe2md griffe2md "openhands.sdk.$name" -o "$OUTPUT_DIR/$name.md"
+  PYTHONPATH="$REPO_ROOT/openhands-sdk:$PYTHONPATH" uvx --from griffe2md griffe2md "openhands.sdk.$name" -o "$OUTPUT_DIR/$name.md" \
+    || { echo "[gen_api_doc] Failed to generate for $name, skipping" >&2; continue; }
 done < <(find "$REPO_ROOT/openhands-sdk/openhands/sdk" -maxdepth 1 -mindepth 1 -type d ! -name '__pycache__' -print0)
 
 # Post-process: remove __init__ module files, which aren't useful for client developers.
