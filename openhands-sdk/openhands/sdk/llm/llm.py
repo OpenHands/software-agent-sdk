@@ -44,10 +44,7 @@ from litellm import (
 )
 from litellm.exceptions import (
     APIConnectionError,
-    BadRequestError,
-    ContextWindowExceededError,
     InternalServerError,
-    OpenAIError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout as LiteLLMTimeout,
@@ -62,7 +59,10 @@ from litellm.utils import (
     token_counter,
 )
 
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import (
+    LLMNoResponseError,
+    map_provider_exception,
+)
 
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
@@ -513,6 +513,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
+            mapped = map_provider_exception(e)
+            if mapped is not e:
+                raise mapped from e
             raise
 
     # =========================================================================
@@ -632,6 +635,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
+            mapped = map_provider_exception(e)
+            if mapped is not e:
+                raise mapped from e
             raise
 
     # =========================================================================
@@ -1014,51 +1020,3 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"Diff: {pretty_pydantic_diff(self, reconciled)}"
             )
         return reconciled
-
-    @staticmethod
-    def is_context_window_exceeded_exception(exception: Exception) -> bool:
-        """Check if the exception indicates a context window exceeded error.
-
-        Context window exceeded errors vary by provider, and LiteLLM does not do a
-        consistent job of identifying and wrapping them.
-        """
-        # A context window exceeded error from litellm is the best signal we have.
-        if isinstance(exception, ContextWindowExceededError):
-            return True
-
-        # But with certain providers the exception might be a bad request or generic
-        # OpenAI error, and we have to use the content of the error to figure out what
-        # is wrong.
-        if not isinstance(exception, (BadRequestError, OpenAIError)):
-            return False
-
-        # Not all BadRequestError or OpenAIError are context window exceeded errors, so
-        # we need to check the message content for known patterns.
-        error_string = str(exception).lower()
-
-        known_exception_patterns: list[str] = [
-            "contextwindowexceedederror",
-            "prompt is too long",
-            "input length and `max_tokens` exceed context limit",
-            "please reduce the length of",
-            "the request exceeds the available context size",
-            "context length exceeded",
-        ]
-
-        if any(pattern in error_string for pattern in known_exception_patterns):
-            return True
-
-        # A special case for SambaNova, where multiple patterns are needed
-        # simultaneously.
-        samba_nova_patterns: list[str] = [
-            "sambanovaexception",
-            "maximum context length",
-        ]
-
-        if all(pattern in error_string for pattern in samba_nova_patterns):
-            return True
-
-        # If we've made it this far and haven't managed to positively ID it as a context
-        # window exceeded error, we'll have to assume it's not and rely on the call-site
-        # context to handle it appropriately.
-        return False
