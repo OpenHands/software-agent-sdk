@@ -652,7 +652,6 @@ jobs:
                   - Each variant tag (e.g., \`${SHORT_SHA}-python\`) is a **multi-arch manifest** supporting both **amd64** and **arm64**
                   - Docker automatically pulls the correct architecture for your platform
                   - Individual architecture tags (e.g., \`${SHORT_SHA}-python-amd64\`) are also available if needed
-                  - Built on native hardware (no emulation) for maximum performance
                   <!-- AGENT_SERVER_IMAGES_END -->
                   EOF
                   )
