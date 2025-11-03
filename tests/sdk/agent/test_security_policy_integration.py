@@ -243,7 +243,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
     with patch(
         "openhands.sdk.llm.llm.litellm_completion",
         return_value=_tool_response(
-            "think",
+            "think_tool",
             '{"thought": "This is a test thought", "security_risk": "LOW"}',
         ),
     ):
