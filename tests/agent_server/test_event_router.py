@@ -8,6 +8,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.sdk import Message
@@ -44,8 +45,6 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test send_message endpoint with run=True."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -83,8 +82,6 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test send_message endpoint with run=False."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -119,8 +116,6 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test send_message endpoint with default run value."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -157,8 +152,6 @@ class TestSendMessageEndpoint:
         """Test send_message endpoint when conversation is not found."""
         from fastapi import HTTPException, status
 
-        from openhands.agent_server.dependencies import get_event_service
-
         def raise_not_found():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -189,8 +182,6 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test send_message endpoint with different content types."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -234,8 +225,6 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test send_message endpoint with system role."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -270,8 +259,6 @@ class TestSendMessageEndpoint:
         self, client, sample_conversation_id
     ):
         """Test send_message endpoint with invalid request data."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency (though it shouldn't be called for validation errors)
         client.app.dependency_overrides[get_event_service] = lambda: None
 
@@ -316,8 +303,6 @@ class TestSearchEventsEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test search events with naive datetime (no timezone)."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -354,8 +339,6 @@ class TestSearchEventsEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test search events with timezone-aware datetime."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -393,8 +376,6 @@ class TestSearchEventsEndpoint:
     ):
         """Test search events with both timestamp filters using
         timezone-aware datetimes."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -432,8 +413,6 @@ class TestSearchEventsEndpoint:
         self, client, sample_conversation_id, mock_event_service
     ):
         """Test count events with timezone-aware datetime."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
@@ -468,8 +447,6 @@ class TestSearchEventsEndpoint:
     ):
         """Test that different timezone representations of the same moment
         normalize consistently."""
-        from openhands.agent_server.dependencies import get_event_service
-
         # Override the dependency to return our mock
         client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
 
