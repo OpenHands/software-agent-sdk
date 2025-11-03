@@ -217,48 +217,6 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-class ExecuteBashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
-    """Tool definition for bash command execution without an executor.
-
-    This is a template tool that needs an executor to be set via .set_executor()
-    before it can be used. For automatic initialization with a BashExecutor,
-    use BashTool.create() instead.
-    """
-
-    @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["ExecuteBashTool"]:  # noqa: ARG003
-        """Create ExecuteBashTool without an executor.
-
-        This returns a tool template that needs an executor set via .set_executor().
-        For automatic executor initialization, use BashTool.create() instead.
-
-        Args:
-            conv_state: Unused for this template tool.
-            **params: Unused for this template tool.
-
-        Returns:
-            A sequence containing a single ExecuteBashTool instance without executor.
-        """
-        return [
-            cls(
-                name="execute_bash",
-                action_type=ExecuteBashAction,
-                observation_type=ExecuteBashObservation,
-                description=TOOL_DESCRIPTION,
-                annotations=ToolAnnotations(
-                    title="execute_bash",
-                    readOnlyHint=False,
-                    destructiveHint=True,
-                    idempotentHint=False,
-                    openWorldHint=True,
-                ),
-            )
-        ]
-
-
-execute_bash_tool = ExecuteBashTool.create()[0]
-
-
 class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
     """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
 
@@ -302,11 +260,17 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name=execute_bash_tool.name,
-                description=TOOL_DESCRIPTION,
+                name="execute_bash",
                 action_type=ExecuteBashAction,
                 observation_type=ExecuteBashObservation,
-                annotations=execute_bash_tool.annotations,
+                description=TOOL_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="execute_bash",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
