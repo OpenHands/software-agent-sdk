@@ -34,10 +34,6 @@ on:
                 description: Prefix for issue titles
                 required: false
                 default: 'DataDog Error: '
-            llm_model:
-                description: LLM model to use for analysis
-                required: false
-                default: litellm_proxy/claude-sonnet-4-5-20250929
 
 permissions:
     contents: read
@@ -90,7 +86,7 @@ jobs:
                   DD_SITE: ${{ secrets.DD_SITE }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-                  LLM_MODEL: ${{ inputs.llm_model }}
+                  LLM_MODEL: ${{ secrets.LLM_MODEL }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PYTHONPATH: ''
               run: |
