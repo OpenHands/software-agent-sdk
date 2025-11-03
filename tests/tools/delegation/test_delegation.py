@@ -65,34 +65,36 @@ def test_delegate_action_creation():
 
 def test_delegate_observation_creation():
     """Test creating DelegateObservation instances."""
-    # Test spawn observation
+    # Test spawn observation with string output
     spawn_observation = DelegateObservation(
         command="spawn",
-        output=[TextContent(text="spawn: Sub-agents created successfully")],
+        output="spawn: Sub-agents created successfully",
     )
-    assert len(spawn_observation.output) == 1
-    assert isinstance(spawn_observation.output[0], TextContent)
-    assert spawn_observation.output[0].text == "spawn: Sub-agents created successfully"
-    # spawn observation doesn't have results field anymore
+    assert isinstance(spawn_observation.output, str)
+    assert spawn_observation.output == "spawn: Sub-agents created successfully"
+    # Verify to_llm_content returns TextContent
+    llm_content = spawn_observation.to_llm_content
+    assert len(llm_content) == 1
+    assert isinstance(llm_content[0], TextContent)
+    assert llm_content[0].text == "spawn: Sub-agents created successfully"
 
-    # Test delegate observation
+    # Test delegate observation with string output
     delegate_observation = DelegateObservation(
         command="delegate",
-        output=[
-            TextContent(
-                text=(
-                    "delegate: Tasks completed successfully\n\nResults:\n"
-                    "1. Result 1\n2. Result 2"
-                )
-            )
-        ],
+        output=(
+            "delegate: Tasks completed successfully\n\nResults:\n"
+            "1. Result 1\n2. Result 2"
+        ),
     )
-    assert len(delegate_observation.output) == 1
-    output_block = delegate_observation.output[0]
-    assert isinstance(output_block, TextContent)
-    assert "Tasks completed successfully" in output_block.text
-    assert "Result 1" in output_block.text
-    assert "Result 2" in output_block.text
+    assert isinstance(delegate_observation.output, str)
+    assert "Tasks completed successfully" in delegate_observation.output
+    assert "Result 1" in delegate_observation.output
+    assert "Result 2" in delegate_observation.output
+    # Verify to_llm_content
+    llm_content = delegate_observation.to_llm_content
+    assert len(llm_content) == 1
+    assert isinstance(llm_content[0], TextContent)
+    assert "Tasks completed successfully" in llm_content[0].text
 
 
 def test_delegate_executor_delegate():
@@ -102,9 +104,8 @@ def test_delegate_executor_delegate():
     # First spawn some agents
     spawn_action = DelegateAction(command="spawn", ids=["agent1", "agent2"])
     spawn_observation = executor(spawn_action, parent_conversation)
-    output_block = spawn_observation.output[0]
-    assert isinstance(output_block, TextContent)
-    assert "Successfully spawned" in output_block.text
+    assert isinstance(spawn_observation.output, str)
+    assert "Successfully spawned" in spawn_observation.output
 
     # Then delegate tasks to them
     delegate_action = DelegateAction(
@@ -115,25 +116,20 @@ def test_delegate_executor_delegate():
     with patch.object(executor, "_delegate_tasks") as mock_delegate:
         mock_observation = DelegateObservation(
             command="delegate",
-            output=[
-                TextContent(
-                    text=(
-                        "delegate: Tasks completed successfully\n\nResults:\n"
-                        "1. Agent agent1: Code analysis complete\n"
-                        "2. Agent agent2: Tests written"
-                    )
-                )
-            ],
+            output=(
+                "delegate: Tasks completed successfully\n\nResults:\n"
+                "1. Agent agent1: Code analysis complete\n"
+                "2. Agent agent2: Tests written"
+            ),
         )
         mock_delegate.return_value = mock_observation
 
         observation = executor(delegate_action, parent_conversation)
 
     assert isinstance(observation, DelegateObservation)
-    obs_block = observation.output[0]
-    assert isinstance(obs_block, TextContent)
-    assert "Agent agent1: Code analysis complete" in obs_block.text
-    assert "Agent agent2: Tests written" in obs_block.text
+    assert isinstance(observation.output, str)
+    assert "Agent agent1: Code analysis complete" in observation.output
+    assert "Agent agent2: Tests written" in observation.output
 
 
 def test_delegate_executor_missing_task():
