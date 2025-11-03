@@ -34,14 +34,6 @@ on:
                 description: Prefix for issue titles
                 required: false
                 default: 'DataDog Error: '
-            max_errors:
-                description: Maximum number of errors to fetch (only for log-query mode)
-                required: false
-                default: '5'
-            llm_model:
-                description: LLM model to use for analysis
-                required: false
-                default: openhands/claude-sonnet-4-5-20250929
 
 permissions:
     contents: read
@@ -94,7 +86,7 @@ jobs:
                   DD_SITE: ${{ secrets.DD_SITE }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-                  LLM_MODEL: ${{ inputs.llm_model }}
+                  LLM_MODEL: <YOUR_LLM_MODEL>
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PYTHONPATH: ''
               run: |
@@ -107,8 +99,7 @@ jobs:
                     --working-dir "/tmp/datadog-debug" \
                     --issue-repo "${{ inputs.issue_repo }}" \
                     --issue-parent "${{ inputs.issue_parent }}" \
-                    --issue-prefix "${{ inputs.issue_prefix }}" \
-                    --max-errors "${{ inputs.max_errors }}"
+                    --issue-prefix "${{ inputs.issue_prefix }}"
 
             - name: Upload debugging artifacts
               if: always()
