@@ -86,7 +86,7 @@ jobs:
                   DD_SITE: ${{ secrets.DD_SITE }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
-                  LLM_MODEL: ${{ secrets.LLM_MODEL }}
+                  LLM_MODEL:  <YOUR_LLM_MODEL>
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PYTHONPATH: ''
               run: |
