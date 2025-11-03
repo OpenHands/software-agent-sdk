@@ -1,6 +1,7 @@
 """Test for FunctionCallingConverter."""
 
 import json
+import textwrap
 
 import pytest
 from litellm import ChatCompletionToolParam
@@ -14,6 +15,7 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_fncall_messages_to_non_fncall_messages,
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
+    convert_tools_to_description,
 )
 
 
@@ -689,3 +691,152 @@ def test_convert_fncall_messages_with_image_url():
         image_content["image_url"]["url"]
         == "data:image/gif;base64,R0lGODlhAQABAAAAACw="
     )
+
+
+def test_convert_tools_to_description_nested_array():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "nested_array",
+                "description": "Handle nested arrays",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "description": "List of entries",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {
+                                        "type": "integer",
+                                        "description": "The numeric value",
+                                    }
+                                },
+                                "required": ["value"],
+                            },
+                        }
+                    },
+                    "required": ["items"],
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: nested_array ----
+        Description: Handle nested arrays
+        Parameters:
+          (1) items (array[object], required): List of entries
+              Array items:
+                Type: object
+                  Object properties:
+                    - value (integer, required): The numeric value
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
+
+
+def test_convert_tools_to_description_union_options():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "union_tool",
+                "description": "Test union parameter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filters": {
+                            "description": "Supported filters",
+                            "anyOf": [
+                                {"type": "string", "description": "match by name"},
+                                {"type": "integer", "description": "match by id"},
+                            ],
+                        }
+                    },
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: union_tool ----
+        Description: Test union parameter
+        Parameters:
+          (1) filters (string or integer, optional): Supported filters
+              anyOf options:
+                - string: match by name
+                - integer: match by id
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
+
+
+def test_convert_tools_to_description_object_details():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "object_tool",
+                "description": "Test object parameter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config": {
+                            "type": "object",
+                            "description": "Configuration payload",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Friendly name",
+                                },
+                                "thresholds": {
+                                    "type": "array",
+                                    "description": "Threshold list",
+                                    "items": {"type": "number"},
+                                },
+                            },
+                            "required": ["name"],
+                            "additionalProperties": {
+                                "type": "string",
+                                "description": "Extra properties",
+                            },
+                        }
+                    },
+                    "required": ["config"],
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: object_tool ----
+        Description: Test object parameter
+        Parameters:
+          (1) config (object, required): Configuration payload
+              Object properties:
+                - name (string, required): Friendly name
+                - thresholds (array[number], optional): Threshold list
+                  Array items:
+                    Type: number
+              Additional properties allowed: string
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
