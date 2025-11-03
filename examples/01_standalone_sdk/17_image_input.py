@@ -46,10 +46,10 @@ agent = Agent(
     llm=llm,
     tools=[
         Tool(
-            name=BashTool.tool_name,
+            name=BashTool.name,
         ),
-        Tool(name=FileEditorTool.tool_name),
-        Tool(name=TaskTrackerTool.tool_name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
     ],
 )
 

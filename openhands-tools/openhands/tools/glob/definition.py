@@ -123,7 +123,6 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="glob",
                 description=enhanced_description,
                 action_type=GlobAction,
                 observation_type=GlobObservation,
@@ -140,4 +139,4 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
 
 
 # Automatically register the tool when this module is imported
-register_tool(GlobTool.tool_name, GlobTool)
+register_tool(GlobTool.name, GlobTool)

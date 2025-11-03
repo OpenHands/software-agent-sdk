@@ -33,12 +33,12 @@ def test_real_tools_have_correct_names():
     from openhands.tools.task_tracker import TaskTrackerTool
 
     # Verify all tools have correct automatic names
-    assert BashTool.tool_name == "bash_tool"
-    assert FileEditorTool.tool_name == "file_editor_tool"
-    assert GrepTool.tool_name == "grep_tool"
-    assert PlanningFileEditorTool.tool_name == "planning_file_editor_tool"
-    assert TaskTrackerTool.tool_name == "task_tracker_tool"
-    assert GlobTool.tool_name == "glob_tool"
+    assert BashTool.name == "bash_tool"
+    assert FileEditorTool.name == "file_editor_tool"
+    assert GrepTool.name == "grep_tool"
+    assert PlanningFileEditorTool.name == "planning_file_editor_tool"
+    assert TaskTrackerTool.name == "task_tracker_tool"
+    assert GlobTool.name == "glob_tool"
 
 
 def test_tool_name_consistency():
@@ -49,12 +49,12 @@ def test_tool_name_consistency():
         BashTool as BashTool2,
     )
 
-    assert BashTool1.tool_name == BashTool2.tool_name == "bash_tool"
+    assert BashTool1.name == BashTool2.name == "bash_tool"
 
     # Test with different tools
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.grep import GrepTool
 
-    assert FileEditorTool.tool_name == "file_editor_tool"
-    assert GrepTool.tool_name == "grep_tool"
-    assert FileEditorTool.tool_name != GrepTool.tool_name
+    assert FileEditorTool.name == "file_editor_tool"
+    assert GrepTool.name == "grep_tool"
+    assert FileEditorTool.name != GrepTool.name

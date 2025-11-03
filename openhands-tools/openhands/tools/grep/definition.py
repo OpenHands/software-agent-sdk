@@ -136,7 +136,6 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="grep",
                 description=enhanced_description,
                 action_type=GrepAction,
                 observation_type=GrepObservation,
@@ -153,4 +152,4 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
 
 
 # Automatically register the tool when this module is imported
-register_tool(GrepTool.tool_name, GrepTool)
+register_tool(GrepTool.name, GrepTool)

@@ -47,7 +47,7 @@ agent = Agent(
     llm=llm,
     tools=[
         Tool(
-            name=BashTool.tool_name,
+            name=BashTool.name,
         ),
     ],
     condenser=condenser,

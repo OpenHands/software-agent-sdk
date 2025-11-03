@@ -31,7 +31,7 @@ llm = LLM(
 )
 
 # Setup agent with bash tool
-agent = Agent(llm=llm, tools=[Tool(name=BashTool.tool_name)])
+agent = Agent(llm=llm, tools=[Tool(name=BashTool.name)])
 
 
 # Callback to display thinking blocks
