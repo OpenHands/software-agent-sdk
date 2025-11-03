@@ -27,6 +27,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
+        full_output_save_dir: str | None = None,
     ):
         """Initialize BashExecutor with auto-detected or specified session type.
 
@@ -37,6 +38,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             terminal_type: Force a specific session type:
                          ('tmux', 'subprocess').
                          If None, auto-detect based on system capabilities
+            full_output_save_dir: Path to directory to save full output
+                                  logs and files, used when truncation is needed.
         """
         self.session = create_terminal_session(
             work_dir=working_dir,
@@ -45,6 +48,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             terminal_type=terminal_type,
         )
         self.session.initialize()
+        self.full_output_save_dir: str | None = full_output_save_dir
         logger.info(
             f"BashExecutor initialized with working_dir: {working_dir}, "
             f"username: {username}, "
@@ -165,10 +169,23 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                     observation.output
                 )
                 if masked_output:
-                    data = observation.model_dump(exclude={"output"})
-                    return ExecuteBashObservation(**data, output=masked_output)
+                    data = observation.model_dump(
+                        exclude={"output", "full_output_save_dir"}
+                    )
+                    return ExecuteBashObservation(
+                        **data,
+                        output=masked_output,
+                        full_output_save_dir=self.full_output_save_dir,
+                    )
             except Exception:
                 pass
+
+        # Set full_output_save_dir if not already set
+        if observation.full_output_save_dir is None and self.full_output_save_dir:
+            data = observation.model_dump(exclude={"full_output_save_dir"})
+            return ExecuteBashObservation(
+                **data, full_output_save_dir=self.full_output_save_dir
+            )
 
         return observation
 

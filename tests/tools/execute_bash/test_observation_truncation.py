@@ -11,7 +11,7 @@ def test_execute_bash_observation_truncation_under_limit():
     metadata = CmdOutputMetadata(
         prefix="",
         suffix="",
-        working_dir="/test",
+        working_dir="/tmp",
         py_interpreter_path="/usr/bin/python",
         exit_code=0,
         pid=123,
@@ -30,7 +30,7 @@ def test_execute_bash_observation_truncation_under_limit():
 
     expected = (
         "Short output\n"
-        "[Current working directory: /test]\n"
+        "[Current working directory: /tmp]\n"
         "[Python interpreter: /usr/bin/python]\n"
         "[Command finished with exit code 0]"
     )
@@ -42,7 +42,7 @@ def test_execute_bash_observation_truncation_over_limit():
     metadata = CmdOutputMetadata(
         prefix="",
         suffix="",
-        working_dir="/test",
+        working_dir="/tmp",
         py_interpreter_path="/usr/bin/python",
         exit_code=0,
         pid=123,
@@ -67,7 +67,7 @@ def test_execute_bash_observation_truncation_over_limit():
     # With head-and-tail truncation, should start and end with original content
     assert result.startswith("A")  # Should start with original content
     expected_end = (
-        "A\n[Current working directory: /test]\n[Python interpreter: /usr/bin/python]\n"
+        "A\n[Current working directory: /tmp]\n[Python interpreter: /usr/bin/python]\n"
         "[Command finished with exit code 0]"
     )
     assert result.endswith(expected_end)  # Should end with original content + metadata
@@ -79,7 +79,7 @@ def test_execute_bash_observation_truncation_with_error():
     metadata = CmdOutputMetadata(
         prefix="",
         suffix="",
-        working_dir="/test",
+        working_dir="/tmp",
         py_interpreter_path="/usr/bin/python",
         exit_code=1,
         pid=123,
@@ -104,7 +104,7 @@ def test_execute_bash_observation_truncation_with_error():
     assert len(result) < len(long_output) + 300  # Account for metadata and error prefix
     # With head-and-tail truncation, should end with original content + metadata
     expected_end = (
-        "B\n[Current working directory: /test]\n[Python interpreter: /usr/bin/python]\n"
+        "B\n[Current working directory: /tmp]\n[Python interpreter: /usr/bin/python]\n"
         "[Command finished with exit code 1]"
     )
     assert result.endswith(expected_end)
@@ -116,7 +116,7 @@ def test_execute_bash_observation_truncation_exact_limit():
     metadata = CmdOutputMetadata(
         prefix="",
         suffix="",
-        working_dir="/test",
+        working_dir="/tmp",
         py_interpreter_path="/usr/bin/python",
         exit_code=0,
         pid=123,
@@ -124,7 +124,7 @@ def test_execute_bash_observation_truncation_exact_limit():
 
     # Calculate exact size to hit the limit after adding metadata
     metadata_text = (
-        "\n[Current working directory: /test]\n"
+        "\n[Current working directory: /tmp]\n"
         "[Python interpreter: /usr/bin/python]\n"
         "[Command finished with exit code 0]"
     )
@@ -152,7 +152,7 @@ def test_execute_bash_observation_truncation_with_prefix_suffix():
     metadata = CmdOutputMetadata(
         prefix="[PREFIX] ",
         suffix=" [SUFFIX]",
-        working_dir="/test",
+        working_dir="/tmp",
         py_interpreter_path="/usr/bin/python",
         exit_code=0,
         pid=123,
@@ -179,7 +179,7 @@ def test_execute_bash_observation_truncation_with_prefix_suffix():
     )  # Account for metadata and prefix/suffix
     # With head-and-tail truncation, should end with original content + metadata
     expected_end = (
-        "D [SUFFIX]\n[Current working directory: /test]\n"
+        "D [SUFFIX]\n[Current working directory: /tmp]\n"
         "[Python interpreter: /usr/bin/python]\n[Command finished with exit code 0]"
     )
     assert result.endswith(expected_end)
