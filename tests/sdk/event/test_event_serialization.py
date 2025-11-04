@@ -38,10 +38,9 @@ class EventsSerializationMockAction(Action):
 class EventsSerializationMockObservation(Observation):
     """Mock observation for testing."""
 
-    content: str
-
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        assert isinstance(self.content, str)
         return [TextContent(text=self.content)]
 
 

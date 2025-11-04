@@ -153,10 +153,9 @@ def test_observation_event_visualize():
     from openhands.sdk.tool import Observation
 
     class VisualizerMockObservation(Observation):
-        content: str = "Command output"
-
         @property
         def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+            assert isinstance(self.content, str)
             return [TextContent(text=self.content)]
 
     observation = VisualizerMockObservation(

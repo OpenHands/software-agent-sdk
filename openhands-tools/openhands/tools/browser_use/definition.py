@@ -39,13 +39,9 @@ class BrowserObservation(Observation):
         if self.is_error:
             llm_content.append(TextContent(text=self.error_message_header))
 
-        # Extract text from content (handle both str and list types)
-        if isinstance(self.content, str):
-            content_text = self.content
-        else:
-            content_text = "".join(
-                [c.text for c in self.content if isinstance(c, TextContent)]
-            )
+        # BrowserObservation always has content as str
+        assert isinstance(self.content, str)
+        content_text = self.content
 
         llm_content.append(
             TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
