@@ -128,7 +128,7 @@ print("\n=== Example Complete ===")
 print("Key points:")
 print(
     "- conversation.run() creates actions; confirmation mode "
-    "sets agent_status=WAITING_FOR_CONFIRMATION"
+    "sets execution_status=WAITING_FOR_CONFIRMATION"
 )
 print("- User confirmation is handled via a single reusable function")
 print("- Rejection uses conversation.reject_pending_actions() and the loop continues")
