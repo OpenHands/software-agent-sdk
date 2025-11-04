@@ -3,9 +3,9 @@
 import pytest
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.microagents import (
-    KnowledgeMicroagent,
-    RepoMicroagent,
+from openhands.sdk.context.skills import (
+    KeywordTrigger,
+    Skill,
 )
 from openhands.sdk.llm import Message, TextContent
 
@@ -16,7 +16,7 @@ class TestAgentContext:
     def test_agent_context_creation_empty(self):
         """Test creating an empty AgentContext."""
         context = AgentContext()
-        assert context.microagents == []
+        assert context.skills == []
         assert context.system_message_suffix is None
         assert context.user_message_suffix is None
 
@@ -29,46 +29,52 @@ class TestAgentContext:
         assert context.system_message_suffix == "Custom system suffix"
         assert context.user_message_suffix == "Custom user suffix"
 
-    def test_microagent_validation_duplicate_names(self):
-        """Test that duplicate microagent names raise validation error."""
-        repo_agent1 = RepoMicroagent(
-            name="duplicate", content="First agent", type="repo"
+    def test_skill_validation_duplicate_names(self):
+        """Test that duplicate skill names raise validation error."""
+        repo_skill1 = Skill(
+            name="duplicate",
+            content="First agent",
+            source="test1.md",
+            trigger=None,
         )
-        repo_agent2 = RepoMicroagent(
-            name="duplicate", content="Second agent", type="repo"
+        repo_skill2 = Skill(
+            name="duplicate",
+            content="Second agent",
+            source="test2.md",
+            trigger=None,
         )
 
-        with pytest.raises(
-            ValueError, match="Duplicate microagent name found: duplicate"
-        ):
-            AgentContext(microagents=[repo_agent1, repo_agent2])
+        with pytest.raises(ValueError, match="Duplicate skill name found: duplicate"):
+            AgentContext(skills=[repo_skill1, repo_skill2])
 
-    def test_get_system_message_suffix_no_repo_microagents(self):
-        """Test system message suffix with no repo microagents."""
-        knowledge_agent = KnowledgeMicroagent(
+    def test_get_system_message_suffix_no_repo_skills(self):
+        """Test system message suffix with no repo skills."""
+        knowledge_skill = Skill(
             name="test_knowledge",
             content="Some knowledge content",
-            type="knowledge",
-            triggers=["test"],
+            source="test.md",
+            trigger=KeywordTrigger(keywords=["test"]),
         )
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_skill])
         result = context.get_system_message_suffix()
         assert result is None
 
-    def test_get_system_message_suffix_with_repo_microagents(self):
-        """Test system message suffix rendering with repo microagents."""
-        repo_agent1 = RepoMicroagent(
+    def test_get_system_message_suffix_with_repo_skills(self):
+        """Test system message suffix rendering with repo skills."""
+        repo_agent1 = Skill(
             name="coding_standards",
             content="Follow PEP 8 style guidelines for Python code.",
-            type="repo",
+            source="coding_standards.md",
+            trigger=None,
         )
-        repo_agent2 = RepoMicroagent(
+        repo_agent2 = Skill(
             name="testing_guidelines",
             content="Write comprehensive unit tests for all new features.",
-            type="repo",
+            source="testing_guidelines.md",
+            trigger=None,
         )
 
-        context = AgentContext(microagents=[repo_agent1, repo_agent2])
+        context = AgentContext(skills=[repo_agent1, repo_agent2])
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -92,15 +98,16 @@ defined in user's repository.\n"
         assert result == expected_output
 
     def test_get_system_message_suffix_with_custom_suffix(self):
-        """Test system message suffix with repo microagents and custom suffix."""
-        repo_agent = RepoMicroagent(
+        """Test system message suffix with repo skills and custom suffix."""
+        repo_agent = Skill(
             name="security_rules",
             content="Always validate user input and sanitize data.",
-            type="repo",
+            source="security-rules.md",
+            trigger=None,
         )
 
         context = AgentContext(
-            microagents=[repo_agent],
+            skills=[repo_agent],
             system_message_suffix="Additional custom instructions for the system.",
         )
         result = context.get_system_message_suffix()
@@ -127,14 +134,14 @@ defined in user's repository.\n"
 
     def test_get_user_message_suffix_empty_query(self):
         """Test user message suffix with empty query."""
-        knowledge_agent = KnowledgeMicroagent(
+        knowledge_agent = Skill(
             name="python_tips",
             content="Use list comprehensions for better performance.",
-            type="knowledge",
-            triggers=["python", "performance"],
+            source="python-tips.md",
+            trigger=KeywordTrigger(keywords=["python", "performance"]),
         )
 
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_agent])
         empty_message = Message(role="user", content=[])
         result = context.get_user_message_suffix(empty_message, [])
 
@@ -142,14 +149,14 @@ defined in user's repository.\n"
 
     def test_get_user_message_suffix_no_triggers(self):
         """Test user message suffix with no matching triggers."""
-        knowledge_agent = KnowledgeMicroagent(
+        knowledge_agent = Skill(
             name="python_tips",
             content="Use list comprehensions for better performance.",
-            type="knowledge",
-            triggers=["python", "performance"],
+            source="python-tips.md",
+            trigger=KeywordTrigger(keywords=["python", "performance"]),
         )
 
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_agent])
         user_message = Message(
             role="user", content=[TextContent(text="How do I write JavaScript code?")]
         )
@@ -158,15 +165,15 @@ defined in user's repository.\n"
         assert result is None
 
     def test_get_user_message_suffix_with_single_trigger(self):
-        """Test user message suffix with single triggered microagent."""
-        knowledge_agent = KnowledgeMicroagent(
+        """Test user message suffix with single triggered skill."""
+        knowledge_agent = Skill(
             name="python_tips",
             content="Use list comprehensions for better performance.",
-            type="knowledge",
-            triggers=["python", "performance"],
+            source="python-tips.md",
+            trigger=KeywordTrigger(keywords=["python", "performance"]),
         )
 
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_agent])
         user_message = Message(
             role="user",
             content=[TextContent(text="How can I improve my Python code performance?")],
@@ -190,22 +197,22 @@ for "python".\n'
         assert triggered_names == ["python_tips"]
 
     def test_get_user_message_suffix_with_multiple_triggers(self):
-        """Test user message suffix with multiple triggered microagents."""
-        python_agent = KnowledgeMicroagent(
+        """Test user message suffix with multiple triggered skills."""
+        python_agent = Skill(
             name="python_best_practices",
             content="Follow PEP 8 and use type hints for better code quality.",
-            type="knowledge",
-            triggers=["python", "best practices"],
+            source="python-best-practices.md",
+            trigger=KeywordTrigger(keywords=["python", "best practices"]),
         )
-        testing_agent = KnowledgeMicroagent(
+        testing_agent = Skill(
             name="testing_framework",
             content="Use pytest for comprehensive testing with fixtures and \
 parametrization.",
-            type="knowledge",
-            triggers=["testing", "pytest"],
+            source="testing-framework.md",
+            trigger=KeywordTrigger(keywords=["testing", "pytest"]),
         )
 
-        context = AgentContext(microagents=[python_agent, testing_agent])
+        context = AgentContext(skills=[python_agent, testing_agent])
         user_message = Message(
             role="user",
             content=[
@@ -241,16 +248,16 @@ parametrization.\n"
         assert text_content.text == expected_output
         assert set(triggered_names) == {"python_best_practices", "testing_framework"}
 
-    def test_get_user_message_suffix_skip_microagent_names(self):
-        """Test user message suffix with skipped microagent names."""
-        knowledge_agent = KnowledgeMicroagent(
+    def test_get_user_message_suffix_skip_skill_names(self):
+        """Test user message suffix with skipped skill names."""
+        knowledge_agent = Skill(
             name="python_tips",
             content="Use list comprehensions for better performance.",
-            type="knowledge",
-            triggers=["python", "performance"],
+            source="python-tips.md",
+            trigger=KeywordTrigger(keywords=["python", "performance"]),
         )
 
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_agent])
         user_message = Message(
             role="user",
             content=[TextContent(text="How can I improve my Python code performance?")],
@@ -261,15 +268,15 @@ parametrization.\n"
 
     def test_get_user_message_suffix_multiline_content(self):
         """Test user message suffix with multiline user content."""
-        knowledge_agent = KnowledgeMicroagent(
+        knowledge_agent = Skill(
             name="database_tips",
             content="Always use parameterized queries to prevent SQL injection \
 attacks.",
-            type="knowledge",
-            triggers=["database", "sql"],
+            source="database-tips.md",
+            trigger=KeywordTrigger(keywords=["database", "sql"]),
         )
 
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_agent])
         user_message = Message(
             role="user",
             content=[
@@ -296,23 +303,24 @@ attacks.",
         assert text_content.text == expected_output
         assert triggered_names == ["database_tips"]
 
-    def test_mixed_microagent_types(self):
-        """Test AgentContext with mixed microagent types."""
-        repo_agent = RepoMicroagent(
+    def test_mixed_skill_types(self):
+        """Test AgentContext with mixed skill types."""
+        repo_agent = Skill(
             name="repo_standards",
             content="Use semantic versioning for releases.",
-            type="repo",
+            source="repo-standards.md",
+            trigger=None,
         )
-        knowledge_agent = KnowledgeMicroagent(
+        knowledge_agent = Skill(
             name="git_tips",
             content="Use conventional commits for better history.",
-            type="knowledge",
-            triggers=["git", "commit"],
+            source="git-tips.md",
+            trigger=KeywordTrigger(keywords=["git", "commit"]),
         )
 
-        context = AgentContext(microagents=[repo_agent, knowledge_agent])
+        context = AgentContext(skills=[repo_agent, knowledge_agent])
 
-        # Test system message suffix (should only include repo microagents)
+        # Test system message suffix (should only include repo skills)
         system_result = context.get_system_message_suffix()
         expected_system_output = (
             "<REPO_CONTEXT>\n"
@@ -329,7 +337,7 @@ defined in user's repository.\n"
         )
         assert system_result == expected_system_output
 
-        # Test user message suffix (should only include knowledge microagents)
+        # Test user message suffix (should only include knowledge skills)
         user_message = Message(
             role="user",
             content=[TextContent(text="How should I format my git commits?")],
@@ -354,14 +362,14 @@ for "git".\n'
 
     def test_case_insensitive_trigger_matching(self):
         """Test that trigger matching is case insensitive."""
-        knowledge_agent = KnowledgeMicroagent(
+        knowledge_agent = Skill(
             name="docker_tips",
             content="Use multi-stage builds to reduce image size.",
-            type="knowledge",
-            triggers=["docker", "container"],
+            source="docker-tips.md",
+            trigger=KeywordTrigger(keywords=["docker", "container"]),
         )
 
-        context = AgentContext(microagents=[knowledge_agent])
+        context = AgentContext(skills=[knowledge_agent])
         user_message = Message(
             role="user",
             content=[TextContent(text="I need help with DOCKER containerization.")],
@@ -386,14 +394,15 @@ for "docker".\n'
 
     def test_special_characters_in_content(self):
         """Test template rendering with special characters in content."""
-        repo_agent = RepoMicroagent(
+        repo_agent = Skill(
             name="special_chars",
             content="Use {{ curly braces }} and <angle brackets> carefully in \
 templates.",
-            type="repo",
+            source="special-chars.md",
+            trigger=None,
         )
 
-        context = AgentContext(microagents=[repo_agent])
+        context = AgentContext(skills=[repo_agent])
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -413,11 +422,13 @@ templates.\n"
 
         assert result == expected_output
 
-    def test_empty_microagent_content(self):
-        """Test template rendering with empty microagent content."""
-        repo_agent = RepoMicroagent(name="empty_content", content="", type="repo")
+    def test_empty_skill_content(self):
+        """Test template rendering with empty skill content."""
+        repo_agent = Skill(
+            name="empty_content", content="", source="test.md", trigger=None
+        )
 
-        context = AgentContext(microagents=[repo_agent])
+        context = AgentContext(skills=[repo_agent])
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -437,22 +448,22 @@ defined in user's repository.\n"
         assert result == expected_output
 
     def test_get_system_message_suffix_custom_suffix_only(self):
-        """Test system message suffix with custom suffix but no repo microagents.
+        """Test system message suffix with custom suffix but no repo skills.
 
         This test exposes a bug where get_system_message_suffix() returns None
-        when there are no repo microagents, even if system_message_suffix is set.
+        when there are no repo skills, even if system_message_suffix is set.
         The method should return the custom suffix in this case.
         """
-        # Create context with only knowledge microagents (no repo microagents)
+        # Create context with only knowledge skills (no repo skills)
         # but with a custom system_message_suffix
-        knowledge_agent = KnowledgeMicroagent(
+        knowledge_agent = Skill(
             name="test_knowledge",
             content="Some knowledge content",
-            type="knowledge",
-            triggers=["test"],
+            source="test-knowledge.md",
+            trigger=KeywordTrigger(keywords=["test"]),
         )
         context = AgentContext(
-            microagents=[knowledge_agent],
+            skills=[knowledge_agent],
             system_message_suffix="Custom system instructions without repo context.",
         )
 
@@ -469,7 +480,7 @@ defined in user's repository.\n"
         """
         # Create context with user_message_suffix
         context = AgentContext(
-            microagents=[],
+            skills=[],
             user_message_suffix="Custom user instructions for empty messages.",
         )
 

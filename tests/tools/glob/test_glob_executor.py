@@ -239,3 +239,86 @@ def test_glob_executor_empty_directory():
         assert observation.error is None
         assert len(observation.files) == 0
         assert not observation.truncated
+
+
+def test_extract_search_path_from_pattern_absolute_with_recursive():
+    """Test _extract_search_path_from_pattern with absolute path and **."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
+        "/path/to/dir/**/*.py"
+    )
+
+    assert search_path == Path("/path/to/dir").resolve()
+    assert pattern == "**/*.py"
+
+
+def test_extract_search_path_from_pattern_absolute_without_recursive():
+    """Test _extract_search_path_from_pattern with absolute path without **."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
+        "/path/to/dir/*.py"
+    )
+
+    assert search_path == Path("/path/to/dir").resolve()
+    assert pattern == "*.py"
+
+
+def test_extract_search_path_from_pattern_relative():
+    """Test _extract_search_path_from_pattern with relative pattern."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("**/*.py")
+
+    assert search_path is None
+    assert pattern == "**/*.py"
+
+
+def test_extract_search_path_from_pattern_relative_simple():
+    """Test _extract_search_path_from_pattern with simple relative pattern."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("*.py")
+
+    assert search_path is None
+    assert pattern == "*.py"
+
+
+def test_extract_search_path_from_pattern_empty():
+    """Test _extract_search_path_from_pattern with empty pattern."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("")
+
+    assert search_path is None
+    assert pattern == "**/*"
+
+
+def test_extract_search_path_from_pattern_home_directory():
+    """Test _extract_search_path_from_pattern with ~ (home directory)."""
+    home = Path.home()
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
+        "~/documents/**/*.txt"
+    )
+
+    assert search_path == (home / "documents").resolve()
+    assert pattern == "**/*.txt"
+
+
+def test_extract_search_path_from_pattern_root_glob():
+    """Test _extract_search_path_from_pattern with glob at root level."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern("/*/*.py")
+
+    assert search_path == Path("/").resolve()
+    assert pattern == "*/*.py"
+
+
+def test_extract_search_path_from_pattern_nested_glob():
+    """Test _extract_search_path_from_pattern with glob in middle of path."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
+        "/path/to/*/subdir/*.py"
+    )
+
+    assert search_path == Path("/path/to").resolve()
+    assert pattern == "*/subdir/*.py"
+
+
+def test_extract_search_path_from_pattern_deep_nesting():
+    """Test _extract_search_path_from_pattern with deeply nested absolute path."""
+    search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
+        "/usr/local/lib/python3.12/**/*.so"
+    )
+
+    assert search_path == Path("/usr/local/lib/python3.12").resolve()
+    assert pattern == "**/*.so"

@@ -16,7 +16,7 @@ from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot, TextCo
 
 def create_test_agent() -> Agent:
     """Create a test agent."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test")
     return Agent(llm=llm, tools=[])
 
 
@@ -158,7 +158,7 @@ def test_generate_title_with_custom_llm(mock_completion):
 
     # Create a custom LLM
     custom_llm = LLM(
-        model="gpt-3.5-turbo", api_key=SecretStr("custom-key"), service_id="custom"
+        model="gpt-3.5-turbo", api_key=SecretStr("custom-key"), usage_id="custom"
     )
 
     # Mock the custom LLM response

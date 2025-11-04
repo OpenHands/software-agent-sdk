@@ -24,9 +24,10 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation import Conversation, LocalConversation
+from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.state import AgentExecutionStatus
-from openhands.sdk.event import MessageEvent, PauseEvent
+from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent, PauseEvent
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
@@ -64,14 +65,76 @@ class BlockingExecutor(
     ToolExecutor[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
 ):
     def __init__(self, step_entered: threading.Event):
-        self.step_entered: bool = step_entered
+        self.step_entered: threading.Event = step_entered
 
     def __call__(
-        self, action: PauseFunctionalityMockAction
+        self,
+        action: PauseFunctionalityMockAction,
+        conversation: BaseConversation | None = None,
     ) -> PauseFunctionalityMockObservation:
         # Signal we've entered tool execution for this step
         self.step_entered.set()
         return PauseFunctionalityMockObservation(result=f"Executed: {action.command}")
+
+
+class TestExecutor(
+    ToolExecutor[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+):
+    """Test executor for pause functionality testing."""
+
+    def __call__(
+        self,
+        action: PauseFunctionalityMockAction,
+        conversation: BaseConversation | None = None,
+    ) -> PauseFunctionalityMockObservation:
+        return PauseFunctionalityMockObservation(result=f"Executed: {action.command}")
+
+
+class PauseFunctionalityTestTool(
+    ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+):
+    """Concrete tool for pause functionality testing."""
+
+    @classmethod
+    def create(
+        cls, conv_state=None, **params
+    ) -> Sequence["PauseFunctionalityTestTool"]:
+        return [
+            cls(
+                name="test_tool",
+                description="A test tool",
+                action_type=PauseFunctionalityMockAction,
+                observation_type=PauseFunctionalityMockObservation,
+                executor=TestExecutor(),
+            )
+        ]
+
+
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+    """Factory function for creating test tools."""
+    return PauseFunctionalityTestTool.create(conv_state, **params)
+
+
+class BlockingTestTool(
+    ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+):
+    """Concrete tool for blocking pause testing."""
+
+    @classmethod
+    def create(
+        cls, conv_state=None, step_entered=None, **params
+    ) -> Sequence["BlockingTestTool"]:
+        if step_entered is None:
+            raise ValueError("step_entered is required for BlockingTestTool")
+        return [
+            cls(
+                name="test_tool",
+                description="Blocking tool for pause test",
+                action_type=PauseFunctionalityMockAction,
+                observation_type=PauseFunctionalityMockObservation,
+                executor=BlockingExecutor(step_entered),
+            )
+        ]
 
 
 class TestPauseFunctionality:
@@ -81,31 +144,8 @@ class TestPauseFunctionality:
         """Set up test fixtures."""
 
         self.llm: LLM = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-
-        class TestExecutor(
-            ToolExecutor[
-                PauseFunctionalityMockAction, PauseFunctionalityMockObservation
-            ]
-        ):
-            def __call__(
-                self, action: PauseFunctionalityMockAction
-            ) -> PauseFunctionalityMockObservation:
-                return PauseFunctionalityMockObservation(
-                    result=f"Executed: {action.command}"
-                )
-
-        def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test tool",
-                    action_type=PauseFunctionalityMockAction,
-                    observation_type=PauseFunctionalityMockObservation,
-                    executor=TestExecutor(),
-                )
-            ]
 
         register_tool("test_tool", _make_tool)
 
@@ -113,7 +153,7 @@ class TestPauseFunctionality:
             llm=self.llm,
             tools=[Tool(name="test_tool")],
         )
-        self.conversation: Conversation = Conversation(agent=self.agent)
+        self.conversation: LocalConversation = Conversation(agent=self.agent)
 
     def test_pause_basic_functionality(self):
         """Test basic pause operations."""
@@ -260,13 +300,22 @@ class TestPauseFunctionality:
             == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
         )
 
-        # Action did not execute
-        agent_messages = [
+        # Action did not execute (no ObservationEvent should be recorded)
+
+        observations = [
             event
             for event in self.conversation.state.events
-            if isinstance(event, Action) and event.source == "agent"
+            if isinstance(event, ObservationEvent)
         ]
-        assert len(agent_messages) == 0
+        assert len(observations) == 0
+
+        # But there should be at least one ActionEvent pending confirmation
+        action_events = [
+            event
+            for event in self.conversation.state.events
+            if isinstance(event, ActionEvent)
+        ]
+        assert len(action_events) >= 1
 
     def test_multiple_pause_calls_create_one_event(self):
         """Test that multiple successive pause calls only create one PauseEvent."""
@@ -295,15 +344,9 @@ class TestPauseFunctionality:
         step_entered = threading.Event()
 
         def _make_blocking_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="Blocking tool for pause test",
-                    action_type=PauseFunctionalityMockAction,
-                    observation_type=PauseFunctionalityMockObservation,
-                    executor=BlockingExecutor(step_entered),
-                )
-            ]
+            return BlockingTestTool.create(
+                conv_state, step_entered=step_entered, **kwargs
+            )
 
         register_tool("test_tool", _make_blocking_tool)
         agent = Agent(
@@ -313,8 +356,8 @@ class TestPauseFunctionality:
         conversation = Conversation(agent=agent, stuck_detection=False)
 
         # Swap them in for this test only
-        self.agent: Agent = agent
-        self.conversation: Conversation = conversation
+        self.agent = agent
+        self.conversation = conversation
 
         # LLM continuously emits actions (no finish)
         tool_call = ChatCompletionMessageToolCall(

@@ -20,7 +20,7 @@ from openhands.tools.execute_bash import (
 def _create_conv_state(working_dir: str) -> ConversationState:
     """Helper to create a ConversationState for testing."""
 
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     return ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir=working_dir)

@@ -16,7 +16,7 @@ from openhands.tools.glob import GlobAction, GlobObservation, GlobTool
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
     """Helper to create a test conversation state."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     return ConversationState.create(
         id=uuid4(),
@@ -41,7 +41,7 @@ def test_glob_tool_initialization():
 
 def test_glob_tool_invalid_working_dir():
     """Test that GlobTool raises error for invalid working directory."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     conv_state = ConversationState.create(
         id=uuid4(),

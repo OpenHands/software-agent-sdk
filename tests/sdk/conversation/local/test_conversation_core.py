@@ -15,7 +15,7 @@ from openhands.sdk.llm import LLM, Message, TextContent
 
 def create_test_agent() -> Agent:
     """Create a test agent."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     return Agent(llm=llm, tools=[])
 
 

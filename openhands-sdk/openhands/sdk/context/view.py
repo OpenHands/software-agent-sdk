@@ -89,6 +89,40 @@ class View(BaseModel):
             raise ValueError(f"Invalid key type: {type(key)}")
 
     @staticmethod
+    def _enforce_batch_atomicity(
+        events: Sequence[Event],
+        forgotten_event_ids: set[EventID],
+    ) -> set[EventID]:
+        """Ensure that if any event in a batch is forgotten, all events in that
+        batch are forgotten.
+
+        This prevents partial batches from being sent to the LLM, which can cause
+        API errors when thinking blocks are separated from their tool calls.
+        """
+        batches: dict[EventID, list[EventID]] = {}
+        for event in events:
+            if isinstance(event, ActionEvent):
+                llm_response_id = event.llm_response_id
+                if llm_response_id not in batches:
+                    batches[llm_response_id] = []
+                batches[llm_response_id].append(event.id)
+
+        updated_forgotten_ids = set(forgotten_event_ids)
+
+        for llm_response_id, batch_event_ids in batches.items():
+            # Check if any event in this batch is being forgotten
+            if any(event_id in forgotten_event_ids for event_id in batch_event_ids):
+                # If so, forget all events in this batch
+                updated_forgotten_ids.update(batch_event_ids)
+                logger.debug(
+                    f"Enforcing batch atomicity: forgetting entire batch "
+                    f"with llm_response_id={llm_response_id} "
+                    f"({len(batch_event_ids)} events)"
+                )
+
+        return updated_forgotten_ids
+
+    @staticmethod
     def filter_unmatched_tool_calls(
         events: list[LLMConvertibleEvent],
     ) -> list[LLMConvertibleEvent]:
@@ -160,6 +194,11 @@ class View(BaseModel):
                 forgotten_event_ids.add(event.id)
             if isinstance(event, CondensationRequest):
                 forgotten_event_ids.add(event.id)
+
+        # Enforce batch atomicity: if any event in a multi-action batch is forgotten,
+        # forget all events in that batch to prevent partial batches with thinking
+        # blocks separated from their tool calls
+        forgotten_event_ids = View._enforce_batch_atomicity(events, forgotten_event_ids)
 
         kept_events = [
             event

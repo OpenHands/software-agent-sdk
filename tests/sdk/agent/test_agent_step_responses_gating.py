@@ -16,7 +16,7 @@ class DummyLLM(LLM):
     _force_responses: bool = PrivateAttr(default=False)
 
     def __init__(self, *, model: str, force_responses: bool):
-        super().__init__(model=model, service_id="test-llm")
+        super().__init__(model=model, usage_id="test-llm")
         self._force_responses = force_responses
 
     def uses_responses_api(self) -> bool:  # override gating
@@ -70,7 +70,7 @@ def test_agent_step_routes_to_responses_or_completion(force_responses, expected)
             events.append(e)
 
     # One step should call the appropriate method and emit an assistant message
-    agent.step(convo.state, on_event=on_event)
+    agent.step(convo, on_event=on_event)
 
     assert llm._calls == [expected]
     assert any(isinstance(e, MessageEvent) for e in events)
@@ -80,7 +80,7 @@ class ModelGateLLM(LLM):
     _calls: list[str] = PrivateAttr(default_factory=list)
 
     def __init__(self, *, model: str):
-        super().__init__(model=model, service_id="test-llm")
+        super().__init__(model=model, usage_id="test-llm")
 
     def completion(self, *, messages, tools=None, **kwargs) -> LLMResponse:  # type: ignore[override]
         self._calls.append("completion")
@@ -127,7 +127,7 @@ def test_agent_step_model_features_gate_to_responses_or_completion(model, expect
         if isinstance(e, MessageEvent):
             events.append(e)
 
-    agent.step(convo.state, on_event=on_event)
+    agent.step(convo, on_event=on_event)
 
     assert llm._calls == [expected]
     assert any(isinstance(e, MessageEvent) for e in events)

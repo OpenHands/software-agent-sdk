@@ -25,7 +25,7 @@ from openhands.tools.execute_bash.definition import (
 def test_history_too_short():
     """Test that stuck detector returns False when there are too few events."""
     # Create a minimal agent for testing
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -73,7 +73,7 @@ def test_history_too_short():
 
 def test_repeating_action_observation_not_stuck_less_than_4_repeats():
     """Test detection of repeating action-observation cycles."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -122,7 +122,7 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
 
 def test_repeating_action_observation_stuck():
     """Test detection of repeating action-observation cycles."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -171,7 +171,7 @@ def test_repeating_action_observation_stuck():
 
 def test_repeating_action_error_stuck():
     """Test detection of repeating action-error cycles."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -230,7 +230,7 @@ def test_repeating_action_error_stuck():
 
 def test_agent_monologue_stuck():
     """Test detection of agent monologue (repeated messages without user input)."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -260,7 +260,7 @@ def test_agent_monologue_stuck():
 
 def test_not_stuck_with_different_actions():
     """Test that different actions don't trigger stuck detection."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -312,7 +312,7 @@ def test_not_stuck_with_different_actions():
 
 def test_reset_after_user_message():
     """Test that stuck detection resets after a new user message."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")

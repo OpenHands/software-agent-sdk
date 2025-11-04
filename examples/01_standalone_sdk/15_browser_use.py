@@ -24,7 +24,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    service_id="agent",
+    usage_id="agent",
     model=model,
     base_url=base_url,
     api_key=SecretStr(api_key),
@@ -63,7 +63,7 @@ conversation = Conversation(
 )
 
 conversation.send_message(
-    "Could you go to https://all-hands.dev/ blog page and summarize main "
+    "Could you go to https://openhands.dev/ blog page and summarize main "
     "points of the latest blog?"
 )
 conversation.run()

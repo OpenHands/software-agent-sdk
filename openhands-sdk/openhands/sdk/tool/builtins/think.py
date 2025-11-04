@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -11,6 +12,11 @@ from openhands.sdk.tool.tool import (
     ToolDefinition,
     ToolExecutor,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation.state import ConversationState
 
 
 class ThinkAction(Action):
@@ -70,20 +76,49 @@ The tool simply logs your thought process for better transparency and does not e
 
 
 class ThinkExecutor(ToolExecutor):
-    def __call__(self, _: ThinkAction) -> ThinkObservation:
+    def __call__(
+        self,
+        _: ThinkAction,
+        conversation: "BaseConversation | None" = None,  # noqa: ARG002
+    ) -> ThinkObservation:
         return ThinkObservation()
 
 
-ThinkTool = ToolDefinition(
-    name="think",
-    description=THINK_DESCRIPTION,
-    action_type=ThinkAction,
-    observation_type=ThinkObservation,
-    executor=ThinkExecutor(),
-    annotations=ToolAnnotations(
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
+class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):
+    """Tool for logging thoughts without making changes."""
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        **params,
+    ) -> Sequence[Self]:
+        """Create ThinkTool instance.
+
+        Args:
+            conv_state: Optional conversation state (not used by ThinkTool).
+            **params: Additional parameters (none supported).
+
+        Returns:
+            A sequence containing a single ThinkTool instance.
+
+        Raises:
+            ValueError: If any parameters are provided.
+        """
+        if params:
+            raise ValueError("ThinkTool doesn't accept parameters")
+        return [
+            cls(
+                name="think",
+                description=THINK_DESCRIPTION,
+                action_type=ThinkAction,
+                observation_type=ThinkObservation,
+                executor=ThinkExecutor(),
+                annotations=ToolAnnotations(
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]

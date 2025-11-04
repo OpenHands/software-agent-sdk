@@ -13,7 +13,9 @@ from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWor
 
 def test_async_remote_workspace_initialization():
     """Test AsyncRemoteWorkspace can be initialized with required parameters."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000", api_key="test-key")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     assert workspace.host == "http://localhost:8000"
     assert workspace.api_key == "test-key"
@@ -21,7 +23,9 @@ def test_async_remote_workspace_initialization():
 
 def test_async_remote_workspace_initialization_without_api_key():
     """Test AsyncRemoteWorkspace can be initialized without API key."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     assert workspace.host == "http://localhost:8000"
     assert workspace.api_key is None
@@ -29,14 +33,18 @@ def test_async_remote_workspace_initialization_without_api_key():
 
 def test_async_remote_workspace_host_normalization():
     """Test that host URL is normalized by removing trailing slash."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000/")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000/", working_dir="workspace"
+    )
 
     assert workspace.host == "http://localhost:8000"
 
 
 def test_async_client_property_lazy_initialization():
     """Test that client property creates httpx.AsyncClient lazily."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Client should be None initially
     assert workspace._client is None
@@ -52,7 +60,9 @@ def test_async_client_property_lazy_initialization():
 
 def test_async_headers_property_with_api_key():
     """Test _headers property includes API key when present."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000", api_key="test-key")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     headers = workspace._headers
     assert headers == {"X-Session-API-Key": "test-key"}
@@ -60,7 +70,9 @@ def test_async_headers_property_with_api_key():
 
 def test_async_headers_property_without_api_key():
     """Test _headers property is empty when no API key."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     headers = workspace._headers
     assert headers == {}
@@ -69,7 +81,9 @@ def test_async_headers_property_without_api_key():
 @pytest.mark.asyncio
 async def test_async_execute_method():
     """Test _execute method handles async generator protocol correctly."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock async client
     mock_client = AsyncMock()
@@ -94,7 +108,9 @@ async def test_async_execute_method():
 )
 async def test_async_execute_command(mock_execute):
     """Test execute_command method calls _execute with correct generator."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     expected_result = CommandResult(
         command="echo hello",
@@ -121,7 +137,9 @@ async def test_async_execute_command(mock_execute):
 )
 async def test_async_file_upload(mock_execute):
     """Test file_upload method calls _execute with correct generator."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     expected_result = FileOperationResult(
         success=True,
@@ -147,7 +165,9 @@ async def test_async_file_upload(mock_execute):
 )
 async def test_async_file_download(mock_execute):
     """Test file_download method calls _execute with correct generator."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     expected_result = FileOperationResult(
         success=True,
@@ -170,7 +190,9 @@ async def test_async_file_download(mock_execute):
 @pytest.mark.asyncio
 async def test_async_execute_command_with_path_objects():
     """Test execute_command works with Path objects for cwd."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     with patch.object(workspace, "_execute") as mock_execute:
         expected_result = CommandResult(
@@ -191,7 +213,9 @@ async def test_async_execute_command_with_path_objects():
 @pytest.mark.asyncio
 async def test_async_file_operations_with_path_objects():
     """Test file operations work with Path objects."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     with patch.object(workspace, "_execute") as mock_execute:
         expected_result = FileOperationResult(
@@ -221,7 +245,9 @@ def test_async_inheritance():
         RemoteWorkspaceMixin,
     )
 
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     assert isinstance(workspace, RemoteWorkspaceMixin)
 
@@ -229,7 +255,9 @@ def test_async_inheritance():
 @pytest.mark.asyncio
 async def test_async_execute_with_exception_handling():
     """Test _execute method handles exceptions in generator correctly."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock async client to raise an exception
     mock_client = AsyncMock()
@@ -250,7 +278,9 @@ async def test_async_execute_with_exception_handling():
 @pytest.mark.asyncio
 async def test_async_execute_generator_completion():
     """Test _execute method properly handles StopIteration to get return value."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock async client
     mock_client = AsyncMock()
@@ -277,7 +307,9 @@ async def test_async_execute_generator_completion():
 @pytest.mark.asyncio
 async def test_async_execute_multiple_yields():
     """Test _execute method handles multiple yields correctly."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock async client
     mock_client = AsyncMock()
@@ -304,7 +336,9 @@ async def test_async_execute_multiple_yields():
 @pytest.mark.asyncio
 async def test_async_concurrent_operations():
     """Test that multiple async operations can run concurrently."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     with patch.object(workspace, "_execute") as mock_execute:
         # Mock different results for different operations

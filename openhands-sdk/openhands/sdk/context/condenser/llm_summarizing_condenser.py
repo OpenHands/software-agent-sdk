@@ -16,15 +16,14 @@ class LLMSummarizingCondenser(RollingCondenser):
     keep_first: int = Field(default=4, ge=0)
 
     @model_validator(mode="after")
-    @classmethod
-    def validate_keep_first_vs_max_size(cls, model):
-        events_from_tail = model.max_size // 2 - model.keep_first - 1
+    def validate_keep_first_vs_max_size(self):
+        events_from_tail = self.max_size // 2 - self.keep_first - 1
         if events_from_tail <= 0:
             raise ValueError(
                 "keep_first must be less than max_size // 2 to leave room for "
                 "condensation"
             )
-        return model
+        return self
 
     def handles_condensation_requests(self) -> bool:
         return True
@@ -79,4 +78,5 @@ class LLMSummarizingCondenser(RollingCondenser):
             forgotten_event_ids=[event.id for event in forgotten_events],
             summary=summary,
             summary_offset=self.keep_first,
+            llm_response_id=llm_response.id,
         )

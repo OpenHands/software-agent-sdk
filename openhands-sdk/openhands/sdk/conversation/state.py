@@ -2,16 +2,16 @@
 import json
 from collections.abc import Sequence
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Self
+from typing import Any, Self
 
-from pydantic import Field, PrivateAttr
+from pydantic import AliasChoices, Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
-from openhands.sdk.conversation.secrets_manager import SecretsManager
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
@@ -40,10 +40,6 @@ class AgentExecutionStatus(str, Enum):
     FINISHED = "finished"  # Agent has completed the current task
     ERROR = "error"  # Agent encountered an error (optional for future use)
     STUCK = "stuck"  # Agent is stuck in a loop or unable to proceed
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.conversation.secrets_manager import SecretsManager
 
 
 class ConversationState(OpenHandsModel):
@@ -84,9 +80,9 @@ class ConversationState(OpenHandsModel):
     agent_status: AgentExecutionStatus = Field(default=AgentExecutionStatus.IDLE)
     confirmation_policy: ConfirmationPolicyBase = NeverConfirm()
 
-    activated_knowledge_microagents: list[str] = Field(
+    activated_knowledge_skills: list[str] = Field(
         default_factory=list,
-        description="List of activated knowledge microagents name",
+        description="List of activated knowledge skills name",
     )
 
     # Conversation statistics for LLM usage tracking
@@ -95,8 +91,15 @@ class ConversationState(OpenHandsModel):
         description="Conversation statistics for tracking LLM metrics",
     )
 
+    # Secret registry for handling sensitive data
+    secret_registry: SecretRegistry = Field(
+        default_factory=SecretRegistry,
+        description="Registry for handling secrets and sensitive data",
+        validation_alias=AliasChoices("secret_registry", "secrets_manager"),
+        serialization_alias="secret_registry",
+    )
+
     # ===== Private attrs (NOT Fields) =====
-    _secrets_manager: "SecretsManager" = PrivateAttr(default_factory=SecretsManager)
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
     _autosave_enabled: bool = PrivateAttr(
@@ -113,11 +116,6 @@ class ConversationState(OpenHandsModel):
     @property
     def events(self) -> EventLog:
         return self._events
-
-    @property
-    def secrets_manager(self) -> SecretsManager:
-        """Public accessor for the SecretsManager (stored as a private attr)."""
-        return self._secrets_manager
 
     def set_on_state_change(self, callback: ConversationCallbackType | None) -> None:
         """Set a callback to be called when state changes.

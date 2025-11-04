@@ -1,6 +1,7 @@
 """Test that an agent can browse a GitHub PR and extract information."""
 
 from openhands.sdk import get_logger
+from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
@@ -8,7 +9,7 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 INSTRUCTION = (
-    "Look at https://github.com/All-Hands-AI/OpenHands/pull/8, and tell me "
+    "Look at https://github.com/OpenHands/OpenHands/pull/8, and tell me "
     "what is happening there and what did @asadm suggest. "
 )
 
@@ -38,9 +39,9 @@ class GitHubPRBrowsingTest(BaseIntegrationTest):
         """Verify that the agent successfully browsed the GitHub PR."""
 
         # Get the agent's final answer/response to the instruction
-        agent_final_answer = self.conversation.agent_final_response()
+        agent_answer = get_agent_final_response(self.conversation.state.events)
 
-        if not agent_final_answer:
+        if not agent_answer:
             return TestResult(
                 success=False,
                 reason=(
@@ -51,7 +52,7 @@ class GitHubPRBrowsingTest(BaseIntegrationTest):
             )
 
         # Convert to lowercase for case-insensitive matching
-        answer_text = agent_final_answer.lower()
+        answer_text = agent_answer.lower()
 
         github_indicators = ["mit", "apache", "license"]
 
@@ -66,6 +67,6 @@ class GitHubPRBrowsingTest(BaseIntegrationTest):
                 reason=(
                     "Agent's final answer does not contain the expected information "
                     "about the PR content. "
-                    f"Final answer preview: {agent_final_answer[:200]}..."
+                    f"Final answer preview: {agent_answer[:200]}..."
                 ),
             )

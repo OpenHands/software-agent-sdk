@@ -32,7 +32,7 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     working_dir = str(tmp_path)
 
     llm = LLM(
-        model="gpt-4o-mini", api_key=SecretStr("llm-api-key"), service_id="main-llm"
+        model="gpt-4o-mini", api_key=SecretStr("llm-api-key"), usage_id="main-llm"
     )
 
     # Use the standard Agent class to avoid polymorphic deserialization issues
@@ -81,7 +81,7 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
     working_dir = str(tmp_path_factory.mktemp("persist"))
 
     llm = LLM(
-        model="gpt-4o-mini", api_key=SecretStr("llm-api-key"), service_id="main-llm"
+        model="gpt-4o-mini", api_key=SecretStr("llm-api-key"), usage_id="main-llm"
     )
 
     agent1 = get_default_agent(llm)
@@ -113,7 +113,7 @@ def test_conversation_with_different_agent_tools_fails():
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         original_agent = Agent(llm=llm, tools=original_tools)
         conversation = LocalConversation(
@@ -137,7 +137,7 @@ def test_conversation_with_different_agent_tools_fails():
         # Try to create new conversation with different tools (only bash tool)
         different_tools = [Tool(name="BashTool")]  # Missing FileEditorTool
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         different_agent = Agent(llm=llm2, tools=different_tools)
 
@@ -163,7 +163,7 @@ def test_conversation_with_same_agent_succeeds():
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         original_agent = Agent(llm=llm, tools=tools)
         conversation = LocalConversation(
@@ -190,7 +190,7 @@ def test_conversation_with_same_agent_succeeds():
             Tool(name="FileEditorTool"),
         ]
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         same_agent = Agent(llm=llm2, tools=same_tools)
 
@@ -224,7 +224,7 @@ def test_conversation_persistence_lifecycle(mock_completion):
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         agent = Agent(llm=llm, tools=tools)
 
@@ -290,7 +290,7 @@ def test_agent_resolve_diff_from_deserialized():
         # Create original agent
         tools = [Tool(name="BashTool")]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         original_agent = Agent(llm=llm, tools=tools)
 
@@ -300,7 +300,7 @@ def test_agent_resolve_diff_from_deserialized():
 
         # Create runtime agent with same configuration
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         runtime_agent = Agent(llm=llm2, tools=tools)
 
@@ -320,7 +320,7 @@ def test_agent_resolve_diff_allows_security_analyzer_change():
         # Create original agent WITH security analyzer
         tools = [Tool(name="BashTool")]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         original_agent = Agent(
             llm=llm, tools=tools, security_analyzer=LLMSecurityAnalyzer()
@@ -336,7 +336,7 @@ def test_agent_resolve_diff_allows_security_analyzer_change():
 
         # Create runtime agent WITHOUT security analyzer
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         runtime_agent = Agent(llm=llm2, tools=tools, security_analyzer=None)
 
@@ -357,7 +357,7 @@ def test_agent_resolve_diff_allows_adding_security_analyzer():
         # Create original agent WITHOUT security analyzer
         tools = [Tool(name="BashTool")]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         original_agent = Agent(llm=llm, tools=tools, security_analyzer=None)
 
@@ -370,7 +370,7 @@ def test_agent_resolve_diff_allows_adding_security_analyzer():
 
         # Create runtime agent WITH security analyzer
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         runtime_agent = Agent(
             llm=llm2, tools=tools, security_analyzer=LLMSecurityAnalyzer()
@@ -397,7 +397,7 @@ def test_conversation_restart_with_different_security_analyzer():
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         agent_with_security = Agent(
             llm=llm, tools=tools, security_analyzer=LLMSecurityAnalyzer()
@@ -421,7 +421,7 @@ def test_conversation_restart_with_different_security_analyzer():
         # Restart conversation WITHOUT security analyzer
         # This should succeed (previously would fail with reconciliation error)
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         agent_without_security = Agent(llm=llm2, tools=tools, security_analyzer=None)
 
@@ -450,7 +450,7 @@ def test_conversation_restart_adding_security_analyzer():
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         agent_without_security = Agent(llm=llm, tools=tools, security_analyzer=None)
 
@@ -472,7 +472,7 @@ def test_conversation_restart_adding_security_analyzer():
         # Restart conversation WITH security analyzer
         # This should succeed
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         agent_with_security = Agent(
             llm=llm2, tools=tools, security_analyzer=LLMSecurityAnalyzer()

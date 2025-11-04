@@ -35,7 +35,7 @@ jobs:
             - name: Checkout agent-sdk repository
               uses: actions/checkout@v4
               with:
-                  repository: All-Hands-AI/agent-sdk
+                  repository: OpenHands/agent-sdk
                   path: agent-sdk
 
             - name: Checkout PR repository
@@ -66,8 +66,8 @@ jobs:
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands-sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands-tools"
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-tools"
 
             - name: Check required configuration
               env:

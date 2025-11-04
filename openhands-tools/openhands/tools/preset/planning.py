@@ -152,26 +152,13 @@ def get_planning_agent(
     """
     tools = get_planning_tools()
 
-    # Add MCP tools that are useful for planning
-    mcp_config = {
-        "mcpServers": {
-            "fetch": {"command": "uvx", "args": ["mcp-server-fetch"]},
-            "repomix": {"command": "npx", "args": ["-y", "repomix@1.4.2", "--mcp"]},
-        }
-    }
-
-    # Filter to only read-only MCP tools
-    filter_tools_regex = "^(?!repomix)(.*)|^repomix.*pack_codebase.*$"
-
     agent = Agent(
         llm=llm,
         tools=tools,
-        mcp_config=mcp_config,
-        filter_tools_regex=filter_tools_regex,
         system_prompt_filename="system_prompt_planning.j2",
         system_prompt_kwargs={"plan_structure": format_plan_structure()},
         condenser=get_planning_condenser(
-            llm=llm.model_copy(update={"service_id": "planning_condenser"})
+            llm=llm.model_copy(update={"usage_id": "planning_condenser"})
         ),
         security_analyzer=None,
     )

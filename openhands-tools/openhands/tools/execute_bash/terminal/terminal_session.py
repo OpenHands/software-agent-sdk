@@ -149,7 +149,7 @@ class TerminalSession(TerminalSessionBase):
 
         # Update the current working directory if it has changed
         if metadata.working_dir != self._cwd and metadata.working_dir:
-            self._cwd: str | None = metadata.working_dir
+            self._cwd: str = metadata.working_dir
 
         logger.debug(
             f"[Prev PS1 not matched: {get_content_before_last_match}] "
@@ -464,6 +464,7 @@ class TerminalSession(TerminalSessionBase):
             )
             if (
                 not is_blocking
+                and self.no_change_timeout_seconds is not None
                 and time_since_last_change >= self.no_change_timeout_seconds
             ):
                 obs = self._handle_nochange_timeout_command(

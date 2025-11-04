@@ -44,7 +44,7 @@ permissions:
 
 jobs:
     scan-todos:
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
     # Only run if triggered manually or if 'automatic-todo' label was added
         if: >
             github.event_name == 'workflow_dispatch' ||
@@ -55,12 +55,12 @@ jobs:
             todo-count: ${{ steps.scan.outputs.todo-count }}
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   fetch-depth: 0 # Full history for better context
 
             - name: Set up Python
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: '3.12'
 
@@ -120,14 +120,14 @@ jobs:
     process-todos:
         needs: scan-todos
         if: needs.scan-todos.outputs.todo-count > 0
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         strategy:
             matrix:
                 todo: ${{ fromJson(needs.scan-todos.outputs.todos) }}
             max-parallel: 1 # Process one TODO at a time to avoid conflicts
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   fetch-depth: 0
                   token: ${{ secrets.GITHUB_TOKEN }}
@@ -138,20 +138,20 @@ jobs:
                   git pull origin openhands/todo-management-example
 
             - name: Set up Python
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: '3.12'
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v6
+              uses: astral-sh/setup-uv@v7
               with:
                   enable-cache: true
 
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands-sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands-tools"
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-tools"
 
             - name: Copy agent files
               run: |
@@ -168,7 +168,7 @@ jobs:
             - name: Process TODO
               env:
                   LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
@@ -297,7 +297,7 @@ jobs:
     summary:
         needs: [scan-todos, process-todos]
         if: always()
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
             - name: Generate Summary
               run: |

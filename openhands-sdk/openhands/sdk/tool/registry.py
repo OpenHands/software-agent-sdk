@@ -4,7 +4,7 @@ from threading import RLock
 from typing import TYPE_CHECKING, Any
 
 from openhands.sdk.tool.spec import Tool
-from openhands.sdk.tool.tool import ToolBase, ToolDefinition
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 if TYPE_CHECKING:
@@ -85,7 +85,7 @@ def _is_abstract_method(cls: type, name: str) -> bool:
     return getattr(attr, "__isabstractmethod__", False)
 
 
-def _resolver_from_subclass(_name: str, cls: type[ToolBase]) -> Resolver:
+def _resolver_from_subclass(_name: str, cls: type[ToolDefinition]) -> Resolver:
     create = getattr(cls, "create", None)
 
     if create is None or not callable(create) or _is_abstract_method(cls, "create"):
@@ -115,14 +115,16 @@ def _resolver_from_subclass(_name: str, cls: type[ToolBase]) -> Resolver:
 
 def register_tool(
     name: str,
-    factory: ToolDefinition | type[ToolBase] | Callable[..., Sequence[ToolDefinition]],
+    factory: ToolDefinition
+    | type[ToolDefinition]
+    | Callable[..., Sequence[ToolDefinition]],
 ) -> None:
     if not isinstance(name, str) or not name.strip():
         raise ValueError("ToolDefinition name must be a non-empty string")
 
     if isinstance(factory, ToolDefinition):
         resolver = _resolver_from_instance(name, factory)
-    elif isinstance(factory, type) and issubclass(factory, ToolBase):
+    elif isinstance(factory, type) and issubclass(factory, ToolDefinition):
         resolver = _resolver_from_subclass(name, factory)
     elif callable(factory):
         resolver = _resolver_from_callable(name, factory)

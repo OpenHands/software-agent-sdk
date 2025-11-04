@@ -24,7 +24,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         workspace = APIRemoteWorkspace(
             runtime_api_url="https://runtime.eval.all-hands.dev",
             runtime_api_key="your-api-key",
-            server_image="ghcr.io/all-hands-ai/agent-server:lastest-python",
+            server_image="ghcr.io/openhands/agent-server:lastest-python",
         )
     """  # noqa: E501
 
@@ -96,7 +96,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         self._wait_until_runtime_alive()
         logger.info(f"Runtime ready at {self._runtime_url}")
         self.host = self._runtime_url.rstrip("/")
-        self.api_key: str = self._session_api_key
+        self.api_key = self._session_api_key
 
     def _check_existing_runtime(self) -> bool:
         """Check if there's an existing runtime for this session."""

@@ -660,7 +660,7 @@ def test_no_ps2_in_output(terminal_type):
 @parametrize_terminal_types
 def test_multiline_command_loop(terminal_type):
     """Test multiline command with loops."""
-    # https://github.com/All-Hands-AI/OpenHands/issues/3143
+    # https://github.com/OpenHands/OpenHands/issues/3143
     init_cmd = """mkdir -p _modules && \\
 for month in {01..04}; do
     for day in {01..05}; do
@@ -965,14 +965,14 @@ def test_bash_remove_prefix(terminal_type):
             # create a git repo - same for both platforms
             obs = _run_bash_action(
                 session,
-                "git init && git remote add origin https://github.com/All-Hands-AI/OpenHands",
+                "git init && git remote add origin https://github.com/OpenHands/OpenHands",
             )
             assert obs.metadata.exit_code == 0
 
             # Check git remote - same for both platforms
             obs = _run_bash_action(session, "git remote -v")
             assert obs.metadata.exit_code == 0
-            assert "https://github.com/All-Hands-AI/OpenHands" in obs.output
+            assert "https://github.com/OpenHands/OpenHands" in obs.output
             assert "git remote -v" not in obs.output
         finally:
             session.close()

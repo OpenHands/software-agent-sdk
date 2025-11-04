@@ -90,7 +90,7 @@ class SleepExecutor(ToolExecutor):
     test_start_time: float | None = None
     test_instance: "TestMessageWhileFinishing | None" = None
 
-    def __call__(self, action: SleepAction) -> SleepObservation:
+    def __call__(self, action: SleepAction, conversation=None) -> SleepObservation:  # noqa: ARG002
         start_time = time.time()
         test_start_time = getattr(self, "test_start_time", None)
         if test_start_time is None:
@@ -129,17 +129,25 @@ class SleepExecutor(ToolExecutor):
         return SleepObservation(message=action.message)
 
 
+class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
+    """Sleep tool for testing message processing during finish."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["SleepTool"]:
+        return [
+            cls(
+                name="sleep_tool",
+                action_type=SleepAction,
+                observation_type=SleepObservation,
+                description="Sleep for specified duration and return a message",
+                executor=SleepExecutor(),
+            )
+        ]
+
+
 def _make_sleep_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
     """Create sleep tool for testing."""
-    return [
-        ToolDefinition(
-            name="sleep_tool",
-            action_type=SleepAction,
-            observation_type=SleepObservation,
-            description="Sleep for specified duration and return a message",
-            executor=SleepExecutor(),
-        )
-    ]
+    return SleepTool.create(conv_state, **kwargs)
 
 
 # Register the tool
@@ -152,9 +160,7 @@ class TestMessageWhileFinishing:
     def setup_method(self):
         """Set up test fixtures."""
         # Use gpt-4o which supports native function calling and multiple tool calls
-        self.llm: LLM = LLM(
-            model="gpt-4o", native_tool_calling=True, service_id="test-llm"
-        )
+        self.llm: LLM = LLM(model="gpt-4o", usage_id="test-llm")
         self.llm_completion_calls: list[Any] = []
         self.agent: Agent = Agent(llm=self.llm, tools=[Tool(name="SleepTool")])
         self.step_count: int = 0

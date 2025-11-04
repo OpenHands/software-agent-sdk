@@ -9,7 +9,6 @@ from openhands.sdk import (
     Agent,
     Conversation,
 )
-from openhands.sdk.conversation.state import AgentExecutionStatus
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
@@ -21,7 +20,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    service_id="agent",
+    usage_id="agent",
     model=model,
     base_url=base_url,
     api_key=SecretStr(api_key),
@@ -42,27 +41,58 @@ agent = Agent(llm=llm, tools=tools)
 conversation = Conversation(agent, workspace=os.getcwd())
 
 
-print("Simple pause example - Press Ctrl+C to pause")
+print("=" * 60)
+print("Pause and Continue Example")
+print("=" * 60)
+print()
 
-# Send a message to get the conversation started
-conversation.send_message("repeatedly say hello world and don't stop")
+# Phase 1: Start a long-running task
+print("Phase 1: Starting agent with a task...")
+conversation.send_message(
+    "Create a file called countdown.txt and write numbers from 100 down to 1, "
+    "one number per line. After you finish, summarize what you did."
+)
+
+print(f"Initial status: {conversation.state.agent_status}")
+print()
 
 # Start the agent in a background thread
 thread = threading.Thread(target=conversation.run)
 thread.start()
 
-try:
-    # Main loop - similar to the user's sample script
-    while (
-        conversation.state.agent_status != AgentExecutionStatus.FINISHED
-        and conversation.state.agent_status != AgentExecutionStatus.PAUSED
-    ):
-        # Send encouraging messages periodically
-        conversation.send_message("keep going! you can do it!")
-        time.sleep(1)
-except KeyboardInterrupt:
-    conversation.pause()
+# Let the agent work for a few seconds
+print("Letting agent work for 2 seconds...")
+time.sleep(2)
 
+# Phase 2: Pause the agent
+print()
+print("Phase 2: Pausing the agent...")
+conversation.pause()
+
+# Wait for the thread to finish (it will stop when paused)
 thread.join()
 
-print(f"Agent status: {conversation.state.agent_status}")
+print(f"Agent status after pause: {conversation.state.agent_status}")
+print()
+
+
+# Phase 3: Send a new message while paused
+print("Phase 3: Sending a new message while agent is paused...")
+conversation.send_message(
+    "Actually, stop working on countdown.txt. Instead, create a file called "
+    "hello.txt with just the text 'Hello, World!' in it."
+)
+print()
+
+# Phase 4: Resume the agent with .run()
+print("Phase 4: Resuming agent with .run()...")
+print(f"Status before resume: {conversation.state.agent_status}")
+
+# Resume execution
+conversation.run()
+
+print(f"Final status: {conversation.state.agent_status}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

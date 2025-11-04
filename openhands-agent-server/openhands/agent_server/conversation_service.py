@@ -347,7 +347,6 @@ class ConversationService:
         event_service = EventService(
             stored=stored,
             conversations_dir=self.conversations_dir,
-            working_dir=Path(stored.workspace.working_dir),
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))

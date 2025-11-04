@@ -15,7 +15,7 @@ from openhands.sdk.workspace import LocalWorkspace
 @pytest.fixture
 def state():
     """Create a ConversationState for testing."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm)
     workspace = LocalWorkspace(working_dir="/tmp/test")
 

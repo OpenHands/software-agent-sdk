@@ -39,7 +39,7 @@ def mock_event_service():
                     id=uuid4(),
                     agent=Agent(
                         llm=LLM(
-                            service_id="test-llm",
+                            usage_id="test-llm",
                             model="test-model",
                             api_key=SecretStr("test-key"),
                         ),
@@ -48,7 +48,6 @@ def mock_event_service():
                     workspace=LocalWorkspace(working_dir="workspace/project"),
                 ),
                 conversations_dir=temp_path / "conversations_dir",
-                working_dir=temp_path / "working_dir",
             )
             yield service
 

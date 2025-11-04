@@ -23,7 +23,7 @@ def test_security_policy_in_system_message():
     # Create a minimal agent configuration
     agent = Agent(
         llm=LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
@@ -67,7 +67,7 @@ def test_security_policy_template_rendering():
     # Get the prompts directory
     agent = Agent(
         llm=LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
@@ -94,7 +94,7 @@ def test_llm_security_analyzer_template_kwargs():
     # Create agent with LLMSecurityAnalyzer
     agent = Agent(
         llm=LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
@@ -121,7 +121,7 @@ def test_llm_security_analyzer_sandbox_mode():
     # Create agent with LLMSecurityAnalyzer and cli_mode=False
     agent = Agent(
         llm=LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
@@ -149,7 +149,7 @@ def test_no_security_analyzer_excludes_risk_assessment():
     # Create agent without security analyzer
     agent = Agent(
         llm=LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
@@ -180,7 +180,7 @@ def test_non_llm_security_analyzer_excludes_risk_assessment():
     # Create agent with non-LLM security analyzer
     agent = Agent(
         llm=LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
@@ -230,7 +230,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
     """Security risk param is ignored when no analyzer is configured."""
 
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="test-model",
         api_key=SecretStr("test-key"),
         base_url="http://test",
@@ -250,7 +250,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
         convo.send_message(
             Message(role="user", content=[TextContent(text="Please think")])
         )
-        agent.step(convo.state, on_event=events.append)
+        agent.step(convo, on_event=events.append)
 
     # No agent errors
     assert not any(isinstance(e, AgentErrorEvent) for e in events)

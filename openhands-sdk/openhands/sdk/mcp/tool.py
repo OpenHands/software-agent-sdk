@@ -2,7 +2,11 @@
 
 import re
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
 
 import mcp.types
 from litellm import ChatCompletionToolParam
@@ -20,6 +24,7 @@ from openhands.sdk.tool import (
     ToolExecutor,
 )
 from openhands.sdk.tool.schema import Schema
+from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 logger = get_logger(__name__)
@@ -68,7 +73,11 @@ class MCPToolExecutor(ToolExecutor):
                     tool_name=self.tool_name,
                 )
 
-    def __call__(self, action: MCPToolAction) -> MCPToolObservation:
+    def __call__(
+        self,
+        action: MCPToolAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> MCPToolObservation:
         """Execute an MCP tool call."""
         return self.client.call_async_from_sync(
             self.call_tool, action=action, timeout=300
@@ -110,7 +119,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
 
-    def __call__(self, action: Action) -> Observation:
+    def __call__(
+        self,
+        action: Action,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> Observation:
         """Execute the tool action using the MCP client.
 
         We dynamically create a new MCPToolAction class with
@@ -140,7 +153,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 tool_name=self.name,
             )
 
-        return super().__call__(action)
+        return super().__call__(action, conversation)
 
     def action_from_arguments(self, arguments: dict[str, Any]) -> MCPToolAction:
         """Create an MCPToolAction from parsed arguments with early validation.
@@ -166,7 +179,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
         # Use exclude_none to avoid injecting nulls back to the call
-        sanitized = validated.model_dump(exclude_none=True)
+        # Exclude DiscriminatedUnionMixin fields (e.g., 'kind') as they're
+        # internal to OpenHands and not part of the MCP tool schema
+        exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys())
+        sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
         return MCPToolAction(data=sanitized)
 
     @classmethod

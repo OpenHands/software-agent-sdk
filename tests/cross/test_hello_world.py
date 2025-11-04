@@ -159,7 +159,7 @@ class TestHelloWorld:
 
         # Configure LLM (no real API key needed)
         llm = LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="claude-sonnet-4",
             api_key=SecretStr("mock-api-key"),
         )
@@ -279,7 +279,7 @@ class TestHelloWorld:
 
         # Configure LLM with logging enabled
         llm = LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="claude-sonnet-4",
             api_key=SecretStr("mock-api-key"),
         )
@@ -429,7 +429,7 @@ class TestHelloWorld:
             return mock_response
 
         # Create agent with mocked LLM
-        llm = LLM(model="claude-sonnet-4", service_id="test-llm")
+        llm = LLM(model="claude-sonnet-4", usage_id="test-llm")
         agent = Agent(llm=llm, tools=[])
 
         # Mock the completion method
@@ -448,7 +448,7 @@ class TestHelloWorld:
             )
 
             # Run one step to get the non-function call response
-            agent.step(conversation._state, on_event=conversation._on_event)
+            agent.step(conversation, on_event=conversation._on_event)
 
         # Validate that we captured the completion data
         assert len(captured_completions) == 1, (
@@ -523,7 +523,7 @@ class TestHelloWorld:
             return mock_response
 
         # Create agent with mocked LLM
-        agent = Agent(llm=LLM(model="claude-sonnet-4", service_id="test-llm"), tools=[])
+        agent = Agent(llm=LLM(model="claude-sonnet-4", usage_id="test-llm"), tools=[])
 
         # Mock the completion method
         with patch(
@@ -541,7 +541,7 @@ class TestHelloWorld:
             )
 
             # Run one step to get the non-function call response
-            agent.step(conversation._state, on_event=conversation._on_event)
+            agent.step(conversation, on_event=conversation._on_event)
 
         # Validate that we captured the completion data
         assert len(captured_completions) == 1, (

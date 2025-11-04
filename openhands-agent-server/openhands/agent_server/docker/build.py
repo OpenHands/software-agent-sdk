@@ -252,7 +252,7 @@ class BuildOptions(BaseModel):
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
-    image: str = Field(default="ghcr.io/all-hands-ai/agent-server")
+    image: str = Field(default="ghcr.io/openhands/agent-server")
     target: TargetType = Field(default="binary")
     platforms: list[PlatformType] = Field(default=["linux/amd64"])
     push: bool | None = Field(
@@ -522,7 +522,7 @@ def main(argv: list[str]) -> int:
     )
     parser.add_argument(
         "--image",
-        default=_env("IMAGE", "ghcr.io/all-hands-ai/agent-server"),
+        default=_env("IMAGE", "ghcr.io/openhands/agent-server"),
         help="Image repo/name (default from $IMAGE).",
     )
     parser.add_argument(

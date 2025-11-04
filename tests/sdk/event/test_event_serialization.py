@@ -151,6 +151,7 @@ def test_condensation_serialization() -> None:
     event = Condensation(
         summary="This is a summary",
         forgotten_event_ids=["event1", "event2", "event3", "event4", "event5"],
+        llm_response_id="condensation_response_1",
     )
 
     # Serialize
@@ -197,7 +198,7 @@ def test_event_deserialize():
             function_calling_enabled=False,
             force_string_serializer=False,
         ),
-        activated_microagents=[],
+        activated_skills=[],
         extended_content=[],
     )
     dumped = original.model_dump_json()

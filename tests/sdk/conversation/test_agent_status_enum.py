@@ -9,7 +9,7 @@ from openhands.sdk.llm import LLM
 
 def test_agent_execution_state_enum_basic():
     """Test basic AgentExecutionStatus enum functionality."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 
@@ -52,7 +52,7 @@ def test_enum_values():
 
 def test_enum_serialization():
     """Test that the enum serializes and deserializes correctly."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 

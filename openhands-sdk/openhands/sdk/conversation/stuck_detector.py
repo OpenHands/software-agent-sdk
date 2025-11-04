@@ -224,7 +224,7 @@ class StuckDetector:
         The pattern is repeated AgentCondensationObservation events without any other
         events between them.
         """
-        # TODO: blocked by https://github.com/All-Hands-AI/agent-sdk/issues/282
+        # TODO: blocked by https://github.com/OpenHands/agent-sdk/issues/282
         return False
 
     def _event_eq(self, event1: Event, event2: Event) -> bool:

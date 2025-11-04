@@ -2,13 +2,11 @@ import pathlib
 
 from pydantic import BaseModel, Field, field_validator
 
-from openhands.sdk.context.microagents import (
-    BaseMicroagent,
-    KnowledgeMicroagent,
-    MicroagentKnowledge,
-    RepoMicroagent,
-)
 from openhands.sdk.context.prompts import render_template
+from openhands.sdk.context.skills import (
+    Skill,
+    SkillKnowledge,
+)
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
 
@@ -23,16 +21,16 @@ class AgentContext(BaseModel):
 
     AgentContext unifies all the contextual inputs that shape how the system
     extends and interprets user prompts. It combines both static environment
-    details and dynamic, user-activated extensions from microagents.
+    details and dynamic, user-activated extensions from skills.
 
     Specifically, it provides:
-    - **Repository context / Repo Microagents**: Information about the active codebase,
-      branches, and repo-specific instructions contributed by repo microagents.
+    - **Repository context / Repo Skills**: Information about the active codebase,
+      branches, and repo-specific instructions contributed by repo skills.
     - **Runtime context**: Current execution environment (hosts, working
       directory, secrets, date, etc.).
     - **Conversation instructions**: Optional task- or channel-specific rules
       that constrain or guide the agent’s behavior across the session.
-    - **Knowledge Microagents**: Extensible components that can be triggered by user input
+    - **Knowledge Skills**: Extensible components that can be triggered by user input
       to inject knowledge or domain-specific guidance.
 
     Together, these elements make AgentContext the primary container responsible
@@ -40,9 +38,9 @@ class AgentContext(BaseModel):
     LLM interactions.
     """  # noqa: E501
 
-    microagents: list[BaseMicroagent] = Field(
+    skills: list[Skill] = Field(
         default_factory=list,
-        description="List of available microagents that can extend the user's input.",
+        description="List of available skills that can extend the user's input.",
     )
     system_message_suffix: str | None = Field(
         default=None, description="Optional suffix to append to the system prompt."
@@ -51,42 +49,37 @@ class AgentContext(BaseModel):
         default=None, description="Optional suffix to append to the user's message."
     )
 
-    @field_validator("microagents")
+    @field_validator("skills")
     @classmethod
-    def _validate_microagents(cls, v: list[BaseMicroagent], _info):
+    def _validate_skills(cls, v: list[Skill], _info):
         if not v:
             return v
-        # Check for duplicate microagent names
+        # Check for duplicate skill names
         seen_names = set()
-        for microagent in v:
-            if microagent.name in seen_names:
-                raise ValueError(f"Duplicate microagent name found: {microagent.name}")
-            seen_names.add(microagent.name)
+        for skill in v:
+            if skill.name in seen_names:
+                raise ValueError(f"Duplicate skill name found: {skill.name}")
+            seen_names.add(skill.name)
         return v
 
     def get_system_message_suffix(self) -> str | None:
-        """Get the system message with repo microagent content and custom suffix.
+        """Get the system message with repo skill content and custom suffix.
 
         Custom suffix can typically includes:
         - Repository information (repo name, branch name, PR number, etc.)
         - Runtime information (e.g., available hosts, current date)
         - Conversation instructions (e.g., user preferences, task details)
-        - Repository-specific instructions (collected from repo microagents)
+        - Repository-specific instructions (collected from repo skills)
         """
-        repo_microagents = [
-            m for m in self.microagents if isinstance(m, RepoMicroagent)
-        ]
-        logger.debug(
-            f"Triggered {len(repo_microagents)} repository "
-            f"microagents: {repo_microagents}"
-        )
+        repo_skills = [s for s in self.skills if s.trigger is None]
+        logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
         # Build the workspace context information
-        if repo_microagents:
+        if repo_skills:
             # TODO(test): add a test for this rendering to make sure they work
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
-                repo_microagents=repo_microagents,
+                repo_skills=repo_skills,
                 system_message_suffix=self.system_message_suffix or "",
             ).strip()
             return formatted_text
@@ -95,14 +88,14 @@ class AgentContext(BaseModel):
         return None
 
     def get_user_message_suffix(
-        self, user_message: Message, skip_microagent_names: list[str]
+        self, user_message: Message, skip_skill_names: list[str]
     ) -> tuple[TextContent, list[str]] | None:
-        """Augment the user’s message with knowledge recalled from microagents.
+        """Augment the user’s message with knowledge recalled from skills.
 
         This works by:
         - Extracting the text content of the user message
-        - Matching microagent triggers against the query
-        - Returning formatted knowledge and triggered microagent names if relevant microagents were triggered
+        - Matching skill triggers against the query
+        - Returning formatted knowledge and triggered skill names if relevant skills were triggered
         """  # noqa: E501
 
         user_message_suffix = None
@@ -112,39 +105,39 @@ class AgentContext(BaseModel):
         query = "\n".join(
             c.text for c in user_message.content if isinstance(c, TextContent)
         ).strip()
-        recalled_knowledge: list[MicroagentKnowledge] = []
+        recalled_knowledge: list[SkillKnowledge] = []
         # skip empty queries, but still return user_message_suffix if it exists
         if not query:
             if user_message_suffix:
                 return TextContent(text=user_message_suffix), []
             return None
-        # Search for microagent triggers in the query
-        for microagent in self.microagents:
-            if not isinstance(microagent, KnowledgeMicroagent):
+        # Search for skill triggers in the query
+        for skill in self.skills:
+            if not isinstance(skill, Skill):
                 continue
-            trigger = microagent.match_trigger(query)
-            if trigger and microagent.name not in skip_microagent_names:
+            trigger = skill.match_trigger(query)
+            if trigger and skill.name not in skip_skill_names:
                 logger.info(
-                    "Microagent '%s' triggered by keyword '%s'",
-                    microagent.name,
+                    "Skill '%s' triggered by keyword '%s'",
+                    skill.name,
                     trigger,
                 )
                 recalled_knowledge.append(
-                    MicroagentKnowledge(
-                        name=microagent.name,
+                    SkillKnowledge(
+                        name=skill.name,
                         trigger=trigger,
-                        content=microagent.content,
+                        content=skill.content,
                     )
                 )
         if recalled_knowledge:
-            formatted_microagent_text = render_template(
+            formatted_skill_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
-                template_name="microagent_knowledge_info.j2",
+                template_name="skill_knowledge_info.j2",
                 triggered_agents=recalled_knowledge,
             )
             if user_message_suffix:
-                formatted_microagent_text += "\n" + user_message_suffix
-            return TextContent(text=formatted_microagent_text), [
+                formatted_skill_text += "\n" + user_message_suffix
+            return TextContent(text=formatted_skill_text), [
                 k.name for k in recalled_knowledge
             ]
 

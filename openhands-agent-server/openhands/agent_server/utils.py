@@ -1,4 +1,8 @@
 from datetime import UTC, datetime
+from typing import Annotated
+from uuid import UUID
+
+from pydantic import PlainSerializer
 
 
 def utc_now():
@@ -177,3 +181,11 @@ def patch_fastapi_discriminated_union_support():
     except (ImportError, AttributeError):
         # FastAPI not available or internal API changed
         pass
+
+
+def _uuid_to_hex(uuid_obj: UUID) -> str:
+    """Converts a UUID object to a hex string without hyphens."""
+    return uuid_obj.hex
+
+
+OpenHandsUUID = Annotated[UUID, PlainSerializer(_uuid_to_hex, when_used="json")]

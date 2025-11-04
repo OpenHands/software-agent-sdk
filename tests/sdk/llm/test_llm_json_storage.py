@@ -13,7 +13,7 @@ def test_llm_store_and_load_json():
     """Test storing LLM to JSON and loading back with fields unchanged."""
     # Create original LLM with secrets
     original_llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="test-model",
         temperature=0.7,
         max_output_tokens=2000,

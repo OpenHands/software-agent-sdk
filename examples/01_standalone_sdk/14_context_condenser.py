@@ -32,7 +32,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    service_id="agent",
+    usage_id="agent",
     model=model,
     base_url=base_url,
     api_key=SecretStr(api_key),
@@ -57,7 +57,7 @@ tools = [
 # the conversation history, and always keeps the first two events (system prompts,
 # initial user messages) to preserve important context.
 condenser = LLMSummarizingCondenser(
-    llm=llm.model_copy(update={"service_id": "condenser"}), max_size=10, keep_first=2
+    llm=llm.model_copy(update={"usage_id": "condenser"}), max_size=10, keep_first=2
 )
 
 # Agent with condenser
@@ -136,3 +136,7 @@ print(f"Total LLM messages collected: {len(llm_messages)}")
 print("\nThe condenser automatically summarized older conversation history")
 print("when the conversation exceeded the configured max_size threshold.")
 print("This helps manage context length while preserving important information.")
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

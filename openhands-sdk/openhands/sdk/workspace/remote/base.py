@@ -5,13 +5,28 @@ from typing import Any
 import httpx
 from pydantic import PrivateAttr
 
+from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.workspace.base import BaseWorkspace
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
 
 
 class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
-    """Remote Workspace Implementation."""
+    """Remote workspace implementation that connects to an OpenHands agent server.
+
+    RemoteWorkspace provides access to a sandboxed environment running on a remote
+    OpenHands agent server. This is the recommended approach for production deployments
+    as it provides better isolation and security.
+
+    Example:
+        >>> workspace = RemoteWorkspace(
+        ...     host="https://agent-server.example.com",
+        ...     working_dir="/workspace"
+        ... )
+        >>> with workspace:
+        ...     result = workspace.execute_command("ls -la")
+        ...     content = workspace.read_file("README.md")
+    """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
 
@@ -19,7 +34,13 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     def client(self) -> httpx.Client:
         client = self._client
         if client is None:
-            client = httpx.Client()
+            # Configure reasonable timeouts for HTTP requests
+            # - connect: 10 seconds to establish connection
+            # - read: 60 seconds to read response (for LLM operations)
+            # - write: 10 seconds to send request
+            # - pool: 10 seconds to get connection from pool
+            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+            client = httpx.Client(base_url=self.host, timeout=timeout)
             self._client = client
         return client
 
@@ -92,5 +113,37 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             FileOperationResult: Result with success status and metadata
         """
         generator = self._file_download_generator(source_path, destination_path)
+        result = self._execute(generator)
+        return result
+
+    def git_changes(self, path: str | Path) -> list[GitChange]:
+        """Get the git changes for the repository at the path given.
+
+        Args:
+            path: Path to the git repository
+
+        Returns:
+            list[GitChange]: List of changes
+
+        Raises:
+            Exception: If path is not a git repository or getting changes failed
+        """
+        generator = self._git_changes_generator(path)
+        result = self._execute(generator)
+        return result
+
+    def git_diff(self, path: str | Path) -> GitDiff:
+        """Get the git diff for the file at the path given.
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            GitDiff: Git diff
+
+        Raises:
+            Exception: If path is not a git repository or getting diff failed
+        """
+        generator = self._git_diff_generator(path)
         result = self._execute(generator)
         return result

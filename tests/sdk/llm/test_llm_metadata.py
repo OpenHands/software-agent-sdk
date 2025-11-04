@@ -3,7 +3,7 @@ from openhands.sdk.llm import LLM
 
 def test_llm_metadata_default():
     """Test that metadata field defaults to empty dict."""
-    llm = LLM(model="gpt-4o", service_id="test")
+    llm = LLM(model="gpt-4o", usage_id="test")
     assert llm.metadata == {}
 
 
@@ -15,13 +15,13 @@ def test_llm_metadata_initialization():
         "session_id": "session-123",
         "trace_user_id": "user-456",
     }
-    llm = LLM(model="gpt-4o", service_id="test", metadata=custom_metadata)
+    llm = LLM(model="gpt-4o", usage_id="test", metadata=custom_metadata)
     assert llm.metadata == custom_metadata
 
 
 def test_llm_metadata_modification():
     """Test that metadata field can be modified after initialization."""
-    llm = LLM(model="gpt-4o", service_id="test")
+    llm = LLM(model="gpt-4o", usage_id="test")
 
     # Start with empty metadata
     assert llm.metadata == {}
@@ -49,7 +49,7 @@ def test_llm_metadata_complex_structure():
             "response_time_ms": 250,
         },
     }
-    llm = LLM(model="claude-3-5-sonnet", service_id="test", metadata=complex_metadata)
+    llm = LLM(model="claude-3-5-sonnet", usage_id="test", metadata=complex_metadata)
     assert llm.metadata == complex_metadata
 
     # Test nested access

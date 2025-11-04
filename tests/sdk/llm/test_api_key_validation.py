@@ -6,7 +6,7 @@ from openhands.sdk.llm import LLM
 def test_empty_api_key_string_converted_to_none():
     """Test that empty string API keys are converted to None."""
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
         api_key=SecretStr(""),
     )
@@ -16,7 +16,7 @@ def test_empty_api_key_string_converted_to_none():
 def test_whitespace_api_key_converted_to_none():
     """Test that whitespace-only API keys are converted to None."""
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
         api_key=SecretStr("   "),
     )
@@ -25,7 +25,7 @@ def test_whitespace_api_key_converted_to_none():
 
 def test_valid_api_key_preserved():
     """Test that valid API keys are preserved."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("valid-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4", api_key=SecretStr("valid-key"), usage_id="test-llm")
     assert llm.api_key is not None
     assert llm.api_key.get_secret_value() == "valid-key"
 
@@ -35,7 +35,7 @@ def test_none_api_key_preserved():
     llm = LLM(
         model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
         api_key=None,
-        service_id="test-llm",
+        usage_id="test-llm",
     )
     assert llm.api_key is None
 
@@ -45,7 +45,7 @@ def test_empty_string_direct_input():
     # This tests the case where someone might pass a string directly
     # Note: This would normally cause a validation error, but we handle it in field validator  # noqa: E501
     data = {"model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", "api_key": ""}
-    llm = LLM(**data, service_id="test-llm")  # type: ignore[arg-type]
+    llm = LLM(**data, usage_id="test-llm")  # type: ignore[arg-type]
     assert llm.api_key is None
 
 
@@ -55,7 +55,7 @@ def test_whitespace_string_direct_input():
         "model": "bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
         "api_key": "   \t\n  ",
     }
-    llm = LLM(**data, service_id="test-llm")  # type: ignore[arg-type]
+    llm = LLM(**data, usage_id="test-llm")  # type: ignore[arg-type]
     assert llm.api_key is None
 
 
@@ -65,7 +65,7 @@ def test_bedrock_model_with_none_api_key():
         model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
         api_key=None,
         aws_region_name="us-east-1",
-        service_id="test-llm",
+        usage_id="test-llm",
     )
     assert llm.api_key is None
     assert llm.aws_region_name == "us-east-1"
@@ -73,9 +73,7 @@ def test_bedrock_model_with_none_api_key():
 
 def test_non_bedrock_model_with_valid_key():
     """Test that non-Bedrock models work normally with valid API keys."""
-    llm = LLM(
-        model="gpt-4", api_key=SecretStr("valid-openai-key"), service_id="test-llm"
-    )
+    llm = LLM(model="gpt-4", api_key=SecretStr("valid-openai-key"), usage_id="test-llm")
     assert llm.api_key is not None
     assert llm.api_key.get_secret_value() == "valid-openai-key"
 
@@ -83,7 +81,7 @@ def test_non_bedrock_model_with_valid_key():
 def test_aws_credentials_handling():
     """Test that AWS credentials are properly handled for Bedrock models."""
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0",
         api_key=None,
         aws_access_key_id=SecretStr("test-access-key"),
