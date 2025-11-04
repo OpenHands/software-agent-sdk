@@ -85,6 +85,9 @@ class FileEditorObservation(Observation):
         default=None, description="The content of the file after the edit."
     )
     error: str | None = Field(default=None, description="Error message if any.")
+    image_data: str | None = Field(
+        default=None, description="Base64-encoded image data if viewing an image file."
+    )
 
     _diff_cache: Text | None = PrivateAttr(default=None)
 
@@ -92,7 +95,29 @@ class FileEditorObservation(Observation):
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         if self.error:
             return [TextContent(text=self.error)]
-        return [TextContent(text=self.output)]
+        
+        content: list[TextContent | ImageContent] = [TextContent(text=self.output)]
+        
+        # If image_data is present, add it as ImageContent
+        if self.image_data:
+            # Detect MIME type from the data prefix
+            mime_type = "image/png"  # default
+            if self.image_data.startswith("/9j/"):
+                mime_type = "image/jpeg"
+            elif self.image_data.startswith("iVBORw0KGgo"):
+                mime_type = "image/png"
+            elif self.image_data.startswith("R0lGODlh"):
+                mime_type = "image/gif"
+            elif self.image_data.startswith("UklGR"):
+                mime_type = "image/webp"
+            elif self.image_data.startswith("Qk"):
+                mime_type = "image/bmp"
+            
+            # Convert base64 to data URL format for ImageContent
+            data_url = f"data:{mime_type};base64,{self.image_data}"
+            content.append(ImageContent(image_urls=[data_url]))
+        
+        return content
 
     @property
     def visualize(self) -> Text:
@@ -157,6 +182,7 @@ Command = Literal[
 TOOL_DESCRIPTION = """Custom editing tool for viewing, creating and editing files in plain-text format
 * State is persistent across command calls and discussions with the user
 * If `path` is a text file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
+* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp), `view` displays the image content
 * The `create` command cannot be used if the specified `path` already exists as a file
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
 * The `undo_edit` command will revert the last edit made to the file at `path`

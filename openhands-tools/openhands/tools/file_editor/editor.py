@@ -1,3 +1,4 @@
+import base64
 import os
 import re
 import shutil
@@ -35,6 +36,9 @@ from openhands.tools.file_editor.utils.shell import run_shell_cmd
 
 
 logger = get_logger(__name__)
+
+# Supported image extensions for viewing as base64-encoded content
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
 class FileEditor:
@@ -321,6 +325,28 @@ class FileEditor:
                 prev_exist=True,
             )
 
+        # Check if the file is an image
+        file_extension = path.suffix.lower()
+        if file_extension in IMAGE_EXTENSIONS:
+            # Read image file as base64
+            try:
+                with open(path, "rb") as f:
+                    image_bytes = f.read()
+                image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+                
+                output_msg = f"Image file {path} read successfully. Displaying image content."
+                return FileEditorObservation(
+                    command="view",
+                    output=output_msg,
+                    path=str(path),
+                    prev_exist=True,
+                    image_data=image_base64,
+                )
+            except Exception as e:
+                raise ToolError(
+                    f"Failed to read image file {path}: {e}"
+                ) from None
+
         # Validate file and count lines
         self.validate_file(path)
         num_lines = self._count_lines(path)
@@ -603,8 +629,9 @@ class FileEditor:
                 ),
             )
 
-        # Check file type
-        if is_binary(str(path)):
+        # Check file type - allow image files
+        file_extension = path.suffix.lower()
+        if is_binary(str(path)) and file_extension not in IMAGE_EXTENSIONS:
             raise FileValidationError(
                 path=str(path),
                 reason=(
