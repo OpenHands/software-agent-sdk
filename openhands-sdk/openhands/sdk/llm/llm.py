@@ -198,6 +198,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "This is a string that can be one of 'low', 'medium', 'high', or 'none'. "
         "Can apply to all reasoning models.",
     )
+    reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
+        default=None,
+        description="The level of detail for reasoning summaries. "
+        "This is a string that can be one of 'auto', 'concise', or 'detailed'. "
+        "Requires verified OpenAI organization. Only sent when explicitly set.",
+    )
     enable_encrypted_reasoning: bool = Field(
         default=False,
         description="If True, ask for ['reasoning.encrypted_content'] "

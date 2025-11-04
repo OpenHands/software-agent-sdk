@@ -83,6 +83,19 @@ def test_normalize_responses_kwargs_policy():
     assert out["max_output_tokens"] == 128
 
 
+def test_normalize_responses_kwargs_with_summary():
+    """Test that reasoning_summary is included when explicitly set (for verified orgs)."""
+    llm = LLM(model="gpt-5-mini", reasoning_effort="high", reasoning_summary="detailed")
+
+    out = select_responses_options(
+        llm, {"temperature": 0.3}, include=["text.output_text"], store=None
+    )
+    # Verify reasoning includes both effort and summary when summary is set
+    r = out["reasoning"]
+    assert r["effort"] == "high"
+    assert r["summary"] == "detailed"
+
+
 @patch("openhands.sdk.llm.llm.litellm_responses")
 def test_llm_responses_end_to_end(mock_responses_call):
     # Configure LLM
