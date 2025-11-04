@@ -12,7 +12,7 @@ def test_validation_error_formatting():
         path="/nonexistent/file.txt",
     )
     assert_error_result(result)
-    assert result.error is not None and "does not exist" in result.error
+    assert result.is_error and "does not exist" in get_output_text(result)
 
     # Test directory validation for non-view commands
     result = file_editor(
@@ -23,8 +23,8 @@ def test_validation_error_formatting():
     )
     assert_error_result(result)
     assert (
-        result.error is not None
-        and "directory and only the `view` command" in result.error
+        result.is_error
+        and "directory and only the `view` command" in get_output_text(result)
     )
 
 
@@ -43,7 +43,7 @@ def test_str_replace_error_handling(temp_file):
         new_str="something",
     )
     assert_error_result(result)
-    assert result.error is not None and "did not appear verbatim" in result.error
+    assert result.is_error and "did not appear verbatim" in get_output_text(result)
 
     # Test multiple occurrences
     with open(temp_file, "w") as f:
@@ -56,8 +56,8 @@ def test_str_replace_error_handling(temp_file):
         new_str="new_line",
     )
     assert_error_result(result)
-    assert result.error is not None and "Multiple occurrences" in result.error
-    assert result.error is not None and "lines [1, 2]" in result.error
+    assert result.is_error and "Multiple occurrences" in get_output_text(result)
+    assert result.is_error and "lines [1, 2]" in get_output_text(result)
 
 
 def test_view_range_validation(temp_file):
@@ -74,8 +74,8 @@ def test_view_range_validation(temp_file):
         view_range=[1],  # Should be [start, end]
     )
     assert_error_result(result)
-    assert (
-        result.error is not None and "should be a list of two integers" in result.error
+    assert result.is_error and "should be a list of two integers" in get_output_text(
+        result
     )
 
     # Test out of bounds range: should clamp to file end and show a warning
@@ -85,7 +85,7 @@ def test_view_range_validation(temp_file):
         view_range=[1, 10],  # File only has 3 lines
     )
     # This should succeed but show a warning
-    assert result.error is None
+    assert not result.is_error
     assert (
         "NOTE: We only show up to 3 since there're only 3 lines in this file."
         in get_output_text(result)
@@ -98,9 +98,8 @@ def test_view_range_validation(temp_file):
         view_range=[3, 1],  # End before start
     )
     assert_error_result(result)
-    assert (
-        result.error is not None
-        and "should be greater than or equal to" in result.error
+    assert result.is_error and "should be greater than or equal to" in get_output_text(
+        result
     )
 
 
@@ -119,7 +118,7 @@ def test_insert_validation(temp_file):
         new_str="new line",
     )
     assert_error_result(result)
-    assert result.error is not None and "should be within the range" in result.error
+    assert result.is_error and "should be within the range" in get_output_text(result)
 
     # Test insert beyond file length
     result = file_editor(
@@ -129,7 +128,7 @@ def test_insert_validation(temp_file):
         new_str="new line",
     )
     assert_error_result(result)
-    assert result.error is not None and "should be within the range" in result.error
+    assert result.is_error and "should be within the range" in get_output_text(result)
 
 
 def test_undo_validation(temp_file):
@@ -145,4 +144,4 @@ def test_undo_validation(temp_file):
         path=temp_file,
     )
     assert_error_result(result)
-    assert result.error is not None and "No edit history found" in result.error
+    assert result.is_error and "No edit history found" in get_output_text(result)

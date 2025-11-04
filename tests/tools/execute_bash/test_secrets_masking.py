@@ -64,7 +64,7 @@ def test_bash_executor_with_conversation_secrets():
             mock_observation = ExecuteBashObservation(
                 command="echo 'Token: $SECRET_TOKEN, Key: $API_KEY'",
                 exit_code=0,
-                output=[
+                content=[
                     TextContent(text="Token: secret-value-123, Key: another-secret-456")
                 ],
             )

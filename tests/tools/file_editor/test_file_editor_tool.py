@@ -65,7 +65,7 @@ def test_file_editor_tool_create_file():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
+        assert not result.is_error
         assert os.path.exists(test_file)
 
         # Check file contents
@@ -96,7 +96,7 @@ def test_file_editor_tool_view_file():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
+        assert not result.is_error
         assert "Line 1" in get_output_text(result)
         assert "Line 2" in get_output_text(result)
         assert "Line 3" in get_output_text(result)
@@ -129,7 +129,7 @@ def test_file_editor_tool_str_replace():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
+        assert not result.is_error
 
         # Check file contents
         with open(test_file) as f:
@@ -179,7 +179,7 @@ def test_file_editor_tool_view_directory():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
+        assert not result.is_error
         assert "file1.txt" in get_output_text(result)
         assert "file2.txt" in get_output_text(result)
 

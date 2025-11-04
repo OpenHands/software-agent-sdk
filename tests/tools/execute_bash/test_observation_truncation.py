@@ -18,9 +18,8 @@ def test_execute_bash_observation_truncation_under_limit():
     )
 
     observation = ExecuteBashObservation(
-        output=[TextContent(text="Short output")],
+        content=[TextContent(text="Short output")],
         metadata=metadata,
-        error=None,
     )
 
     result = observation.to_llm_content
@@ -52,9 +51,8 @@ def test_execute_bash_observation_truncation_over_limit():
     long_output = "A" * (MAX_CMD_OUTPUT_SIZE + 1000)
 
     observation = ExecuteBashObservation(
-        output=[TextContent(text=long_output)],
+        content=[TextContent(text=long_output)],
         metadata=metadata,
-        error=None,
     )
 
     result = observation.to_llm_content
@@ -85,22 +83,26 @@ def test_execute_bash_observation_truncation_with_error():
         pid=123,
     )
 
-    # Create output that exceeds the limit
-    long_output = "B" * (MAX_CMD_OUTPUT_SIZE + 500)
-
     observation = ExecuteBashObservation(
-        output=[TextContent(text=long_output)],
+        content="Command failed",
         metadata=metadata,
-        error="Command failed",
+        is_error=True,
     )
 
     result = observation.to_llm_content
-    assert len(result) == 1
+    assert len(result) == 2
     assert isinstance(result[0], TextContent)
-    result = result[0].text
+    assert isinstance(result[1], TextContent)
 
-    # When there's an error, only the error message is returned
-    assert result == "Tool Execution Error: Command failed"
+    # First part is the error prefix
+    assert result[0].text == "Tool Execution Error. "
+
+    # Second part includes the error message with metadata
+    full_text = result[1].text
+    assert "Command failed" in full_text
+    assert "[Current working directory: /test]" in full_text
+    assert "[Python interpreter: /usr/bin/python]" in full_text
+    assert "[Command finished with exit code 1]" in full_text
 
 
 def test_execute_bash_observation_truncation_exact_limit():
@@ -124,9 +126,8 @@ def test_execute_bash_observation_truncation_exact_limit():
     exact_output = "C" * exact_output_size
 
     observation = ExecuteBashObservation(
-        output=[TextContent(text=exact_output)],
+        content=[TextContent(text=exact_output)],
         metadata=metadata,
-        error=None,
     )
 
     result = observation.to_llm_content
@@ -154,9 +155,8 @@ def test_execute_bash_observation_truncation_with_prefix_suffix():
     long_output = "D" * (MAX_CMD_OUTPUT_SIZE + 200)
 
     observation = ExecuteBashObservation(
-        output=[TextContent(text=long_output)],
+        content=[TextContent(text=long_output)],
         metadata=metadata,
-        error=None,
     )
 
     result = observation.to_llm_content
