@@ -37,6 +37,11 @@ class FinishObservation(Observation):
     extra fields are needed here.
     """
 
+    @property
+    def visualize(self) -> Text:
+        """Return an empty Text representation since the message is in the action."""
+        return Text()
+
 
 TOOL_DESCRIPTION = """Signals the completion of the current task or conversation.
 
@@ -55,10 +60,10 @@ The message should include:
 class FinishExecutor(ToolExecutor):
     def __call__(
         self,
-        action: FinishAction,  # noqa: ARG002
+        action: FinishAction,
         conversation: "BaseConversation | None" = None,  # noqa: ARG002
     ) -> FinishObservation:
-        return FinishObservation()
+        return FinishObservation(content=action.message)
 
 
 class FinishTool(ToolDefinition[FinishAction, FinishObservation]):

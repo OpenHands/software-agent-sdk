@@ -188,7 +188,7 @@ class TerminalSession(TerminalSessionBase):
         self._ready_for_next_command()
         return ExecuteBashObservation(
             command=command,
-            output=command_output,
+            content=command_output,
             metadata=metadata,
         )
 
@@ -222,7 +222,7 @@ class TerminalSession(TerminalSessionBase):
         )
         return ExecuteBashObservation(
             command=command,
-            output=command_output,
+            content=command_output,
             metadata=metadata,
         )
 
@@ -257,7 +257,7 @@ class TerminalSession(TerminalSessionBase):
         )
         return ExecuteBashObservation(
             command=command,
-            output=command_output,
+            content=command_output,
             metadata=metadata,
         )
 
@@ -314,12 +314,14 @@ class TerminalSession(TerminalSessionBase):
             if command == "":
                 return ExecuteBashObservation(
                     command=command,
-                    error="No previous running command to retrieve logs from.",
+                    content="No previous running command to retrieve logs from.",
+                    is_error=True,
                 )
             if is_input:
                 return ExecuteBashObservation(
                     command=command,
-                    error="No previous running command to interact with.",
+                    content="No previous running command to interact with.",
+                    is_error=True,
                 )
 
         # Check if the command is a single command or multiple commands
@@ -330,11 +332,12 @@ class TerminalSession(TerminalSessionBase):
             )
             return ExecuteBashObservation(
                 command=command,
-                error=(
+                content=(
                     "Cannot execute multiple commands at once.\n"
                     "Please run each command separately OR chain them into a single "
                     f"command via && or ;\nProvided commands:\n{commands_list}"
                 ),
+                is_error=True,
             )
 
         # Get initial state before sending command
@@ -387,7 +390,7 @@ class TerminalSession(TerminalSessionBase):
             )
             obs = ExecuteBashObservation(
                 command=command,
-                output=command_output,
+                content=command_output,
                 metadata=metadata,
             )
             logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")

@@ -1,6 +1,5 @@
 from abc import ABC
 from collections.abc import Sequence
-from enum import Enum
 from typing import Any, ClassVar, TypeVar
 
 from pydantic import ConfigDict, Field, create_model
@@ -188,59 +187,42 @@ class Action(Schema, ABC):
         return content
 
 
-class ObservationStatus(str, Enum):
-    SUCCESS = "success"
-    ERROR = "error"
-
-
 class Observation(Schema, ABC):
     """Base schema for output observation."""
 
-    output: str | list[TextContent | ImageContent] = Field(
+    content: str | list[TextContent | ImageContent] = Field(
         default="",
         description=(
-            "Output returned from the tool. Can be a simple string for most tools, "
-            "or a list of TextContent/ImageContent for tools that need rich content."
+            "Content returned from the tool. Can be a simple string for most tools, "
+            "or a list of TextContent/ImageContent for tools that need rich content. "
+            "When there is an error, it should be written in this field."
         ),
     )
-    error: str | None = Field(
-        default=None, description="Error message if operation failed"
+    is_error: bool = Field(
+        default=False, description="Whether the observation indicates an error"
     )
-
-    @property
-    def has_error(self) -> bool:
-        """
-        Check if the observation indicates an error.
-        """
-        return bool(self.error)
-
-    @property
-    def result_status(self) -> ObservationStatus:
-        """
-        Get the observation result status based on presence of error."""
-        return ObservationStatus.ERROR if self.has_error else ObservationStatus.SUCCESS
-
-    def format_error(self) -> TextContent:
-        """Format the error message for LLM display."""
-        return TextContent(text=f"Tool Execution Error: {self.error}")
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         """
         Default content formatting for converting observation to LLM readable content.
         Subclasses can override to provide richer content (e.g., images, diffs).
-        Errors can be partial so both output and error are included if present.
         """
         llm_content: list[TextContent | ImageContent] = []
-        if self.error:
-            llm_content.append(self.format_error())
-        if self.output:
+
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text="Tool Execution Error. "))
+
+        # Add content
+        if self.content:
             # Handle both str and list types
-            if isinstance(self.output, str):
-                llm_content.append(TextContent(text=self.output))
+            if isinstance(self.content, str):
+                llm_content.append(TextContent(text=self.content))
             else:
                 # It's a list of TextContent | ImageContent
-                llm_content.extend(self.output)
+                llm_content.extend(self.content)
+
         return llm_content
 
     @property

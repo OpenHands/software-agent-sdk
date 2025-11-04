@@ -100,7 +100,7 @@ class FileEditorObservation(Observation):
         assert self.path is not None, "path should be set for meaningful diff"
         # Generate and cache diff visualization
         if not self._diff_cache:
-            change_applied = self.command != "view" and not self.error
+            change_applied = self.command != "view" and not self.is_error
             self._diff_cache = visualize_diff(
                 self.path,
                 self.old_content,
@@ -114,7 +114,7 @@ class FileEditorObservation(Observation):
     @property
     def _has_meaningful_diff(self) -> bool:
         """Check if there's a meaningful diff to display."""
-        if self.error:
+        if self.is_error:
             return False
 
         if not self.path:

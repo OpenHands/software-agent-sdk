@@ -51,6 +51,11 @@ class ThinkObservation(Observation):
     fields are needed here.
     """
 
+    @property
+    def visualize(self) -> Text:
+        """Return an empty Text representation since the thought is in the action."""
+        return Text()
+
 
 THINK_DESCRIPTION = """Use the tool to think about something. It will not obtain new information or make any changes to the repository, but just log the thought. Use it when complex reasoning or brainstorming is needed.
 
@@ -70,7 +75,7 @@ class ThinkExecutor(ToolExecutor):
         _: ThinkAction,
         conversation: "BaseConversation | None" = None,  # noqa: ARG002
     ) -> ThinkObservation:
-        return ThinkObservation()
+        return ThinkObservation(content="Your thought has been logged.")
 
 
 class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):

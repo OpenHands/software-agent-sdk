@@ -113,7 +113,7 @@ class FileEditor:
                 path=str(_path),
                 new_content=file_text,
                 prev_exist=False,
-                output=f"File created successfully at: {_path}",
+                content=f"File created successfully at: {_path}",
             )
         elif command == "str_replace":
             if old_str is None:
@@ -255,7 +255,7 @@ class FileEditor:
         )
         return FileEditorObservation(
             command="str_replace",
-            output=success_message,
+            content=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_content,
@@ -293,30 +293,36 @@ class FileEditor:
                 rf"-path '{path}/*/\.*' \) | sort",
                 truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
             )
-            if not stderr:
-                # Add trailing slashes to directories
-                paths = stdout.strip().split("\n") if stdout.strip() else []
-                formatted_paths = []
-                for p in paths:
-                    if Path(p).is_dir():
-                        formatted_paths.append(f"{p}/")
-                    else:
-                        formatted_paths.append(p)
+            if stderr:
+                return FileEditorObservation(
+                    command="view",
+                    content=stderr,
+                    is_error=True,
+                    path=str(path),
+                    prev_exist=True,
+                )
+            # Add trailing slashes to directories
+            paths = stdout.strip().split("\n") if stdout.strip() else []
+            formatted_paths = []
+            for p in paths:
+                if Path(p).is_dir():
+                    formatted_paths.append(f"{p}/")
+                else:
+                    formatted_paths.append(p)
 
-                msg = [
-                    f"Here's the files and directories up to 2 levels deep in {path}, "
-                    "excluding hidden items:\n" + "\n".join(formatted_paths)
-                ]
-                if hidden_count > 0:
-                    msg.append(
-                        f"\n{hidden_count} hidden files/directories in this directory "
-                        f"are excluded. You can use 'ls -la {path}' to see them."
-                    )
-                stdout = "\n".join(msg)
+            msg = [
+                f"Here's the files and directories up to 2 levels deep in {path}, "
+                "excluding hidden items:\n" + "\n".join(formatted_paths)
+            ]
+            if hidden_count > 0:
+                msg.append(
+                    f"\n{hidden_count} hidden files/directories in this directory "
+                    f"are excluded. You can use 'ls -la {path}' to see them."
+                )
+            stdout = "\n".join(msg)
             return FileEditorObservation(
                 command="view",
-                output=stdout,
-                error=stderr,
+                content=stdout,
                 path=str(path),
                 prev_exist=True,
             )
@@ -332,7 +338,7 @@ class FileEditor:
 
             return FileEditorObservation(
                 command="view",
-                output=output,
+                content=output,
                 path=str(path),
                 prev_exist=True,
             )
@@ -386,7 +392,7 @@ class FileEditor:
         return FileEditorObservation(
             command="view",
             path=str(path),
-            output=output,
+            content=output,
             prev_exist=True,
         )
 
@@ -498,7 +504,7 @@ class FileEditor:
         )
         return FileEditorObservation(
             command="insert",
-            output=success_message,
+            content=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_text,
@@ -567,7 +573,7 @@ class FileEditor:
 
         return FileEditorObservation(
             command="undo_edit",
-            output=(
+            content=(
                 f"Last edit to {path} undone successfully. "
                 f"{self._make_output(old_text, str(path))}"
             ),

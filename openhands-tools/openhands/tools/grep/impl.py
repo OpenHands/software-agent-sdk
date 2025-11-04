@@ -60,7 +60,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
                         pattern=action.pattern,
                         search_path=str(search_path),
                         include_pattern=action.include,
-                        error=f"Search path '{action.path}' is not a valid directory",
+                        content=f"Search path '{action.path}' is not a valid directory",
+                        is_error=True,
                     )
             else:
                 search_path = self.working_dir
@@ -74,7 +75,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
                     pattern=action.pattern,
                     search_path=str(search_path),
                     include_pattern=action.include,
-                    error=f"Invalid regex pattern: {e}",
+                    content=f"Invalid regex pattern: {e}",
+                    is_error=True,
                 )
 
             if self._ripgrep_available:
@@ -97,7 +99,8 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
                 pattern=action.pattern,
                 search_path=error_search_path,
                 include_pattern=action.include,
-                error=str(e),
+                content=str(e),
+                is_error=True,
             )
 
     def _format_output(
@@ -180,7 +183,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             search_path=str(search_path),
             include_pattern=action.include,
             truncated=truncated,
-            output=output,
+            content=output,
         )
 
     def _execute_with_grep(
@@ -243,5 +246,5 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             search_path=str(search_path),
             include_pattern=action.include,
             truncated=truncated,
-            output=output,
+            content=output,
         )

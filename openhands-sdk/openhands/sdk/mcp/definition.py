@@ -80,47 +80,63 @@ class MCPToolObservation(Observation):
         # Prepend initial message to content
         content_with_header = [TextContent(text=initial_message)] + converted_content
 
-        # Populate error or output field based on result status
+        # Populate content field and is_error flag based on result status
         if result.isError:
-            # When there is an error, populate error field only with all content
+            # When there is an error, populate content field with all content
+            # and set is_error=True
             return cls(
-                error="\n".join(
+                content="\n".join(
                     [initial_message]
                     + [
                         c.text if isinstance(c, TextContent) else "[Image]"
                         for c in converted_content
                     ]
                 ),
+                is_error=True,
                 tool_name=tool_name,
             )
         else:
-            # When success, populate output field only
+            # When success, populate content field only
             return cls(
-                output=content_with_header,
+                content=content_with_header,
                 tool_name=tool_name,
             )
 
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this observation."""
-        content = Text()
-        content.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
+        content_obj = Text()
+        content_obj.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
 
-        if self.has_error:
-            content.append("[Error during execution]\n", style="bold red")
-            if self.error:
-                content.append(self.error + "\n")
-        elif self.output:
+        if self.is_error:
+            content_obj.append("[Error during execution]\n", style="bold red")
+            # Handle both str and list types for content
+            if isinstance(self.content, str):
+                content_obj.append(self.content + "\n")
+            else:
+                for block in self.content:
+                    if isinstance(block, TextContent):
+                        content_obj.append(block.text + "\n")
+                    elif isinstance(block, ImageContent):
+                        content_obj.append(
+                            f"[Image with {len(block.image_urls)} URLs]\n"
+                        )
+        elif self.content:
             # Display all content blocks
-            for block in self.output:
-                if isinstance(block, TextContent):
-                    # Try to parse as JSON for better display
-                    try:
-                        parsed = json.loads(block.text)
-                        content.append(display_dict(parsed))
-                    except (json.JSONDecodeError, TypeError):
-                        content.append(block.text + "\n")
-                elif isinstance(block, ImageContent):
-                    content.append(f"[Image with {len(block.image_urls)} URLs]\n")
+            if isinstance(self.content, str):
+                content_obj.append(self.content + "\n")
+            else:
+                for block in self.content:
+                    if isinstance(block, TextContent):
+                        # Try to parse as JSON for better display
+                        try:
+                            parsed = json.loads(block.text)
+                            content_obj.append(display_dict(parsed))
+                        except (json.JSONDecodeError, TypeError):
+                            content_obj.append(block.text + "\n")
+                    elif isinstance(block, ImageContent):
+                        content_obj.append(
+                            f"[Image with {len(block.image_urls)} URLs]\n"
+                        )
 
-        return content
+        return content_obj

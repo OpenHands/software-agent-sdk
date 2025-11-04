@@ -101,56 +101,55 @@ class ExecuteBashObservation(Observation):
         return self.metadata.pid
 
     @property
-    def raw_output(self) -> str:
-        """Return the raw output text for backward compatibility."""
-        if isinstance(self.output, str):
-            return self.output
-        else:
-            first_item = self.output[0] if self.output else None
-            return first_item.text if isinstance(first_item, TextContent) else ""
-
-    @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        if self.error:
-            error_msg = f"{self.metadata.prefix}{self.error}{self.metadata.suffix}"
-            return [TextContent(text=f"Tool Execution Error: {error_msg}")]
+        llm_content: list[TextContent | ImageContent] = []
 
-        # Handle both str and list types
-        if isinstance(self.output, str):
-            output_text = self.output
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text="Tool Execution Error. "))
+
+        # Handle both str and list types for content
+        if isinstance(self.content, str):
+            content_text = self.content
         else:
-            first_item = self.output[0] if self.output else None
-            output_text = first_item.text if isinstance(first_item, TextContent) else ""
+            first_item = self.content[0] if self.content else None
+            content_text = (
+                first_item.text if isinstance(first_item, TextContent) else ""
+            )
 
-        ret = f"{self.metadata.prefix}{output_text}{self.metadata.suffix}"
+        ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
         if self.metadata.working_dir:
             ret += f"\n[Current working directory: {self.metadata.working_dir}]"
         if self.metadata.py_interpreter_path:
             ret += f"\n[Python interpreter: {self.metadata.py_interpreter_path}]"
         if self.metadata.exit_code != -1:
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
-        return [TextContent(text=maybe_truncate(ret, MAX_CMD_OUTPUT_SIZE))]
+        llm_content.append(TextContent(text=maybe_truncate(ret, MAX_CMD_OUTPUT_SIZE)))
+
+        return llm_content
 
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation with terminal-style output formatting."""
-        content = Text()
+        content_obj = Text()
 
         # Add error indicator if present
-        if self.error:
-            content.append("❌ ", style="red bold")
-            content.append("Command execution error\n", style="red")
+        if self.is_error:
+            content_obj.append("❌ ", style="red bold")
+            content_obj.append("Command execution error\n", style="red")
 
         # Add command output with proper styling
-        if isinstance(self.output, str):
-            output_text = self.output
+        if isinstance(self.content, str):
+            content_text = self.content
         else:
-            first_item = self.output[0] if self.output else None
-            output_text = first_item.text if isinstance(first_item, TextContent) else ""
+            first_item = self.content[0] if self.content else None
+            content_text = (
+                first_item.text if isinstance(first_item, TextContent) else ""
+            )
 
-        if output_text:
+        if content_text:
             # Style the output based on content
-            output_lines = output_text.split("\n")
+            output_lines = content_text.split("\n")
             for line in output_lines:
                 if line.strip():
                     # Color error-like lines differently
@@ -158,28 +157,28 @@ class ExecuteBashObservation(Observation):
                         keyword in line.lower()
                         for keyword in ["error", "failed", "exception", "traceback"]
                     ):
-                        content.append(line, style="red")
+                        content_obj.append(line, style="red")
                     elif any(
                         keyword in line.lower() for keyword in ["warning", "warn"]
                     ):
-                        content.append(line, style="yellow")
+                        content_obj.append(line, style="yellow")
                     elif line.startswith("+ "):  # bash -x output
-                        content.append(line, style="cyan")
+                        content_obj.append(line, style="cyan")
                     else:
-                        content.append(line, style="white")
-                content.append("\n")
+                        content_obj.append(line, style="white")
+                content_obj.append("\n")
 
         # Add metadata with styling
         if hasattr(self, "metadata") and self.metadata:
             if self.metadata.working_dir:
-                content.append("\n📁 ", style="blue")
-                content.append(
+                content_obj.append("\n📁 ", style="blue")
+                content_obj.append(
                     f"Working directory: {self.metadata.working_dir}", style="blue"
                 )
 
             if self.metadata.py_interpreter_path:
-                content.append("\n🐍 ", style="green")
-                content.append(
+                content_obj.append("\n🐍 ", style="green")
+                content_obj.append(
                     f"Python interpreter: {self.metadata.py_interpreter_path}",
                     style="green",
                 )
@@ -189,20 +188,22 @@ class ExecuteBashObservation(Observation):
                 and self.metadata.exit_code is not None
             ):
                 if self.metadata.exit_code == 0:
-                    content.append("\n✅ ", style="green")
-                    content.append(
+                    content_obj.append("\n✅ ", style="green")
+                    content_obj.append(
                         f"Exit code: {self.metadata.exit_code}", style="green"
                     )
                 elif self.metadata.exit_code == -1:
-                    content.append("\n⏳ ", style="yellow")
-                    content.append(
+                    content_obj.append("\n⏳ ", style="yellow")
+                    content_obj.append(
                         "Process still running (soft timeout)", style="yellow"
                     )
                 else:
-                    content.append("\n❌ ", style="red")
-                    content.append(f"Exit code: {self.metadata.exit_code}", style="red")
+                    content_obj.append("\n❌ ", style="red")
+                    content_obj.append(
+                        f"Exit code: {self.metadata.exit_code}", style="red"
+                    )
 
-        return content
+        return content_obj
 
 
 TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.

@@ -33,20 +33,23 @@ class BrowserObservation(Observation):
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        if self.error:
-            return [self.format_error()]
+        llm_content: list[TextContent | ImageContent] = []
 
-        # Extract text from output (handle both str and list types)
-        if isinstance(self.output, str):
-            output_text = self.output
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text="Tool Execution Error. "))
+
+        # Extract text from content (handle both str and list types)
+        if isinstance(self.content, str):
+            content_text = self.content
         else:
-            output_text = "".join(
-                [c.text for c in self.output if isinstance(c, TextContent)]
+            content_text = "".join(
+                [c.text for c in self.content if isinstance(c, TextContent)]
             )
 
-        content: list[TextContent | ImageContent] = [
-            TextContent(text=maybe_truncate(output_text, MAX_BROWSER_OUTPUT_SIZE))
-        ]
+        llm_content.append(
+            TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
+        )
 
         if self.screenshot_data:
             mime_type = "image/png"
@@ -60,9 +63,9 @@ class BrowserObservation(Observation):
                 mime_type = "image/webp"
             # Convert base64 to data URL format for ImageContent
             data_url = f"data:{mime_type};base64,{self.screenshot_data}"
-            content.append(ImageContent(image_urls=[data_url]))
+            llm_content.append(ImageContent(image_urls=[data_url]))
 
-        return content
+        return llm_content
 
 
 # ============================================
