@@ -32,22 +32,23 @@ def test_tool_name_attributes_exist():
         assert tool_class.name.islower(), (
             f"{tool_class.__name__}.name should be snake_case"
         )
-        assert "_" in tool_class.name or len(tool_class.name) <= 4, (
+        # Allow single words without underscores (e.g., "bash", "grep")
+        assert "_" in tool_class.name or len(tool_class.name) <= 10, (
             f"{tool_class.__name__}.name should contain underscores for "
-            "multi-word names"
+            "multi-word names or be a short single word"
         )
 
 
 def test_tool_name_consistency():
     """Test that name matches the expected snake_case conversion."""
     expected_names = {
-        BashTool: "bash_tool",
-        FileEditorTool: "file_editor_tool",
+        BashTool: "bash",
+        FileEditorTool: "file_editor",
         TaskTrackerTool: "task_tracker",
         BrowserToolSet: "browser_tool_set",
-        GrepTool: "grep_tool",
-        GlobTool: "glob_tool",
-        PlanningFileEditorTool: "planning_file_editor_tool",
+        GrepTool: "grep",
+        GlobTool: "glob",
+        PlanningFileEditorTool: "planning_file_editor",
     }
 
     for tool_class, expected_name in expected_names.items():
@@ -59,10 +60,10 @@ def test_tool_name_consistency():
 def test_tool_name_accessible_at_class_level():
     """Test that name can be accessed at the class level without instantiation."""
     # This should not raise any errors and should return snake_case names
-    assert BashTool.name == "bash_tool"
-    assert FileEditorTool.name == "file_editor_tool"
+    assert BashTool.name == "bash"
+    assert FileEditorTool.name == "file_editor"
     assert TaskTrackerTool.name == "task_tracker"
     assert BrowserToolSet.name == "browser_tool_set"
-    assert GrepTool.name == "grep_tool"
-    assert GlobTool.name == "glob_tool"
-    assert PlanningFileEditorTool.name == "planning_file_editor_tool"
+    assert GrepTool.name == "grep"
+    assert GlobTool.name == "glob"
+    assert PlanningFileEditorTool.name == "planning_file_editor"

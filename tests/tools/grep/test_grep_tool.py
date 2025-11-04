@@ -33,7 +33,7 @@ def test_grep_tool_initialization():
 
         assert len(tools) == 1
         tool = tools[0]
-        assert tool.name == "grep_tool"
+        assert tool.name == "grep"
         assert tool.executor is not None
 
 
