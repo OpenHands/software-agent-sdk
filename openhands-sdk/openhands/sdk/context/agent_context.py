@@ -54,7 +54,6 @@ class AgentContext(BaseModel):
         description=(
             "Whether to automatically load user skills from ~/.openhands/skills/ "
             "and ~/.openhands/microagents/ (for backward compatibility). "
-            "Default is True."
         ),
     )
 
