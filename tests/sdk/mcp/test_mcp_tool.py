@@ -96,9 +96,9 @@ class TestMCPToolObservation:
 
     def test_to_llm_content_success(self):
         """Test agent observation formatting for success."""
-        observation = MCPToolObservation(
+        observation = MCPToolObservation.from_text(
+            text="[Tool 'test_tool' executed.]\nSuccess result",
             tool_name="test_tool",
-            content=[TextContent(text="[Tool 'test_tool' executed.]\nSuccess result")],
         )
 
         agent_obs = observation.to_llm_content
@@ -110,13 +110,13 @@ class TestMCPToolObservation:
 
     def test_to_llm_content_error(self):
         """Test agent observation formatting for error."""
-        observation = MCPToolObservation(
-            tool_name="test_tool",
-            content=(
+        observation = MCPToolObservation.from_text(
+            text=(
                 "[Tool 'test_tool' executed.]\n"
                 "[An error occurred during execution.]\n"
                 "Error occurred"
             ),
+            tool_name="test_tool",
             is_error=True,
         )
 
@@ -202,8 +202,8 @@ class TestMCPToolExecutor:
 
         # Mock call_async_from_sync to return an error observation
         def mock_call_async_from_sync(coro_func, **kwargs):
-            return MCPToolObservation(
-                content="Error calling MCP tool test_tool: Connection failed",
+            return MCPToolObservation.from_text(
+                text="Error calling MCP tool test_tool: Connection failed",
                 tool_name="test_tool",
                 is_error=True,
             )
@@ -216,7 +216,7 @@ class TestMCPToolExecutor:
         assert observation.tool_name == "test_tool"
         assert observation.is_error is True
         assert observation.is_error is True
-        assert "Connection failed" in observation.content
+        assert "Connection failed" in observation.get_text()
 
 
 class TestMCPTool:

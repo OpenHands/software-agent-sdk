@@ -63,7 +63,7 @@ class FinishExecutor(ToolExecutor):
         action: FinishAction,
         conversation: "BaseConversation | None" = None,  # noqa: ARG002
     ) -> FinishObservation:
-        return FinishObservation(content=action.message)
+        return FinishObservation.from_text(text=action.message)
 
 
 class FinishTool(ToolDefinition[FinishAction, FinishObservation]):

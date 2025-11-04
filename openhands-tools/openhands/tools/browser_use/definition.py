@@ -40,13 +40,12 @@ class BrowserObservation(Observation):
         if self.is_error:
             llm_content.append(TextContent(text=self.error_message_header))
 
-        # BrowserObservation always has content as str
-        assert isinstance(self.content, str)
-        content_text = self.content
-
-        llm_content.append(
-            TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
-        )
+        # Get text content and truncate if needed
+        content_text = self.get_text_safe()
+        if content_text:
+            llm_content.append(
+                TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
+            )
 
         if self.screenshot_data:
             mime_type = "image/png"

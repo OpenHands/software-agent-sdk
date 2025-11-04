@@ -108,12 +108,12 @@ class FileEditor:
                 raise EditorToolParameterMissingError(command, "file_text")
             self.write_file(_path, file_text)
             self._history_manager.add_history(_path, file_text)
-            return FileEditorObservation(
+            return FileEditorObservation.from_text(
+                text=f"File created successfully at: {_path}",
                 command=command,
                 path=str(_path),
                 new_content=file_text,
                 prev_exist=False,
-                content=f"File created successfully at: {_path}",
             )
         elif command == "str_replace":
             if old_str is None:
@@ -253,9 +253,9 @@ class FileEditor:
             "Review the changes and make sure they are as expected. Edit the "
             "file again if necessary."
         )
-        return FileEditorObservation(
+        return FileEditorObservation.from_text(
+            text=success_message,
             command="str_replace",
-            content=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_content,
@@ -294,9 +294,9 @@ class FileEditor:
                 truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
             )
             if stderr:
-                return FileEditorObservation(
+                return FileEditorObservation.from_text(
+                    text=stderr,
                     command="view",
-                    content=stderr,
                     is_error=True,
                     path=str(path),
                     prev_exist=True,
@@ -320,9 +320,9 @@ class FileEditor:
                     f"are excluded. You can use 'ls -la {path}' to see them."
                 )
             stdout = "\n".join(msg)
-            return FileEditorObservation(
+            return FileEditorObservation.from_text(
+                text=stdout,
                 command="view",
-                content=stdout,
                 path=str(path),
                 prev_exist=True,
             )
@@ -336,9 +336,9 @@ class FileEditor:
             file_content = self.read_file(path)
             output = self._make_output(file_content, str(path), start_line)
 
-            return FileEditorObservation(
+            return FileEditorObservation.from_text(
+                text=output,
                 command="view",
-                content=output,
                 path=str(path),
                 prev_exist=True,
             )
@@ -389,10 +389,10 @@ class FileEditor:
         if warning_message:
             output = f"NOTE: {warning_message}\n{output}"
 
-        return FileEditorObservation(
+        return FileEditorObservation.from_text(
+            text=output,
             command="view",
             path=str(path),
-            content=output,
             prev_exist=True,
         )
 
@@ -502,9 +502,9 @@ class FileEditor:
             "Review the changes and make sure they are as expected (correct "
             "indentation, no duplicate lines, etc). Edit the file again if necessary."
         )
-        return FileEditorObservation(
+        return FileEditorObservation.from_text(
+            text=success_message,
             command="insert",
-            content=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_text,
@@ -571,12 +571,12 @@ class FileEditor:
 
         self.write_file(path, old_text)
 
-        return FileEditorObservation(
-            command="undo_edit",
-            content=(
+        return FileEditorObservation.from_text(
+            text=(
                 f"Last edit to {path} undone successfully. "
                 f"{self._make_output(old_text, str(path))}"
             ),
+            command="undo_edit",
             path=str(path),
             prev_exist=True,
             old_content=current_text,

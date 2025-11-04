@@ -58,8 +58,8 @@ def test_history_too_short():
 
     observation = ObservationEvent(
         source="environment",
-        observation=ExecuteBashObservation(
-            content="file1.txt\nfile2.txt",
+        observation=ExecuteBashObservation.from_text(
+            text="file1.txt\nfile2.txt",
             command="ls",
             exit_code=0,
         ),
@@ -109,8 +109,8 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                content="file1.txt\nfile2.txt",
+            observation=ExecuteBashObservation.from_text(
+                text="file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
             ),
@@ -160,8 +160,8 @@ def test_repeating_action_observation_stuck():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                content="file1.txt\nfile2.txt",
+            observation=ExecuteBashObservation.from_text(
+                text="file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
             ),
@@ -303,8 +303,8 @@ def test_not_stuck_with_different_actions():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                content=f"output from {cmd}",
+            observation=ExecuteBashObservation.from_text(
+                text=f"output from {cmd}",
                 command=cmd,
                 exit_code=0,
             ),
@@ -354,8 +354,8 @@ def test_reset_after_user_message():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                content="file1.txt\nfile2.txt",
+            observation=ExecuteBashObservation.from_text(
+                text="file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
             ),
@@ -399,8 +399,8 @@ def test_reset_after_user_message():
 
     observation = ObservationEvent(
         source="environment",
-        observation=ExecuteBashObservation(
-            content="/home/user", command="pwd", exit_code=0
+        observation=ExecuteBashObservation.from_text(
+            text="/home/user", command="pwd", exit_code=0
         ),
         action_id=action.id,
         tool_name="bash",

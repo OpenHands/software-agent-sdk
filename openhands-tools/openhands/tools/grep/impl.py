@@ -55,12 +55,12 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             if action.path:
                 search_path = Path(action.path).resolve()
                 if not search_path.is_dir():
-                    return GrepObservation(
+                    return GrepObservation.from_text(
+                        text=f"Search path '{action.path}' is not a valid directory",
                         matches=[],
                         pattern=action.pattern,
                         search_path=str(search_path),
                         include_pattern=action.include,
-                        content=f"Search path '{action.path}' is not a valid directory",
                         is_error=True,
                     )
             else:
@@ -70,12 +70,12 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             try:
                 re.compile(action.pattern)
             except re.error as e:
-                return GrepObservation(
+                return GrepObservation.from_text(
+                    text=f"Invalid regex pattern: {e}",
                     matches=[],
                     pattern=action.pattern,
                     search_path=str(search_path),
                     include_pattern=action.include,
-                    content=f"Invalid regex pattern: {e}",
                     is_error=True,
                 )
 
@@ -94,12 +94,12 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             except Exception:
                 error_search_path = "unknown"
 
-            return GrepObservation(
+            return GrepObservation.from_text(
+                text=str(e),
                 matches=[],
                 pattern=action.pattern,
                 search_path=error_search_path,
                 include_pattern=action.include,
-                content=str(e),
                 is_error=True,
             )
 
@@ -177,13 +177,13 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             truncated=truncated,
         )
 
-        return GrepObservation(
+        return GrepObservation.from_text(
+            text=output,
             matches=matches,
             pattern=action.pattern,
             search_path=str(search_path),
             include_pattern=action.include,
             truncated=truncated,
-            content=output,
         )
 
     def _execute_with_grep(
@@ -240,11 +240,11 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
             truncated=truncated,
         )
 
-        return GrepObservation(
+        return GrepObservation.from_text(
+            text=output,
             matches=matches,
             pattern=action.pattern,
             search_path=str(search_path),
             include_pattern=action.include,
             truncated=truncated,
-            content=output,
         )

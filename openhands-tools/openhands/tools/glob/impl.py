@@ -67,11 +67,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                 )
 
             if not search_path.is_dir():
-                return GlobObservation(
+                return GlobObservation.from_text(
+                    text=f"Search path '{search_path}' is not a valid directory",
                     files=[],
                     pattern=original_pattern,
                     search_path=str(search_path),
-                    content=f"Search path '{search_path}' is not a valid directory",
                     is_error=True,
                 )
 
@@ -98,12 +98,12 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                         "Consider using a more specific pattern.]"
                     )
 
-            return GlobObservation(
+            return GlobObservation.from_text(
+                text=content,
                 files=files,
                 pattern=original_pattern,
                 search_path=str(search_path),
                 truncated=truncated,
-                content=content,
             )
 
         except Exception as e:
@@ -116,11 +116,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             except Exception:
                 error_search_path = "unknown"
 
-            return GlobObservation(
+            return GlobObservation.from_text(
+                text=str(e),
                 files=[],
                 pattern=action.pattern,
                 search_path=error_search_path,
-                content=str(e),
                 is_error=True,
             )
 

@@ -2,7 +2,6 @@
 
 from unittest.mock import AsyncMock, patch
 
-from openhands.sdk.tool.schema import TextContent
 from openhands.tools.browser_use.definition import (
     BrowserClickAction,
     BrowserGetStateAction,
@@ -73,8 +72,8 @@ async def test_browser_executor_action_routing_get_state(
     mock_get_state, mock_browser_executor
 ):
     """Test that get_state actions are routed correctly and return directly."""
-    expected_observation = BrowserObservation(
-        content=[TextContent(text="State retrieved")], screenshot_data="base64data"
+    expected_observation = BrowserObservation.from_text(
+        text="State retrieved", screenshot_data="base64data"
     )
     mock_get_state.return_value = expected_observation
 
@@ -106,7 +105,7 @@ async def test_browser_executor_error_wrapping(mock_navigate, mock_browser_execu
     result = await mock_browser_executor._execute_action(action)
 
     assert_browser_observation_error(result, "Browser operation failed")
-    assert "Browser error occurred" in result.content
+    assert "Browser error occurred" in result.get_text()
 
 
 def test_browser_executor_async_execution(mock_browser_executor):
@@ -114,7 +113,7 @@ def test_browser_executor_async_execution(mock_browser_executor):
     with patch.object(
         mock_browser_executor, "_execute_action", new_callable=AsyncMock
     ) as mock_execute:
-        expected_result = BrowserObservation(content=[TextContent(text="Test result")])
+        expected_result = BrowserObservation.from_text(text="Test result")
         mock_execute.return_value = expected_result
 
         action = BrowserNavigateAction(url="https://example.com")
