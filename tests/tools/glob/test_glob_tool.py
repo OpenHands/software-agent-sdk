@@ -33,7 +33,7 @@ def test_glob_tool_initialization():
         tool = tools[0]
 
         # Check that the tool has the correct name and properties
-        assert tool.name == "glob"
+        assert tool.name == "glob_tool"
         assert tool.executor is not None
         assert tool.action_type == GlobAction
         assert tool.observation_type == GlobObservation
