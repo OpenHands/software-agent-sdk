@@ -74,7 +74,7 @@ async def test_browser_executor_action_routing_get_state(
 ):
     """Test that get_state actions are routed correctly and return directly."""
     expected_observation = BrowserObservation(
-        output=[TextContent(text="State retrieved")], screenshot_data="base64data"
+        content=[TextContent(text="State retrieved")], screenshot_data="base64data"
     )
     mock_get_state.return_value = expected_observation
 
@@ -106,7 +106,7 @@ async def test_browser_executor_error_wrapping(mock_navigate, mock_browser_execu
     result = await mock_browser_executor._execute_action(action)
 
     assert_browser_observation_error(result, "Browser operation failed")
-    assert "Browser error occurred" in result.error
+    assert "Browser error occurred" in result.content
 
 
 def test_browser_executor_async_execution(mock_browser_executor):
@@ -114,7 +114,7 @@ def test_browser_executor_async_execution(mock_browser_executor):
     with patch.object(
         mock_browser_executor, "_execute_action", new_callable=AsyncMock
     ) as mock_execute:
-        expected_result = BrowserObservation(output=[TextContent(text="Test result")])
+        expected_result = BrowserObservation(content=[TextContent(text="Test result")])
         mock_execute.return_value = expected_result
 
         action = BrowserNavigateAction(url="https://example.com")

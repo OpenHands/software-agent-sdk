@@ -24,10 +24,10 @@ from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
 def get_output_text(observation: BrowserObservation) -> str:
-    """Extract text from observation output."""
-    if isinstance(observation.output, str):
-        return observation.output
-    return "".join([c.text for c in observation.output if isinstance(c, TextContent)])
+    """Extract text from observation content."""
+    if isinstance(observation.content, str):
+        return observation.content
+    return "".join([c.text for c in observation.content if isinstance(c, TextContent)])
 
 
 # Test HTML content for browser operations
@@ -179,7 +179,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         output_text = get_output_text(result).lower()
         assert "successfully" in output_text or "navigated" in output_text
 
@@ -196,7 +196,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         assert "Browser Test Page" in get_output_text(result)
 
     def test_get_state_with_screenshot(
@@ -212,7 +212,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         assert result.screenshot_data is not None
         assert len(result.screenshot_data) > 0
 
@@ -237,7 +237,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(click_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_type_action(self, browser_executor: BrowserToolExecutor, test_server: str):
         """Test typing text into an input field."""
@@ -259,7 +259,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(type_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_scroll_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
@@ -274,14 +274,14 @@ class TestBrowserExecutorE2E:
         result = browser_executor(scroll_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
         # Scroll back up
         scroll_up_action = BrowserScrollAction(direction="up")
         result = browser_executor(scroll_up_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_get_content_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
@@ -296,7 +296,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(content_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         assert "Browser Test Page" in get_output_text(result)
 
         # Get content with links
@@ -306,7 +306,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(content_with_links_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         assert "Browser Test Page" in get_output_text(result)
 
     def test_navigate_new_tab(
@@ -318,7 +318,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_list_tabs_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
@@ -333,7 +333,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(list_tabs_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         # Should contain tab information
         assert len(get_output_text(result)) > 0
 
@@ -355,7 +355,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(back_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_switch_tab_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
@@ -435,24 +435,24 @@ class TestBrowserExecutorE2E:
         """Test that multiple actions can be executed in sequence."""
         # Navigate
         navigate_result = browser_executor(BrowserNavigateAction(url=test_server))
-        assert navigate_result.error is None
+        assert not navigate_result.is_error
 
         # Get state
         state_result = browser_executor(BrowserGetStateAction(include_screenshot=False))
-        assert state_result.error is None
+        assert not state_result.is_error
 
         # Scroll
         scroll_result = browser_executor(BrowserScrollAction(direction="down"))
-        assert scroll_result.error is None
+        assert not scroll_result.is_error
 
         # Get content
         content_result = browser_executor(
             BrowserGetContentAction(extract_links=False, start_from_char=0)
         )
-        assert content_result.error is None
+        assert not content_result.is_error
 
         # All actions should complete successfully
         assert all(
-            result.error is None
+            not result.is_error
             for result in [navigate_result, state_result, scroll_result, content_result]
         )
