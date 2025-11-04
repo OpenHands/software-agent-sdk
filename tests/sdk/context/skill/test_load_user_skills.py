@@ -192,7 +192,7 @@ def test_load_user_skills_handles_errors_gracefully(temp_user_skills_dir):
 
 
 def test_agent_context_loads_user_skills_by_default(temp_user_skills_dir):
-    """Test that AgentContext loads user skills by default."""
+    """Test that AgentContext loads user skills when enabled."""
     root, skills_dir = temp_user_skills_dir
 
     # Create a test skill
@@ -204,7 +204,7 @@ def test_agent_context_loads_user_skills_by_default(temp_user_skills_dir):
     original_dirs = skill.USER_SKILLS_DIRS
     try:
         skill.USER_SKILLS_DIRS = [skills_dir]
-        context = AgentContext()
+        context = AgentContext(load_user_skills=True)
         skill_names = [s.name for s in context.skills]
         assert "auto_skill" in skill_names
     finally:
@@ -237,7 +237,7 @@ def test_agent_context_merges_explicit_and_user_skills(temp_user_skills_dir):
     original_dirs = skill.USER_SKILLS_DIRS
     try:
         skill.USER_SKILLS_DIRS = [skills_dir]
-        context = AgentContext(skills=[explicit_skill])
+        context = AgentContext(skills=[explicit_skill], load_user_skills=True)
         skill_names = [s.name for s in context.skills]
         assert "explicit_skill" in skill_names
         assert "user_skill" in skill_names
@@ -266,7 +266,7 @@ def test_agent_context_explicit_skill_takes_precedence(temp_user_skills_dir):
     original_dirs = skill.USER_SKILLS_DIRS
     try:
         skill.USER_SKILLS_DIRS = [skills_dir]
-        context = AgentContext(skills=[explicit_skill])
+        context = AgentContext(skills=[explicit_skill], load_user_skills=True)
         assert len(context.skills) == 1
         # Explicit skill should be used, not the user skill
         assert context.skills[0].content == "Explicit skill content."
