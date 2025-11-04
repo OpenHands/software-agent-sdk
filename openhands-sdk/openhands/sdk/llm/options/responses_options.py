@@ -47,4 +47,8 @@ def select_responses_options(
     effort = llm.reasoning_effort or "high"
     out["reasoning"] = {"effort": effort, "summary": "detailed"}
 
+    # Pass through litellm_extra_body if provided
+    if llm.litellm_extra_body:
+        out["extra_body"] = llm.litellm_extra_body
+
     return out

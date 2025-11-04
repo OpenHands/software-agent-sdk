@@ -91,10 +91,10 @@ def test_remote_state_initialization(mock_client, conversation_id):
         ("finished", ConversationExecutionStatus.FINISHED),
     ],
 )
-def test_remote_state_agent_status(
+def test_remote_state_execution_status(
     mock_client, conversation_id, mock_agent, status_value, expected
 ):
-    """Test agent_status property with different values."""
+    """Test execution_status property with different values."""
     conversation_info = create_mock_conversation_info(
         conversation_id, mock_agent, execution_status=status_value
     )
@@ -105,8 +105,10 @@ def test_remote_state_agent_status(
     assert state.execution_status == expected
 
 
-def test_remote_state_agent_status_setter_not_implemented(mock_client, conversation_id):
-    """Test that setting agent_status raises NotImplementedError."""
+def test_remote_state_execution_status_setter_not_implemented(
+    mock_client, conversation_id
+):
+    """Test that setting execution_status raises NotImplementedError."""
     mock_events_response = Mock()
     mock_events_response.raise_for_status.return_value = None
     mock_events_response.json.return_value = {"items": [], "next_page_id": None}
