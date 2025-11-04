@@ -1,4 +1,4 @@
-"""OpenHands runtime package."""
+"""OpenHands tool package."""
 
 from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, FinishTool, ThinkTool
 from openhands.sdk.tool.registry import (
