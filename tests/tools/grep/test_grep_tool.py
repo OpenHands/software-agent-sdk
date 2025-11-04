@@ -269,8 +269,9 @@ def test_grep_tool_to_llm_content_error():
         observation = tool.executor(action)
 
         content = observation.to_llm_content
-        text = content[0].text
-        assert "Error:" in text
+        assert len(content) == 2
+        assert content[0].text == "Tool Execution Error. "
+        text = content[1].text
         assert "Invalid regex pattern" in text
 
 
