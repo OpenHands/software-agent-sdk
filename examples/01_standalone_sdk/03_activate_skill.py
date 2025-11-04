@@ -34,7 +34,7 @@ llm = LLM(
     api_key=SecretStr(api_key),
 )
 
-# Tools (automatically registered on import)
+# Tools
 cwd = os.getcwd()
 tools = [
     Tool(
