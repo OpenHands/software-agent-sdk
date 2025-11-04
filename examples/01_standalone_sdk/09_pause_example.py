@@ -53,7 +53,7 @@ conversation.send_message(
     "one number per line. After you finish, summarize what you did."
 )
 
-print(f"Initial status: {conversation.state.agent_status}")
+print(f"Initial status: {conversation.state.execution_status}")
 print()
 
 # Start the agent in a background thread
@@ -72,7 +72,7 @@ conversation.pause()
 # Wait for the thread to finish (it will stop when paused)
 thread.join()
 
-print(f"Agent status after pause: {conversation.state.agent_status}")
+print(f"Agent status after pause: {conversation.state.execution_status}")
 print()
 
 
@@ -86,12 +86,12 @@ print()
 
 # Phase 4: Resume the agent with .run()
 print("Phase 4: Resuming agent with .run()...")
-print(f"Status before resume: {conversation.state.agent_status}")
+print(f"Status before resume: {conversation.state.execution_status}")
 
 # Resume execution
 conversation.run()
 
-print(f"Final status: {conversation.state.agent_status}")
+print(f"Final status: {conversation.state.execution_status}")
 
 # Report cost
 cost = llm.metrics.accumulated_cost

@@ -25,6 +25,10 @@ def select_responses_options(
     out["temperature"] = 1.0
     out["tool_choice"] = "auto"
 
+    # If user didn't set extra_headers, propagate from llm config
+    if llm.extra_headers is not None and "extra_headers" not in out:
+        out["extra_headers"] = dict(llm.extra_headers)
+
     # Store defaults to False (stateless) unless explicitly provided
     if store is not None:
         out["store"] = bool(store)

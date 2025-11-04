@@ -15,7 +15,7 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizer,
@@ -28,6 +28,12 @@ from openhands.sdk.event.conversation_state import (
 )
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import (
+    end_active_span,
+    observe,
+    should_enable_observability,
+    start_active_span,
+)
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -309,26 +315,26 @@ class RemoteState(ConversationStateProtocol):
         return uuid.UUID(self._conversation_id)
 
     @property
-    def agent_status(self) -> AgentExecutionStatus:
-        """The current agent execution status."""
+    def execution_status(self) -> ConversationExecutionStatus:
+        """The current conversation execution status."""
         info = self._get_conversation_info()
-        status_str = info.get("agent_status", None)
+        status_str = info.get("execution_status")
         if status_str is None:
             raise RuntimeError(
-                "agent_status missing in conversation info: " + str(info)
+                "execution_status missing in conversation info: " + str(info)
             )
-        return AgentExecutionStatus(status_str)
+        return ConversationExecutionStatus(status_str)
 
-    @agent_status.setter
-    def agent_status(self, value: AgentExecutionStatus) -> None:
-        """Set agent status is No-OP for RemoteConversation.
+    @execution_status.setter
+    def execution_status(self, value: ConversationExecutionStatus) -> None:
+        """Set execution status is No-OP for RemoteConversation.
 
-        # For remote conversations, agent status is managed server-side
+        # For remote conversations, execution status is managed server-side
         # This setter is provided for test compatibility but doesn't actually change remote state  # noqa: E501
         """  # noqa: E501
         raise NotImplementedError(
-            f"Setting agent_status on RemoteState has no effect. "
-            f"Remote agent status is managed server-side. Attempted to set: {value}"
+            f"Setting execution_status on RemoteState has no effect. "
+            f"Remote execution status is managed server-side. Attempted to set: {value}"
         )
 
     @property
@@ -507,6 +513,9 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
+        if should_enable_observability():
+            start_active_span("conversation", session_id=str(self._id))
+
     @property
     def id(self) -> ConversationID:
         return self._id
@@ -532,6 +541,7 @@ class RemoteConversation(BaseConversation):
             " since it would be handled server-side."
         )
 
+    @observe(name="conversation.send_message")
     def send_message(self, message: str | Message) -> None:
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -547,6 +557,7 @@ class RemoteConversation(BaseConversation):
             self._client, "POST", f"/api/conversations/{self._id}/events", json=payload
         )
 
+    @observe(name="conversation.run")
     def run(self) -> None:
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -604,6 +615,7 @@ class RemoteConversation(BaseConversation):
             self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
         )
 
+    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
@@ -640,6 +652,8 @@ class RemoteConversation(BaseConversation):
                 self._ws_client = None
         except Exception:
             pass
+
+        end_active_span()
 
         try:
             self._client.close()

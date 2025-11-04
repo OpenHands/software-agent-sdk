@@ -21,7 +21,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -55,7 +55,7 @@ def sample_conversation_info():
             tools=[Tool(name="BashTool")],
         ),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
-        agent_status=AgentExecutionStatus.IDLE,
+        execution_status=ConversationExecutionStatus.IDLE,
         title="Test Conversation",
         created_at=now,
         updated_at=now,
@@ -149,7 +149,7 @@ def test_search_conversations_with_all_params(
             params={
                 "page_id": "test_page",
                 "limit": 50,
-                "status": AgentExecutionStatus.IDLE.value,
+                "status": ConversationExecutionStatus.IDLE.value,
                 "sort_order": ConversationSortOrder.UPDATED_AT_DESC.value,
             },
         )
@@ -163,7 +163,7 @@ def test_search_conversations_with_all_params(
         mock_conversation_service.search_conversations.assert_called_once_with(
             "test_page",
             50,
-            AgentExecutionStatus.IDLE,
+            ConversationExecutionStatus.IDLE,
             ConversationSortOrder.UPDATED_AT_DESC,
         )
     finally:
@@ -254,7 +254,7 @@ def test_count_conversations_with_status_filter(client, mock_conversation_servic
     try:
         response = client.get(
             "/api/conversations/count",
-            params={"status": AgentExecutionStatus.RUNNING.value},
+            params={"status": ConversationExecutionStatus.RUNNING.value},
         )
 
         assert response.status_code == 200
@@ -262,7 +262,7 @@ def test_count_conversations_with_status_filter(client, mock_conversation_servic
 
         # Verify service was called with status filter
         mock_conversation_service.count_conversations.assert_called_once_with(
-            AgentExecutionStatus.RUNNING
+            ConversationExecutionStatus.RUNNING
         )
     finally:
         client.app.dependency_overrides.clear()

@@ -5,6 +5,9 @@ import pytest
 from litellm.exceptions import (
     RateLimitError,
 )
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from openai.types.responses.response_output_message import ResponseOutputMessage
+from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
@@ -259,6 +262,189 @@ def test_llm_token_counting(default_llm):
     token_count = llm.get_token_count(messages)
     assert isinstance(token_count, int)
     assert token_count >= 0
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_forwards_extra_headers_to_litellm(mock_completion):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    headers = {"anthropic-beta": "context-1m-2025-08-07"}  # Enable 1M context
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        extra_headers=headers,
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    # extra_headers forwarded either directly or inside **kwargs
+    assert kwargs.get("extra_headers") == headers
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_llm_responses_forwards_extra_headers_to_litellm(mock_responses):
+    # Build a minimal, but valid, ResponsesAPIResponse instance per litellm types
+    # Build typed message output using OpenAI types to satisfy litellm schema
+    msg = ResponseOutputMessage.model_construct(
+        id="m1",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[ResponseOutputText(type="output_text", text="ok", annotations=[])],
+    )
+    usage = ResponseAPIUsage(input_tokens=0, output_tokens=0, total_tokens=0)
+    resp = ResponsesAPIResponse(
+        id="resp123",
+        created_at=0,
+        output=[msg],
+        usage=usage,
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        instructions="",
+        status="completed",
+    )
+
+    mock_responses.return_value = resp
+
+    headers = {"anthropic-beta": "context-1m-2025-08-07"}
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        extra_headers=headers,
+        num_retries=0,
+    )
+
+    messages = [
+        Message(role="system", content=[TextContent(text="sys")]),
+        Message(role="user", content=[TextContent(text="Hi")]),
+    ]
+    _ = llm.responses(messages=messages)
+
+    assert mock_responses.call_count == 1
+    _, kwargs = mock_responses.call_args
+    assert kwargs.get("extra_headers") == headers
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_merges_llm_extra_headers_with_extended_thinking_default(
+    mock_completion,
+):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="claude-sonnet-4-5-20250514",
+        api_key=SecretStr("test_key"),
+        extra_headers={"X-Trace": "1"},
+        extended_thinking_budget=1000,
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    headers = kwargs.get("extra_headers") or {}
+    # Intended behavior:
+    # - No per-call headers provided.
+    # - LLM.extra_headers should be used.
+    # - Extended thinking default (anthropic-beta) should be merged in.
+    # - Result keeps both the default and configured headers.
+    assert headers.get("anthropic-beta") == "interleaved-thinking-2025-05-14"
+    assert headers.get("X-Trace") == "1"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_call_time_extra_headers_override_config_and_defaults(
+    mock_completion,
+):
+    mock_response = create_mock_litellm_response("ok")
+    mock_completion.return_value = mock_response
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="claude-sonnet-4-5-20250514",
+        api_key=SecretStr("test_key"),
+        # Config sets a conflicting header
+        extra_headers={"anthropic-beta": "context-1m-2025-08-07", "X-Trace": "1"},
+        extended_thinking_budget=1000,
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    # Intended behavior:
+    # - Per-call headers should replace any LLM.extra_headers.
+    # - Extended thinking default should still be merged in.
+    # - On conflicts, per-call headers win (anthropic-beta => custom-beta).
+    call_headers = {"anthropic-beta": "custom-beta", "Header-Only": "H"}
+    _ = llm.completion(messages=messages, extra_headers=call_headers)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+    headers = kwargs.get("extra_headers") or {}
+    assert headers.get("anthropic-beta") == "custom-beta"
+    assert headers.get("Header-Only") == "H"
+    # LLM.config headers should not be merged when user specifies their own
+    # (except defaults we explicitly add)
+    assert "X-Trace" not in headers
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_responses_call_time_extra_headers_override_config(mock_responses):
+    # Build a minimal valid Responses response
+    msg = ResponseOutputMessage.model_construct(
+        id="m1",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[ResponseOutputText(type="output_text", text="ok", annotations=[])],
+    )
+    usage = ResponseAPIUsage(input_tokens=0, output_tokens=0, total_tokens=0)
+    resp = ResponsesAPIResponse(
+        id="resp123",
+        created_at=0,
+        output=[msg],
+        usage=usage,
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        instructions="",
+        status="completed",
+    )
+    mock_responses.return_value = resp
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        extra_headers={"X-Trace": "1"},
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    # Intended behavior:
+    # - Per-call headers should replace any LLM.extra_headers for Responses path.
+    # - No Anthropic default is currently added on the Responses path.
+    call_headers = {"Header-Only": "H"}
+    _ = llm.responses(messages=messages, extra_headers=call_headers)
+
+    assert mock_responses.call_count == 1
+    _, kwargs = mock_responses.call_args
+    headers = kwargs.get("extra_headers") or {}
+    assert headers.get("Header-Only") == "H"
+    assert "X-Trace" not in headers
 
 
 def test_llm_vision_support(default_llm):
