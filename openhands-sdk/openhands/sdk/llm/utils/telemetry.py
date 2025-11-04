@@ -304,21 +304,12 @@ class Telemetry(BaseModel):
 def _safe_json(obj: Any) -> Any:
     # Centralized serializer for telemetry logs.
     # Prefer robust serialization for Pydantic models first to avoid cycles.
-    try:
-        from pydantic import (
-            BaseModel as _PydanticBaseModel,
-        )  # local import to avoid cycles
-    except (
-        Exception
-    ):  # pragma: no cover - pydantic is always present, but keep safe fallback
-        _PydanticBaseModel = None  # type: ignore
-
     # Typed LiteLLM responses
     if isinstance(obj, ModelResponse) or isinstance(obj, ResponsesAPIResponse):
         return obj.model_dump(mode="json", exclude_none=True)
 
     # Any Pydantic BaseModel (e.g., ToolDefinition, ChatCompletionToolParam, etc.)
-    if _PydanticBaseModel is not None and isinstance(obj, _PydanticBaseModel):
+    if isinstance(obj, BaseModel):
         # Use Pydantic's serializer which respects field exclusions (e.g., executors)
         return obj.model_dump(mode="json", exclude_none=True)
 
