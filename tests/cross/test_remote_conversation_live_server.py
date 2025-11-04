@@ -209,7 +209,7 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
 
     # Validate state transitions and that we received an assistant message
     state = conv.state
-    assert state.agent_status.value in {"finished", "idle", "running"}
+    assert state.execution_status.value in {"finished", "idle", "running"}
 
     # Wait for WS-delivered events and validate them using proper type checking
     found_system_prompt = False
