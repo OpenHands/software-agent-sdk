@@ -45,7 +45,11 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
-from openhands.sdk.tool.builtins import FinishAction, ThinkAction
+from openhands.sdk.tool.builtins import (
+    FinishAction,
+    FinishTool,
+    ThinkAction,
+)
 
 
 logger = get_logger(__name__)
@@ -447,6 +451,6 @@ class Agent(AgentBase):
         on_event(obs_event)
 
         # Set conversation state
-        if tool.name == "finish":
+        if tool.name == FinishTool.name:
             state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
