@@ -419,7 +419,7 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = False,
+        visualize: bool | ConversationVisualizer | None = False,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -433,7 +433,10 @@ class RemoteConversation(BaseConversation):
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
-            visualize: Whether to enable the default visualizer callback
+            visualize: Visualization configuration. Can be:
+                      - True: Use default visualizer
+                      - False or None: No visualization (default for remote)
+                      - ConversationVisualizer instance: Use custom visualizer
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             secrets: Optional secrets to initialize the conversation with
@@ -485,14 +488,20 @@ class RemoteConversation(BaseConversation):
         state_update_callback = self._state.create_state_update_callback()
         self._callbacks.append(state_update_callback)
 
-        # Add default visualizer callback if requested
-        if visualize:
+        # Handle visualization configuration
+        if isinstance(visualize, ConversationVisualizer):
+            # Use custom visualizer instance
+            self._visualizer = visualize
+            self._callbacks.append(self._visualizer.on_event)
+        elif visualize is True:
+            # Create default visualizer
             self._visualizer = create_default_visualizer(
                 name_for_visualization=name_for_visualization,
             )
             if self._visualizer is not None:
                 self._callbacks.append(self._visualizer.on_event)
         else:
+            # No visualization (visualize is False or None)
             self._visualizer = None
 
         # Compose all callbacks into a single callback

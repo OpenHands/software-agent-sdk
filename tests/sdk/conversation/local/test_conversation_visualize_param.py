@@ -216,3 +216,80 @@ def test_conversation_no_callbacks_with_visualize_false(mock_agent):
 
         # Event should be in state
         assert test_event in conversation.state.events
+
+
+def test_conversation_with_custom_visualizer_instance(mock_agent):
+    """Test Conversation with a custom ConversationVisualizer instance."""
+    # Create a custom visualizer
+    custom_visualizer = ConversationVisualizer(
+        highlight_regex={"Test:": "bold red"},
+        skip_user_messages=True,
+    )
+
+    with patch.object(Agent, "init_state") as mock_init_state:
+        conversation = Conversation(agent=mock_agent, visualize=custom_visualizer)
+
+        # Should use the custom visualizer
+        assert conversation._visualizer is custom_visualizer
+        assert isinstance(conversation._visualizer, ConversationVisualizer)
+
+        # Agent should be initialized with callbacks that include the custom visualizer
+        mock_init_state.assert_called_once()
+        args, kwargs = mock_init_state.call_args
+        assert "on_event" in kwargs
+
+        # The on_event callback should be composed of multiple callbacks
+        on_event = kwargs["on_event"]
+        assert callable(on_event)
+
+
+def test_conversation_with_custom_visualizer_and_callbacks(mock_agent):
+    """Test Conversation with custom visualizer and custom callbacks."""
+    custom_callback = Mock()
+    callbacks = [custom_callback]
+
+    # Create a custom visualizer with mocked on_event to track calls
+    custom_visualizer = Mock(spec=ConversationVisualizer)
+    custom_visualizer.on_event = Mock()
+
+    with patch.object(Agent, "init_state") as mock_init_state:
+        conversation = Conversation(
+            agent=mock_agent, callbacks=callbacks, visualize=custom_visualizer
+        )
+
+        # Should use the custom visualizer
+        assert conversation._visualizer is custom_visualizer
+
+        # Test that callbacks are composed correctly
+        mock_init_state.assert_called_once()
+        args, kwargs = mock_init_state.call_args
+        on_event = kwargs["on_event"]
+
+        # Create a test event and trigger it
+        test_event = create_test_event("Test event content")
+        on_event(test_event)
+
+        # Both custom visualizer and custom callback should have been called
+        custom_visualizer.on_event.assert_called_once_with(test_event)
+        custom_callback.assert_called_once_with(test_event)
+
+        # Event should be in conversation state
+        assert test_event in conversation.state.events
+
+
+def test_conversation_with_visualize_none(mock_agent):
+    """Test Conversation with visualize=None (no visualization)."""
+    with patch.object(Agent, "init_state") as mock_init_state:
+        conversation = Conversation(agent=mock_agent, visualize=None)
+
+        # Should not have a visualizer
+        assert conversation._visualizer is None
+
+        # Agent should still be initialized with callbacks (just not visualizer)
+        mock_init_state.assert_called_once()
+        args, kwargs = mock_init_state.call_args
+        assert "on_event" in kwargs
+
+        # The on_event callback should still exist (for state persistence)
+        on_event = kwargs["on_event"]
+        assert callable(on_event)

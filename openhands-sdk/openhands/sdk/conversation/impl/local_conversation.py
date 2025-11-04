@@ -61,7 +61,7 @@ class LocalConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = True,
+        visualize: bool | ConversationVisualizer | None = True,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -77,9 +77,10 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             max_iteration_per_run: Maximum number of iterations per run
-            visualize: Whether to enable default visualization. If True, adds
-                      a default visualizer callback. If False, relies on
-                      application to provide visualization through callbacks.
+            visualize: Visualization configuration. Can be:
+                      - True: Use default visualizer (default behavior)
+                      - False or None: No visualization
+                      - ConversationVisualizer instance: Use custom visualizer
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             stuck_detection: Whether to enable stuck detection
@@ -112,8 +113,14 @@ class LocalConversation(BaseConversation):
             self._state.events.append(e)
 
         composed_list = (callbacks if callbacks else []) + [_default_callback]
-        # Add default visualizer if requested
-        if visualize:
+        # Handle visualization configuration
+        if isinstance(visualize, ConversationVisualizer):
+            # Use custom visualizer instance
+            self._visualizer = visualize
+            composed_list = [self._visualizer.on_event] + composed_list
+            # visualize should happen first for visibility
+        elif visualize is True:
+            # Create default visualizer
             self._visualizer = create_default_visualizer(
                 conversation_stats=self._state.stats,
                 name_for_visualization=name_for_visualization,
@@ -121,6 +128,7 @@ class LocalConversation(BaseConversation):
             composed_list = [self._visualizer.on_event] + composed_list
             # visualize should happen first for visibility
         else:
+            # No visualization (visualize is False or None)
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
