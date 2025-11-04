@@ -105,4 +105,4 @@ def test_tool_can_be_resolved_after_automatic_registration():
 
     # Should successfully resolve
     assert len(resolved_tools) == 1
-    assert resolved_tools[0].name == "execute_bash"
+    assert resolved_tools[0].name == "bash_tool"

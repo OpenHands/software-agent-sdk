@@ -111,7 +111,7 @@ class TestHelloWorld:
                                 "id": "call_1",
                                 "type": "function",
                                 "function": {
-                                    "name": "str_replace_editor",
+                                    "name": "file_editor_tool",
                                     "arguments": f'{{"command": "create", '
                                     f'"path": "{hello_path}", '
                                     f'"file_text": "print(\\"Hello, World!\\")"}}',
@@ -165,11 +165,11 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("BashTool", BashTool)
-        register_tool("FileEditorTool", FileEditorTool)
+        register_tool("bash_tool", BashTool)
+        register_tool("file_editor_tool", FileEditorTool)
         tools = [
-            Tool(name="BashTool"),
-            Tool(name="FileEditorTool"),
+            Tool(name="bash_tool"),
+            Tool(name="file_editor_tool"),
         ]
 
         # Agent setup
@@ -285,11 +285,11 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("BashTool", BashTool)
-        register_tool("FileEditorTool", FileEditorTool)
+        register_tool("bash_tool", BashTool)
+        register_tool("file_editor_tool", FileEditorTool)
         tools = [
-            Tool(name="BashTool"),
-            Tool(name="FileEditorTool"),
+            Tool(name="bash_tool"),
+            Tool(name="file_editor_tool"),
         ]
 
         # Create agent and conversation
