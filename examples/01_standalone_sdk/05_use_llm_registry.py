@@ -85,3 +85,7 @@ resp = llm.completion(
 msg = resp.message
 texts = [c.text for c in msg.content if isinstance(c, TextContent)]
 print(f"Direct completion response: {texts[0] if texts else str(msg)}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

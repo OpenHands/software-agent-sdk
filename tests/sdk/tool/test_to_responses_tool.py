@@ -1,5 +1,5 @@
 from openhands.sdk.tool.schema import Action, Observation
-from openhands.sdk.tool.tool import ToolBase
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 class A(Action):
@@ -13,7 +13,7 @@ class Obs(Observation):
         return [TextContent(text="ok")]
 
 
-class T(ToolBase[A, Obs]):
+class T(ToolDefinition[A, Obs]):
     @classmethod
     def create(cls, *args, **kwargs):  # pragma: no cover
         raise NotImplementedError

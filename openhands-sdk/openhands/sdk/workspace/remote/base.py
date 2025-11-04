@@ -12,7 +12,21 @@ from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspac
 
 
 class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
-    """Remote Workspace Implementation."""
+    """Remote workspace implementation that connects to an OpenHands agent server.
+
+    RemoteWorkspace provides access to a sandboxed environment running on a remote
+    OpenHands agent server. This is the recommended approach for production deployments
+    as it provides better isolation and security.
+
+    Example:
+        >>> workspace = RemoteWorkspace(
+        ...     host="https://agent-server.example.com",
+        ...     working_dir="/workspace"
+        ... )
+        >>> with workspace:
+        ...     result = workspace.execute_command("ls -la")
+        ...     content = workspace.read_file("README.md")
+    """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
 

@@ -28,13 +28,15 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
-from openhands.sdk.llm.exceptions import FunctionCallValidationError
+from openhands.sdk.llm.exceptions import (
+    FunctionCallValidationError,
+    LLMContextWindowExceedError,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
-    FinishTool,
     Observation,
 )
 from openhands.sdk.tool.builtins import FinishAction, ThinkAction
@@ -44,6 +46,19 @@ logger = get_logger(__name__)
 
 
 class Agent(AgentBase):
+    """Main agent implementation for OpenHands.
+
+    The Agent class provides the core functionality for running AI agents that can
+    interact with tools, process messages, and execute actions. It inherits from
+    AgentBase and implements the agent execution logic.
+
+    Example:
+        >>> from openhands.sdk import LLM, Agent, Tool
+        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
+        >>> tools = [Tool(name="BashTool"), Tool(name="FileEditorTool")]
+        >>> agent = Agent(llm=llm, tools=tools)
+    """
+
     @property
     def _add_security_risk_prediction(self) -> bool:
         return isinstance(self.security_analyzer, LLMSecurityAnalyzer)
@@ -168,22 +183,19 @@ class Agent(AgentBase):
             )
             on_event(error_message)
             return
-        except Exception as e:
-            # If there is a condenser registered and the exception is a context window
-            # exceeded, we can recover by triggering a condensation request.
+        except LLMContextWindowExceedError:
+            # If condenser is available and handles requests, trigger condensation
             if (
                 self.condenser is not None
                 and self.condenser.handles_condensation_requests()
-                and self.llm.is_context_window_exceeded_exception(e)
             ):
                 logger.warning(
                     "LLM raised context window exceeded error, triggering condensation"
                 )
                 on_event(CondensationRequest())
                 return
-            # If the error isn't recoverable, keep propagating it up the stack.
-            else:
-                raise e
+            # No condenser available; re-raise for client handling
+            raise
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
@@ -418,6 +430,6 @@ class Agent(AgentBase):
         on_event(obs_event)
 
         # Set conversation state
-        if tool.name == FinishTool.name:
+        if tool.name == "finish":
             state.agent_status = AgentExecutionStatus.FINISHED
         return obs_event

@@ -1,4 +1,5 @@
-from typing import TYPE_CHECKING
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -14,6 +15,7 @@ from openhands.sdk.tool.tool import (
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation.state import ConversationState
 
 
 class FinishAction(Action):
@@ -59,17 +61,42 @@ class FinishExecutor(ToolExecutor):
         return FinishObservation()
 
 
-FinishTool = ToolDefinition(
-    name="finish",
-    action_type=FinishAction,
-    observation_type=FinishObservation,
-    description=TOOL_DESCRIPTION,
-    executor=FinishExecutor(),
-    annotations=ToolAnnotations(
-        title="finish",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
+class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
+    """Tool for signaling the completion of a task or conversation."""
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        **params,
+    ) -> Sequence[Self]:
+        """Create FinishTool instance.
+
+        Args:
+            conv_state: Optional conversation state (not used by FinishTool).
+            **params: Additional parameters (none supported).
+
+        Returns:
+            A sequence containing a single FinishTool instance.
+
+        Raises:
+            ValueError: If any parameters are provided.
+        """
+        if params:
+            raise ValueError("FinishTool doesn't accept parameters")
+        return [
+            cls(
+                name="finish",
+                action_type=FinishAction,
+                observation_type=FinishObservation,
+                description=TOOL_DESCRIPTION,
+                executor=FinishExecutor(),
+                annotations=ToolAnnotations(
+                    title="finish",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+            )
+        ]

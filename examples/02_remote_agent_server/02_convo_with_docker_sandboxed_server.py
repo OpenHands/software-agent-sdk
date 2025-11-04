@@ -101,6 +101,10 @@ with DockerWorkspace(
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
         logger.info("✅ Second task completed!")
+
+        # Report cost (must be before conversation.close())
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         print("\n🧹 Cleaning up conversation...")
         conversation.close()
