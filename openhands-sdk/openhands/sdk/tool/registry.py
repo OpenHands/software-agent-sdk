@@ -138,7 +138,7 @@ def register_tool(
         )
 
     with _LOCK:
-        # TODO: raise error when registering duplicate name tools
+        # TODO: throw exception when registering duplicate name tools
         if name in _REG:
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
