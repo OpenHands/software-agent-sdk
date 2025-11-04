@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from litellm.types.utils import ModelResponse, Usage
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.telemetry import Telemetry, _safe_json
@@ -426,7 +426,6 @@ class TestTelemetryLogging:
         are included in the log context. Using Pydantic's model_dump should
         avoid circular references.
         """
-        from pydantic import BaseModel, Field
 
         class SelfReferencingModel(BaseModel):
             name: str
