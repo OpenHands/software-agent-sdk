@@ -92,7 +92,7 @@ def test_register_and_resolve_callable_factory():
     tools = resolve_tool(Tool(name="say_hello"), _create_mock_conv_state())
     assert len(tools) == 1
     assert isinstance(tools[0], ToolDefinition)
-    assert tools[0].name == "__simple_hello_tool"
+    assert tools[0].name == "__simple_hello"
 
 
 def test_register_tool_instance_rejects_params():

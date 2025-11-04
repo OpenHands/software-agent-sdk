@@ -106,7 +106,7 @@ class TestToolImmutability:
 
         # Verify that a new instance was created with modifications
         assert modified_tool is not tool
-        assert tool.name == "mock_immutable_tool"
+        assert tool.name == "mock_immutable"
         assert tool.description == "Test tool"
         assert modified_tool.name == "modified_tool"
         assert modified_tool.description == "Modified description"

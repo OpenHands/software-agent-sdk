@@ -55,7 +55,7 @@ class TestTool:
             observation_type=ToolMockObservation,
         )
 
-        assert tool.name == "mock_test_tool"
+        assert tool.name == "mock_test"
         assert tool.description == "A test tool"
         assert tool.action_type == ToolMockAction
         assert tool.observation_type == ToolMockObservation
@@ -113,7 +113,7 @@ class TestTool:
 
         mcp_tool = tool.to_mcp_tool()
 
-        assert mcp_tool["name"] == "mock_test_tool"
+        assert mcp_tool["name"] == "mock_test"
         assert mcp_tool["description"] == "A test tool"
         assert "inputSchema" in mcp_tool
         assert mcp_tool["inputSchema"]["type"] == "object"
@@ -143,7 +143,7 @@ class TestTool:
         mcp_tool = tool.to_mcp_tool()
 
         # Tool should include annotations
-        assert mcp_tool["name"] == "mock_test_tool"
+        assert mcp_tool["name"] == "mock_test"
         assert mcp_tool["description"] == "A test tool"
         assert "annotations" in mcp_tool
         assert mcp_tool["annotations"] == annotations
@@ -158,7 +158,7 @@ class TestTool:
 
         action = ToolMockAction(command="test")
         with pytest.raises(
-            NotImplementedError, match="Tool 'mock_test_tool' has no executor"
+            NotImplementedError, match="Tool 'mock_test' has no executor"
         ):
             tool(action)
 
@@ -304,7 +304,7 @@ class TestTool:
 
         # Should still be able to create MCP tool
         mcp_tool = tool.to_mcp_tool()
-        assert mcp_tool["name"] == "mock_test_tool"
+        assert mcp_tool["name"] == "mock_test"
 
     def test_executor_function_attachment(self):
         """Test creating tool with executor."""
@@ -338,7 +338,7 @@ class TestTool:
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
         )
-        assert tool.name == "mock_test_tool"
+        assert tool.name == "mock_test"
 
     def test_complex_executor_return_types(self):
         """Test executor with complex return types."""
@@ -693,7 +693,7 @@ class TestTool:
 
         # Should return ExecutableTool without error
         executable_tool = tool.as_executable()
-        assert executable_tool.name == "mock_test_tool"
+        assert executable_tool.name == "mock_test"
         assert executable_tool.executor is executor
 
         # Should be able to call it
@@ -712,6 +712,6 @@ class TestTool:
 
         # Should raise NotImplementedError
         with pytest.raises(
-            NotImplementedError, match="Tool 'mock_test_tool' has no executor"
+            NotImplementedError, match="Tool 'mock_test' has no executor"
         ):
             tool.as_executable()

@@ -237,7 +237,7 @@ class TestConfirmationMode:
             id="think_call_1",
             type="function",
             function=Function(
-                name="think_tool",
+                name="think",
                 arguments=f'{{"thought": "{thought}"}}',
             ),
         )

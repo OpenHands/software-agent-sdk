@@ -100,7 +100,7 @@ def test_convert_non_fncall_to_fncall_basic():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command for you.\n\n<function=execute_bash>\n"
+                "I'll run the ls command for you.\n\n<function=bash>\n"
                 "<parameter=command>ls</parameter>\n</function>"
             ),
         },
@@ -478,10 +478,7 @@ def test_convert_with_finish_tool():
                     "arguments": '{"command": "ls -la"}',
                 },
             },
-            (
-                "<function=execute_bash>\n<parameter=command>ls -la</parameter>\n"
-                "</function>"
-            ),
+            ("<function=bash>\n<parameter=command>ls -la</parameter>\n</function>"),
         ),
         # Multiple parameters with different types
         (
@@ -497,7 +494,7 @@ def test_convert_with_finish_tool():
                 },
             },
             (
-                "<function=str_replace_editor>\n<parameter=command>view</parameter>\n"
+                "<function=file_editor>\n<parameter=command>view</parameter>\n"
                 "<parameter=path>/test/file.py</parameter>\n"
                 "<parameter=view_range>[1, 10]</parameter>\n</function>"
             ),
@@ -523,7 +520,7 @@ def test_convert_with_finish_tool():
                 },
             },
             (
-                "<function=str_replace_editor>\n<parameter=command>str_replace</parameter>\n"
+                "<function=file_editor>\n<parameter=command>str_replace</parameter>\n"
                 "<parameter=path>/test/file.py</parameter>\n<parameter=old_str>\n"
                 "def example():\n    pass\n</parameter>\n<parameter=new_str>\n"
                 'def example():\n    # This is indented\n    print("hello")\n'
