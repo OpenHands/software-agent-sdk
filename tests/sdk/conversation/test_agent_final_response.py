@@ -11,13 +11,13 @@ def test_get_agent_final_response_with_finish_action():
     # Create a finish action event
     finish_action = FinishAction(message="Task completed successfully!")
     tool_call = MessageToolCall(
-        id="test-call-id", name="finish", arguments="{}", origin="completion"
+        id="test-call-id", name="finish_tool", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",
         thought=[TextContent(text="Finishing the task")],
         action=finish_action,
-        tool_name="finish",
+        tool_name="finish_tool",
         tool_call_id="test-call-id",
         tool_call=tool_call,
         llm_response_id="test-response-id",
@@ -87,13 +87,13 @@ def test_get_agent_final_response_finish_action_takes_precedence():
     # Create a finish action that comes after
     finish_action = FinishAction(message="Finished!")
     tool_call = MessageToolCall(
-        id="test-call-id", name="finish", arguments="{}", origin="completion"
+        id="test-call-id", name="finish_tool", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",
         thought=[TextContent(text="Done")],
         action=finish_action,
-        tool_name="finish",
+        tool_name="finish_tool",
         tool_call_id="test-call-id",
         tool_call=tool_call,
         llm_response_id="test-response-id",
@@ -130,15 +130,15 @@ def test_get_agent_final_response_no_agent_events():
 
 def test_get_agent_final_response_with_none_action():
     """Test handling of finish tool call with None action."""
-    # Create an action event with tool_name="finish" but action=None
+    # Create an action event with tool_name="finish_tool" but action=None
     tool_call = MessageToolCall(
-        id="test-call-id", name="finish", arguments="{}", origin="completion"
+        id="test-call-id", name="finish_tool", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",
         thought=[TextContent(text="Trying to finish")],
         action=None,  # No executable action
-        tool_name="finish",
+        tool_name="finish_tool",
         tool_call_id="test-call-id",
         tool_call=tool_call,
         llm_response_id="test-response-id",
@@ -177,13 +177,13 @@ def test_get_agent_final_response_ignores_non_agent_finish():
     # Create a finish action from user (shouldn't happen but test edge case)
     finish_action = FinishAction(message="User finish")
     tool_call = MessageToolCall(
-        id="test-call-id", name="finish", arguments="{}", origin="completion"
+        id="test-call-id", name="finish_tool", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="user",  # Not from agent
         thought=[TextContent(text="User thought")],
         action=finish_action,
-        tool_name="finish",
+        tool_name="finish_tool",
         tool_call_id="test-call-id",
         tool_call=tool_call,
         llm_response_id="test-response-id",

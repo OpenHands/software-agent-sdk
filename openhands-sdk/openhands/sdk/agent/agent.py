@@ -430,6 +430,6 @@ class Agent(AgentBase):
         on_event(obs_event)
 
         # Set conversation state
-        if tool.name == "finish":
+        if tool.name == "finish_tool":
             state.agent_status = AgentExecutionStatus.FINISHED
         return obs_event

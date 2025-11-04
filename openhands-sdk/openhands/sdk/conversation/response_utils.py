@@ -27,7 +27,7 @@ def get_agent_final_response(events: Sequence[Event]) -> str:
         if (
             isinstance(event, ActionEvent)
             and event.source == "agent"
-            and event.tool_name == "finish"
+            and event.tool_name == "finish_tool"
         ):
             # Extract message from finish tool call
             if event.action is not None and isinstance(event.action, FinishAction):

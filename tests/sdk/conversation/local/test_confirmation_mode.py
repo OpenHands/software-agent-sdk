@@ -205,7 +205,7 @@ class TestConfirmationMode:
             id="finish_call_1",
             type="function",
             function=Function(
-                name="finish",
+                name="finish_tool",
                 arguments=f'{{"message": "{message}"}}',
             ),
         )
@@ -234,7 +234,7 @@ class TestConfirmationMode:
             id="think_call_1",
             type="function",
             function=Function(
-                name="think",
+                name="think_tool",
                 arguments=f'{{"thought": "{thought}"}}',
             ),
         )
@@ -272,7 +272,7 @@ class TestConfirmationMode:
             id="finish_call_1",
             type="function",
             function=Function(
-                name="finish",
+                name="finish_tool",
                 arguments='{"message": "Task completed!"}',
             ),
         )
