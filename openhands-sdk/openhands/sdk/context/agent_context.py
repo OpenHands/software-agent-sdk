@@ -50,7 +50,7 @@ class AgentContext(BaseModel):
         default=None, description="Optional suffix to append to the user's message."
     )
     load_user_skills: bool = Field(
-        default=True,
+        default=False,
         description=(
             "Whether to automatically load user skills from ~/.openhands/skills/ "
             "and ~/.openhands/microagents/ (for backward compatibility). "
