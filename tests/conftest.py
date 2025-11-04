@@ -1,12 +1,17 @@
 """Common test fixtures and utilities."""
 
+import uuid
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic import SecretStr
 
+from openhands.sdk import Agent
+from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolExecutor
+from openhands.sdk.workspace import LocalWorkspace
 
 
 @pytest.fixture
@@ -20,6 +25,26 @@ def mock_llm():
         retry_min_wait=1,
         retry_max_wait=2,
     )
+
+
+@pytest.fixture
+def mock_conversation_state(mock_llm, tmp_path):
+    """Create a standard mock ConversationState for testing."""
+    agent = Agent(llm=mock_llm)
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+    state = ConversationState(
+        id=uuid.uuid4(),
+        workspace=workspace,
+        persistence_dir=str(tmp_path / ".state"),
+        agent=agent,
+    )
+
+    # Set up filestore for state persistence
+    state._fs = InMemoryFileStore()
+    state._autosave_enabled = False
+
+    return state
 
 
 @pytest.fixture

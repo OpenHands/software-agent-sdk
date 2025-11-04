@@ -76,20 +76,6 @@ This tool provides two commands:
 - Sub-agents work in the same workspace as the main agent: {workspace_path}
 """  # noqa
 
-delegate_tool = ToolDefinition(
-    name="delegate",
-    action_type=DelegateAction,
-    observation_type=DelegateObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="delegate",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
 
 class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
     """A ToolDefinition subclass that automatically initializes a DelegateExecutor."""
@@ -124,11 +110,17 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name=delegate_tool.name,
-                description=tool_description,
+                name="delegate",
                 action_type=DelegateAction,
                 observation_type=DelegateObservation,
-                annotations=delegate_tool.annotations,
+                description=tool_description,
+                annotations=ToolAnnotations(
+                    title="delegate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]

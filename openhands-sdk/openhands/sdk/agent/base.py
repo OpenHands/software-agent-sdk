@@ -28,8 +28,11 @@ logger = get_logger(__name__)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
-    """Abstract base class for agents.
+    """Abstract base class for OpenHands agents.
+
     Agents are stateless and should be fully defined by their configuration.
+    This base class provides the common interface and functionality that all
+    agent implementations must follow.
     """
 
     model_config = ConfigDict(
@@ -220,7 +223,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
 
         # Always include built-in tools; not subject to filtering
-        tools.extend(BUILT_IN_TOOLS)
+        # Instantiate built-in tools using their .create() method
+        for tool_class in BUILT_IN_TOOLS:
+            tools.extend(tool_class.create(state))
 
         # Check tool types
         for tool in tools:
