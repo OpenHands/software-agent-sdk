@@ -63,7 +63,7 @@ conversation = Conversation(
 )
 
 conversation.send_message(
-    "Could you go to https://all-hands.dev/ blog page and summarize main "
+    "Could you go to https://openhands.dev/ blog page and summarize main "
     "points of the latest blog?"
 )
 conversation.run()

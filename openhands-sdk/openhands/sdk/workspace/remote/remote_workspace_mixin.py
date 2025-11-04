@@ -5,8 +5,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, TypeAdapter
 
+from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 
@@ -20,6 +21,9 @@ class RemoteWorkspaceMixin(BaseModel):
     host: str = Field(description="The remote host URL for the workspace.")
     api_key: str | None = Field(
         default=None, description="API key for authenticating with the remote host."
+    )
+    working_dir: str = Field(
+        description="The working directory for agent operations and tool execution."
     )
 
     def model_post_init(self, context: Any) -> None:
@@ -67,7 +71,7 @@ class RemoteWorkspaceMixin(BaseModel):
             # Start the command
             response: httpx.Response = yield {
                 "method": "POST",
-                "url": f"{self.host}/api/bash/execute_bash_command",
+                "url": f"{self.host}/api/bash/start_bash_command",
                 "json": payload,
                 "headers": self._headers,
                 "timeout": timeout + 5.0,  # Add buffer to HTTP timeout
@@ -178,7 +182,7 @@ class RemoteWorkspaceMixin(BaseModel):
             # Make HTTP call
             response: httpx.Response = yield {
                 "method": "POST",
-                "url": f"{self.host}/api/file/upload",
+                "url": f"{self.host}/api/file/upload/{destination}",
                 "files": files,
                 "data": data,
                 "headers": self._headers,
@@ -262,3 +266,56 @@ class RemoteWorkspaceMixin(BaseModel):
                 destination_path=str(destination),
                 error=str(e),
             )
+
+    def _git_changes_generator(
+        self,
+        path: str | Path,
+    ) -> Generator[dict[str, Any], httpx.Response, list[GitChange]]:
+        """Get the git changes for the repository at the path given.
+
+        Args:
+            path: Path to the git repository
+
+        Returns:
+            list[GitChange]: List of changes
+
+        Raises:
+            Exception: If path is not a git repository or getting changes failed
+        """
+        # Make HTTP call
+        response = yield {
+            "method": "GET",
+            "url": Path("/api/git/changes") / self.working_dir / path,
+            "headers": self._headers,
+            "timeout": 60.0,
+        }
+        response.raise_for_status()
+        type_adapter = TypeAdapter(list[GitChange])
+        changes = type_adapter.validate_python(response.json())
+        return changes
+
+    def _git_diff_generator(
+        self,
+        path: str | Path,
+    ) -> Generator[dict[str, Any], httpx.Response, GitDiff]:
+        """Get the git diff for the file at the path given.
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            GitDiff: Git diff
+
+        Raises:
+            Exception: If path is not a git repository or getting diff failed
+        """
+        # Make HTTP call
+        response = yield {
+            "method": "GET",
+            "url": Path("/api/git/diff") / self.working_dir / path,
+            "headers": self._headers,
+            "timeout": 60.0,
+        }
+        response.raise_for_status()
+        diff = GitDiff.model_validate(response.json())
+        return diff

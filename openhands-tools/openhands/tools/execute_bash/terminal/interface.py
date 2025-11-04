@@ -3,6 +3,9 @@
 import os
 from abc import ABC, abstractmethod
 
+from openhands.tools.execute_bash.constants import (
+    NO_CHANGE_TIMEOUT_SECONDS,
+)
 from openhands.tools.execute_bash.definition import (
     ExecuteBashAction,
     ExecuteBashObservation,
@@ -131,7 +134,7 @@ class TerminalSessionBase(ABC):
 
     work_dir: str
     username: str | None
-    no_change_timeout_seconds: int | None
+    no_change_timeout_seconds: int
     _initialized: bool
     _closed: bool
     _cwd: str
@@ -151,7 +154,9 @@ class TerminalSessionBase(ABC):
         """
         self.work_dir = work_dir
         self.username = username
-        self.no_change_timeout_seconds = no_change_timeout_seconds
+        self.no_change_timeout_seconds = (
+            no_change_timeout_seconds or NO_CHANGE_TIMEOUT_SECONDS
+        )
         self._initialized = False
         self._closed = False
         self._cwd = os.path.abspath(work_dir)

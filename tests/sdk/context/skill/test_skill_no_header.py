@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from openhands.sdk.context import BaseMicroagent, RepoMicroagent
+from openhands.sdk.context import Skill
 
 
 def test_load_markdown_without_frontmatter():
@@ -8,14 +8,13 @@ def test_load_markdown_without_frontmatter():
     content = "# Test Content\nThis is a test markdown file without frontmatter."
     path = Path("test.md")
 
-    # Load the agent from content using keyword argument
-    agent = BaseMicroagent.load(path=path, file_content=content)
+    # Load the skill from content using keyword argument
+    skill = Skill.load(path=path, file_content=content)
 
-    # Verify it's loaded as a repo agent with default values
-    assert isinstance(agent, RepoMicroagent)
-    assert agent.name == "test"  # Name comes from path.stem
-    assert agent.content == content
-    assert agent.type == "repo"
+    # Verify it's loaded as a repo skill with default values
+    assert skill.trigger is None
+    assert skill.name == "test"  # Name comes from path.stem
+    assert skill.content == content
 
 
 def test_load_markdown_with_empty_frontmatter():
@@ -25,17 +24,16 @@ def test_load_markdown_with_empty_frontmatter():
     )
     path = Path("test.md")
 
-    # Load the agent from content using keyword argument
-    agent = BaseMicroagent.load(path=path, file_content=content)
+    # Load the skill from content using keyword argument
+    skill = Skill.load(path=path, file_content=content)
 
-    # Verify it's loaded as a repo agent with default values
-    assert isinstance(agent, RepoMicroagent)
-    assert agent.name == "test"  # Name comes from path.stem
+    # Verify it's loaded as a repo skill with default values
+    assert skill.trigger is None
+    assert skill.name == "test"  # Name comes from path.stem
     assert (
-        agent.content
+        skill.content
         == "# Test Content\nThis is a test markdown file with empty frontmatter."
     )
-    assert agent.type == "repo"
 
 
 def test_load_markdown_with_partial_frontmatter():
@@ -47,17 +45,16 @@ name: custom_name
 This is a test markdown file with partial frontmatter."""
     path = Path("test.md")
 
-    # Load the agent from content using keyword argument
-    agent = BaseMicroagent.load(path=path, file_content=content)
+    # Load the skill from content using keyword argument
+    skill = Skill.load(path=path, file_content=content)
 
     # Verify it uses provided name but default values for other fields
-    assert isinstance(agent, RepoMicroagent)
-    assert agent.name == "custom_name"
+    assert skill.trigger is None
+    assert skill.name == "custom_name"
     assert (
-        agent.content
+        skill.content
         == "# Test Content\nThis is a test markdown file with partial frontmatter."
     )
-    assert agent.type == "repo"
 
 
 def test_load_markdown_with_full_frontmatter():
@@ -72,14 +69,13 @@ version: 2.0.0
 This is a test markdown file with full frontmatter."""
     path = Path("test.md")
 
-    # Load the agent from content using keyword argument
-    agent = BaseMicroagent.load(path=path, file_content=content)
+    # Load the skill from content using keyword argument
+    skill = Skill.load(path=path, file_content=content)
 
     # Verify all provided values are used
-    assert isinstance(agent, RepoMicroagent)
-    assert agent.name == "test_agent"
+    assert skill.trigger is None
+    assert skill.name == "test_agent"
     assert (
-        agent.content
+        skill.content
         == "# Test Content\nThis is a test markdown file with full frontmatter."
     )
-    assert agent.type == "repo"

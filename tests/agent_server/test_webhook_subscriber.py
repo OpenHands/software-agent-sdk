@@ -48,7 +48,6 @@ def mock_event_service():
                     workspace=LocalWorkspace(working_dir="workspace/project"),
                 ),
                 conversations_dir=temp_path / "conversations_dir",
-                working_dir=temp_path / "working_dir",
             )
             yield service
 
@@ -1013,7 +1012,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=ConversationExecutionStatus.RUNNING,
+            execution_status=ConversationExecutionStatus.RUNNING,
         )
 
         await subscriber.post_conversation_info(conversation_info)
@@ -1061,7 +1060,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=ConversationExecutionStatus.PAUSED,
+            execution_status=ConversationExecutionStatus.PAUSED,
         )
 
         await subscriber.post_conversation_info(conversation_info)
@@ -1102,7 +1101,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=ConversationExecutionStatus.FINISHED,
+            execution_status=ConversationExecutionStatus.FINISHED,
         )
 
         # Track retry attempts

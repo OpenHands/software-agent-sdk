@@ -214,7 +214,7 @@ class TestMCPTool:
 
     def setup_method(self):
         """Set up test fixtures."""
-        self.mock_client: Mock = MockMCPClient()
+        self.mock_client: MockMCPClient = MockMCPClient()
 
         # Create mock MCP tool
         self.mock_mcp_tool: Mock = MagicMock(spec=mcp.types.Tool)

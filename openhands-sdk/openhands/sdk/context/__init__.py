@@ -1,24 +1,24 @@
-from openhands.sdk.context.agent_context import (
-    AgentContext,
-)
-from openhands.sdk.context.microagents import (
-    BaseMicroagent,
-    KnowledgeMicroagent,
-    MicroagentKnowledge,
-    MicroagentValidationError,
-    RepoMicroagent,
-    load_microagents_from_dir,
-)
+from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.prompts import render_template
+from openhands.sdk.context.skills import (
+    BaseTrigger,
+    KeywordTrigger,
+    Skill,
+    SkillKnowledge,
+    SkillValidationError,
+    TaskTrigger,
+    load_skills_from_dir,
+)
 
 
 __all__ = [
     "AgentContext",
-    "BaseMicroagent",
-    "KnowledgeMicroagent",
-    "RepoMicroagent",
-    "MicroagentKnowledge",
-    "load_microagents_from_dir",
+    "Skill",
+    "BaseTrigger",
+    "KeywordTrigger",
+    "TaskTrigger",
+    "SkillKnowledge",
+    "load_skills_from_dir",
     "render_template",
-    "MicroagentValidationError",
+    "SkillValidationError",
 ]

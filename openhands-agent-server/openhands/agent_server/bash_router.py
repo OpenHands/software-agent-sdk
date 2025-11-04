@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Literal, cast
 from uuid import UUID
 
 from fastapi import (
@@ -18,6 +18,7 @@ from openhands.agent_server.models import (
     BashEventBase,
     BashEventPage,
     BashEventSortOrder,
+    BashOutput,
     ExecuteBashRequest,
 )
 
@@ -80,11 +81,21 @@ async def batch_get_bash_events(
     return events
 
 
-@bash_router.post("/execute_bash_command")
+@bash_router.post("/start_bash_command")
 async def start_bash_command(request: ExecuteBashRequest) -> BashCommand:
-    """Execute a bash command"""
+    """Execute a bash command in the background"""
     command, _ = await bash_event_service.start_bash_command(request)
     return command
+
+
+@bash_router.post("/execute_bash_command")
+async def execute_bash_command(request: ExecuteBashRequest) -> BashOutput:
+    """Execute a bash command and wait for a result"""
+    command, task = await bash_event_service.start_bash_command(request)
+    await task
+    page = await bash_event_service.search_bash_events(command_id__eq=command.id)
+    result = cast(BashOutput, page.items[-1])
+    return result
 
 
 @bash_router.delete("/bash_events")

@@ -81,7 +81,7 @@ def test_nonexistent_tool_returns_error_and_continues_conversation():
         )
 
         # Run one step to trigger the tool call
-        agent.step(conversation.state, on_event=event_callback)
+        agent.step(conversation, on_event=event_callback)
 
     # Verify that an AgentErrorEvent was generated
     error_events = [e for e in collected_events if isinstance(e, AgentErrorEvent)]
@@ -168,7 +168,7 @@ def test_nonexistent_tool_error_includes_available_tools():
                 content=[TextContent(text="Test message")],
             )
         )
-        agent.step(conversation.state, on_event=event_callback)
+        agent.step(conversation, on_event=event_callback)
 
     # Find the error event
     error_events = [e for e in collected_events if isinstance(e, AgentErrorEvent)]
@@ -270,7 +270,7 @@ def test_conversation_continues_after_tool_error():
         )
 
         # Run first step - should generate error
-        agent.step(conversation.state, on_event=event_callback)
+        agent.step(conversation, on_event=event_callback)
 
         # Verify we got an error event
         error_events = [e for e in collected_events if isinstance(e, AgentErrorEvent)]
@@ -284,7 +284,7 @@ def test_conversation_continues_after_tool_error():
             )
 
         # Run second step - should continue normally
-        agent.step(conversation.state, on_event=event_callback)
+        agent.step(conversation, on_event=event_callback)
 
         # Verify we got a message event from the second response
         message_events = [

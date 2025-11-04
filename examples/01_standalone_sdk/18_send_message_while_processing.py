@@ -140,3 +140,7 @@ if os.path.exists(document_path):
     os.remove(document_path)
 else:
     print("WARNING: Document.txt was not created")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

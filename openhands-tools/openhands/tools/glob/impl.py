@@ -5,8 +5,13 @@ import glob as glob_module
 import os
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
 from openhands.tools.glob.definition import GlobAction, GlobObservation
 from openhands.tools.utils import (
     _check_ripgrep_available,
@@ -34,7 +39,11 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
         if not self._ripgrep_available:
             _log_ripgrep_fallback_warning("glob", "Python glob module")
 
-    def __call__(self, action: GlobAction) -> GlobObservation:
+    def __call__(
+        self,
+        action: GlobAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> GlobObservation:
         """Execute glob pattern matching using ripgrep or fallback to Python glob.
 
         Args:
@@ -44,23 +53,38 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             GlobObservation with matching files or error information
         """
         try:
-            # Determine search path
+            original_pattern = action.pattern  # Store original pattern for observation
+
             if action.path:
                 search_path = Path(action.path).resolve()
-                if not search_path.is_dir():
-                    return GlobObservation(
-                        files=[],
-                        pattern=action.pattern,
-                        search_path=str(search_path),
-                        error=f"Search path '{action.path}' is not a valid directory",
-                    )
+                pattern = action.pattern
             else:
-                search_path = self.working_dir
+                extracted_path, pattern = self._extract_search_path_from_pattern(
+                    action.pattern
+                )
+                search_path = (
+                    extracted_path if extracted_path is not None else self.working_dir
+                )
+
+            if not search_path.is_dir():
+                return GlobObservation(
+                    files=[],
+                    pattern=original_pattern,
+                    search_path=str(search_path),
+                    error=f"Search path '{search_path}' is not a valid directory",
+                )
 
             if self._ripgrep_available:
-                return self._execute_with_ripgrep(action, search_path)
+                files, truncated = self._execute_with_ripgrep(pattern, search_path)
             else:
-                return self._execute_with_glob(action, search_path)
+                files, truncated = self._execute_with_glob(pattern, search_path)
+
+            return GlobObservation(
+                files=files,
+                pattern=original_pattern,
+                search_path=str(search_path),
+                truncated=truncated,
+            )
 
         except Exception as e:
             # Determine search path for error reporting
@@ -80,16 +104,25 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             )
 
     def _execute_with_ripgrep(
-        self, action: GlobAction, search_path: Path
-    ) -> GlobObservation:
-        """Execute glob pattern matching using ripgrep."""
+        self, pattern: str, search_path: Path
+    ) -> tuple[list[str], bool]:
+        """Execute glob pattern matching using ripgrep.
+
+        Args:
+            pattern: The glob pattern to match
+            search_path: The directory to search in
+
+        Returns:
+            Tuple of (file_paths, truncated) where file_paths is a list of matching files
+            and truncated is True if results were limited to 100 files
+        """  # noqa: E501
         # Build ripgrep command: rg --files {path} -g {pattern} --sortr=modified
         cmd = [
             "rg",
             "--files",
             str(search_path),
             "-g",
-            action.pattern,
+            pattern,
             "--sortr=modified",
         ]
 
@@ -110,17 +143,21 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
 
         truncated = len(file_paths) >= 100
 
-        return GlobObservation(
-            files=file_paths,
-            pattern=action.pattern,
-            search_path=str(search_path),
-            truncated=truncated,
-        )
+        return file_paths, truncated
 
     def _execute_with_glob(
-        self, action: GlobAction, search_path: Path
-    ) -> GlobObservation:
-        """Execute glob pattern matching using Python's glob module."""
+        self, pattern: str, search_path: Path
+    ) -> tuple[list[str], bool]:
+        """Execute glob pattern matching using Python's glob module.
+
+        Args:
+            pattern: The glob pattern to match
+            search_path: The directory to search in
+
+        Returns:
+            Tuple of (file_paths, truncated) where file_paths is a list of matching files
+            and truncated is True if results were limited to 100 files
+        """  # noqa: E501
         # Change to search directory for glob to work correctly
         original_cwd = os.getcwd()
         try:
@@ -128,7 +165,6 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
 
             # Ripgrep's -g flag is always recursive, so we need to make the pattern
             # recursive if it doesn't already contain **
-            pattern = action.pattern
             if "**" not in pattern:
                 # Convert non-recursive patterns like "*.py" to "**/*.py"
                 # to match ripgrep's recursive behavior
@@ -137,8 +173,8 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             # Use glob to find matching files
             matches = glob_module.glob(pattern, recursive=True)
 
-            # Convert to absolute paths (without resolving symlinks) a
-            # nd sort by modification time
+            # Convert to absolute paths (without resolving symlinks)
+            # and sort by modification time
             file_paths = []
             for match in matches:
                 # Use absolute() instead of resolve() to avoid resolving symlinks
@@ -152,11 +188,70 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
 
             truncated = len(file_paths) > 100
 
-            return GlobObservation(
-                files=sorted_files,
-                pattern=action.pattern,
-                search_path=str(search_path),
-                truncated=truncated,
-            )
+            return sorted_files, truncated
         finally:
             os.chdir(original_cwd)
+
+    @staticmethod
+    def _extract_search_path_from_pattern(pattern: str) -> tuple[Path | None, str]:
+        """Extract search path and relative pattern from an absolute path pattern.
+
+        This is needed because agents may send absolute path patterns like
+        "/path/to/dir/**/*.py", but ripgrep's -g flag expects a search directory
+        and a relative pattern separately. This function splits the absolute pattern
+        into these two components.
+
+        For relative patterns, returns (None, pattern) to indicate the caller should
+        use its default working directory.
+
+        Args:
+            pattern: The glob pattern (may be absolute or relative)
+
+        Returns:
+            Tuple of (search_path, adjusted_pattern) where:
+            - search_path: The directory to search in (None for relative patterns)
+            - adjusted_pattern: The pattern relative to search_path
+
+        Examples:
+            >>> _extract_search_path_from_pattern("/path/to/dir/**/*.py")
+            (Path("/path/to/dir"), "**/*.py")
+
+            >>> _extract_search_path_from_pattern("/path/to/*.py")
+            (Path("/path/to"), "*.py")
+
+            >>> _extract_search_path_from_pattern("**/*.py")
+            (None, "**/*.py")
+        """
+        if not pattern:
+            return None, "**/*"
+
+        # Expand ~ for user home directory
+        pattern = os.path.expanduser(pattern)
+
+        # Check if pattern is an absolute path
+        if not pattern.startswith("/"):
+            # Relative pattern - caller should use default working directory
+            return None, pattern
+
+        # Absolute path pattern - extract the base path
+        path_obj = Path(pattern)
+        parts = path_obj.parts
+
+        # Find where the glob characters start using glob.has_magic()
+        search_parts = []
+        for part in parts:
+            if glob_module.has_magic(part):
+                break
+            search_parts.append(part)
+
+        if not search_parts:
+            # Pattern starts with glob at root (e.g., "/*/*.py")
+            search_path = Path("/")
+            adjusted_pattern = pattern.lstrip("/")
+        else:
+            search_path = Path(*search_parts)
+            # Get the remaining parts as the pattern
+            remaining = parts[len(search_parts) :]
+            adjusted_pattern = str(Path(*remaining)) if remaining else "**/*"
+
+        return search_path.resolve(), adjusted_pattern

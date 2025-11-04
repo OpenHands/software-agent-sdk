@@ -1,7 +1,7 @@
 """Execute bash tool implementation."""
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -17,6 +17,7 @@ from openhands.sdk.tool import (
     Observation,
     ToolAnnotations,
     ToolDefinition,
+    ToolExecutor,
 )
 from openhands.sdk.utils import maybe_truncate
 from openhands.tools.execute_bash.constants import (
@@ -217,21 +218,6 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-execute_bash_tool = ToolDefinition(
-    name="execute_bash",
-    action_type=ExecuteBashAction,
-    observation_type=ExecuteBashObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="execute_bash",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
-
 class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
     """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
 
@@ -242,8 +228,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
-        env_provider: Callable[[str], dict[str, str]] | None = None,
-        env_masker: Callable[[str], str] | None = None,
+        executor: ToolExecutor | None = None,
     ) -> Sequence["BashTool"]:
         """Initialize BashTool with executor parameters.
 
@@ -258,12 +243,6 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                          If None, auto-detect based on system capabilities:
                          - On Windows: PowerShell if available, otherwise subprocess
                          - On Unix-like: tmux if available, otherwise subprocess
-            env_provider: Optional callable that maps a command string to
-                          environment variables (key -> value) to export before
-                          running that command.
-            env_masker: Optional callable that returns current secret values
-                        for masking purposes. This ensures consistent masking
-                        even when env_provider calls fail.
         """
         # Import here to avoid circular imports
         from openhands.tools.execute_bash.impl import BashExecutor
@@ -273,23 +252,28 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
             raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
 
         # Initialize the executor
-        executor = BashExecutor(
-            working_dir=working_dir,
-            username=username,
-            no_change_timeout_seconds=no_change_timeout_seconds,
-            terminal_type=terminal_type,
-            env_provider=env_provider,
-            env_masker=env_masker,
-        )
+        if executor is None:
+            executor = BashExecutor(
+                working_dir=working_dir,
+                username=username,
+                no_change_timeout_seconds=no_change_timeout_seconds,
+                terminal_type=terminal_type,
+            )
 
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name=execute_bash_tool.name,
-                description=TOOL_DESCRIPTION,
+                name="execute_bash",
                 action_type=ExecuteBashAction,
                 observation_type=ExecuteBashObservation,
-                annotations=execute_bash_tool.annotations,
+                description=TOOL_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="execute_bash",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]

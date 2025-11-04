@@ -437,7 +437,7 @@ def test_agent_resolve_diff_different_class_raises_error():
         def init_state(self, state, on_event):
             pass
 
-        def step(self, state, on_event):
+        def step(self, conversation, on_event):
             pass
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
@@ -471,7 +471,7 @@ def test_conversation_state_flags_persistence():
         # Set various flags
         state.execution_status = ConversationExecutionStatus.FINISHED
         state.confirmation_policy = AlwaysConfirm()
-        state.activated_knowledge_microagents = ["agent1", "agent2"]
+        state.activated_knowledge_skills = ["agent1", "agent2"]
 
         # Create a new ConversationState that loads from the same persistence directory
         loaded_state = ConversationState.create(
@@ -487,7 +487,7 @@ def test_conversation_state_flags_persistence():
         # Verify flags are preserved
         assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
-        assert loaded_state.activated_knowledge_microagents == ["agent1", "agent2"]
+        assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
         # Test model_dump equality
         assert loaded_state.model_dump(mode="json") != state.model_dump(mode="json")
         loaded_state.stats.register_llm(RegistryEvent(llm=llm))

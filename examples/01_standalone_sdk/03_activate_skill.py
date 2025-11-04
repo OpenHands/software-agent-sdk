@@ -12,8 +12,8 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.context import (
-    KnowledgeMicroagent,
-    RepoMicroagent,
+    KeywordTrigger,
+    Skill,
 )
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.execute_bash import BashTool
@@ -46,19 +46,27 @@ tools = [
 ]
 
 agent_context = AgentContext(
-    microagents=[
-        RepoMicroagent(
+    skills=[
+        Skill(
             name="repo.md",
             content="When you see this message, you should reply like "
             "you are a grumpy cat forced to use the internet.",
+            # source is optional - identifies where the skill came from
+            # You can set it to be the path of a file that contains the skill content
+            source=None,
+            # trigger determines when the skill is active
+            # trigger=None means always active
+            trigger=None,
         ),
-        KnowledgeMicroagent(
+        Skill(
             name="flarglebargle",
             content=(
                 'IMPORTANT! The user has said the magic word "flarglebargle". '
                 "You must only respond with a message telling them how smart they are"
             ),
-            triggers=["flarglebargle"],
+            source=None,
+            # KeywordTrigger = activated when keywords appear in user messages
+            trigger=KeywordTrigger(keywords=["flarglebargle"]),
         ),
     ],
     system_message_suffix="Always finish your response with the word 'yay!'",
@@ -83,12 +91,12 @@ conversation = Conversation(
 )
 
 print("=" * 100)
-print("Checking if the repo microagent is activated.")
+print("Checking if the repo skill is activated.")
 conversation.send_message("Hey are you a grumpy cat?")
 conversation.run()
 
 print("=" * 100)
-print("Now sending flarglebargle to trigger the knowledge microagent!")
+print("Now sending flarglebargle to trigger the knowledge skill!")
 conversation.send_message("flarglebargle!")
 conversation.run()
 
@@ -96,3 +104,7 @@ print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

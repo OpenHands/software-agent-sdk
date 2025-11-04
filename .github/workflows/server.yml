@@ -106,7 +106,7 @@ jobs:
                   echo "✓ Binary test completed successfully"
 
             - name: Upload binary artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: openhands-server-${{ matrix.os }}
                   path: |
@@ -196,7 +196,10 @@ jobs:
                   version: latest
 
             - name: Set up Docker Buildx
-              uses: useblacksmith/setup-docker-builder@v1
+              uses: docker/setup-buildx-action@v3
+              with:
+                  driver: docker-container
+                  use: true
 
             - name: Log in to GHCR
               uses: docker/login-action@v3
@@ -233,7 +236,7 @@ jobs:
                   EOF
 
             - name: Upload build info artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: build-info-${{ matrix.name }}
                   path: build-info/${{ matrix.name }}.json
@@ -245,12 +248,12 @@ jobs:
         # Run if it's a PR and the matrix job completed (even if some variants failed)
         if: github.event_name == 'pull_request' && always() && (needs.build-and-push-image.result == 'success' || needs.build-and-push-image.result ==
             'failure')
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         outputs:
             build_summary: ${{ steps.consolidate.outputs.build_summary }}
         steps:
             - name: Download all build info artifacts
-              uses: actions/download-artifact@v5
+              uses: actions/download-artifact@v6
               with:
                   pattern: build-info-*
                   merge-multiple: true

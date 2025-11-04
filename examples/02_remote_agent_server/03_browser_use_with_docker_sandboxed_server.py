@@ -18,8 +18,8 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 
@@ -36,10 +36,8 @@ def detect_platform():
 with DockerWorkspace(
     base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     host_port=8010,
-    # TODO: Change this to your platform if not linux/arm64
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
-    forward_env=["LLM_API_KEY"],  # Forward API key to container
 ) as workspace:
     """Extra ports allows you to check localhost:8012 for VNC"""
 
@@ -71,7 +69,7 @@ with DockerWorkspace(
     logger.info(f"\n📋 Conversation ID: {conversation.state.id}")
     logger.info("📝 Sending first message...")
     conversation.send_message(
-        "Could you go to https://all-hands.dev/ blog page and summarize main "
+        "Could you go to https://openhands.dev/ blog page and summarize main "
         "points of the latest blog?"
     )
     conversation.run()

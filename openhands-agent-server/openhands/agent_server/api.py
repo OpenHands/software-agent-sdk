@@ -21,6 +21,7 @@ from openhands.agent_server.desktop_router import desktop_router
 from openhands.agent_server.desktop_service import get_desktop_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
+from openhands.agent_server.git_router import git_router
 from openhands.agent_server.middleware import LocalhostCORSMiddleware
 from openhands.agent_server.server_details_router import (
     get_server_info,
@@ -133,6 +134,7 @@ def _add_api_routes(app: FastAPI, config: Config) -> None:
     api_router.include_router(conversation_router)
     api_router.include_router(tool_router)
     api_router.include_router(bash_router)
+    api_router.include_router(git_router)
     api_router.include_router(file_router)
     api_router.include_router(vscode_router)
     api_router.include_router(desktop_router)

@@ -9,13 +9,13 @@ from openhands.sdk.llm import LLM
 
 
 class FailingAgent(AgentBase):
-    def step(self, state, on_event):  # noqa: D401, ARG002
+    def step(self, conversation, on_event):  # noqa: D401, ARG002
         """Intentionally fail to simulate an unexpected runtime error."""
         raise ValueError("boom")
 
 
 def test_run_raises_conversation_run_error_with_id():
-    llm = LLM(model="gpt-4o-mini", api_key=None, service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=None, usage_id="test-llm")
     agent = FailingAgent(llm=llm, tools=[])
 
     with tempfile.TemporaryDirectory() as tmpdir:

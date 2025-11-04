@@ -18,7 +18,7 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -61,6 +61,42 @@ class MockConfirmationModeObservation(Observation):
         return [TextContent(text=self.result)]
 
 
+class TestExecutor(
+    ToolExecutor[MockConfirmationModeAction, MockConfirmationModeObservation]
+):
+    """Test executor for confirmation mode testing."""
+
+    def __call__(
+        self,
+        action: MockConfirmationModeAction,
+        conversation=None,  # noqa: ARG002
+    ) -> MockConfirmationModeObservation:
+        return MockConfirmationModeObservation(result=f"Executed: {action.command}")
+
+
+class ConfirmationTestTool(
+    ToolDefinition[MockConfirmationModeAction, MockConfirmationModeObservation]
+):
+    """Concrete tool for confirmation mode testing."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["ConfirmationTestTool"]:
+        return [
+            cls(
+                name="test_tool",
+                description="A test tool",
+                action_type=MockConfirmationModeAction,
+                observation_type=MockConfirmationModeObservation,
+                executor=TestExecutor(),
+            )
+        ]
+
+
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+    """Factory function for creating test tools."""
+    return ConfirmationTestTool.create(conv_state, **params)
+
+
 class TestConfirmationMode:
     """Test suite for confirmation mode functionality."""
 
@@ -94,34 +130,13 @@ class TestConfirmationMode:
         )
         self.mock_llm.metrics.get_snapshot.return_value = mock_metrics_snapshot
 
-        class TestExecutor(
-            ToolExecutor[MockConfirmationModeAction, MockConfirmationModeObservation]
-        ):
-            def __call__(
-                self, action: MockConfirmationModeAction
-            ) -> MockConfirmationModeObservation:
-                return MockConfirmationModeObservation(
-                    result=f"Executed: {action.command}"
-                )
-
-        def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test tool",
-                    action_type=MockConfirmationModeAction,
-                    observation_type=MockConfirmationModeObservation,
-                    executor=TestExecutor(),
-                )
-            ]
-
         register_tool("test_tool", _make_tool)
 
         self.agent: Agent = Agent(
             llm=self.llm,
             tools=[Tool(name="test_tool")],
         )
-        self.conversation: Conversation = Conversation(agent=self.agent)
+        self.conversation: LocalConversation = Conversation(agent=self.agent)
 
     def _mock_message_only(self, text: str = "Hello, how can I help you?") -> MagicMock:
         """Configure LLM to return a plain assistant message (no tool calls)."""

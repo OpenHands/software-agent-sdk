@@ -1,6 +1,12 @@
 """Implementation of the planning file editor tool."""
 
+from typing import TYPE_CHECKING
+
 from openhands.sdk.tool import ToolExecutor
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
 from openhands.tools.file_editor.definition import FileEditorAction
 from openhands.tools.file_editor.impl import FileEditorExecutor
 from openhands.tools.planning_file_editor.definition import (
@@ -25,7 +31,9 @@ class PlanningFileEditorExecutor(ToolExecutor):
         )
 
     def __call__(
-        self, action: PlanningFileEditorAction
+        self,
+        action: PlanningFileEditorAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> PlanningFileEditorObservation:
         """Execute the planning file editor action.
 

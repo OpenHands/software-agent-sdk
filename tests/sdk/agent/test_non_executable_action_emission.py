@@ -71,7 +71,7 @@ def test_emits_action_event_with_none_action_then_error_on_missing_tool() -> Non
         "openhands.sdk.llm.llm.litellm_completion", side_effect=mock_llm_response
     ):
         conv.send_message(Message(role="user", content=[TextContent(text="go")]))
-        agent.step(conv.state, on_event=cb)
+        agent.step(conv, on_event=cb)
 
     # Find ActionEvent with action=None
     action_events_none = [

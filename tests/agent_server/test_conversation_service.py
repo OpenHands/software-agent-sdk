@@ -616,7 +616,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -634,7 +634,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with custom conversation_id
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,
@@ -645,7 +645,7 @@ class TestConversationServiceStartConversation:
             assert is_new
 
             duplicate_request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 conversation_id=custom_id,

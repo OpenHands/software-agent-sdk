@@ -28,22 +28,22 @@ def run_agent_server(port, api_key):
     main()
 
 
-@pytest.fixture
-def agent_server(tmp_path):
+@pytest.fixture(scope="session")
+def agent_server():
     port = find_free_port()
     api_key = "test-wsproto-key"
 
     process = multiprocessing.Process(target=run_agent_server, args=(port, api_key))
     process.start()
 
-    for _ in range(50):
+    for _ in range(30):
         try:
             response = requests.get(f"http://127.0.0.1:{port}/docs", timeout=1)
             if response.status_code == 200:
                 break
         except requests.exceptions.ConnectionError:
             pass
-        time.sleep(0.2)
+        time.sleep(2)
     else:
         process.terminate()
         process.join()

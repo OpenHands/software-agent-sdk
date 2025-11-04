@@ -3,8 +3,13 @@
 import re
 import subprocess
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
 from openhands.tools.grep.definition import GrepAction, GrepObservation
 from openhands.tools.utils import (
     _check_ripgrep_available,
@@ -32,7 +37,11 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         if not self._ripgrep_available:
             _log_ripgrep_fallback_warning("grep", "regular grep command")
 
-    def __call__(self, action: GrepAction) -> GrepObservation:
+    def __call__(
+        self,
+        action: GrepAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> GrepObservation:
         """Execute grep content search using ripgrep or fallback to regular grep.
 
         Args:

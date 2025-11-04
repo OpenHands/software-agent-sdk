@@ -43,18 +43,18 @@ def test_local_conversation_constructor_with_secrets():
         assert isinstance(conv, LocalConversation)
 
         # Verify secrets were initialized
-        secrets_manager = conv.state.secrets_manager
-        assert secrets_manager is not None
+        secret_registry = conv.state.secret_registry
+        assert secret_registry is not None
 
-        # Verify secrets are accessible through the secrets manager
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $API_KEY")
+        # Verify secrets are accessible through the secret registry
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $API_KEY")
         assert env_vars == {"API_KEY": "test-api-key-123"}
 
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $DATABASE_URL")
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $DATABASE_URL")
         assert env_vars == {"DATABASE_URL": "postgresql://localhost/test"}
 
         # Test multiple secrets in one command
-        env_vars = secrets_manager.get_secrets_as_env_vars(
+        env_vars = secret_registry.get_secrets_as_env_vars(
             "export API_KEY=$API_KEY && export AUTH_TOKEN=$AUTH_TOKEN"
         )
         assert env_vars == {
@@ -90,15 +90,15 @@ def test_local_conversation_constructor_with_callable_secrets():
         assert isinstance(conv, LocalConversation)
 
         # Verify callable secrets work
-        secrets_manager = conv.state.secrets_manager
+        secret_registry = conv.state.secret_registry
 
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $DYNAMIC_TOKEN")
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $DYNAMIC_TOKEN")
         assert env_vars == {"DYNAMIC_TOKEN": "dynamic-token-789"}
 
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $API_KEY")
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $API_KEY")
         assert env_vars == {"API_KEY": "callable-api-key"}
 
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $STATIC_KEY")
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $STATIC_KEY")
         assert env_vars == {"STATIC_KEY": "static-value"}
 
 
@@ -118,11 +118,11 @@ def test_local_conversation_constructor_without_secrets():
         assert isinstance(conv, LocalConversation)
 
         # Verify secrets manager exists but is empty
-        secrets_manager = conv.state.secrets_manager
-        assert secrets_manager is not None
+        secret_registry = conv.state.secret_registry
+        assert secret_registry is not None
 
         # Should return empty dict for any command
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $API_KEY")
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $API_KEY")
         assert env_vars == {}
 
 
@@ -142,11 +142,11 @@ def test_local_conversation_constructor_with_empty_secrets():
         assert isinstance(conv, LocalConversation)
 
         # Verify secrets manager exists but is empty
-        secrets_manager = conv.state.secrets_manager
-        assert secrets_manager is not None
+        secret_registry = conv.state.secret_registry
+        assert secret_registry is not None
 
         # Should return empty dict for any command
-        env_vars = secrets_manager.get_secrets_as_env_vars("echo $API_KEY")
+        env_vars = secret_registry.get_secrets_as_env_vars("echo $API_KEY")
         assert env_vars == {}
 
 

@@ -70,7 +70,7 @@ def test_agent_step_routes_to_responses_or_completion(force_responses, expected)
             events.append(e)
 
     # One step should call the appropriate method and emit an assistant message
-    agent.step(convo.state, on_event=on_event)
+    agent.step(convo, on_event=on_event)
 
     assert llm._calls == [expected]
     assert any(isinstance(e, MessageEvent) for e in events)
@@ -127,7 +127,7 @@ def test_agent_step_model_features_gate_to_responses_or_completion(model, expect
         if isinstance(e, MessageEvent):
             events.append(e)
 
-    agent.step(convo.state, on_event=on_event)
+    agent.step(convo, on_event=on_event)
 
     assert llm._calls == [expected]
     assert any(isinstance(e, MessageEvent) for e in events)

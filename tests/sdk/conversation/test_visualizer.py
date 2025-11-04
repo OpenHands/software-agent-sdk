@@ -187,7 +187,7 @@ def test_message_event_visualize():
     event = MessageEvent(
         source="user",
         llm_message=message,
-        activated_microagents=["helper", "analyzer"],
+        activated_skills=["helper", "analyzer"],
         extended_content=[TextContent(text="Additional context")],
     )
 
@@ -196,7 +196,7 @@ def test_message_event_visualize():
 
     text_content = result.plain
     assert "Hello, how can you help me?" in text_content
-    assert "Activated Microagents: helper, analyzer" in text_content
+    assert "Activated Skills: helper, analyzer" in text_content
     assert "Prompt Extension based on Agent Context:" in text_content
     assert "Additional context" in text_content
 

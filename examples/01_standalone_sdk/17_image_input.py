@@ -39,6 +39,7 @@ llm = LLM(
     base_url=base_url,
     api_key=SecretStr(api_key),
 )
+assert llm.vision_is_active(), "The selected LLM model does not support vision input."
 
 cwd = os.getcwd()
 
@@ -69,12 +70,11 @@ conversation = Conversation(
     agent=agent, callbacks=[conversation_callback], workspace=cwd
 )
 
-IMAGE_URL = "https://github.com/OpenHands/OpenHands/raw/main/docs/static/img/logo.png"
+IMAGE_URL = "https://github.com/OpenHands/docs/raw/main/openhands/static/img/logo.png"
 
 conversation.send_message(
     Message(
         role="user",
-        vision_enabled=True,
         content=[
             TextContent(
                 text=(
@@ -98,3 +98,7 @@ print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

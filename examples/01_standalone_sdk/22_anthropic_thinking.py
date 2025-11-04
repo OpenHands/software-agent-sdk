@@ -63,3 +63,7 @@ conversation.send_message(
 )
 conversation.run()
 print("✅ Done!")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

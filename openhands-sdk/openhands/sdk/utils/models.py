@@ -78,9 +78,8 @@ class OpenHandsModel(BaseModel):
     regenerate all the polymorphic mappings.
     """
 
-    def __init__(self, *args, **kwargs):
+    def model_post_init(self, _context):
         _rebuild_if_required()
-        super().__init__(*args, **kwargs)
 
     @classmethod
     def model_validate(cls, *args, **kwargs) -> Self:

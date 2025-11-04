@@ -34,7 +34,7 @@ class _HelloObservation(Observation):
 
 
 class _HelloExec(ToolExecutor[_HelloAction, _HelloObservation]):
-    def __call__(self, action: _HelloAction) -> _HelloObservation:
+    def __call__(self, action: _HelloAction, conversation=None) -> _HelloObservation:
         return _HelloObservation(message=f"Hello, {action.name}!")
 
 
@@ -51,7 +51,9 @@ class _ConfigurableHelloTool(ToolDefinition):
                 self._greeting: str = greeting
                 self._punctuation: str = punctuation
 
-            def __call__(self, action: _HelloAction) -> _HelloObservation:
+            def __call__(
+                self, action: _HelloAction, conversation=None
+            ) -> _HelloObservation:
                 return _HelloObservation(
                     message=f"{self._greeting}, {action.name}{self._punctuation}"
                 )
@@ -67,16 +69,24 @@ class _ConfigurableHelloTool(ToolDefinition):
         ]
 
 
+class _SimpleHelloTool(ToolDefinition[_HelloAction, _HelloObservation]):
+    """Simple concrete tool for registry testing."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_SimpleHelloTool"]:
+        return [
+            cls(
+                name="say_hello",
+                description="Says hello",
+                action_type=_HelloAction,
+                observation_type=_HelloObservation,
+                executor=_HelloExec(),
+            )
+        ]
+
+
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
-    return [
-        ToolDefinition(
-            name="say_hello",
-            description="Says hello",
-            action_type=_HelloAction,
-            observation_type=_HelloObservation,
-            executor=_HelloExec(),
-        )
-    ]
+    return list(_SimpleHelloTool.create(conv_state, **params))
 
 
 def test_register_and_resolve_callable_factory():

@@ -91,7 +91,10 @@ llm = LLM(
     api_key=SecretStr(api_key),
 )
 
-agent = get_default_agent(llm=llm)
+add_security_analyzer = bool(os.getenv("ADD_SECURITY_ANALYZER", "").strip())
+if add_security_analyzer:
+    print("Agent security analyzer added.")
+agent = get_default_agent(llm=llm, add_security_analyzer=add_security_analyzer)
 conversation = Conversation(agent=agent, workspace=os.getcwd())
 
 # 1) Confirmation mode ON

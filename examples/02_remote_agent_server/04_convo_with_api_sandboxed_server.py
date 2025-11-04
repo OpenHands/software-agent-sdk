@@ -7,7 +7,7 @@ Usage:
   uv run examples/24_remote_convo_with_api_sandboxed_server.py
 
 Requirements:
-  - LITELLM_API_KEY: API key for LLM access
+  - LLM_API_KEY: API key for LLM access
   - RUNTIME_API_KEY: API key for runtime API access
 """
 
@@ -29,13 +29,13 @@ from openhands.workspace import APIRemoteWorkspace
 logger = get_logger(__name__)
 
 
-api_key = os.getenv("LITELLM_API_KEY")
-assert api_key, "LITELLM_API_KEY required"
+api_key = os.getenv("LLM_API_KEY")
+assert api_key, "LLM_API_KEY required"
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 
@@ -46,9 +46,9 @@ if not runtime_api_key:
 
 
 with APIRemoteWorkspace(
-    runtime_api_url="https://runtime.eval.all-hands.dev",
+    runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
     runtime_api_key=runtime_api_key,
-    server_image="ghcr.io/openhands/agent-server:latest-python",
+    server_image="ghcr.io/openhands/agent-server:main-python",
 ) as workspace:
     agent = get_default_agent(llm=llm, cli_mode=True)
     received_events: list = []
