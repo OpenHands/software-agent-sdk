@@ -244,6 +244,7 @@ class LocalConversation(BaseConversation):
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.ERROR,
             ]:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
@@ -301,6 +302,7 @@ class LocalConversation(BaseConversation):
                     ):
                         break
         except Exception as e:
+            self._state.execution_status = ConversationExecutionStatus.ERROR
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
         finally:
