@@ -39,7 +39,10 @@ jobs:
                 # Need Reviewer Action
 
                 Find all open PRs where:
-                1. The PR is waiting for review (there are no open review comments or change requests)
+                1. The PR is actually waiting for review: reviewDecision == REVIEW_REQUIRED
+                   - Prefer GraphQL: query pullRequest.reviewDecision
+                   - If using REST only, approximate by ensuring there are NO submitted reviews with
+                     state in [APPROVED, CHANGES_REQUESTED, COMMENTED] more recent than the latest head commit
                 2. The PR is in a "clean" state (CI passing, no merge conflicts)
                 3. The PR is not marked as draft (draft: false)
                 4. The PR has had no activity (comments, commits, reviews) for more than 3 days.
@@ -63,6 +66,11 @@ jobs:
 
                 Find all open pull requests that TRULY have NO reviewers assigned. To do this correctly:
 
+                0. Ensure the PR is actually waiting for review: reviewDecision == REVIEW_REQUIRED
+                   - Prefer GraphQL: query pullRequest.reviewDecision
+                   - If using REST only, approximate by verifying there are no submitted reviews newer than the latest head commit; if the latest review
+                is older than the latest commit, review is required
+                   - If reviewDecision is APPROVED or CHANGES_REQUESTED, SKIP this PR
                 1. Use the GitHub API to fetch PR details: GET /repos/{owner}/{repo}/pulls/{pull_number}
                 2. Check the "requested_reviewers" and "requested_teams" arrays
                 3. ALSO check for submitted reviews: GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews
