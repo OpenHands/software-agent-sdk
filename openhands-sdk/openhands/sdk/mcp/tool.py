@@ -120,6 +120,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
 
+    @property
+    def name(self) -> str:  # type: ignore[override]
+        """Return the MCP tool name instead of the class name."""
+        return self.mcp_tool.name
+
     def __call__(
         self,
         action: Action,
@@ -201,21 +206,17 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 else None
             )
 
-            return [
-                cls(
-                    name=mcp_tool.name,
-                    description=mcp_tool.description or "No description provided",
-                    action_type=MCPToolAction,
-                    observation_type=MCPToolObservation,
-                    annotations=annotations,
-                    meta=mcp_tool.meta,
-                    executor=MCPToolExecutor(
-                        tool_name=mcp_tool.name, client=mcp_client
-                    ),
-                    # pass-through fields (enabled by **extra in Tool.create)
-                    mcp_tool=mcp_tool,
-                )
-            ]
+            tool_instance = cls(
+                description=mcp_tool.description or "No description provided",
+                action_type=MCPToolAction,
+                observation_type=MCPToolObservation,
+                annotations=annotations,
+                meta=mcp_tool.meta,
+                executor=MCPToolExecutor(tool_name=mcp_tool.name, client=mcp_client),
+                # pass-through fields (enabled by **extra in Tool.create)
+                mcp_tool=mcp_tool,
+            )
+            return [tool_instance]
         except ValidationError as e:
             logger.error(
                 f"Validation error creating MCPTool for {mcp_tool.name}: "

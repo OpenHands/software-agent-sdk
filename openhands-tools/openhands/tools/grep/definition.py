@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolAnnotations,
+    ToolDefinition,
+    register_tool,
+)
 
 
 if TYPE_CHECKING:
@@ -92,7 +98,6 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="grep",
                 description=enhanced_description,
                 action_type=GrepAction,
                 observation_type=GrepObservation,
@@ -106,3 +111,7 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(GrepTool.name, GrepTool)

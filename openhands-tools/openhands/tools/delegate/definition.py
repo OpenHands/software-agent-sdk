@@ -101,7 +101,6 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name="delegate",
                 action_type=DelegateAction,
                 observation_type=DelegateObservation,
                 description=tool_description,

@@ -374,8 +374,8 @@ jobs:
                       LATEST_TAG="latest-${VARIANT}"
                       echo "Creating latest multi-arch manifest: ${IMAGE}:${LATEST_TAG}"
                       docker buildx imagetools create -t ${IMAGE}:${LATEST_TAG} \
-                        ${IMAGE}:latest-${VARIANT}-amd64 \
-                        ${IMAGE}:latest-${VARIANT}-arm64
+                        ${IMAGE}:main-${VARIANT}-amd64 \
+                        ${IMAGE}:main-${VARIANT}-arm64
                       
                       echo "Inspecting latest multi-arch manifest:"
                       docker buildx imagetools inspect ${IMAGE}:${LATEST_TAG}

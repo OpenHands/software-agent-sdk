@@ -46,7 +46,7 @@ def conversation(agent: Agent, tmp_path) -> LocalConversation:
 @pytest.fixture
 def bash_executor(conversation: LocalConversation) -> BashExecutor:
     tools_map = conversation.agent.tools_map
-    bash_tool = tools_map["execute_bash"]
+    bash_tool = tools_map["bash"]
     return cast(BashExecutor, bash_tool.executor)
 
 
@@ -73,7 +73,7 @@ def test_agent_configures_bash_tools_env_provider(
     )
 
     # Get the bash tool from agent
-    bash_tool = agent.tools_map["execute_bash"]
+    bash_tool = agent.tools_map["bash"]
 
     assert bash_tool is not None
     assert bash_tool.executor is not None

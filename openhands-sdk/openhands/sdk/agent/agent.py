@@ -45,7 +45,11 @@ from openhands.sdk.tool import (
     Action,
     Observation,
 )
-from openhands.sdk.tool.builtins import FinishAction, ThinkAction
+from openhands.sdk.tool.builtins import (
+    FinishAction,
+    FinishTool,
+    ThinkAction,
+)
 
 
 logger = get_logger(__name__)
@@ -171,13 +175,13 @@ class Agent(AgentBase):
                     include=None,
                     store=False,
                     add_security_risk_prediction=self._add_security_risk_prediction,
-                    metadata=self.llm.metadata,
+                    extra_body=self.llm.litellm_extra_body,
                 )
             else:
                 llm_response = self.llm.completion(
                     messages=_messages,
                     tools=list(self.tools_map.values()),
-                    extra_body={"metadata": self.llm.metadata},
+                    extra_body=self.llm.litellm_extra_body,
                     add_security_risk_prediction=self._add_security_risk_prediction,
                 )
         except FunctionCallValidationError as e:
@@ -447,6 +451,6 @@ class Agent(AgentBase):
         on_event(obs_event)
 
         # Set conversation state
-        if tool.name == "finish":
+        if tool.name == FinishTool.name:
             state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event

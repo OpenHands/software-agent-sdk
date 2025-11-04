@@ -6,7 +6,13 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolAnnotations,
+    ToolDefinition,
+    register_tool,
+)
 
 
 if TYPE_CHECKING:
@@ -90,7 +96,6 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="glob",
                 description=enhanced_description,
                 action_type=GlobAction,
                 observation_type=GlobObservation,
@@ -104,3 +109,7 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(GlobTool.name, GlobTool)

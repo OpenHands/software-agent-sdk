@@ -37,7 +37,6 @@ def test_tool_call_with_observation_none_result_shapes():
             return {"kind": "OCAObs", "value": 1}
 
     t = MockCoercionTool(
-        name="t",
         description="d",
         action_type=OCAAction,
         observation_type=None,
@@ -61,7 +60,6 @@ def test_tool_call_with_observation_none_result_shapes():
             return MObs(value=2)
 
     t2 = MockCoercionTool(
-        name="t2",
         description="d",
         action_type=OCAAction,
         observation_type=None,
@@ -77,7 +75,6 @@ def test_tool_call_with_observation_none_result_shapes():
             return [1, 2, 3]
 
     t3 = MockCoercionTool(
-        name="t3",
         description="d",
         action_type=OCAAction,
         observation_type=None,

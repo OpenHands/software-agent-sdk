@@ -16,7 +16,6 @@ from openhands.workspace import DockerWorkspace
 
 logger = get_logger(__name__)
 
-
 # 1) Ensure we have LLM API key
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."

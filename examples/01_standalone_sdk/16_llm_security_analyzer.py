@@ -17,7 +17,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.security.confirmation_policy import ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 
@@ -68,7 +68,7 @@ def run_until_finished_with_security(
     """
     Drive the conversation until FINISHED.
     - If WAITING_FOR_CONFIRMATION: ask the confirmer.
-        * On approve: set agent_status = IDLE (keeps original example’s behavior).
+        * On approve: set execution_status = IDLE (keeps original example’s behavior).
         * On reject: conversation.reject_pending_actions(...).
     - If WAITING but no pending actions: print warning and set IDLE (matches original).
     """
@@ -104,13 +104,11 @@ llm = LLM(
 )
 
 # Tools
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=BashTool.name,
     ),
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
 ]
 
 # Agent with security analyzer

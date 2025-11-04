@@ -5,6 +5,7 @@ Tests the core behavior: pause action execution for user confirmation.
 """
 
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -79,11 +80,12 @@ class ConfirmationTestTool(
 ):
     """Concrete tool for confirmation mode testing."""
 
+    name: ClassVar[str] = "test_tool"
+
     @classmethod
     def create(cls, conv_state=None, **params) -> Sequence["ConfirmationTestTool"]:
         return [
             cls(
-                name="test_tool",
                 description="A test tool",
                 action_type=MockConfirmationModeAction,
                 observation_type=MockConfirmationModeObservation,

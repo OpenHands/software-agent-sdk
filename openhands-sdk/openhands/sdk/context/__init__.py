@@ -8,6 +8,7 @@ from openhands.sdk.context.skills import (
     SkillValidationError,
     TaskTrigger,
     load_skills_from_dir,
+    load_user_skills,
 )
 
 
@@ -19,6 +20,7 @@ __all__ = [
     "TaskTrigger",
     "SkillKnowledge",
     "load_skills_from_dir",
+    "load_user_skills",
     "render_template",
     "SkillValidationError",
 ]

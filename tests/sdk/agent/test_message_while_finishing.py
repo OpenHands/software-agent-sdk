@@ -30,7 +30,7 @@ import os
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 
 # Ensure repo root on sys.path when running this file as a script
@@ -132,11 +132,12 @@ class SleepExecutor(ToolExecutor):
 class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
     """Sleep tool for testing message processing during finish."""
 
+    name: ClassVar[str] = "sleep"
+
     @classmethod
     def create(cls, conv_state=None, **params) -> Sequence["SleepTool"]:
         return [
             cls(
-                name="sleep_tool",
                 action_type=SleepAction,
                 observation_type=SleepObservation,
                 description="Sleep for specified duration and return a message",
@@ -188,7 +189,7 @@ class TestMessageWhileFinishing:
                 id="sleep_call_1",
                 type="function",
                 function=Function(
-                    name="sleep_tool",
+                    name="sleep",
                     arguments='{"duration": 2.0, "message": "First sleep completed"}',
                 ),
             )
@@ -231,7 +232,7 @@ class TestMessageWhileFinishing:
                 id="sleep_call_2",
                 type="function",
                 function=Function(
-                    name="sleep_tool",
+                    name="sleep",
                     arguments=f'{{"duration": 3.0, "message": "{sleep_message}"}}',
                 ),
             )
@@ -314,7 +315,7 @@ class TestMessageWhileFinishing:
 
         # Set the test start time reference for the sleep executor
         # Access the actual tool instances from the agent's _tools dict
-        sleep_tool = self.agent._tools.get("sleep_tool")
+        sleep_tool = self.agent._tools.get("sleep")
         if sleep_tool and sleep_tool.executor is not None:
             setattr(sleep_tool.executor, "test_start_time", self.test_start_time)
             setattr(sleep_tool.executor, "test_instance", self)
