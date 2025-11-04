@@ -57,7 +57,7 @@ def assert_successful_result(
 ):
     """Assert that a result is successful (no error)."""
     assert isinstance(result, FileEditorObservation)
-    assert result.error is None
+    assert not result.is_error
     if expected_path:
         assert result.path == expected_path
 
@@ -67,9 +67,14 @@ def assert_error_result(
 ):
     """Assert that a result contains an error."""
     assert isinstance(result, FileEditorObservation)
-    assert result.error is not None
+    assert result.is_error
     if expected_error_substring:
-        assert expected_error_substring in result.error
+        content_text = (
+            result.content
+            if isinstance(result.content, str)
+            else "".join([c.text for c in result.content if isinstance(c, TextContent)])
+        )
+        assert expected_error_substring in content_text
 
 
 def create_test_file(path: Path, content: str):
@@ -79,7 +84,7 @@ def create_test_file(path: Path, content: str):
 
 
 def get_output_text(result: FileEditorObservation) -> str:
-    """Extract text content from a FileEditorObservation's output."""
-    if isinstance(result.output, str):
-        return result.output
-    return "".join([c.text for c in result.output if isinstance(c, TextContent)])
+    """Extract text content from a FileEditorObservation's content."""
+    if isinstance(result.content, str):
+        return result.content
+    return "".join([c.text for c in result.content if isinstance(c, TextContent)])
