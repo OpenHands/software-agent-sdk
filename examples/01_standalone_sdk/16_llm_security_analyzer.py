@@ -68,7 +68,7 @@ def run_until_finished_with_security(
     """
     Drive the conversation until FINISHED.
     - If WAITING_FOR_CONFIRMATION: ask the confirmer.
-        * On approve: set agent_status = IDLE (keeps original example’s behavior).
+        * On approve: set execution_status = IDLE (keeps original example’s behavior).
         * On reject: conversation.reject_pending_actions(...).
     - If WAITING but no pending actions: print warning and set IDLE (matches original).
     """
