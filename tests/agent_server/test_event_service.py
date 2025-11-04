@@ -65,6 +65,40 @@ def mock_conversation_with_events():
     return conversation
 
 
+@pytest.fixture
+def mock_conversation_with_timestamped_events():
+    """Create a mock conversation with events having specific timestamps for testing."""
+    conversation = MagicMock(spec=Conversation)
+    state = MagicMock(spec=ConversationState)
+
+    # Create events with specific ISO format timestamps
+    # These timestamps are in chronological order
+    timestamps = [
+        "2025-01-01T10:00:00.000000",
+        "2025-01-01T11:00:00.000000",
+        "2025-01-01T12:00:00.000000",
+        "2025-01-01T13:00:00.000000",
+        "2025-01-01T14:00:00.000000",
+    ]
+
+    events = []
+    for index, timestamp in enumerate(timestamps, 1):
+        event = MessageEvent(
+            id=f"event{index}",
+            source="user",
+            llm_message=Message(role="user"),
+            timestamp=timestamp,
+        )
+        events.append(event)
+
+    state.events = events
+    state.__enter__ = MagicMock(return_value=state)
+    state.__exit__ = MagicMock(return_value=None)
+    conversation._state = state
+
+    return conversation
+
+
 class TestEventServiceSearchEvents:
     """Test cases for EventService.search_events method."""
 
@@ -286,6 +320,115 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 3
         assert result.next_page_id is None  # No more events available
 
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_gte_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamp__gte (greater than or equal)."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 12:00:00 (should return events 3, 4, 5)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 3
+        assert result.items[0].id == "event3"
+        assert result.items[1].id == "event4"
+        assert result.items[2].id == "event5"
+        # All returned events should have timestamp >= filter value
+        filter_iso = filter_time.isoformat()
+        for event in result.items:
+            assert event.timestamp >= filter_iso
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_lt_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamp__lt (less than)."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events < 13:00:00 (should return events 1, 2, 3)
+        filter_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.search_events(timestamp__lt=filter_time)
+
+        assert len(result.items) == 3
+        assert result.items[0].id == "event1"
+        assert result.items[1].id == "event2"
+        assert result.items[2].id == "event3"
+        # All returned events should have timestamp < filter value
+        filter_iso = filter_time.isoformat()
+        for event in result.items:
+            assert event.timestamp < filter_iso
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_range_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with both timestamp__gte and timestamp__lt."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events between 11:00:00 and 13:00:00 (should return events 2, 3)
+        gte_time = datetime(2025, 1, 1, 11, 0, 0)
+        lt_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.search_events(
+            timestamp__gte=gte_time, timestamp__lt=lt_time
+        )
+
+        assert len(result.items) == 2
+        assert result.items[0].id == "event2"
+        assert result.items[1].id == "event3"
+        # All returned events should be within the range
+        gte_iso = gte_time.isoformat()
+        lt_iso = lt_time.isoformat()
+        for event in result.items:
+            assert event.timestamp >= gte_iso
+            assert event.timestamp < lt_iso
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_with_timezone_aware(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timezone-aware datetime."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 12:00:00 UTC (should return events 3, 4, 5)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 3
+        assert result.items[0].id == "event3"
+        assert result.items[1].id == "event4"
+        assert result.items[2].id == "event5"
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_no_matches(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamps that don't match any events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 15:00:00 (should return no events)
+        filter_time = datetime(2025, 1, 1, 15, 0, 0)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 0
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_all_events(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamps that include all events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 09:00:00 (should return all events)
+        filter_time = datetime(2025, 1, 1, 9, 0, 0)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 5
+        assert result.items[0].id == "event1"
+        assert result.items[4].id == "event5"
+
 
 class TestEventServiceCountEvents:
     """Test cases for EventService.count_events method."""
@@ -343,6 +486,81 @@ class TestEventServiceCountEvents:
         # Count non-existent event type (should be 0)
         result = await event_service.count_events(kind="NonExistentEvent")
         assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_gte_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamp__gte filter."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 12:00:00 (should return 3)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_lt_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamp__lt filter."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events < 13:00:00 (should return 3)
+        filter_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.count_events(timestamp__lt=filter_time)
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_range_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with both timestamp filters."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events between 11:00:00 and 13:00:00 (should return 2)
+        gte_time = datetime(2025, 1, 1, 11, 0, 0)
+        lt_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.count_events(
+            timestamp__gte=gte_time, timestamp__lt=lt_time
+        )
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_filter_with_timezone_aware(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timezone-aware datetime."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 12:00:00 UTC (should return 3)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_filter_no_matches(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamps that don't match any events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 15:00:00 (should return 0)
+        filter_time = datetime(2025, 1, 1, 15, 0, 0)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_filter_all_events(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamps that include all events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 09:00:00 (should return 5)
+        filter_time = datetime(2025, 1, 1, 9, 0, 0)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 5
 
 
 class TestEventServiceSendMessage:
