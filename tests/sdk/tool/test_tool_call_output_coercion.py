@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import pytest
 from pydantic import Field
 
@@ -19,6 +21,14 @@ class OCAObs(Observation):
         return [TextContent(text=str(self.value))]
 
 
+class MockCoercionTool(ToolDefinition[OCAAction, OCAObs]):
+    """Concrete mock tool for output coercion testing."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["MockCoercionTool"]:
+        return [cls(**params)]
+
+
 def test_tool_call_with_observation_none_result_shapes():
     # When observation_type is None, results are wrapped/coerced to Observation
     # 1) dict -> Observation
@@ -26,7 +36,7 @@ def test_tool_call_with_observation_none_result_shapes():
         def __call__(self, action: OCAAction, conversation=None) -> dict[str, object]:
             return {"kind": "OCAObs", "value": 1}
 
-    t = ToolDefinition(
+    t = MockCoercionTool(
         name="t",
         description="d",
         action_type=OCAAction,
@@ -50,7 +60,7 @@ def test_tool_call_with_observation_none_result_shapes():
         def __call__(self, action: OCAAction, conversation=None) -> MObs:
             return MObs(value=2)
 
-    t2 = ToolDefinition(
+    t2 = MockCoercionTool(
         name="t2",
         description="d",
         action_type=OCAAction,
@@ -66,7 +76,7 @@ def test_tool_call_with_observation_none_result_shapes():
         def __call__(self, action: OCAAction, conversation=None) -> list[int]:
             return [1, 2, 3]
 
-    t3 = ToolDefinition(
+    t3 = MockCoercionTool(
         name="t3",
         description="d",
         action_type=OCAAction,

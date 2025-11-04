@@ -77,6 +77,66 @@ class BlockingExecutor(
         return PauseFunctionalityMockObservation(result=f"Executed: {action.command}")
 
 
+class TestExecutor(
+    ToolExecutor[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+):
+    """Test executor for pause functionality testing."""
+
+    def __call__(
+        self,
+        action: PauseFunctionalityMockAction,
+        conversation: BaseConversation | None = None,
+    ) -> PauseFunctionalityMockObservation:
+        return PauseFunctionalityMockObservation(result=f"Executed: {action.command}")
+
+
+class PauseFunctionalityTestTool(
+    ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+):
+    """Concrete tool for pause functionality testing."""
+
+    @classmethod
+    def create(
+        cls, conv_state=None, **params
+    ) -> Sequence["PauseFunctionalityTestTool"]:
+        return [
+            cls(
+                name="test_tool",
+                description="A test tool",
+                action_type=PauseFunctionalityMockAction,
+                observation_type=PauseFunctionalityMockObservation,
+                executor=TestExecutor(),
+            )
+        ]
+
+
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+    """Factory function for creating test tools."""
+    return PauseFunctionalityTestTool.create(conv_state, **params)
+
+
+class BlockingTestTool(
+    ToolDefinition[PauseFunctionalityMockAction, PauseFunctionalityMockObservation]
+):
+    """Concrete tool for blocking pause testing."""
+
+    @classmethod
+    def create(
+        cls, conv_state=None, step_entered=None, **params
+    ) -> Sequence["BlockingTestTool"]:
+        if step_entered is None:
+            raise ValueError("step_entered is required for BlockingTestTool")
+        return [
+            cls(
+                name="test_tool",
+                description="Blocking tool for pause test",
+                action_type=PauseFunctionalityMockAction,
+                observation_type=PauseFunctionalityMockObservation,
+                executor=BlockingExecutor(step_entered),
+            )
+        ]
+
+
 class TestPauseFunctionality:
     """Test suite for pause functionality."""
 
@@ -86,31 +146,6 @@ class TestPauseFunctionality:
         self.llm: LLM = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-
-        class TestExecutor(
-            ToolExecutor[
-                PauseFunctionalityMockAction, PauseFunctionalityMockObservation
-            ]
-        ):
-            def __call__(
-                self,
-                action: PauseFunctionalityMockAction,
-                conversation: BaseConversation | None = None,
-            ) -> PauseFunctionalityMockObservation:
-                return PauseFunctionalityMockObservation(
-                    result=f"Executed: {action.command}"
-                )
-
-        def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test tool",
-                    action_type=PauseFunctionalityMockAction,
-                    observation_type=PauseFunctionalityMockObservation,
-                    executor=TestExecutor(),
-                )
-            ]
 
         register_tool("test_tool", _make_tool)
 
@@ -309,15 +344,9 @@ class TestPauseFunctionality:
         step_entered = threading.Event()
 
         def _make_blocking_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="Blocking tool for pause test",
-                    action_type=PauseFunctionalityMockAction,
-                    observation_type=PauseFunctionalityMockObservation,
-                    executor=BlockingExecutor(step_entered),
-                )
-            ]
+            return BlockingTestTool.create(
+                conv_state, step_entered=step_entered, **kwargs
+            )
 
         register_tool("test_tool", _make_blocking_tool)
         agent = Agent(

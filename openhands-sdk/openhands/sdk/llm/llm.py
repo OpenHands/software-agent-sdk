@@ -26,7 +26,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
-    from openhands.sdk.tool.tool import ToolBase
+    from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -101,7 +101,23 @@ SERVICE_ID_DEPRECATION_MSG = (
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
-    """Refactored LLM: simple `completion()`, centralized Telemetry, tiny helpers."""
+    """Language model interface for OpenHands agents.
+
+    The LLM class provides a unified interface for interacting with various
+    language models through the litellm library. It handles model configuration,
+    API authentication,
+    retry logic, and tool calling capabilities.
+
+    Example:
+        >>> from openhands.sdk import LLM
+        >>> from pydantic import SecretStr
+        >>> llm = LLM(
+        ...     model="claude-sonnet-4-20250514",
+        ...     api_key=SecretStr("your-api-key"),
+        ...     usage_id="my-agent"
+        ... )
+        >>> # Use with agent or conversation
+    """
 
     # =========================================================================
     # Config fields
@@ -386,6 +402,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @property
     def metrics(self) -> Metrics:
+        """Get usage metrics for this LLM instance.
+
+        Returns:
+            Metrics object containing token usage, costs, and other statistics.
+
+        Example:
+            >>> cost = llm.metrics.accumulated_cost
+            >>> print(f"Total cost: ${cost}")
+        """
         assert self._metrics is not None, (
             "Metrics should be initialized after model validation"
         )
@@ -398,14 +423,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def completion(
         self,
         messages: list[Message],
-        tools: Sequence[ToolBase] | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         **kwargs,
     ) -> LLMResponse:
-        """Single entry point for LLM completion.
+        """Generate a completion from the language model.
 
-        Normalize → (maybe) mock tools → transport → postprocess.
+        This is the method for getting responses from the model via Completion API.
+        It handles message formatting, tool calling, and response processing.
+
+        Returns:
+            LLMResponse containing the model's response and metadata.
+
+        Raises:
+            ValueError: If streaming is requested (not supported).
+
+        Example:
+            >>> from openhands.sdk.llm import Message, TextContent
+            >>> messages = [Message(role="user", content=[TextContent(text="Hello")])]
+            >>> response = llm.completion(messages)
+            >>> print(response.content)
         """
         # Check if streaming is requested
         if kwargs.get("stream", False):
@@ -522,7 +560,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def responses(
         self,
         messages: list[Message],
-        tools: Sequence[ToolBase] | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
         _return_metrics: bool = False,
