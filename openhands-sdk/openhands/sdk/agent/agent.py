@@ -28,7 +28,10 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
-from openhands.sdk.llm.exceptions import FunctionCallValidationError
+from openhands.sdk.llm.exceptions import (
+    FunctionCallValidationError,
+    LLMContextWindowExceedError,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
@@ -168,22 +171,19 @@ class Agent(AgentBase):
             )
             on_event(error_message)
             return
-        except Exception as e:
-            # If there is a condenser registered and the exception is a context window
-            # exceeded, we can recover by triggering a condensation request.
+        except LLMContextWindowExceedError:
+            # If condenser is available and handles requests, trigger condensation
             if (
                 self.condenser is not None
                 and self.condenser.handles_condensation_requests()
-                and self.llm.is_context_window_exceeded_exception(e)
             ):
                 logger.warning(
                     "LLM raised context window exceeded error, triggering condensation"
                 )
                 on_event(CondensationRequest())
                 return
-            # If the error isn't recoverable, keep propagating it up the stack.
-            else:
-                raise e
+            # No condenser available; re-raise for client handling
+            raise
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
