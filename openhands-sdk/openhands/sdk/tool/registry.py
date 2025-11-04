@@ -3,7 +3,7 @@ from collections.abc import Callable, Sequence
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
-from openhands.sdk import get_logger
+from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolDefinition
 
