@@ -3,8 +3,6 @@ import uuid
 from collections.abc import Mapping
 from pathlib import Path
 
-from opentelemetry.trace import Span
-
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -50,7 +48,6 @@ class LocalConversation(BaseConversation):
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
-    _span: Span | None
 
     def __init__(
         self,

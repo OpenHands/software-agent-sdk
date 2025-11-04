@@ -1,5 +1,4 @@
 from collections.abc import Callable
-from contextvars import Context, Token
 from typing import (
     Any,
     Literal,
@@ -119,14 +118,14 @@ class SpanManager:
     """Manages a stack of active spans and their associated tokens."""
 
     def __init__(self):
-        self._stack: list[tuple[trace.Span, Token[Context] | None]] = []
+        self._stack: list[trace.Span] = []
 
     def start_active_span(self, name: str, session_id: str | None = None) -> None:
         """Start a new active span and push it to the stack."""
-        span, token = Laminar.start_active_span(name)
+        span = Laminar.start_active_span(name)
         if session_id:
             Laminar.set_trace_session_id(session_id)
-        self._stack.append((span, token))
+        self._stack.append(span)
 
     def end_active_span(self) -> None:
         """End the most recent active span by popping it from the stack."""
@@ -134,26 +133,34 @@ class SpanManager:
             logger.warning("Attempted to end active span, but stack is empty")
             return
 
-        span, token = self._stack.pop()
-        if token is not None:
-            Laminar.end_active_span(span, token)
-        elif span and span.is_recording():
-            span.end()
+        try:
+            span = self._stack.pop()
+            if span and span.is_recording():
+                span.end()
+        except IndexError:
+            logger.warning("Attempted to end active span, but stack is empty")
+            return
 
 
-# Global instance for convenience
-_span_manager = SpanManager()
+_span_manager: SpanManager | None = None
+
+
+def _get_span_manager() -> SpanManager:
+    global _span_manager
+    if _span_manager is None:
+        _span_manager = SpanManager()
+    return _span_manager
 
 
 def start_active_span(name: str, session_id: str | None = None) -> None:
     """Start a new active span using the global span manager."""
-    _span_manager.start_active_span(name, session_id)
+    _get_span_manager().start_active_span(name, session_id)
 
 
 def end_active_span() -> None:
     """End the most recent active span using the global span manager."""
     try:
-        _span_manager.end_active_span()
+        _get_span_manager().end_active_span()
     except Exception:
         logger.debug("Error ending active span")
         pass
