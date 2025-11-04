@@ -11,7 +11,7 @@ import json
 import re
 import sys
 from collections.abc import Iterable
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from litellm import ChatCompletionToolParam, ChatCompletionToolParamFunctionChunk
 
@@ -41,6 +41,11 @@ LLM_BASED_EDIT_TOOL_NAME = "edit_file"
 TASK_TRACKER_TOOL_NAME = "task_tracker"
 
 # Inspired by: https://docs.together.ai/docs/llama-3-function-calling#function-calling-w-llama-31-70b
+MISSING_DESCRIPTION_PLACEHOLDER = "No description provided"
+SCHEMA_INDENT_STEP = 2
+SCHEMA_UNION_KEYS = ("anyOf", "oneOf", "allOf")
+
+
 system_message_suffix_TEMPLATE = """
 You have access to the following functions:
 
@@ -345,13 +350,13 @@ Let me check the current task list first:
   {
     "title": "Initialize repo",
     "status": "done",
-    "notes": "Repository created and README added.",
+    "notes": "Repository created and README added."
   },
   {
     "title": "Implement nested param parsing",
     "status": "in_progress",
-    "notes": "Add recursive parsing for array-typed parameters.",
-  },
+    "notes": "Add recursive parsing for array-typed parameters."
+  }
 ]
 </parameter>
 </function>
@@ -495,8 +500,7 @@ def _summarize_schema_type(schema: object | None) -> str:
     if not isinstance(schema, dict):
         return "unknown" if schema is None else str(schema)
 
-    union_keys = ("anyOf", "oneOf", "allOf")
-    for key in union_keys:
+    for key in SCHEMA_UNION_KEYS:
         if key in schema:
             return " or ".join(_summarize_schema_type(option) for option in schema[key])
 
@@ -518,84 +522,124 @@ def _summarize_schema_type(schema: object | None) -> str:
     return "unknown"
 
 
+def _indent(indent: int) -> str:
+    return " " * indent
+
+
+def _nested_indent(indent: int, levels: int = 1) -> int:
+    return indent + SCHEMA_INDENT_STEP * levels
+
+
+def _get_description(schema: dict[str, object] | None) -> str:
+    """
+    Extract description from schema, or return placeholder if missing.
+    """
+    if not isinstance(schema, dict):
+        return MISSING_DESCRIPTION_PLACEHOLDER
+    description = schema.get("description")
+    if isinstance(description, str) and description.strip():
+        return description
+    return MISSING_DESCRIPTION_PLACEHOLDER
+
+
+def _format_union_details(schema: dict[str, object], indent: int) -> list[str] | None:
+    for key in SCHEMA_UNION_KEYS:
+        options = schema.get(key)
+        if not isinstance(options, list):
+            continue
+        lines = [f"{_indent(indent)}{key} options:"]
+        for option in options:
+            option_type = _summarize_schema_type(option)
+            option_line = f"{_indent(_nested_indent(indent))}- {option_type}"
+            option_line += (
+                f": {_get_description(option if isinstance(option, dict) else None)}"
+            )
+            lines.append(option_line)
+            lines.extend(_format_schema_detail(option, _nested_indent(indent, 2)))
+        return lines
+    return None
+
+
+def _format_array_details(schema: dict[str, object], indent: int) -> list[str]:
+    lines = [f"{_indent(indent)}Array items:"]
+    items = schema.get("items")
+    if isinstance(items, list):
+        for index, item_schema in enumerate(items):
+            item_type = _summarize_schema_type(item_schema)
+            lines.append(
+                f"{_indent(_nested_indent(indent))}- index {index}: {item_type}"
+            )
+            lines.extend(_format_schema_detail(item_schema, _nested_indent(indent, 2)))
+    elif isinstance(items, dict):
+        lines.append(
+            f"{_indent(_nested_indent(indent))}Type: {_summarize_schema_type(items)}"
+        )
+        lines.extend(_format_schema_detail(items, _nested_indent(indent, 2)))
+    else:
+        lines.append(f"{_indent(_nested_indent(indent))}Type: unknown")
+    return lines
+
+
+def _format_additional_properties(
+    additional_props: object | None, indent: int
+) -> list[str]:
+    if isinstance(additional_props, dict):
+        line = (
+            f"{_indent(indent)}Additional properties allowed: "
+            f"{_summarize_schema_type(additional_props)}"
+        )
+        lines = [line]
+        lines.extend(_format_schema_detail(additional_props, _nested_indent(indent)))
+        return lines
+    if additional_props is True:
+        return [f"{_indent(indent)}Additional properties allowed."]
+    if additional_props is False:
+        return [f"{_indent(indent)}Additional properties not allowed."]
+    return []
+
+
+def _format_object_details(schema: dict[str, Any], indent: int) -> list[str]:
+    lines: list[str] = []
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    if isinstance(properties, dict) and properties:
+        lines.append(f"{_indent(indent)}Object properties:")
+        for name, prop in properties.items():
+            prop_type = _summarize_schema_type(prop)
+            required_flag = "required" if name in required else "optional"
+            prop_desc = _get_description(prop if isinstance(prop, dict) else None)
+            lines.append(
+                f"{_indent(_nested_indent(indent))}- {name} ({prop_type},"
+                f" {required_flag}): {prop_desc}"
+            )
+            lines.extend(_format_schema_detail(prop, _nested_indent(indent, 2)))
+    lines.extend(
+        _format_additional_properties(schema.get("additionalProperties"), indent)
+    )
+    return lines
+
+
 def _format_schema_detail(schema: object | None, indent: int = 4) -> list[str]:
-    """
-    Recursively describe arrays, objects, unions, and additional properties.
-    """
+    """Recursively describe arrays, objects, unions, and additional properties."""
     if not isinstance(schema, dict):
         return []
 
-    indent_str = " " * indent
-    lines: list[str] = []
-
-    # Handle union types
-    union_keys = ("anyOf", "oneOf", "allOf")
-    for key in union_keys:
-        if key in schema:
-            lines.append(f"{indent_str}{key} options:")
-            for option in schema[key]:
-                option_type = _summarize_schema_type(option)
-                option_line = f"{' ' * (indent + 2)}- {option_type}"
-                option_desc = (
-                    option.get("description") if isinstance(option, dict) else None
-                )
-                if option_desc:
-                    option_line += f": {option_desc}"
-                lines.append(option_line)
-                lines.extend(_format_schema_detail(option, indent + 4))
-            return lines
+    union_lines = _format_union_details(schema, indent)
+    if union_lines is not None:
+        return union_lines
 
     schema_type = schema.get("type")
     if isinstance(schema_type, list):
-        lines.append(
-            f"{indent_str}Allowed types: {', '.join(str(t) for t in schema_type)}"
-        )
-        return lines
+        allowed_types = ", ".join(str(t) for t in schema_type)
+        return [f"{_indent(indent)}Allowed types: {allowed_types}"]
 
-    # Handle array type
     if schema_type == "array":
-        items = schema.get("items")
-        lines.append(f"{indent_str}Array items:")
-        if isinstance(items, list):
-            for index, item_schema in enumerate(items):
-                item_type = _summarize_schema_type(item_schema)
-                lines.append(f"{' ' * (indent + 2)}- index {index}: {item_type}")
-                lines.extend(_format_schema_detail(item_schema, indent + 4))
-        elif isinstance(items, dict):
-            lines.append(f"{' ' * (indent + 2)}Type: {_summarize_schema_type(items)}")
-            lines.extend(_format_schema_detail(items, indent + 4))
-        else:
-            lines.append(f"{' ' * (indent + 2)}Type: unknown")
-        return lines
+        return _format_array_details(schema, indent)
 
     if schema_type == "object":
-        properties = schema.get("properties", {})
-        required = set(schema.get("required", []))
-        if isinstance(properties, dict) and properties:
-            lines.append(f"{indent_str}Object properties:")
-            for name, prop in properties.items():
-                prop_type = _summarize_schema_type(prop)
-                required_flag = "required" if name in required else "optional"
-                prop_desc = prop.get("description", "No description provided")
-                lines.append(
-                    f"{' ' * (indent + 2)}- {name} ({prop_type}, {required_flag}):"
-                    f" {prop_desc}"
-                )
-                lines.extend(_format_schema_detail(prop, indent + 4))
-        additional_props = schema.get("additionalProperties")
-        if isinstance(additional_props, dict):
-            lines.append(
-                f"{indent_str}Additional properties allowed: "
-                f"{_summarize_schema_type(additional_props)}"
-            )
-            lines.extend(_format_schema_detail(additional_props, indent + 2))
-        elif additional_props is True:
-            lines.append(f"{indent_str}Additional properties allowed.")
-        elif additional_props is False:
-            lines.append(f"{indent_str}Additional properties not allowed.")
-        return lines
+        return _format_object_details(schema, indent)
 
-    return lines
+    return []
 
 
 def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
@@ -619,7 +663,9 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                 param_status = "required" if is_required else "optional"
                 param_type = _summarize_schema_type(param_info)
 
-                desc = param_info.get("description", "No description provided")
+                desc = _get_description(
+                    param_info if isinstance(param_info, dict) else None
+                )
 
                 if "enum" in param_info:
                     enum_values = ", ".join(f"`{v}`" for v in param_info["enum"])
