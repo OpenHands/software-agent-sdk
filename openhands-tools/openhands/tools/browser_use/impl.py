@@ -35,11 +35,27 @@ def _check_chromium_available() -> str | None:
         if path := shutil.which(binary):
             return path
 
+    # Check common Windows installation paths
+    if os.name == "nt":
+        windows_chrome_paths = [
+            Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "Google" / "Chrome" / "Application" / "chrome.exe",
+            Path(os.environ.get("PROGRAMFILES", "C:\\Program Files")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+            Path(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)")) / "Microsoft" / "Edge" / "Application" / "msedge.exe",
+        ]
+        for chrome_path in windows_chrome_paths:
+            if chrome_path.exists():
+                return str(chrome_path)
+
     # Check Playwright-installed Chromium
     playwright_cache_candidates = [
-        Path.home() / ".cache" / "ms-playwright",
-        Path.home() / "Library" / "Caches" / "ms-playwright",
+        Path.home() / ".cache" / "ms-playwright",  # Linux
+        Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
     ]
+    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
+        playwright_cache_candidates.append(Path(os.environ["LOCALAPPDATA"]) / "ms-playwright")
+    
     for playwright_cache in playwright_cache_candidates:
         if playwright_cache.exists():
             chromium_dirs = list(playwright_cache.glob("chromium-*"))
