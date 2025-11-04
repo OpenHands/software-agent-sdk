@@ -11,7 +11,7 @@ from openhands.sdk.tool import ToolExecutor
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation import LocalConversation
 from openhands.tools.glob.definition import GlobAction, GlobObservation
 from openhands.tools.utils import (
     _check_ripgrep_available,
@@ -42,7 +42,7 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
     def __call__(
         self,
         action: GlobAction,
-        conversation: "BaseConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> GlobObservation:
         """Execute glob pattern matching using ripgrep or fallback to Python glob.
 

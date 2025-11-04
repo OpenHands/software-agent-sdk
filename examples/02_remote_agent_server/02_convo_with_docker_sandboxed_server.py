@@ -16,14 +16,13 @@ from openhands.workspace import DockerWorkspace
 
 logger = get_logger(__name__)
 
-
 # 1) Ensure we have LLM API key
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -89,7 +88,7 @@ with DockerWorkspace(
         logger.info("🚀 Running conversation...")
         conversation.run()
         logger.info("✅ First task completed!")
-        logger.info(f"Agent status: {conversation.state.agent_status}")
+        logger.info(f"Agent status: {conversation.state.execution_status}")
 
         # Wait for events to settle (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
@@ -101,6 +100,10 @@ with DockerWorkspace(
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
         logger.info("✅ Second task completed!")
+
+        # Report cost (must be before conversation.close())
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         print("\n🧹 Cleaning up conversation...")
         conversation.close()

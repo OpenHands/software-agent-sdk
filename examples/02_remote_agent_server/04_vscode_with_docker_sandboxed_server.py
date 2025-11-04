@@ -12,13 +12,12 @@ from openhands.workspace import DockerWorkspace
 
 logger = get_logger(__name__)
 
-
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )

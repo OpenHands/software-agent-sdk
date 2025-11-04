@@ -4,7 +4,6 @@ import tempfile
 from pathlib import Path
 
 import pytest
-from pydantic import ValidationError
 
 from openhands.sdk.context import (
     KeywordTrigger,
@@ -81,6 +80,7 @@ def test_knowledge_agent():
     assert agent.match_trigger("running a testing") == "testing"
     assert agent.match_trigger("using pytest") == "pytest"
     assert agent.match_trigger("no match here") is None
+    assert isinstance(agent.trigger, KeywordTrigger)
     assert agent.trigger.keywords == ["testing", "pytest"]
 
 
@@ -488,9 +488,9 @@ This is a repo skill with invalid MCP tools configuration.
     test_path = Path("invalid-mcp-tools.md")
 
     # Loading should raise an error (either SkillValidationError or AttributeError)
-    with pytest.raises(ValidationError) as excinfo:
+    with pytest.raises(SkillValidationError) as excinfo:
         Skill.load(test_path, file_content=skill_content)
 
     # Check that the error message contains helpful information
     error_msg = str(excinfo.value)
-    assert "Input should be a valid dictionary" in error_msg
+    assert "mcp_tools must be a dictionary or None" in error_msg

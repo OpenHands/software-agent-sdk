@@ -2,13 +2,14 @@
 
 from collections.abc import Mapping
 
-from pydantic import SecretStr
+from pydantic import Field, PrivateAttr, SecretStr
 
 from openhands.sdk.conversation.secret_source import (
     SecretSource,
     StaticSecret,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.models import OpenHandsModel
 
 
 logger = get_logger(__name__)
@@ -16,23 +17,26 @@ logger = get_logger(__name__)
 SecretValue = str | SecretSource
 
 
-class SecretsManager:
+class SecretRegistry(OpenHandsModel):
     """Manages secrets and injects them into bash commands when needed.
 
-    The secrets manager stores a mapping of secret keys to callable functions
+    The secret registry stores a mapping of secret keys to SecretSources
     that retrieve the actual secret values. When a bash command is about to be
     executed, it scans the command for any secret keys and injects the corresponding
     environment variables.
+
+    Secret sources will redact / encrypt their sensitive values as appropriate when
+    serializing, depending on the content of the context. If a context is present
+    and contains a 'cipher' object, this is used for encryption. If it contains a
+    boolean 'expose_secrets' flag set to True, secrets are dunped in plain text.
+    Otherwise secrets are redacted.
 
     Additionally, it tracks the latest exported values to enable consistent masking
     even when callable secrets fail on subsequent calls.
     """
 
-    def __init__(self) -> None:
-        """Initialize an empty secrets manager."""
-        self._secret_sources: dict[str, SecretSource] = {}
-        # Track the latest successfully exported values for masking
-        self._exported_values: dict[str, str] = {}
+    secret_sources: dict[str, SecretSource] = Field(default_factory=dict)
+    _exported_values: dict[str, str] = PrivateAttr(default_factory=dict)
 
     def update_secrets(
         self,
@@ -45,7 +49,7 @@ class SecretsManager:
                     or callable functions that return string values
         """
         secret_sources = {name: _wrap_secret(value) for name, value in secrets.items()}
-        self._secret_sources.update(secret_sources)
+        self.secret_sources.update(secret_sources)
 
     def find_secrets_in_text(self, text: str) -> set[str]:
         """Find all secret keys mentioned in the given text.
@@ -57,7 +61,7 @@ class SecretsManager:
             Set of secret keys found in the text
         """
         found_keys = set()
-        for key in self._secret_sources.keys():
+        for key in self.secret_sources.keys():
             if key.lower() in text.lower():
                 found_keys.add(key)
         return found_keys
@@ -81,7 +85,7 @@ class SecretsManager:
         env_vars = {}
         for key in found_secrets:
             try:
-                source = self._secret_sources[key]
+                source = self.secret_sources[key]
                 value = source.get_value()
                 if value:
                     env_vars[key] = value

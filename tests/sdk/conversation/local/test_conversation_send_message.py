@@ -1,7 +1,7 @@
 from pydantic import SecretStr
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.conversation import Conversation
+from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.conversation.types import ConversationCallbackType
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
@@ -24,7 +24,7 @@ class SendMessageDummyAgent(AgentBase):
         on_event(event)
 
     def step(
-        self, state: ConversationState, on_event: ConversationCallbackType
+        self, conversation: LocalConversation, on_event: ConversationCallbackType
     ) -> None:
         on_event(
             MessageEvent(

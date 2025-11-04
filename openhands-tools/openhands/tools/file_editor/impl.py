@@ -5,7 +5,7 @@ from openhands.sdk.tool import ToolExecutor
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation import LocalConversation
 from openhands.tools.file_editor.definition import (
     CommandLiteral,
     FileEditorAction,
@@ -37,7 +37,7 @@ class FileEditorExecutor(ToolExecutor):
     def __call__(
         self,
         action: FileEditorAction,
-        conversation: "BaseConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> FileEditorObservation:
         # Enforce allowed_edits_files restrictions
         if self.allowed_edits_files is not None and action.command != "view":

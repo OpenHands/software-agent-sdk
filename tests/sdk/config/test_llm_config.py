@@ -36,7 +36,7 @@ def test_llm_config_defaults():
     assert config.caching_prompt is True
     assert config.log_completions is False
     assert config.custom_tokenizer is None
-    assert config.native_tool_calling is None
+    assert config.native_tool_calling is True
     assert config.reasoning_effort == "high"  # Default for non-Gemini models
     assert config.seed is None
     assert config.safety_settings is None
@@ -336,7 +336,6 @@ def test_llm_config_optional_fields():
         disable_vision=None,
         disable_stop_word=None,
         custom_tokenizer=None,
-        native_tool_calling=None,
         reasoning_effort=None,
         seed=None,
         safety_settings=None,
@@ -364,7 +363,6 @@ def test_llm_config_optional_fields():
     assert config.disable_vision is None
     assert config.disable_stop_word is None
     assert config.custom_tokenizer is None
-    assert config.native_tool_calling is None
     assert (
         config.reasoning_effort == "high"
     )  # Even when set to None, post_init sets it to "high" for non-Gemini models

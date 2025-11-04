@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from pydantic import PrivateAttr
 
+from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
 
@@ -91,5 +92,37 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
             FileOperationResult: Result with success status and metadata
         """
         generator = self._file_download_generator(source_path, destination_path)
+        result = await self._execute(generator)
+        return result
+
+    async def git_changes(self, path: str | Path) -> list[GitChange]:
+        """Get the git changes for the repository at the path given.
+
+        Args:
+            path: Path to the git repository
+
+        Returns:
+            list[GitChange]: List of changes
+
+        Raises:
+            Exception: If path is not a git repository or getting changes failed
+        """
+        generator = self._git_changes_generator(path)
+        result = await self._execute(generator)
+        return result
+
+    async def git_diff(self, path: str | Path) -> GitDiff:
+        """Get the git diff for the file at the path given.
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            GitDiff: Git diff
+
+        Raises:
+            Exception: If path is not a git repository or getting diff failed
+        """
+        generator = self._git_diff_generator(path)
         result = await self._execute(generator)
         return result

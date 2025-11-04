@@ -206,7 +206,7 @@ def test_agent_error_event_visualize():
     event = AgentErrorEvent(
         error="Failed to execute command: permission denied",
         tool_call_id="call_err_1",
-        tool_name="execute_bash",
+        tool_name="bash",
     )
 
     result = event.visualize
@@ -333,11 +333,51 @@ def test_metrics_formatting():
     # Test the metrics subtitle formatting
     subtitle = visualizer._format_metrics_subtitle()
     assert subtitle is not None
-    assert "1.50K" in subtitle  # Input tokens abbreviated
+    assert "1.5K" in subtitle  # Input tokens abbreviated (trailing zeros removed)
     assert "500" in subtitle  # Output tokens
     assert "20.00%" in subtitle  # Cache hit rate
     assert "200" in subtitle  # Reasoning tokens
     assert "0.0234" in subtitle  # Cost
+
+
+def test_metrics_abbreviation_formatting():
+    """Test number abbreviation with various edge cases."""
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    test_cases = [
+        # (input_tokens, expected_abbr)
+        (999, "999"),  # Below threshold
+        (1000, "1K"),  # Exact K boundary, trailing zeros removed
+        (1500, "1.5K"),  # K with one decimal, trailing zero removed
+        (89080, "89.08K"),  # K with two decimals (regression test for bug)
+        (89000, "89K"),  # K with trailing zeros removed
+        (1000000, "1M"),  # Exact M boundary
+        (1234567, "1.23M"),  # M with decimals
+        (1000000000, "1B"),  # Exact B boundary
+    ]
+
+    for tokens, expected in test_cases:
+        stats = ConversationStats()
+        metrics = Metrics(model_name="test-model")
+        metrics.add_token_usage(
+            prompt_tokens=tokens,
+            completion_tokens=100,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            reasoning_tokens=0,
+            context_window=8000,
+            response_id="test",
+        )
+        stats.usage_to_metrics["test"] = metrics
+
+        visualizer = ConversationVisualizer(conversation_stats=stats)
+        subtitle = visualizer._format_metrics_subtitle()
+
+        assert subtitle is not None, f"Failed for {tokens}"
+        assert expected in subtitle, (
+            f"Expected '{expected}' in subtitle for {tokens}, got: {subtitle}"
+        )
 
 
 def test_event_base_fallback_visualize():

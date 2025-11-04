@@ -41,7 +41,8 @@ jobs:
                 Find all open PRs where:
                 1. The PR is waiting for review (there are no open review comments or change requests)
                 2. The PR is in a "clean" state (CI passing, no merge conflicts)
-                3. The PR has had no activity (comments, commits, reviews) for more than 3 days.
+                3. The PR is not marked as draft (draft: false)
+                4. The PR has had no activity (comments, commits, reviews) for more than 3 days.
 
                 In this case, send a message to the reviewers:
                 [Automatic Post]: This PR seems to be currently waiting for review.
@@ -50,7 +51,7 @@ jobs:
                 # Need Author Action
 
                 Find all open PRs where the most recent change or comment was made on the pull
-                request more than 5 days ago. Then do the following in order:
+                request more than 5 days ago (use 14 days if the PR is marked as draft).
 
                 And send a message to the author:
 
@@ -60,13 +61,36 @@ jobs:
 
                 # Need Reviewers
 
-                Find all open pull requests that:
-                1. Have no reviewers assigned to them.
-                2. Are not marked as draft.
-                3. Were created more than 1 day ago.
-                4. CI is passing and there are no merge conflicts.
+                Find all open pull requests that TRULY have NO reviewers assigned. To do this correctly:
 
-                For each of these pull requests, read the git blame information for the files,
+                1. Use the GitHub API to fetch PR details: GET /repos/{owner}/{repo}/pulls/{pull_number}
+                2. Check the "requested_reviewers" and "requested_teams" arrays
+                3. ALSO check for submitted reviews: GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+                4. A PR needs reviewers ONLY if ALL of these are true:
+                   - The "requested_reviewers" array is empty (no pending review requests)
+                   - The "requested_teams" array is empty (no pending team review requests)
+                   - The reviews array is empty (no reviews have been submitted yet)
+                5. IMPORTANT: If ANY of these has entries, SKIP this PR - it already has or had reviewers!
+
+                Example API responses showing a PR that DOES NOT need reviewers (skip this):
+
+                Case 1 - Has requested reviewers:
+                GET /pulls/{number}: {"requested_reviewers": [{"login": "someuser"}], "requested_teams": []}
+
+                Case 2 - Has submitted reviews (even if requested_reviewers is empty):
+                GET /pulls/{number}: {"requested_reviewers": [], "requested_teams": []}
+                GET /pulls/{number}/reviews: [{"user": {"login": "someuser"}, "state": "COMMENTED"}]
+
+                Example API response showing a PR that DOES need reviewers (process this):
+                GET /pulls/{number}: {"requested_reviewers": [], "requested_teams": []}
+                GET /pulls/{number}/reviews: []
+
+                Additional criteria for PRs that need reviewers:
+                1. Are not marked as draft (draft: false)
+                2. Were created more than 1 day ago
+                3. CI is passing and there are no merge conflicts
+
+                For each PR that truly has NO reviewers, read the git blame information for the files,
                 and find the most recent and active contributors to the file/location of the changes.
                 Assign one of these people as a reviewer, but try not to assign too many reviews to
                 any single person. Add this message:
@@ -75,7 +99,7 @@ jobs:
                 Thanks in advance for the help!
 
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-            LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+            LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -154,7 +178,7 @@ jobs:
                   fi
 
             - name: Upload logs as artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               if: always()
               with:
                   name: openhands-task-logs

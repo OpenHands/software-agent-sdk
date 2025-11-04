@@ -21,12 +21,12 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout agent-sdk repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   fetch-depth: 0
 
             - name: Checkout docs repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   repository: OpenHands/docs
                   path: docs

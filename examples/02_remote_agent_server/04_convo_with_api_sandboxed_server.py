@@ -34,7 +34,7 @@ assert api_key, "LLM_API_KEY required"
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -43,7 +43,6 @@ runtime_api_key = os.getenv("RUNTIME_API_KEY")
 if not runtime_api_key:
     logger.error("RUNTIME_API_KEY required")
     exit(1)
-
 
 with APIRemoteWorkspace(
     runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),

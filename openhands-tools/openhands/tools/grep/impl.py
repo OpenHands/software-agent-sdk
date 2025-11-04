@@ -9,7 +9,7 @@ from openhands.sdk.tool import ToolExecutor
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import BaseConversation
+    from openhands.sdk.conversation import LocalConversation
 from openhands.tools.grep.definition import GrepAction, GrepObservation
 from openhands.tools.utils import (
     _check_ripgrep_available,
@@ -40,7 +40,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
     def __call__(
         self,
         action: GrepAction,
-        conversation: "BaseConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ) -> GrepObservation:
         """Execute grep content search using ripgrep or fallback to regular grep.
 

@@ -5,10 +5,10 @@ from typing import TYPE_CHECKING, Protocol
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.secrets_manager import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.llm.llm import LLM
-from openhands.sdk.llm.message import Message, content_to_str
+from openhands.sdk.llm.message import Message
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -18,7 +18,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.conversation.state import AgentExecutionStatus
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
 
 
 class ConversationStateProtocol(Protocol):
@@ -35,8 +35,8 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def agent_status(self) -> "AgentExecutionStatus":
-        """The current agent execution status."""
+    def execution_status(self) -> "ConversationExecutionStatus":
+        """The current conversation execution status."""
         ...
 
     @property
@@ -69,6 +69,13 @@ class ConversationStateProtocol(Protocol):
 
 
 class BaseConversation(ABC):
+    """Abstract base class for conversation implementations.
+
+    This class defines the interface that all conversation implementations must follow.
+    Conversations manage the interaction between users and agents, handling message
+    exchange, execution control, and state management.
+    """
+
     @property
     @abstractmethod
     def id(self) -> ConversationID: ...
@@ -82,13 +89,23 @@ class BaseConversation(ABC):
     def conversation_stats(self) -> ConversationStats: ...
 
     @abstractmethod
-    def send_message(self, message: str | Message) -> None: ...
+    def send_message(self, message: str | Message) -> None:
+        """Send a message to the agent."""
+        ...
 
     @abstractmethod
-    def run(self) -> None: ...
+    def run(self) -> None:
+        """Execute the agent to process messages and perform actions.
+
+        This method runs the agent until it finishes processing the current
+        message or reaches the maximum iteration limit.
+        """
+        ...
 
     @abstractmethod
-    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None: ...
+    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
+        """Set the confirmation policy for the conversation."""
+        ...
 
     @property
     def confirmation_policy_active(self) -> bool:
@@ -145,46 +162,6 @@ class BaseConversation(ABC):
     ) -> str:
         """Get the persistence directory for the conversation."""
         return str(Path(persistence_base_dir) / conversation_id.hex)
-
-    def agent_final_response(self) -> str:
-        """Extract the final response from the agent.
-
-        An agent can end a conversation in two ways:
-        1. By calling the finish tool
-        2. By returning a text message with no tool calls
-
-        Returns:
-            The final response message from the agent, or empty string if not found.
-        """
-        # Find the last finish action or message event from the agent
-        for event in reversed(self.state.events):
-            # Case 1: finish tool call
-            if (
-                type(event).__name__ == "ActionEvent"
-                and hasattr(event, "source")
-                and getattr(event, "source") == "agent"
-                and hasattr(event, "tool_name")
-                and getattr(event, "tool_name") == "finish"
-            ):
-                # Extract message from finish tool call
-                if hasattr(event, "action") and hasattr(
-                    getattr(event, "action"), "message"
-                ):
-                    message = getattr(getattr(event, "action"), "message")
-                    return message
-                else:
-                    break
-            # Case 2: text message with no tool calls (MessageEvent)
-            elif (
-                type(event).__name__ == "MessageEvent"
-                and hasattr(event, "source")
-                and getattr(event, "source") == "agent"
-                and hasattr(event, "llm_message")
-            ):
-                llm_message = getattr(event, "llm_message")
-                text_parts = content_to_str(llm_message.content)
-                return "".join(text_parts)
-        return ""
 
     @staticmethod
     def compose_callbacks(

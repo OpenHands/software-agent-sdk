@@ -59,12 +59,14 @@ class ConversationVisualizer:
     _console: Console
     _skip_user_messages: bool
     _conversation_stats: "ConversationStats | None"
+    _name_for_visualization: str | None
 
     def __init__(
         self,
         highlight_regex: dict[str, str] | None = None,
         skip_user_messages: bool = False,
         conversation_stats: "ConversationStats | None" = None,
+        name_for_visualization: str | None = None,
     ):
         """Initialize the visualizer.
 
@@ -76,11 +78,16 @@ class ConversationVisualizer:
             skip_user_messages: If True, skip displaying user messages. Useful for
                                 scenarios where user input is not relevant to show.
             conversation_stats: ConversationStats object to display metrics information.
+            name_for_visualization: Optional name to prefix in panel titles to identify
+                                  which agent/conversation is speaking.
         """
         self._console = Console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns: dict[str, str] = highlight_regex or {}
         self._conversation_stats = conversation_stats
+        self._name_for_visualization = (
+            name_for_visualization.capitalize() if name_for_visualization else None
+        )
 
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
@@ -125,22 +132,26 @@ class ConversationVisualizer:
 
         # Determine panel styling based on event type
         if isinstance(event, SystemPromptEvent):
+            title = f"[bold {_SYSTEM_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"System Prompt[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_SYSTEM_COLOR}]System Prompt[/bold {_SYSTEM_COLOR}]",
+                title=title,
                 border_style=_SYSTEM_COLOR,
                 padding=_PANEL_PADDING,
                 expand=True,
             )
         elif isinstance(event, ActionEvent):
             # Check if action is None (non-executable)
+            title = f"[bold {_ACTION_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
             if event.action is None:
-                title = (
-                    f"[bold {_ACTION_COLOR}]Agent Action (Not Executed)"
-                    f"[/bold {_ACTION_COLOR}]"
-                )
+                title += f"Agent Action (Not Executed)[/bold {_ACTION_COLOR}]"
             else:
-                title = f"[bold {_ACTION_COLOR}]Agent Action[/bold {_ACTION_COLOR}]"
+                title += f"Agent Action[/bold {_ACTION_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -150,19 +161,25 @@ class ConversationVisualizer:
                 expand=True,
             )
         elif isinstance(event, ObservationEvent):
+            title = f"[bold {_OBSERVATION_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"Observation[/bold {_OBSERVATION_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_OBSERVATION_COLOR}]Observation"
-                f"[/bold {_OBSERVATION_COLOR}]",
+                title=title,
                 border_style=_OBSERVATION_COLOR,
                 padding=_PANEL_PADDING,
                 expand=True,
             )
         elif isinstance(event, UserRejectObservation):
+            title = f"[bold {_ERROR_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"User Rejected Action[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_ERROR_COLOR}]User Rejected Action"
-                f"[/bold {_ERROR_COLOR}]",
+                title=title,
                 border_style=_ERROR_COLOR,
                 padding=_PANEL_PADDING,
                 expand=True,
@@ -182,10 +199,24 @@ class ConversationVisualizer:
             }
             role_color = role_colors.get(event.llm_message.role, "white")
 
-            title_text = (
-                f"[bold {role_color}]Message from {event.source.capitalize()}"
-                f"[/bold {role_color}]"
+            # "User Message To [Name] Agent" for user
+            # "Message from [Name] Agent" for agent
+            agent_name = (
+                f"{self._name_for_visualization} "
+                if self._name_for_visualization
+                else ""
             )
+
+            if event.llm_message.role == "user":
+                title_text = (
+                    f"[bold {role_color}]User Message to "
+                    f"{agent_name}Agent[/bold {role_color}]"
+                )
+            else:
+                title_text = (
+                    f"[bold {role_color}]Message from "
+                    f"{agent_name}Agent[/bold {role_color}]"
+                )
             return Panel(
                 content,
                 title=title_text,
@@ -195,36 +226,51 @@ class ConversationVisualizer:
                 expand=True,
             )
         elif isinstance(event, AgentErrorEvent):
+            title = f"[bold {_ERROR_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"Agent Error[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_ERROR_COLOR}]Agent Error[/bold {_ERROR_COLOR}]",
+                title=title,
                 subtitle=self._format_metrics_subtitle(),
                 border_style=_ERROR_COLOR,
                 padding=_PANEL_PADDING,
                 expand=True,
             )
         elif isinstance(event, PauseEvent):
+            title = f"[bold {_PAUSE_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"User Paused[/bold {_PAUSE_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_PAUSE_COLOR}]User Paused[/bold {_PAUSE_COLOR}]",
+                title=title,
                 border_style=_PAUSE_COLOR,
                 padding=_PANEL_PADDING,
                 expand=True,
             )
         elif isinstance(event, Condensation):
+            title = f"[bold {_SYSTEM_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"Condensation[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_SYSTEM_COLOR}]Condensation[/bold {_SYSTEM_COLOR}]",
+                title=title,
                 subtitle=self._format_metrics_subtitle(),
                 border_style=_SYSTEM_COLOR,
                 expand=True,
             )
         else:
             # Fallback panel for unknown event types
+            title = f"[bold {_ERROR_COLOR}]"
+            if self._name_for_visualization:
+                title += f"{self._name_for_visualization} "
+            title += f"UNKNOWN Event: {event.__class__.__name__}[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
-                title=f"[bold {_ERROR_COLOR}]UNKNOWN Event: {event.__class__.__name__}"
-                f"[/bold {_ERROR_COLOR}]",
+                title=title,
                 subtitle=f"({event.source})",
                 border_style=_ERROR_COLOR,
                 padding=_PANEL_PADDING,
@@ -248,14 +294,14 @@ class ConversationVisualizer:
         def abbr(n: int | float) -> str:
             n = int(n or 0)
             if n >= 1_000_000_000:
-                s = f"{n / 1_000_000_000:.2f}B"
+                val, suffix = n / 1_000_000_000, "B"
             elif n >= 1_000_000:
-                s = f"{n / 1_000_000:.2f}M"
+                val, suffix = n / 1_000_000, "M"
             elif n >= 1_000:
-                s = f"{n / 1_000:.2f}K"
+                val, suffix = n / 1_000, "K"
             else:
                 return str(n)
-            return s.replace(".0", "")
+            return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
 
         input_tokens = abbr(usage.prompt_tokens or 0)
         output_tokens = abbr(usage.completion_tokens or 0)
@@ -267,7 +313,7 @@ class ConversationVisualizer:
         reasoning_tokens = usage.reasoning_tokens or 0
 
         # Cost
-        cost_str = f"{cost:.4f}" if cost > 0 else "$0.00"
+        cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
 
         # Build with fixed color scheme
         parts: list[str] = []
@@ -284,6 +330,7 @@ class ConversationVisualizer:
 def create_default_visualizer(
     highlight_regex: dict[str, str] | None = None,
     conversation_stats: "ConversationStats | None" = None,
+    name_for_visualization: str | None = None,
     **kwargs,
 ) -> ConversationVisualizer:
     """Create a default conversation visualizer instance.
@@ -294,11 +341,14 @@ def create_default_visualizer(
                        For example: {"Reasoning:": "bold blue",
                        "Thought:": "bold green"}
         conversation_stats: ConversationStats object to display metrics information.
+        name_for_visualization: Optional name to prefix in panel titles to identify
+                              which agent/conversation is speaking.
     """
     return ConversationVisualizer(
         highlight_regex=DEFAULT_HIGHLIGHT_REGEX
         if highlight_regex is None
         else highlight_regex,
         conversation_stats=conversation_stats,
+        name_for_visualization=name_for_visualization,
         **kwargs,
     )
