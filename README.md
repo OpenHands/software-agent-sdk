@@ -47,7 +47,7 @@ from openhands.sdk import LLM, Conversation
 from openhands.tools.preset.default import get_default_agent
 
 # Configure LLM and create agent
-llm = LLM(model="openhands/claude-sonnet-4-5-20250929", api_key=api_key)
+llm = LLM(model="openhands/claude-sonnet-4-5-20250929", api_key='...')
 agent = get_default_agent(llm=llm)
 
 # Start a conversation
