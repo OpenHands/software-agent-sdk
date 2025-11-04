@@ -275,7 +275,7 @@ def test_cmd_output_observation_properties():
     metadata = CmdOutputMetadata(exit_code=0, pid=123)
     obs = ExecuteBashObservation(
         command="ls",
-        content=[TextContent(text="file1\nfile2")],
+        content="file1\nfile2",
         exit_code=0,
         metadata=metadata,
     )
