@@ -21,7 +21,10 @@ from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Event, Message
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -67,7 +70,7 @@ class ConversationService:
         self,
         page_id: str | None = None,
         limit: int = 100,
-        agent_status: AgentExecutionStatus | None = None,
+        execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
     ) -> ConversationPage:
         if self._event_services is None:
@@ -80,8 +83,8 @@ class ConversationService:
             conversation_info = _compose_conversation_info(event_service.stored, state)
             # Apply status filter if provided
             if (
-                agent_status is not None
-                and conversation_info.agent_status != agent_status
+                execution_status is not None
+                and conversation_info.execution_status != execution_status
             ):
                 continue
 
@@ -122,7 +125,7 @@ class ConversationService:
 
     async def count_conversations(
         self,
-        agent_status: AgentExecutionStatus | None = None,
+        execution_status: ConversationExecutionStatus | None = None,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -133,7 +136,10 @@ class ConversationService:
             state = await event_service.get_state()
 
             # Apply status filter if provided
-            if agent_status is not None and state.agent_status != agent_status:
+            if (
+                execution_status is not None
+                and state.execution_status != execution_status
+            ):
                 continue
 
             count += 1

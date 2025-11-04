@@ -15,7 +15,10 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -198,7 +201,7 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
             with self._conversation.state as state:
-                run = state.agent_status != AgentExecutionStatus.RUNNING
+                run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
             loop.run_in_executor(None, self._conversation.run)
 
