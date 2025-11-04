@@ -93,7 +93,6 @@ class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
             raise ValueError("FinishTool doesn't accept parameters")
         return [
             cls(
-                name="finish",
                 action_type=FinishAction,
                 observation_type=FinishObservation,
                 description=TOOL_DESCRIPTION,

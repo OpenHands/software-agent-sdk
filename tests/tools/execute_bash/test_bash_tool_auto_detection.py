@@ -148,7 +148,7 @@ def test_tool_metadata():
         tools = BashTool.create(_create_conv_state(temp_dir))
         tool = tools[0]
 
-        assert tool.name == "execute_bash"
+        assert tool.name == "bash"
         assert tool.description is not None
         assert tool.action_type == ExecuteBashAction
         assert hasattr(tool, "annotations")

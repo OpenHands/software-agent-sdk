@@ -16,6 +16,7 @@ from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+from openhands.sdk.observability.laminar import observe
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -50,6 +51,7 @@ class MCPToolExecutor(ToolExecutor):
         self.tool_name = tool_name
         self.client = client
 
+    @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
         async with self.client:
             assert self.client.is_connected(), "MCP client is not connected."
@@ -118,6 +120,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     """MCP Tool that wraps an MCP client and provides tool functionality."""
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
+
+    @property
+    def name(self) -> str:  # type: ignore[override]
+        """Return the MCP tool name instead of the class name."""
+        return self.mcp_tool.name
 
     def __call__(
         self,
@@ -200,21 +207,17 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 else None
             )
 
-            return [
-                cls(
-                    name=mcp_tool.name,
-                    description=mcp_tool.description or "No description provided",
-                    action_type=MCPToolAction,
-                    observation_type=MCPToolObservation,
-                    annotations=annotations,
-                    meta=mcp_tool.meta,
-                    executor=MCPToolExecutor(
-                        tool_name=mcp_tool.name, client=mcp_client
-                    ),
-                    # pass-through fields (enabled by **extra in Tool.create)
-                    mcp_tool=mcp_tool,
-                )
-            ]
+            tool_instance = cls(
+                description=mcp_tool.description or "No description provided",
+                action_type=MCPToolAction,
+                observation_type=MCPToolObservation,
+                annotations=annotations,
+                meta=mcp_tool.meta,
+                executor=MCPToolExecutor(tool_name=mcp_tool.name, client=mcp_client),
+                # pass-through fields (enabled by **extra in Tool.create)
+                mcp_tool=mcp_tool,
+            )
+            return [tool_instance]
         except ValidationError as e:
             logger.error(
                 f"Validation error creating MCPTool for {mcp_tool.name}: "

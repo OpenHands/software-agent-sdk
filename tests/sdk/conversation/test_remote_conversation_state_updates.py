@@ -41,7 +41,7 @@ def test_update_state_from_event_with_full_state():
 
         # Create a full state event
         full_state = {
-            "agent_status": "running",
+            "execution_status": "running",
             "confirmation_policy": {"kind": "NeverConfirm"},
             "max_iterations": 100,
         }
@@ -53,7 +53,7 @@ def test_update_state_from_event_with_full_state():
         # Verify all fields were updated
         assert conv.state._cached_state is not None
         assert conv.state._cached_state == full_state
-        assert conv.state._cached_state["agent_status"] == "running"
+        assert conv.state._cached_state["execution_status"] == "running"
         assert conv.state._cached_state["max_iterations"] == 100
 
 
@@ -79,19 +79,19 @@ def test_update_state_from_event_with_individual_field():
 
         # Set initial cached state
         conv.state._cached_state = {
-            "agent_status": "idle",
+            "execution_status": "idle",
             "max_iterations": 50,
         }
 
         # Create an individual field update event
-        event = ConversationStateUpdateEvent(key="agent_status", value="running")
+        event = ConversationStateUpdateEvent(key="execution_status", value="running")
 
         # Update state using the real RemoteState
         conv.state.update_state_from_event(event)
 
         # Verify only that field was updated
         assert conv.state._cached_state is not None
-        assert conv.state._cached_state["agent_status"] == "running"
+        assert conv.state._cached_state["execution_status"] == "running"
         assert conv.state._cached_state["max_iterations"] == 50  # Unchanged
 
 
@@ -119,12 +119,12 @@ def test_update_state_initializes_cache_if_none():
         conv.state._cached_state = None
 
         # Update with individual field when cache is None
-        event = ConversationStateUpdateEvent(key="agent_status", value="running")
+        event = ConversationStateUpdateEvent(key="execution_status", value="running")
         conv.state.update_state_from_event(event)
 
         # Verify cache was initialized
         assert conv.state._cached_state is not None
-        assert conv.state._cached_state["agent_status"] == "running"
+        assert conv.state._cached_state["execution_status"] == "running"
 
 
 def test_update_state_from_multiple_events():
@@ -149,7 +149,7 @@ def test_update_state_from_multiple_events():
 
         # First, full state
         full_state = {
-            "agent_status": "idle",
+            "execution_status": "idle",
             "max_iterations": 50,
             "stuck_detection": True,
         }
@@ -157,7 +157,7 @@ def test_update_state_from_multiple_events():
         conv.state.update_state_from_event(event1)
 
         # Then, individual updates
-        event2 = ConversationStateUpdateEvent(key="agent_status", value="running")
+        event2 = ConversationStateUpdateEvent(key="execution_status", value="running")
         conv.state.update_state_from_event(event2)
 
         event3 = ConversationStateUpdateEvent(key="max_iterations", value=100)
@@ -165,7 +165,7 @@ def test_update_state_from_multiple_events():
 
         # Verify final state
         assert conv.state._cached_state is not None
-        assert conv.state._cached_state["agent_status"] == "running"
+        assert conv.state._cached_state["execution_status"] == "running"
         assert conv.state._cached_state["max_iterations"] == 100
         assert conv.state._cached_state["stuck_detection"] is True
 
@@ -192,14 +192,14 @@ def test_update_state_full_state_overwrites_fields():
 
         # Set initial cached state
         conv.state._cached_state = {
-            "agent_status": "running",
+            "execution_status": "running",
             "max_iterations": 100,
             "old_field": "old_value",
         }
 
         # Update with full state (without old_field)
         full_state = {
-            "agent_status": "idle",
+            "execution_status": "idle",
             "max_iterations": 50,
         }
         event = ConversationStateUpdateEvent(key="full_state", value=full_state)
@@ -207,7 +207,7 @@ def test_update_state_full_state_overwrites_fields():
 
         # Verify new fields are set and old field still exists (update, not replace)
         assert conv.state._cached_state is not None
-        assert conv.state._cached_state["agent_status"] == "idle"
+        assert conv.state._cached_state["execution_status"] == "idle"
         assert conv.state._cached_state["max_iterations"] == 50
         assert "old_field" in conv.state._cached_state  # Still there from .update()
 
@@ -321,11 +321,11 @@ def test_state_update_callback_integration():
         state_update_callback = conv.state.create_state_update_callback()
 
         # Test that the callback properly handles ConversationStateUpdateEvent
-        event = ConversationStateUpdateEvent(key="agent_status", value="running")
+        event = ConversationStateUpdateEvent(key="execution_status", value="running")
 
         # Call the callback directly (simulating websocket event)
         state_update_callback(event)
 
         # Verify the state was updated
         assert conv.state._cached_state is not None
-        assert conv.state._cached_state["agent_status"] == "running"
+        assert conv.state._cached_state["execution_status"] == "running"

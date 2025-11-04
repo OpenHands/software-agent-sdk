@@ -44,7 +44,6 @@ if not runtime_api_key:
     logger.error("RUNTIME_API_KEY required")
     exit(1)
 
-
 with APIRemoteWorkspace(
     runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
     runtime_api_key=runtime_api_key,

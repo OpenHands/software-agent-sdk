@@ -109,7 +109,6 @@ class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):
             raise ValueError("ThinkTool doesn't accept parameters")
         return [
             cls(
-                name="think",
                 description=THINK_DESCRIPTION,
                 action_type=ThinkAction,
                 observation_type=ThinkObservation,
