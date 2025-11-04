@@ -754,11 +754,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if not base_url.startswith(("http://", "https://")):
                 base_url = "http://" + base_url
             try:
+                headers = {}
                 api_key = self.api_key.get_secret_value() if self.api_key else ""
-                response = httpx.get(
-                    f"{base_url}/v1/model/info",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+
+                response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
                 data = response.json().get("data", [])
                 current = next(
                     (
@@ -775,7 +776,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Got model info from litellm proxy: {self._model_info}"
                     )
             except Exception as e:
-                logger.debug(f"Error fetching model info from proxy: {e}")
+                logger.debug(
+                    f"Error fetching model info from proxy: {e}",
+                    exc_info=True,
+                    stack_info=True,
+                )
 
         # Fallbacks: try base name variants
         if not self._model_info:
