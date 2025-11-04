@@ -9,7 +9,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.remote_conversation import RemoteState
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 
@@ -86,9 +86,9 @@ def test_remote_state_initialization(mock_client, conversation_id):
 @pytest.mark.parametrize(
     "status_value,expected",
     [
-        ("running", AgentExecutionStatus.RUNNING),
-        ("paused", AgentExecutionStatus.PAUSED),
-        ("finished", AgentExecutionStatus.FINISHED),
+        ("running", ConversationExecutionStatus.RUNNING),
+        ("paused", ConversationExecutionStatus.PAUSED),
+        ("finished", ConversationExecutionStatus.FINISHED),
     ],
 )
 def test_remote_state_agent_status(
@@ -118,7 +118,7 @@ def test_remote_state_agent_status_setter_not_implemented(mock_client, conversat
         NotImplementedError,
         match="Setting execution_status on RemoteState has no effect",
     ):
-        state.execution_status = AgentExecutionStatus.PAUSED
+        state.execution_status = ConversationExecutionStatus.PAUSED
 
 
 def test_remote_state_confirmation_policy(mock_client, conversation_id, mock_agent):
