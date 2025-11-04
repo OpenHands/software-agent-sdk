@@ -115,7 +115,8 @@ def test_remote_state_agent_status_setter_not_implemented(mock_client, conversat
     state = RemoteState(mock_client, conversation_id)
 
     with pytest.raises(
-        NotImplementedError, match="Setting agent_status on RemoteState has no effect"
+        NotImplementedError,
+        match="Setting execution_status on RemoteState has no effect",
     ):
         state.execution_status = AgentExecutionStatus.PAUSED
 
