@@ -339,7 +339,7 @@ def load_user_skills() -> list[Skill]:
                         all_skills.append(skill)
                         seen_names.add(name)
                     else:
-                        logger.debug(
+                        logger.warning(
                             f"Skipping duplicate skill '{name}' from {skills_dir}"
                         )
 
