@@ -237,6 +237,10 @@ with ManagedAPIServer(port=8001) as server:
             if isinstance(event, ConversationStateUpdateEvent):
                 logger.info(f"  - {event}")
 
+        # Report cost (must be before conversation.close())
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
+
     finally:
         # Clean up
         print("\n🧹 Cleaning up conversation...")

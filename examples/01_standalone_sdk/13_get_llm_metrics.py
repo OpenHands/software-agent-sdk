@@ -77,3 +77,7 @@ assert llm.metrics is not None
 print(
     f"Conversation finished. Final LLM metrics with details: {llm.metrics.model_dump()}"
 )
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

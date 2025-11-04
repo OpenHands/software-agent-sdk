@@ -26,7 +26,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
-    from openhands.sdk.tool.tool import ToolBase
+    from openhands.sdk.tool.tool import ToolDefinition
 
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -44,10 +44,7 @@ from litellm import (
 )
 from litellm.exceptions import (
     APIConnectionError,
-    BadRequestError,
-    ContextWindowExceededError,
     InternalServerError,
-    OpenAIError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout as LiteLLMTimeout,
@@ -62,7 +59,10 @@ from litellm.utils import (
     token_counter,
 )
 
-from openhands.sdk.llm.exceptions import LLMNoResponseError
+from openhands.sdk.llm.exceptions import (
+    LLMNoResponseError,
+    map_provider_exception,
+)
 
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
@@ -101,7 +101,23 @@ SERVICE_ID_DEPRECATION_MSG = (
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
-    """Refactored LLM: simple `completion()`, centralized Telemetry, tiny helpers."""
+    """Language model interface for OpenHands agents.
+
+    The LLM class provides a unified interface for interacting with various
+    language models through the litellm library. It handles model configuration,
+    API authentication,
+    retry logic, and tool calling capabilities.
+
+    Example:
+        >>> from openhands.sdk import LLM
+        >>> from pydantic import SecretStr
+        >>> llm = LLM(
+        ...     model="claude-sonnet-4-20250514",
+        ...     api_key=SecretStr("your-api-key"),
+        ...     usage_id="my-agent"
+        ... )
+        >>> # Use with agent or conversation
+    """
 
     # =========================================================================
     # Config fields
@@ -388,6 +404,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @property
     def metrics(self) -> Metrics:
+        """Get usage metrics for this LLM instance.
+
+        Returns:
+            Metrics object containing token usage, costs, and other statistics.
+
+        Example:
+            >>> cost = llm.metrics.accumulated_cost
+            >>> print(f"Total cost: ${cost}")
+        """
         assert self._metrics is not None, (
             "Metrics should be initialized after model validation"
         )
@@ -400,14 +425,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def completion(
         self,
         messages: list[Message],
-        tools: Sequence[ToolBase] | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         **kwargs,
     ) -> LLMResponse:
-        """Single entry point for LLM completion.
+        """Generate a completion from the language model.
 
-        Normalize → (maybe) mock tools → transport → postprocess.
+        This is the method for getting responses from the model via Completion API.
+        It handles message formatting, tool calling, and response processing.
+
+        Returns:
+            LLMResponse containing the model's response and metadata.
+
+        Raises:
+            ValueError: If streaming is requested (not supported).
+
+        Example:
+            >>> from openhands.sdk.llm import Message, TextContent
+            >>> messages = [Message(role="user", content=[TextContent(text="Hello")])]
+            >>> response = llm.completion(messages)
+            >>> print(response.content)
         """
         # Check if streaming is requested
         if kwargs.get("stream", False):
@@ -459,7 +497,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             }
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
-        self._telemetry.on_request(log_ctx=log_ctx)
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -472,6 +509,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
+            self._telemetry.on_request(log_ctx=log_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(messages=formatted_messages, **final_kwargs)
@@ -513,6 +551,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
+            mapped = map_provider_exception(e)
+            if mapped is not e:
+                raise mapped from e
             raise
 
     # =========================================================================
@@ -521,7 +562,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def responses(
         self,
         messages: list[Message],
-        tools: Sequence[ToolBase] | None = None,
+        tools: Sequence[ToolDefinition] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
         _return_metrics: bool = False,
@@ -632,6 +673,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
+            mapped = map_provider_exception(e)
+            if mapped is not e:
+                raise mapped from e
             raise
 
     # =========================================================================
@@ -1014,51 +1058,3 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"Diff: {pretty_pydantic_diff(self, reconciled)}"
             )
         return reconciled
-
-    @staticmethod
-    def is_context_window_exceeded_exception(exception: Exception) -> bool:
-        """Check if the exception indicates a context window exceeded error.
-
-        Context window exceeded errors vary by provider, and LiteLLM does not do a
-        consistent job of identifying and wrapping them.
-        """
-        # A context window exceeded error from litellm is the best signal we have.
-        if isinstance(exception, ContextWindowExceededError):
-            return True
-
-        # But with certain providers the exception might be a bad request or generic
-        # OpenAI error, and we have to use the content of the error to figure out what
-        # is wrong.
-        if not isinstance(exception, (BadRequestError, OpenAIError)):
-            return False
-
-        # Not all BadRequestError or OpenAIError are context window exceeded errors, so
-        # we need to check the message content for known patterns.
-        error_string = str(exception).lower()
-
-        known_exception_patterns: list[str] = [
-            "contextwindowexceedederror",
-            "prompt is too long",
-            "input length and `max_tokens` exceed context limit",
-            "please reduce the length of",
-            "the request exceeds the available context size",
-            "context length exceeded",
-        ]
-
-        if any(pattern in error_string for pattern in known_exception_patterns):
-            return True
-
-        # A special case for SambaNova, where multiple patterns are needed
-        # simultaneously.
-        samba_nova_patterns: list[str] = [
-            "sambanovaexception",
-            "maximum context length",
-        ]
-
-        if all(pattern in error_string for pattern in samba_nova_patterns):
-            return True
-
-        # If we've made it this far and haven't managed to positively ID it as a context
-        # window exceeded error, we'll have to assume it's not and rely on the call-site
-        # context to handle it appropriately.
-        return False

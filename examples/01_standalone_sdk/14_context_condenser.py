@@ -136,3 +136,7 @@ print(f"Total LLM messages collected: {len(llm_messages)}")
 print("\nThe condenser automatically summarized older conversation history")
 print("when the conversation exceeded the configured max_size threshold.")
 print("This helps manage context length while preserving important information.")
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
