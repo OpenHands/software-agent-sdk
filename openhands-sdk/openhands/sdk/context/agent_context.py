@@ -84,7 +84,7 @@ class AgentContext(BaseModel):
                 if user_skill.name not in existing_names:
                     self.skills.append(user_skill)
                 else:
-                    logger.debug(
+                    logger.warning(
                         f"Skipping user skill '{user_skill.name}' "
                         f"(already in explicit skills)"
                     )
