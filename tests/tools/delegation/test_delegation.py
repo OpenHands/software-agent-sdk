@@ -38,7 +38,7 @@ def create_mock_conversation():
     """Helper to create a mock conversation."""
     mock_conv = MagicMock()
     mock_conv.id = str(uuid.uuid4())
-    mock_conv.state.agent_status = AgentExecutionStatus.FINISHED
+    mock_conv.state.execution_status = AgentExecutionStatus.FINISHED
     return mock_conv
 
 

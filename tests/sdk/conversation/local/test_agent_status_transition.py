@@ -74,7 +74,7 @@ class StatusCheckingExecutor(
     ) -> StatusTransitionMockObservation:
         # Capture the agent status during execution
         if conversation:
-            self.status_during_execution.append(conversation.state.agent_status)
+            self.status_during_execution.append(conversation.state.execution_status)
         return StatusTransitionMockObservation(result=f"Executed: {action.command}")
 
 
@@ -115,7 +115,7 @@ def test_agent_status_transitions_to_running_from_idle(mock_completion):
     conversation = Conversation(agent=agent)
 
     # Verify initial state is IDLE
-    assert conversation.state.agent_status == AgentExecutionStatus.IDLE
+    assert conversation.state.execution_status == AgentExecutionStatus.IDLE
 
     # Mock LLM to return a message that finishes execution
     mock_completion.return_value = ModelResponse(
@@ -133,7 +133,7 @@ def test_agent_status_transitions_to_running_from_idle(mock_completion):
     conversation.run()
 
     # After run completes, status should be FINISHED
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
     # Verify we have agent response
     agent_messages = [
@@ -165,7 +165,7 @@ def test_agent_status_is_running_during_execution_from_idle(mock_completion):
     conversation = Conversation(agent=agent)
 
     # Verify initial state is IDLE
-    assert conversation.state.agent_status == AgentExecutionStatus.IDLE
+    assert conversation.state.execution_status == AgentExecutionStatus.IDLE
 
     # Mock LLM to return an action first, then finish
     tool_call = ChatCompletionMessageToolCall(
@@ -238,7 +238,7 @@ def test_agent_status_is_running_during_execution_from_idle(mock_completion):
     assert execution_started.wait(timeout=2.0), "Execution never started"
 
     # Check status while running
-    status_during_run[0] = conversation.state.agent_status
+    status_during_run[0] = conversation.state.execution_status
     status_checked.set()
 
     # Wait for run to complete
@@ -251,7 +251,7 @@ def test_agent_status_is_running_during_execution_from_idle(mock_completion):
     )
 
     # After run completes, status should be FINISHED
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -264,7 +264,7 @@ def test_agent_status_transitions_to_running_from_paused(mock_completion):
 
     # Pause the conversation
     conversation.pause()
-    assert conversation.state.agent_status == AgentExecutionStatus.PAUSED
+    assert conversation.state.execution_status == AgentExecutionStatus.PAUSED
 
     # Mock LLM to return a message that finishes execution
     mock_completion.return_value = ModelResponse(
@@ -282,7 +282,7 @@ def test_agent_status_transitions_to_running_from_paused(mock_completion):
     conversation.run()
 
     # After run completes, status should be FINISHED
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
     # Verify we have agent response
     agent_messages = [
@@ -366,14 +366,15 @@ def test_agent_status_transitions_from_waiting_for_confirmation(mock_completion)
 
     # Should be waiting for confirmation
     assert (
-        conversation.state.agent_status == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+        conversation.state.execution_status
+        == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
     )
 
     # Call run again - this confirms and should transition to RUNNING, then FINISHED
     conversation.run()
 
     # After confirmation and execution, should be FINISHED
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -399,17 +400,17 @@ def test_agent_status_finished_to_idle_to_running(mock_completion):
         Message(role="user", content=[TextContent(text="First task")])
     )
     conversation.run()
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
     # Send new message - should transition to IDLE
     conversation.send_message(
         Message(role="user", content=[TextContent(text="Second task")])
     )
-    assert conversation.state.agent_status == AgentExecutionStatus.IDLE
+    assert conversation.state.execution_status == AgentExecutionStatus.IDLE
 
     # Run again - should transition to RUNNING then FINISHED
     conversation.run()
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -433,7 +434,7 @@ def test_run_exits_immediately_when_already_finished(mock_completion):
     # Complete a task
     conversation.send_message(Message(role="user", content=[TextContent(text="Task")]))
     conversation.run()
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
 
     # Call run again without sending a new message
     # Should exit immediately without calling LLM again
@@ -441,7 +442,7 @@ def test_run_exits_immediately_when_already_finished(mock_completion):
     conversation.run()
 
     # Status should still be FINISHED
-    assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+    assert conversation.state.execution_status == AgentExecutionStatus.FINISHED
     # LLM should not be called again
     assert mock_completion.call_count == initial_call_count
 
@@ -454,12 +455,12 @@ def test_run_exits_immediately_when_stuck(mock_completion):
     conversation = Conversation(agent=agent)
 
     # Manually set status to STUCK (simulating stuck detection)
-    conversation._state.agent_status = AgentExecutionStatus.STUCK
+    conversation._state.execution_status = AgentExecutionStatus.STUCK
 
     # Call run - should exit immediately
     conversation.run()
 
     # Status should still be STUCK
-    assert conversation.state.agent_status == AgentExecutionStatus.STUCK
+    assert conversation.state.execution_status == AgentExecutionStatus.STUCK
     # LLM should not be called
     assert mock_completion.call_count == 0
