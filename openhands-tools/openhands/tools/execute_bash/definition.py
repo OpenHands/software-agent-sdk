@@ -268,7 +268,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 observation_type=ExecuteBashObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
-                    title="execute_bash",
+                    title="bash",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,

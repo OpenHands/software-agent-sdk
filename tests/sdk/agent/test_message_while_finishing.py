@@ -132,7 +132,7 @@ class SleepExecutor(ToolExecutor):
 class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
     """Sleep tool for testing message processing during finish."""
 
-    name: ClassVar[str] = "sleep_tool"
+    name: ClassVar[str] = "sleep"
 
     @classmethod
     def create(cls, conv_state=None, **params) -> Sequence["SleepTool"]:
@@ -189,7 +189,7 @@ class TestMessageWhileFinishing:
                 id="sleep_call_1",
                 type="function",
                 function=Function(
-                    name="sleep_tool",
+                    name="sleep",
                     arguments='{"duration": 2.0, "message": "First sleep completed"}',
                 ),
             )
@@ -232,7 +232,7 @@ class TestMessageWhileFinishing:
                 id="sleep_call_2",
                 type="function",
                 function=Function(
-                    name="sleep_tool",
+                    name="sleep",
                     arguments=f'{{"duration": 3.0, "message": "{sleep_message}"}}',
                 ),
             )
@@ -315,7 +315,7 @@ class TestMessageWhileFinishing:
 
         # Set the test start time reference for the sleep executor
         # Access the actual tool instances from the agent's _tools dict
-        sleep_tool = self.agent._tools.get("sleep_tool")
+        sleep_tool = self.agent._tools.get("sleep")
         if sleep_tool and sleep_tool.executor is not None:
             setattr(sleep_tool.executor, "test_start_time", self.test_start_time)
             setattr(sleep_tool.executor, "test_instance", self)

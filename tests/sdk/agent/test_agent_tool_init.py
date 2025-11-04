@@ -65,5 +65,5 @@ def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map
         assert "upper" in runtime_tools
-        assert "finish_tool" in runtime_tools
-        assert "think_tool" in runtime_tools
+        assert "finish" in runtime_tools
+        assert "think" in runtime_tools

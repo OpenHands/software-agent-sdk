@@ -172,7 +172,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                         working_dir=conv_state.workspace.working_dir,
                         **params,
                     )
-                    return [cls(name="execute_bash", ..., executor=executor)]
+                    return [cls(name="bash", ..., executor=executor)]
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -187,7 +187,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         super().__init_subclass__(**kwargs)
         # Only set automatically if not explicitly defined in the current class
         if "name" not in cls.__dict__:
-            cls.name = _camel_to_snake(cls.__name__)
+            cls.name = _camel_to_snake(cls.__name__).removesuffix("_tool")
 
     description: str
     action_type: type[Action] = Field(repr=False)

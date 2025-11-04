@@ -206,7 +206,7 @@ def test_agent_error_event_visualize():
     event = AgentErrorEvent(
         error="Failed to execute command: permission denied",
         tool_call_id="call_err_1",
-        tool_name="execute_bash",
+        tool_name="bash",
     )
 
     result = event.visualize

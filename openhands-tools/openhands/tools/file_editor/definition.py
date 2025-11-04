@@ -227,7 +227,7 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
                 observation_type=FileEditorObservation,
                 description=enhanced_description,
                 annotations=ToolAnnotations(
-                    title="str_replace_editor",
+                    title="file_editor",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,

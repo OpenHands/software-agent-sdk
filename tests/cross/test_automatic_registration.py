@@ -10,7 +10,7 @@ def test_bash_tool_automatic_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "bash_tool" in registered_tools
+    assert "bash" in registered_tools
 
 
 def test_file_editor_tool_automatic_registration():
@@ -20,7 +20,7 @@ def test_file_editor_tool_automatic_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "file_editor_tool" in registered_tools
+    assert "file_editor" in registered_tools
 
 
 def test_task_tracker_tool_automatic_registration():
@@ -30,7 +30,7 @@ def test_task_tracker_tool_automatic_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "task_tracker_tool" in registered_tools
+    assert "task_tracker" in registered_tools
 
 
 def test_browser_tool_automatic_registration():
@@ -50,7 +50,7 @@ def test_grep_tool_automatic_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "grep_tool" in registered_tools
+    assert "grep" in registered_tools
 
 
 def test_glob_tool_automatic_registration():
@@ -60,7 +60,7 @@ def test_glob_tool_automatic_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "glob_tool" in registered_tools
+    assert "glob" in registered_tools
 
 
 def test_planning_file_editor_tool_automatic_registration():
@@ -70,7 +70,7 @@ def test_planning_file_editor_tool_automatic_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "planning_file_editor_tool" in registered_tools
+    assert "planning_file_editor" in registered_tools
 
 
 def test_import_from_init_triggers_registration():
@@ -80,7 +80,7 @@ def test_import_from_init_triggers_registration():
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "bash_tool" in registered_tools
+    assert "bash" in registered_tools
 
 
 def test_tool_can_be_resolved_after_automatic_registration():
@@ -100,9 +100,9 @@ def test_tool_can_be_resolved_after_automatic_registration():
     mock_conv_state.workspace = mock_workspace
 
     # Try to resolve the tool using snake_case name
-    tool_spec = Tool(name="bash_tool")
+    tool_spec = Tool(name="bash")
     resolved_tools = resolve_tool(tool_spec, mock_conv_state)
 
     # Should successfully resolve
     assert len(resolved_tools) == 1
-    assert resolved_tools[0].name == "bash_tool"
+    assert resolved_tools[0].name == "bash"

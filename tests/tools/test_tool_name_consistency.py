@@ -43,7 +43,7 @@ def test_tool_name_consistency():
     expected_names = {
         BashTool: "bash_tool",
         FileEditorTool: "file_editor_tool",
-        TaskTrackerTool: "task_tracker_tool",
+        TaskTrackerTool: "task_tracker",
         BrowserToolSet: "browser_tool_set",
         GrepTool: "grep_tool",
         GlobTool: "glob_tool",
@@ -61,7 +61,7 @@ def test_tool_name_accessible_at_class_level():
     # This should not raise any errors and should return snake_case names
     assert BashTool.name == "bash_tool"
     assert FileEditorTool.name == "file_editor_tool"
-    assert TaskTrackerTool.name == "task_tracker_tool"
+    assert TaskTrackerTool.name == "task_tracker"
     assert BrowserToolSet.name == "browser_tool_set"
     assert GrepTool.name == "grep_tool"
     assert GlobTool.name == "glob_tool"

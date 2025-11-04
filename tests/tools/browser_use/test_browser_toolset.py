@@ -26,16 +26,16 @@ def test_browser_toolset_create_includes_all_browser_tools():
 
     # Expected tool names based on the browser tools
     expected_names = [
-        "browser_navigate_tool",
-        "browser_click_tool",
-        "browser_get_state_tool",
-        "browser_get_content_tool",
-        "browser_type_tool",
-        "browser_scroll_tool",
-        "browser_go_back_tool",
-        "browser_list_tabs_tool",
-        "browser_switch_tab_tool",
-        "browser_close_tab_tool",
+        "browser_navigate",
+        "browser_click",
+        "browser_get_state",
+        "browser_get_content",
+        "browser_type",
+        "browser_scroll",
+        "browser_go_back",
+        "browser_list_tabs",
+        "browser_switch_tab",
+        "browser_close_tab",
     ]
 
     # Verify all expected tools are present
@@ -67,7 +67,7 @@ def test_browser_toolset_create_tools_are_properly_configured():
     # Find a specific tool to test (e.g., navigate tool)
     navigate_tool = None
     for tool in tools:
-        if tool.name == "browser_navigate_tool":
+        if tool.name == "browser_navigate":
             navigate_tool = tool
             break
 
