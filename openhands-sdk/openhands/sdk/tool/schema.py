@@ -111,10 +111,32 @@ class Schema(DiscriminatedUnionMixin):
         expects a list or dict type has received a JSON string instead. If so,
         it automatically decodes the string using json.loads().
 
-        This handles cases where LLMs (like GLM-4) return array/object values
-        as JSON strings instead of native JSON arrays/objects i.e.
-        <parameter=view_range>"[1, 100]"</parameter> instead of
-        <parameter=view_range>[1, 100]</parameter>.
+        This handles cases where certain LLMs (such as GLM 4.6) incorrectly encode
+        array/object parameters as JSON strings when using native function calling.
+
+        Example raw LLM output from GLM 4.6:
+        {
+            "role": "assistant",
+            "content": "I'll view the file for you.",
+            "tool_calls": [{
+            "id": "call_ef8e",
+            "type": "function",
+            "function": {
+                "name": "str_replace_editor",
+                "arguments": '{
+                    "command": "view",
+                    "path": "/tmp/test.txt",
+                    "view_range": "[1, 5]"
+                }'
+            }
+            }]
+        }
+        Expected output: `"view_range" : [1, 5]`
+
+        Note: The arguments field is a JSON string. When decoded, view_range is
+        incorrectly a string "[1, 5]" instead of the proper array [1, 5].
+        This validator automatically fixes this by detecting that view_range
+        expects a list type and decoding the JSON string to get the actual array.
 
         Args:
             data: The input data (usually a dict) before validation.
