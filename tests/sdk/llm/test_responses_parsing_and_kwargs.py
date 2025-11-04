@@ -75,7 +75,7 @@ def test_normalize_responses_kwargs_policy():
     assert set(out["include"]) >= {"text.output_text", "reasoning.encrypted_content"}
     # store default to False when None passed
     assert out["store"] is False
-    # reasoning config included when reasoning_effort is set (without summary to avoid requiring verified org)
+    # reasoning config with effort only (no summary for unverified orgs)
     r = out["reasoning"]
     assert r["effort"] in {"low", "medium", "high", "none"}
     assert "summary" not in r  # Summary not included to support unverified orgs
@@ -84,7 +84,7 @@ def test_normalize_responses_kwargs_policy():
 
 
 def test_normalize_responses_kwargs_with_summary():
-    """Test that reasoning_summary is included when explicitly set (for verified orgs)."""
+    """Test reasoning_summary is included when set (verified orgs)."""
     llm = LLM(model="gpt-5-mini", reasoning_effort="high", reasoning_summary="detailed")
 
     out = select_responses_options(

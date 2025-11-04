@@ -170,7 +170,7 @@ def test_llm_config_post_init_openrouter_env_vars():
 
 
 def test_llm_config_post_init_reasoning_effort_default():
-    """Test that reasoning_effort is None by default for all models unless explicitly set."""
+    """Test reasoning_effort is None by default unless explicitly set."""
     config = LLM(model="gpt-4", usage_id="test-llm")
     assert config.reasoning_effort is None
 
