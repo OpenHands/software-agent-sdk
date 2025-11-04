@@ -58,8 +58,11 @@ class TestMCPToolObservation:
 
         assert observation.tool_name == "test_tool"
         assert observation.is_error is True
-        assert "[Tool 'test_tool' executed.]" in observation.content
-        assert "Operation failed" in observation.content
+        assert len(observation.content) == 2
+        assert isinstance(observation.content[0], TextContent)
+        assert observation.content[0].text == "[Tool 'test_tool' executed.]"
+        assert isinstance(observation.content[1], TextContent)
+        assert observation.content[1].text == "Operation failed"
 
     def test_from_call_tool_result_with_image(self):
         """Test creating observation from MCP result with image content."""

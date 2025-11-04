@@ -80,27 +80,11 @@ class MCPToolObservation(Observation):
         # Prepend initial message to content
         content_with_header = [TextContent(text=initial_message)] + converted_content
 
-        # Populate content field and is_error flag based on result status
-        if result.isError:
-            # When there is an error, populate content field with all content
-            # and set is_error=True
-            return cls(
-                content="\n".join(
-                    [initial_message]
-                    + [
-                        c.text if isinstance(c, TextContent) else "[Image]"
-                        for c in converted_content
-                    ]
-                ),
-                is_error=True,
-                tool_name=tool_name,
-            )
-        else:
-            # When success, populate content field only
-            return cls(
-                content=content_with_header,
-                tool_name=tool_name,
-            )
+        return cls(
+            content=content_with_header,
+            is_error=result.isError,
+            tool_name=tool_name,
+        )
 
     @property
     def visualize(self) -> Text:
