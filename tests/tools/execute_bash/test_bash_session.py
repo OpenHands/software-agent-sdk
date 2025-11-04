@@ -319,15 +319,15 @@ def test_empty_command_error(terminal_type):
     # Test empty command without previous command
     obs = session.execute(ExecuteBashAction(command=""))
 
-    assert obs.has_error is True
-    assert not obs.output  # When there's an error, output should not be populated
-    assert obs.error == "No previous running command to retrieve logs from."
-    assert len(obs.to_llm_content) == 1
+    assert obs.is_error is True
+    assert obs.content == "No previous running command to retrieve logs from."
+    assert len(obs.to_llm_content) == 2
     assert isinstance(obs.to_llm_content[0], TextContent)
-    assert "Tool Execution Error:" in obs.to_llm_content[0].text
+    assert obs.to_llm_content[0].text == "Tool Execution Error. "
+    assert isinstance(obs.to_llm_content[1], TextContent)
     assert (
         "No previous running command to retrieve logs from."
-        in obs.to_llm_content[0].text
+        == obs.to_llm_content[1].text
     )
     assert obs.metadata.exit_code == -1
     assert obs.metadata.prefix == ""
@@ -518,7 +518,7 @@ def _run_bash_action(session, command: str, **kwargs):
     action = ExecuteBashAction(command=command, **kwargs)
     obs = session.execute(action)
     logger.info(f"Command: {command}")
-    output_text = get_output_text(obs) if obs.output else ""
+    output_text = get_output_text(obs) if obs.content else ""
     logger.info(f"Output: {output_text}")
     logger.info(f"Exit code: {obs.metadata.exit_code}")
     return obs
@@ -719,9 +719,8 @@ world""",
 
             # First test that running multiple commands at once fails
             obs = _run_bash_action(session, joined_cmds)
-            assert obs.has_error is True
-            assert obs.error is not None
-            assert "Cannot execute multiple commands at once" in obs.error
+            assert obs.is_error is True
+            assert "Cannot execute multiple commands at once" in obs.content
 
             # Now run each command individually and verify they work
             results = []

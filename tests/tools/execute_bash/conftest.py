@@ -13,16 +13,16 @@ logger = get_logger(__name__)
 
 
 def get_output_text(obs: ExecuteBashObservation) -> str:
-    """Extract text from observation output field.
+    """Extract text from observation content field.
 
     This helper handles type-safe extraction of text from the observation's
-    output field, which can be a str or list of Content items.
+    content field, which can be a str or list of Content items.
     """
-    if isinstance(obs.output, str):
-        return obs.output
-    if not obs.output:
+    if isinstance(obs.content, str):
+        return obs.content
+    if not obs.content:
         return ""
-    first_item = obs.output[0]
+    first_item = obs.content[0]
     return first_item.text if isinstance(first_item, TextContent) else ""
 
 

@@ -180,4 +180,4 @@ def test_mcp_tool_validates_correctly_after_security_risk_pop():
     # 4. Execute the action (this should also work)
     observation = tool(action)
     assert isinstance(observation, MCPToolObservation)
-    assert not observation.has_error
+    assert not observation.is_error

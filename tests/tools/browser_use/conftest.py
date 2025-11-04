@@ -31,8 +31,12 @@ def create_mock_browser_response(
     screenshot_data: str | None = None,
 ):
     """Helper to create mock browser responses."""
+    if error:
+        return BrowserObservation(
+            content=error, is_error=True, screenshot_data=screenshot_data
+        )
     return BrowserObservation(
-        output=[TextContent(text=output)], error=error, screenshot_data=screenshot_data
+        content=[TextContent(text=output)], screenshot_data=screenshot_data
     )
 
 
@@ -41,13 +45,13 @@ def assert_browser_observation_success(
 ):
     """Assert that a browser observation indicates success."""
     assert isinstance(observation, BrowserObservation)
-    assert observation.error is None
+    assert observation.is_error is False
     if expected_output:
-        if isinstance(observation.output, str):
-            output_text = observation.output
+        if isinstance(observation.content, str):
+            output_text = observation.content
         else:
             output_text = "".join(
-                [c.text for c in observation.output if isinstance(c, TextContent)]
+                [c.text for c in observation.content if isinstance(c, TextContent)]
             )
         assert expected_output in output_text
 
@@ -57,6 +61,6 @@ def assert_browser_observation_error(
 ):
     """Assert that a browser observation contains an error."""
     assert isinstance(observation, BrowserObservation)
-    assert observation.error is not None
+    assert observation.is_error is True
     if expected_error:
-        assert expected_error in observation.error
+        assert expected_error in observation.content

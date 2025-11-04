@@ -63,7 +63,7 @@ def test_grep_tool_basic_search():
         observation = tool.executor(action)
 
         assert isinstance(observation, GrepObservation)
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 2  # Two files
         assert observation.pattern == "print"
         assert observation.search_path == str(Path(temp_dir).resolve())
@@ -89,7 +89,7 @@ def test_grep_tool_case_insensitive():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
 
 
@@ -107,7 +107,7 @@ def test_grep_tool_include_filter():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.matches[0].endswith(".py")
 
@@ -128,7 +128,7 @@ def test_grep_tool_specific_directory():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.search_path == str(src_dir.resolve())
         assert str(src_dir) in observation.matches[0]
@@ -147,7 +147,7 @@ def test_grep_tool_no_matches():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 0
         assert not observation.truncated
 
@@ -163,8 +163,8 @@ def test_grep_tool_invalid_regex():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is not None
-        assert "Invalid regex pattern" in observation.error
+        assert observation.is_error is True
+        assert "Invalid regex pattern" in observation.content
 
 
 def test_grep_tool_invalid_directory():
@@ -178,8 +178,8 @@ def test_grep_tool_invalid_directory():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is not None
-        assert "not a valid directory" in observation.error
+        assert observation.is_error is True
+        assert "not a valid directory" in observation.content
 
 
 def test_grep_tool_hidden_files_excluded():
@@ -196,7 +196,7 @@ def test_grep_tool_hidden_files_excluded():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
         assert ".hidden" not in observation.matches[0]
 
@@ -289,7 +289,7 @@ def test_grep_tool_truncation():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 100
         assert observation.truncated is True
 
