@@ -166,6 +166,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
     )
+    extra_headers: dict[str, str] | None = Field(
+        default=None,
+        description="Optional HTTP headers to forward to LiteLLM requests.",
+    )
     input_cost_per_token: float | None = Field(
         default=None,
         ge=0,
@@ -708,7 +712,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 ret = litellm_completion(
                     model=self.model,
                     api_key=self.api_key.get_secret_value() if self.api_key else None,
-                    base_url=self.base_url,
+                    api_base=self.base_url,
                     api_version=self.api_version,
                     timeout=self.timeout,
                     drop_params=self.drop_params,
