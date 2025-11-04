@@ -163,7 +163,11 @@ def test_remote_state_agent_property(mock_client, conversation_id, mock_agent):
 @pytest.mark.parametrize(
     "missing_field,property_name,error_match",
     [
-        ("agent_status", "agent_status", "agent_status missing in conversation info"),
+        (
+            "execution_status",
+            "execution_status",
+            "execution_status missing in conversation info",
+        ),
         (
             "confirmation_policy",
             "confirmation_policy",
