@@ -42,10 +42,6 @@ class ConversationExecutionStatus(str, Enum):
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
 
 
-# Backward compatibility alias
-AgentExecutionStatus = ConversationExecutionStatus
-
-
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====
     id: ConversationID = Field(description="Unique conversation ID")
