@@ -89,38 +89,22 @@ class MCPToolObservation(Observation):
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this observation."""
+        # MCPToolObservation always has content as a list
+        assert isinstance(self.content, list)
+
         content_obj = Text()
         content_obj.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
-
         if self.is_error:
             content_obj.append("[Error during execution]\n", style="bold red")
-            # Handle both str and list types for content
-            if isinstance(self.content, str):
-                content_obj.append(self.content + "\n")
-            else:
-                for block in self.content:
-                    if isinstance(block, TextContent):
-                        content_obj.append(block.text + "\n")
-                    elif isinstance(block, ImageContent):
-                        content_obj.append(
-                            f"[Image with {len(block.image_urls)} URLs]\n"
-                        )
-        elif self.content:
-            # Display all content blocks
-            if isinstance(self.content, str):
-                content_obj.append(self.content + "\n")
-            else:
-                for block in self.content:
-                    if isinstance(block, TextContent):
-                        # Try to parse as JSON for better display
-                        try:
-                            parsed = json.loads(block.text)
-                            content_obj.append(display_dict(parsed))
-                        except (json.JSONDecodeError, TypeError):
-                            content_obj.append(block.text + "\n")
-                    elif isinstance(block, ImageContent):
-                        content_obj.append(
-                            f"[Image with {len(block.image_urls)} URLs]\n"
-                        )
-
+        for block in self.content:
+            if isinstance(block, TextContent):
+                # try to see if block.text is a JSON
+                try:
+                    parsed = json.loads(block.text)
+                    content_obj.append(display_dict(parsed))
+                    continue
+                except (json.JSONDecodeError, TypeError):
+                    content_obj.append(block.text + "\n")
+            elif isinstance(block, ImageContent):
+                content_obj.append(f"[Image with {len(block.image_urls)} URLs]\n")
         return content_obj
