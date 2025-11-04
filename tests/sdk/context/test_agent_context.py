@@ -75,7 +75,9 @@ class TestAgentContext:
             trigger=None,
         )
 
-        context = AgentContext(load_user_skills=False, skills=[repo_agent1, repo_agent2])
+        context = AgentContext(
+            load_user_skills=False, skills=[repo_agent1, repo_agent2]
+        )
         result = context.get_system_message_suffix()
 
         expected_output = (
@@ -214,7 +216,9 @@ parametrization.",
             trigger=KeywordTrigger(keywords=["testing", "pytest"]),
         )
 
-        context = AgentContext(load_user_skills=False, skills=[python_agent, testing_agent])
+        context = AgentContext(
+            load_user_skills=False, skills=[python_agent, testing_agent]
+        )
         user_message = Message(
             role="user",
             content=[
@@ -320,7 +324,9 @@ attacks.",
             trigger=KeywordTrigger(keywords=["git", "commit"]),
         )
 
-        context = AgentContext(load_user_skills=False, skills=[repo_agent, knowledge_agent])
+        context = AgentContext(
+            load_user_skills=False, skills=[repo_agent, knowledge_agent]
+        )
 
         # Test system message suffix (should only include repo skills)
         system_result = context.get_system_message_suffix()
