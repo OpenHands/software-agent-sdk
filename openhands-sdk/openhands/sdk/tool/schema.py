@@ -201,6 +201,10 @@ class Observation(Schema, ABC):
     is_error: bool = Field(
         default=False, description="Whether the observation indicates an error"
     )
+    error_message_header: str = Field(
+        default="Tool Execution Error. ",
+        description="Header prepended to content when is_error is True",
+    )
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
@@ -212,7 +216,7 @@ class Observation(Schema, ABC):
 
         # If is_error is true, prepend error message
         if self.is_error:
-            llm_content.append(TextContent(text="Tool Execution Error. "))
+            llm_content.append(TextContent(text=self.error_message_header))
 
         # Add content
         if self.content:

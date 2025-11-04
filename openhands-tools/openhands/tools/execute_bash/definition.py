@@ -106,7 +106,7 @@ class ExecuteBashObservation(Observation):
 
         # If is_error is true, prepend error message
         if self.is_error:
-            llm_content.append(TextContent(text="Tool Execution Error. "))
+            llm_content.append(TextContent(text=self.error_message_header))
 
         # Handle both str and list types for content
         if isinstance(self.content, str):
