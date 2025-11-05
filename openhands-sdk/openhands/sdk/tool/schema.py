@@ -193,7 +193,7 @@ class Action(Schema, ABC):
 class Observation(Schema, ABC):
     """Base schema for output observation."""
 
-    ERROR_MESSAGE_HEADER: ClassVar[str] = "Tool Execution Error. "
+    ERROR_MESSAGE_HEADER: ClassVar[str] = "[An error occurred during execution.]\n"
 
     content: list[TextContent | ImageContent] = Field(
         default_factory=list,
