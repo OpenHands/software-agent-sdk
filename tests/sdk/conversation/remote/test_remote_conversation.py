@@ -640,24 +640,21 @@ class TestRemoteConversation:
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
 
-        # Mock the visualizer
-        with patch(
-            "openhands.sdk.conversation.impl.remote_conversation.create_default_visualizer"
-        ) as mock_visualizer:
-            mock_viz_instance = Mock()
-            mock_viz_instance.on_event = Mock()
-            mock_visualizer.return_value = mock_viz_instance
+        # Create a custom visualizer instance
+        custom_visualizer = ConversationVisualizer()
 
-            # Create conversation with visualizer=ConversationVisualizer()
-            conversation = RemoteConversation(
-                agent=self.agent,
-                workspace=self.workspace,
-                visualizer=ConversationVisualizer(),
-            )
+        # Create conversation with visualizer=ConversationVisualizer()
+        conversation = RemoteConversation(
+            agent=self.agent,
+            workspace=self.workspace,
+            visualizer=custom_visualizer,
+        )
 
-            # Verify visualizer was created and callback added
-            mock_visualizer.assert_called_once()
-            assert conversation._visualizer is mock_viz_instance
+        # Verify the custom visualizer instance is used directly
+        assert conversation._visualizer is custom_visualizer
+
+        # Verify the visualizer's on_event callback is in the callbacks list
+        assert custom_visualizer.on_event in conversation._callbacks
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
