@@ -3,7 +3,6 @@ from typing import TYPE_CHECKING, Literal
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolExecutor
-from openhands.sdk.tool.schema import TextContent
 
 
 if TYPE_CHECKING:
@@ -144,19 +143,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 command_result = self.session.execute(command_action)
 
                 # Extract text from content
-                reset_text = (
-                    reset_result.content[0].text
-                    if reset_result.content
-                    and isinstance(reset_result.content[0], TextContent)
-                    else ""
-                )
-
-                command_text = (
-                    command_result.content[0].text
-                    if command_result.content
-                    and isinstance(command_result.content[0], TextContent)
-                    else ""
-                )
+                reset_text = reset_result.get_text()
+                command_text = command_result.get_text()
 
                 observation = command_result.model_copy(
                     update={
