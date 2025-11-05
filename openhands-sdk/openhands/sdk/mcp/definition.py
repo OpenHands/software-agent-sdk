@@ -89,19 +89,19 @@ class MCPToolObservation(Observation):
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this observation."""
-        content_obj = Text()
-        content_obj.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
+        content = Text()
+        content.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
         if self.is_error:
-            content_obj.append("[Error during execution]\n", style="bold red")
+            content.append("[Error during execution]\n", style="bold red")
         for block in self.content:
             if isinstance(block, TextContent):
                 # try to see if block.text is a JSON
                 try:
                     parsed = json.loads(block.text)
-                    content_obj.append(display_dict(parsed))
+                    content.append(display_dict(parsed))
                     continue
                 except (json.JSONDecodeError, TypeError):
-                    content_obj.append(block.text + "\n")
+                    content.append(block.text + "\n")
             elif isinstance(block, ImageContent):
-                content_obj.append(f"[Image with {len(block.image_urls)} URLs]\n")
-        return content_obj
+                content.append(f"[Image with {len(block.image_urls)} URLs]\n")
+        return content
