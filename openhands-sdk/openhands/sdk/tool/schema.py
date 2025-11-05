@@ -206,7 +206,9 @@ class Observation(Schema, ABC):
     )
     error_message_header: str = Field(
         default="Tool Execution Error. ",
-        description="Header prepended to content when is_error is True",
+        description=(
+            "Header prepended to content and visualization when is_error is True"
+        ),
     )
 
     @classmethod
