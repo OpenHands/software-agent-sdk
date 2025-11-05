@@ -169,7 +169,6 @@ with ManagedAPIServer(port=8001) as server:
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 

@@ -57,7 +57,7 @@ def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
     agent = Agent(llm=llm, tools=[Tool(name="upper")])
 
     # Build a conversation; this should call agent._initialize() internally
-    Conversation(agent=agent, visualize=False)
+    Conversation(agent=agent, visualizer=None)
 
     # Access the agent's runtime tools via a small shim
     # (We don't rely on private internals; we verify init_state produced a system prompt

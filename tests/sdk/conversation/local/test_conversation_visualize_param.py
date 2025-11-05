@@ -29,9 +29,9 @@ def mock_agent():
 
 
 def test_conversation_with_visualize_true(mock_agent):
-    """Test Conversation with visualize=True (default)."""
+    """Test Conversation with visualizer=default (omitted parameter)."""
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(agent=mock_agent, visualize=True)
+        conversation = Conversation(agent=mock_agent)
 
         # Should have a visualizer
         assert conversation._visualizer is not None
@@ -48,9 +48,9 @@ def test_conversation_with_visualize_true(mock_agent):
 
 
 def test_conversation_with_visualize_false(mock_agent):
-    """Test Conversation with visualize=False."""
+    """Test Conversation with visualizer=None."""
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(agent=mock_agent, visualize=False)
+        conversation = Conversation(agent=mock_agent, visualizer=None)
 
         # Should not have a visualizer
         assert conversation._visualizer is None
@@ -66,7 +66,7 @@ def test_conversation_with_visualize_false(mock_agent):
 
 
 def test_conversation_default_visualize_is_true(mock_agent):
-    """Test that visualize defaults to True."""
+    """Test that visualizer defaults to default visualizer."""
     with patch.object(Agent, "init_state"):
         conversation = Conversation(agent=mock_agent)
 
@@ -81,9 +81,7 @@ def test_conversation_with_custom_callbacks_and_visualize_true(mock_agent):
     callbacks = [custom_callback]
 
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(
-            agent=mock_agent, callbacks=callbacks, visualize=True
-        )
+        conversation = Conversation(agent=mock_agent, callbacks=callbacks)
 
         # Should have a visualizer
         assert conversation._visualizer is not None
@@ -111,7 +109,7 @@ def test_conversation_with_custom_callbacks_and_visualize_false(mock_agent):
 
     with patch.object(Agent, "init_state") as mock_init_state:
         conversation = Conversation(
-            agent=mock_agent, callbacks=callbacks, visualize=False
+            agent=mock_agent, callbacks=callbacks, visualizer=None
         )
 
         # Should not have a visualizer
@@ -156,9 +154,7 @@ def test_conversation_callback_order(mock_agent):
         )
         mock_create_viz.return_value = mock_visualizer
 
-        conversation = Conversation(
-            agent=mock_agent, callbacks=[callback1, callback2], visualize=True
-        )
+        conversation = Conversation(agent=mock_agent, callbacks=[callback1, callback2])
 
         # Get the composed callback
         mock_init_state.assert_called_once()
@@ -179,7 +175,7 @@ def test_conversation_callback_order(mock_agent):
 def test_conversation_no_callbacks_with_visualize_true(mock_agent):
     """Test Conversation with no custom callbacks but visualize=True."""
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(agent=mock_agent, callbacks=None, visualize=True)
+        conversation = Conversation(agent=mock_agent, callbacks=None)
 
         # Should have a visualizer
         assert conversation._visualizer is not None
@@ -200,7 +196,7 @@ def test_conversation_no_callbacks_with_visualize_true(mock_agent):
 def test_conversation_no_callbacks_with_visualize_false(mock_agent):
     """Test Conversation with no custom callbacks and visualize=False."""
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(agent=mock_agent, callbacks=None, visualize=False)
+        conversation = Conversation(agent=mock_agent, callbacks=None, visualizer=None)
 
         # Should not have a visualizer
         assert conversation._visualizer is None
@@ -227,7 +223,7 @@ def test_conversation_with_custom_visualizer_instance(mock_agent):
     )
 
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(agent=mock_agent, visualize=custom_visualizer)
+        conversation = Conversation(agent=mock_agent, visualizer=custom_visualizer)
 
         # Should use the custom visualizer
         assert conversation._visualizer is custom_visualizer
@@ -254,7 +250,7 @@ def test_conversation_with_custom_visualizer_and_callbacks(mock_agent):
 
     with patch.object(Agent, "init_state") as mock_init_state:
         conversation = Conversation(
-            agent=mock_agent, callbacks=callbacks, visualize=custom_visualizer
+            agent=mock_agent, callbacks=callbacks, visualizer=custom_visualizer
         )
 
         # Should use the custom visualizer
@@ -280,7 +276,7 @@ def test_conversation_with_custom_visualizer_and_callbacks(mock_agent):
 def test_conversation_with_visualize_none(mock_agent):
     """Test Conversation with visualize=None (no visualization)."""
     with patch.object(Agent, "init_state") as mock_init_state:
-        conversation = Conversation(agent=mock_agent, visualize=None)
+        conversation = Conversation(agent=mock_agent, visualizer=None)
 
         # Should not have a visualizer
         assert conversation._visualizer is None
