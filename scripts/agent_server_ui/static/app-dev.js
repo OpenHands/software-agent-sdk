@@ -178,7 +178,7 @@ class OpenHandsWebChat {
             <div class="conversation-title">${title}</div>
             <div class="conversation-meta">
                 <span>${createdAt}</span>
-                <span class="conversation-status ${conversation.agent_status.toLowerCase()}">${conversation.agent_status}</span>
+                <span class="conversation-status ${conversation.execution_status.toLowerCase()}">${conversation.execution_status}</span>
             </div>
         `;
         
@@ -223,7 +223,7 @@ class OpenHandsWebChat {
         const conversation = this.conversations.get(conversationId);
         if (conversation) {
             this.conversationTitle.textContent = this.getConversationTitle(conversation);
-            this.updateConversationStatus(conversation.agent_status);
+            this.updateConversationStatus(conversation.execution_status);
             this.enableChatControls();
         }
         

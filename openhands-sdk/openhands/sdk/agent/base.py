@@ -257,7 +257,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         2. Executing the tool
         3. Updating the conversation state with
             LLM calls (role="assistant") and tool results (role="tool")
-        4.1 If conversation is finished, set state.agent_status to FINISHED
+        4.1 If conversation is finished, set state.execution_status to FINISHED
         4.2 Otherwise, just return, Conversation will kick off the next step
 
         NOTE: state will be mutated in-place.

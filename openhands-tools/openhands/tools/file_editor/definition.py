@@ -8,6 +8,7 @@ from pydantic import Field, PrivateAttr
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
 from rich.text import Text
 
 from openhands.sdk.llm import ImageContent, TextContent
@@ -16,6 +17,7 @@ from openhands.sdk.tool import (
     Observation,
     ToolAnnotations,
     ToolDefinition,
+    register_tool,
 )
 from openhands.tools.file_editor.utils.diff import visualize_diff
 
@@ -221,12 +223,11 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name="str_replace_editor",
                 action_type=FileEditorAction,
                 observation_type=FileEditorObservation,
                 description=enhanced_description,
                 annotations=ToolAnnotations(
-                    title="str_replace_editor",
+                    title="file_editor",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,
@@ -235,3 +236,7 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(FileEditorTool.name, FileEditorTool)

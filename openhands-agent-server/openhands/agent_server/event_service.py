@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -14,7 +15,10 @@ from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
@@ -82,9 +86,15 @@ class EventService:
         limit: int = 100,
         kind: str | None = None,
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
     ) -> EventPage:
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Convert datetime to ISO string for comparison (ISO strings are comparable)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         # Collect all events
         all_events = []
@@ -97,6 +107,16 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply timestamp filters if provided (ISO string comparison)
+                if (
+                    timestamp_gte_str is not None
+                    and event.timestamp < timestamp_gte_str
+                ):
+                    continue
+                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                    continue
+
                 all_events.append(event)
 
         # Sort events based on sort_order
@@ -131,10 +151,16 @@ class EventService:
     async def count_events(
         self,
         kind: str | None = None,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
     ) -> int:
         """Count events matching the given filters."""
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Convert datetime to ISO string for comparison (ISO strings are comparable)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
         with self._conversation._state as state:
@@ -146,6 +172,16 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply timestamp filters if provided (ISO string comparison)
+                if (
+                    timestamp_gte_str is not None
+                    and event.timestamp < timestamp_gte_str
+                ):
+                    continue
+                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                    continue
+
                 count += 1
 
         return count
@@ -165,7 +201,7 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
             with self._conversation.state as state:
-                run = state.agent_status != AgentExecutionStatus.RUNNING
+                run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
             loop.run_in_executor(None, self._conversation.run)
 

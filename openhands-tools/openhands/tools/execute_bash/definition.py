@@ -18,6 +18,7 @@ from openhands.sdk.tool import (
     ToolAnnotations,
     ToolDefinition,
     ToolExecutor,
+    register_tool,
 )
 from openhands.sdk.utils import maybe_truncate
 from openhands.tools.execute_bash.constants import (
@@ -263,12 +264,11 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="execute_bash",
                 action_type=ExecuteBashAction,
                 observation_type=ExecuteBashObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
-                    title="execute_bash",
+                    title="bash",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,
@@ -277,3 +277,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(BashTool.name, BashTool)

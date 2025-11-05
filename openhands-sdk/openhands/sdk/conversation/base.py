@@ -18,7 +18,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.conversation.state import AgentExecutionStatus
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
 
 
 class ConversationStateProtocol(Protocol):
@@ -35,8 +35,8 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def agent_status(self) -> "AgentExecutionStatus":
-        """The current agent execution status."""
+    def execution_status(self) -> "ConversationExecutionStatus":
+        """The current conversation execution status."""
         ...
 
     @property

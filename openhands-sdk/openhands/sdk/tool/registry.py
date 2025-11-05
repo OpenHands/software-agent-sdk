@@ -3,6 +3,7 @@ from collections.abc import Callable, Sequence
 from threading import RLock
 from typing import TYPE_CHECKING, Any
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import ToolDefinition
 
@@ -10,6 +11,7 @@ from openhands.sdk.tool.tool import ToolDefinition
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
+logger = get_logger(__name__)
 
 # A resolver produces ToolDefinition instances for given params.
 Resolver = Callable[[dict[str, Any], "ConversationState"], Sequence[ToolDefinition]]
@@ -136,6 +138,9 @@ def register_tool(
         )
 
     with _LOCK:
+        # TODO: throw exception when registering duplicate name tools
+        if name in _REG:
+            logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
 
 
