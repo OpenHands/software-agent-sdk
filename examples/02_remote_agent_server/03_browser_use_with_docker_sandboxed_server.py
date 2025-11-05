@@ -35,7 +35,7 @@ def detect_platform():
 # Create a Docker-based remote workspace with extra ports for browser access
 with DockerWorkspace(
     base_image="nikolaik/python-nodejs:python3.12-nodejs22",
-    # host_port=8010,
+    host_port=8011,
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
 ) as workspace:
