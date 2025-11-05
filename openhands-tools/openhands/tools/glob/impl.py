@@ -67,11 +67,12 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
                 )
 
             if not search_path.is_dir():
-                return GlobObservation(
+                return GlobObservation.from_text(
+                    text=f"Search path '{search_path}' is not a valid directory",
                     files=[],
                     pattern=original_pattern,
                     search_path=str(search_path),
-                    error=f"Search path '{search_path}' is not a valid directory",
+                    is_error=True,
                 )
 
             if self._ripgrep_available:
@@ -79,7 +80,26 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             else:
                 files, truncated = self._execute_with_glob(pattern, search_path)
 
-            return GlobObservation(
+            # Format content message
+            if not files:
+                content = (
+                    f"No files found matching pattern '{original_pattern}' "
+                    f"in directory '{search_path}'"
+                )
+            else:
+                file_list = "\n".join(files)
+                content = (
+                    f"Found {len(files)} file(s) matching pattern "
+                    f"'{original_pattern}' in '{search_path}':\n{file_list}"
+                )
+                if truncated:
+                    content += (
+                        "\n\n[Results truncated to first 100 files. "
+                        "Consider using a more specific pattern.]"
+                    )
+
+            return GlobObservation.from_text(
+                text=content,
                 files=files,
                 pattern=original_pattern,
                 search_path=str(search_path),
@@ -96,11 +116,12 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
             except Exception:
                 error_search_path = "unknown"
 
-            return GlobObservation(
+            return GlobObservation.from_text(
+                text=str(e),
                 files=[],
                 pattern=action.pattern,
                 search_path=error_search_path,
-                error=str(e),
+                is_error=True,
             )
 
     def _execute_with_ripgrep(

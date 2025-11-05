@@ -18,9 +18,9 @@ def test_execute_bash_observation_truncation_under_limit():
     )
 
     observation = ExecuteBashObservation(
-        output="Short output",
+        command="echo test",
+        content=[TextContent(text="Short output")],
         metadata=metadata,
-        error=False,
     )
 
     result = observation.to_llm_content
@@ -52,9 +52,9 @@ def test_execute_bash_observation_truncation_over_limit():
     long_output = "A" * (MAX_CMD_OUTPUT_SIZE + 1000)
 
     observation = ExecuteBashObservation(
-        output=long_output,
+        command="echo test",
+        content=[TextContent(text=long_output)],
         metadata=metadata,
-        error=False,
     )
 
     result = observation.to_llm_content
@@ -89,18 +89,21 @@ def test_execute_bash_observation_truncation_with_error():
     long_output = "B" * (MAX_CMD_OUTPUT_SIZE + 500)
 
     observation = ExecuteBashObservation(
-        output=long_output,
+        command="false",
+        content=[TextContent(text=long_output)],
         metadata=metadata,
-        error=True,
+        is_error=True,
     )
 
     result = observation.to_llm_content
-    assert len(result) == 1
+    assert len(result) == 2
     assert isinstance(result[0], TextContent)
-    result = result[0].text
+    assert result[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
 
-    # The result should be truncated and have error prefix
-    assert result.startswith("[There was an error during command execution.]")
+    assert isinstance(result[1], TextContent)
+    result = result[1].text
+
+    # The result should be truncated
     assert len(result) < len(long_output) + 300  # Account for metadata and error prefix
     # With head-and-tail truncation, should end with original content + metadata
     expected_end = (
@@ -132,9 +135,9 @@ def test_execute_bash_observation_truncation_exact_limit():
     exact_output = "C" * exact_output_size
 
     observation = ExecuteBashObservation(
-        output=exact_output,
+        command="echo test",
+        content=[TextContent(text=exact_output)],
         metadata=metadata,
-        error=False,
     )
 
     result = observation.to_llm_content
@@ -162,9 +165,9 @@ def test_execute_bash_observation_truncation_with_prefix_suffix():
     long_output = "D" * (MAX_CMD_OUTPUT_SIZE + 200)
 
     observation = ExecuteBashObservation(
-        output=long_output,
+        command="echo test",
+        content=[TextContent(text=long_output)],
         metadata=metadata,
-        error=False,
     )
 
     result = observation.to_llm_content

@@ -26,7 +26,7 @@ def test_glob_executor_basic_pattern():
         action = GlobAction(pattern="*.py")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 2
         assert all(f.endswith(".py") for f in observation.files)
         assert observation.pattern == "*.py"
@@ -49,7 +49,7 @@ def test_glob_executor_recursive_pattern():
         action = GlobAction(pattern="**/*.py")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 2
         assert all(f.endswith(".py") for f in observation.files)
 
@@ -70,7 +70,7 @@ def test_glob_executor_custom_path():
         action = GlobAction(pattern="*.txt", path=str(sub_dir))
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 2
         assert observation.search_path == str(sub_dir.resolve())
         assert all(str(sub_dir) in f for f in observation.files)
@@ -83,8 +83,8 @@ def test_glob_executor_invalid_path():
         action = GlobAction(pattern="*.py", path="/nonexistent/path")
         observation = executor(action)
 
-        assert observation.error is not None
-        assert "is not a valid directory" in observation.error
+        assert observation.is_error is True
+        assert "is not a valid directory" in observation.text
         assert len(observation.files) == 0
 
 
@@ -99,7 +99,7 @@ def test_glob_executor_no_matches():
         action = GlobAction(pattern="*.py")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 0
         assert not observation.truncated
 
@@ -116,7 +116,7 @@ def test_glob_executor_directories_excluded():
         action = GlobAction(pattern="*")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         # Should only find the file, not directories
         assert len(observation.files) == 1
         assert observation.files[0].endswith("file.txt")
@@ -143,7 +143,7 @@ def test_glob_executor_sorting():
         action = GlobAction(pattern="*.txt")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 3
 
         # Files should be sorted by modification time (newest first)
@@ -162,7 +162,7 @@ def test_glob_executor_truncation():
         action = GlobAction(pattern="*.txt")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 100
         assert observation.truncated is True
 
@@ -189,7 +189,7 @@ def test_glob_executor_complex_patterns():
         action = GlobAction(pattern="config.*")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 4  # All config files
         extensions = {Path(f).suffix for f in observation.files}
         assert extensions == {".json", ".yaml", ".yml", ".toml"}
@@ -206,7 +206,7 @@ def test_glob_executor_exception_handling():
         observation = executor(action)
 
         # Should not raise exception, even if there are no matches
-        assert observation.error is None or isinstance(observation.error, str)
+        assert observation.is_error is False or isinstance(observation.content, str)
         assert isinstance(observation.files, list)
 
 
@@ -220,7 +220,7 @@ def test_glob_executor_absolute_paths():
         action = GlobAction(pattern="*.py")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 1
 
         # Check that returned path is absolute
@@ -236,7 +236,7 @@ def test_glob_executor_empty_directory():
         action = GlobAction(pattern="*")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 0
         assert not observation.truncated
 

@@ -28,11 +28,13 @@ def serialize_secret(v: SecretStr | None, info):
     return v
 
 
-def validate_secret(v: SecretStr | None, info):
+def validate_secret(v: str | SecretStr | None, info) -> SecretStr | None:
     """
     Deserialize secret fields, handling encryption and empty values.
 
+    Accepts both str and SecretStr inputs, always returns SecretStr | None.
     - Empty secrets are converted to None
+    - Plain strings are converted to SecretStr
     - If a cipher is provided in context, attempts to decrypt the value
     - If decryption fails, the cipher returns None and a warning is logged
     - This gracefully handles conversations encrypted with different keys or were redacted
@@ -55,4 +57,8 @@ def validate_secret(v: SecretStr | None, info):
         cipher: Cipher = info.context.get("cipher")
         return cipher.decrypt(secret_value)
 
-    return v
+    # Always return SecretStr
+    if isinstance(v, SecretStr):
+        return v
+    else:
+        return SecretStr(secret_value)

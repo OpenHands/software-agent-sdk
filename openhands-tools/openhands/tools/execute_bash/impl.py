@@ -1,6 +1,7 @@
 import json
 from typing import TYPE_CHECKING, Literal
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolExecutor
 
@@ -111,8 +112,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             f"Terminal session reset successfully with working_dir: {original_work_dir}"
         )
 
-        return ExecuteBashObservation(
-            output=(
+        return ExecuteBashObservation.from_text(
+            text=(
                 "Terminal session has been reset. All previous environment "
                 "variables and session state have been cleared."
             ),
@@ -141,11 +142,16 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 )
                 self._export_envs(command_action, conversation)
                 command_result = self.session.execute(command_action)
+
+                # Extract text from content
+                reset_text = reset_result.text
+                command_text = command_result.text
+
                 observation = command_result.model_copy(
                     update={
-                        "output": (
-                            reset_result.output + "\n\n" + command_result.output
-                        ),
+                        "content": [
+                            TextContent(text=f"{reset_text}\n\n{command_text}")
+                        ],
                         "command": f"[RESET] {action.command}",
                     }
                 )
@@ -158,15 +164,15 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             observation = self.session.execute(action)
 
         # Apply automatic secrets masking
-        if observation.output and conversation is not None:
+        content_text = observation.text
+
+        if content_text and conversation is not None:
             try:
                 secret_registry = conversation.state.secret_registry
-                masked_output = secret_registry.mask_secrets_in_output(
-                    observation.output
-                )
-                if masked_output:
-                    data = observation.model_dump(exclude={"output"})
-                    return ExecuteBashObservation(**data, output=masked_output)
+                masked_content = secret_registry.mask_secrets_in_output(content_text)
+                if masked_content:
+                    data = observation.model_dump(exclude={"content"})
+                    return ExecuteBashObservation.from_text(text=masked_content, **data)
             except Exception:
                 pass
 
