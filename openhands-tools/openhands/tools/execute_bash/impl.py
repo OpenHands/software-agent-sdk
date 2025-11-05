@@ -143,26 +143,20 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 self._export_envs(command_action, conversation)
                 command_result = self.session.execute(command_action)
 
-                # Extract text from content (handle both str and list types)
-                if isinstance(reset_result.content, str):
-                    reset_text = reset_result.content
-                else:
-                    reset_text = (
-                        reset_result.content[0].text
-                        if reset_result.content
-                        and isinstance(reset_result.content[0], TextContent)
-                        else ""
-                    )
+                # Extract text from content
+                reset_text = (
+                    reset_result.content[0].text
+                    if reset_result.content
+                    and isinstance(reset_result.content[0], TextContent)
+                    else ""
+                )
 
-                if isinstance(command_result.content, str):
-                    command_text = command_result.content
-                else:
-                    command_text = (
-                        command_result.content[0].text
-                        if command_result.content
-                        and isinstance(command_result.content[0], TextContent)
-                        else ""
-                    )
+                command_text = (
+                    command_result.content[0].text
+                    if command_result.content
+                    and isinstance(command_result.content[0], TextContent)
+                    else ""
+                )
 
                 observation = command_result.model_copy(
                     update={
