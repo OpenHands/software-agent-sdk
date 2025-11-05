@@ -392,6 +392,7 @@ class TerminalSession(TerminalSessionBase):
                 command=command,
                 text=command_output,
                 metadata=metadata,
+                is_error=True,
             )
             logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")
             return obs
