@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Self
 from pydantic import Field
 from rich.text import Text
 
-from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -46,20 +45,15 @@ class ThinkAction(Action):
 
 
 class ThinkObservation(Observation):
-    """Observation returned after logging a thought."""
-
-    content: str = Field(
-        default="Your thought has been logged.", description="Confirmation message."
-    )
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        return [TextContent(text=self.content)]
+    """
+    Observation returned after logging a thought.
+    The ThinkAction itself contains the thought logged so no extra
+    fields are needed here.
+    """
 
     @property
     def visualize(self) -> Text:
-        """Return Rich Text representation - empty since action shows the thought."""
-        # Don't duplicate the thought display - action already shows it
+        """Return an empty Text representation since the thought is in the action."""
         return Text()
 
 
@@ -81,7 +75,7 @@ class ThinkExecutor(ToolExecutor):
         _: ThinkAction,
         conversation: "BaseConversation | None" = None,  # noqa: ARG002
     ) -> ThinkObservation:
-        return ThinkObservation()
+        return ThinkObservation.from_text(text="Your thought has been logged.")
 
 
 class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):
