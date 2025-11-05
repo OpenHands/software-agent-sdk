@@ -86,20 +86,14 @@ def test_real_mcp_tool_execution_without_kind_field(fetch_tool):
 
     # Verify we got a valid response (not an error about 'kind')
     # Check output if no error, otherwise check error message
-    if observation.is_error:
-        assert observation.is_error is True
-        content_str = observation.content
-    else:
-        assert observation.content is not None
-        # Extract text from content blocks
-        from openhands.sdk.llm import TextContent
+    from openhands.sdk.llm import TextContent
 
-        text_parts = [
-            block.text
-            for block in observation.content
-            if isinstance(block, TextContent)
-        ]
-        content_str = " ".join(text_parts)
+    assert observation.content is not None
+    # Extract text from content blocks (content is always a list now)
+    text_parts = [
+        block.text for block in observation.content if isinstance(block, TextContent)
+    ]
+    content_str = " ".join(text_parts)
 
     # Check that the response doesn't contain validation error about 'kind'
     if "error" in content_str.lower():
