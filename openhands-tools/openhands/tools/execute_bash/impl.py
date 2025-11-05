@@ -187,9 +187,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 masked_content = secret_registry.mask_secrets_in_output(content_text)
                 if masked_content:
                     data = observation.model_dump(exclude={"content"})
-                    return ExecuteBashObservation(
-                        **data, content=[TextContent(text=masked_content)]
-                    )
+                    return ExecuteBashObservation.from_text(text=masked_content, **data)
             except Exception:
                 pass
 

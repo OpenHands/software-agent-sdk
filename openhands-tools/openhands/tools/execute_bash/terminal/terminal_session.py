@@ -4,7 +4,6 @@ import re
 import time
 from enum import Enum
 
-from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.tools.execute_bash.constants import (
     CMD_OUTPUT_PS1_END,
@@ -187,9 +186,9 @@ class TerminalSession(TerminalSessionBase):
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
         self._ready_for_next_command()
-        return ExecuteBashObservation(
+        return ExecuteBashObservation.from_text(
             command=command,
-            content=[TextContent(text=command_output)],
+            text=command_output,
             metadata=metadata,
         )
 
@@ -221,9 +220,9 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        return ExecuteBashObservation(
+        return ExecuteBashObservation.from_text(
             command=command,
-            content=[TextContent(text=command_output)],
+            text=command_output,
             metadata=metadata,
         )
 
@@ -256,9 +255,9 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        return ExecuteBashObservation(
+        return ExecuteBashObservation.from_text(
             command=command,
-            content=[TextContent(text=command_output)],
+            text=command_output,
             metadata=metadata,
         )
 
@@ -389,9 +388,9 @@ class TerminalSession(TerminalSessionBase):
                 metadata,
                 continue_prefix="[Below is the output of the previous command.]\n",
             )
-            obs = ExecuteBashObservation(
+            obs = ExecuteBashObservation.from_text(
                 command=command,
-                content=[TextContent(text=command_output)],
+                text=command_output,
                 metadata=metadata,
             )
             logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")
