@@ -4,7 +4,7 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
-from openhands.sdk.conversation.visualizer import ConversationVisualizer
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -51,7 +51,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: ConversationVisualizerBase | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "LocalConversation": ...
@@ -66,7 +66,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: ConversationVisualizerBase | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "RemoteConversation": ...
@@ -81,7 +81,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: ConversationVisualizerBase | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> BaseConversation:

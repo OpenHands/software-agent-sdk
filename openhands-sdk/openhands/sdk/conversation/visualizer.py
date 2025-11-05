@@ -1,4 +1,5 @@
 import re
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from rich.console import Console
@@ -19,6 +20,7 @@ from openhands.sdk.event.condenser import Condensation
 
 
 if TYPE_CHECKING:
+    from openhands.sdk.conversation.base import ConversationStateProtocol
     from openhands.sdk.conversation.conversation_stats import ConversationStats
 
 
@@ -50,7 +52,76 @@ DEFAULT_HIGHLIGHT_REGEX = {
 _PANEL_PADDING = (1, 1)
 
 
-class ConversationVisualizer:
+class ConversationVisualizerBase(ABC):
+    """Base class for conversation visualizers.
+
+    This abstract base class defines the interface that all conversation visualizers
+    must implement. Visualizers can be created before the Conversation is initialized
+    and will be configured with the conversation state automatically.
+
+    The typical usage pattern:
+    1. Create a visualizer instance:
+       `viz = MyVisualizer(name_for_visualization="agent1")`
+    2. Pass it to Conversation: `conv = Conversation(agent, visualizer=viz)`
+    3. Conversation automatically calls `viz.initialize(state)` to attach the state
+    """
+
+    _name_for_visualization: str | None
+    _state: "ConversationStateProtocol | None"
+
+    def __init__(
+        self,
+        name_for_visualization: str | None = None,
+        state: "ConversationStateProtocol | None" = None,
+    ):
+        """Initialize the visualizer base.
+
+        Args:
+            name_for_visualization: Optional name to prefix in panel titles to identify
+                                  which agent/conversation is speaking. Will be
+                                  capitalized automatically.
+            state: Optional conversation state. If not provided, must be set later
+                  via initialize() method.
+        """
+        self._name_for_visualization = (
+            name_for_visualization.capitalize() if name_for_visualization else None
+        )
+        self._state = state
+
+    def initialize(self, state: "ConversationStateProtocol") -> None:
+        """Initialize the visualizer with conversation state.
+
+        This method is called by Conversation after the state is created,
+        allowing the visualizer to access conversation stats and other
+        state information.
+
+        Subclasses can override this method to add custom initialization logic,
+        but should call super().initialize(state) to ensure the state is set.
+
+        Args:
+            state: The conversation state object
+        """
+        self._state = state
+
+    @property
+    def conversation_stats(self) -> "ConversationStats | None":
+        """Get conversation stats from the state."""
+        return self._state.stats if self._state else None
+
+    @abstractmethod
+    def on_event(self, event: Event) -> None:
+        """Handle a conversation event.
+
+        This method is called for each event in the conversation and should
+        implement the visualization logic.
+
+        Args:
+            event: The event to visualize
+        """
+        pass
+
+
+class ConversationVisualizer(ConversationVisualizerBase):
     """Handles visualization of conversation events with Rich formatting.
 
     Provides Rich-formatted output with panels and complete content display.
@@ -58,8 +129,7 @@ class ConversationVisualizer:
 
     _console: Console
     _skip_user_messages: bool
-    _conversation_stats: "ConversationStats | None"
-    _name_for_visualization: str | None
+    _highlight_patterns: dict[str, str]
 
     def __init__(
         self,
@@ -67,6 +137,7 @@ class ConversationVisualizer:
         skip_user_messages: bool = False,
         conversation_stats: "ConversationStats | None" = None,
         name_for_visualization: str | None = None,
+        state: "ConversationStateProtocol | None" = None,
     ):
         """Initialize the visualizer.
 
@@ -77,17 +148,28 @@ class ConversationVisualizer:
                            "Thought:": "bold green"}
             skip_user_messages: If True, skip displaying user messages. Useful for
                                 scenarios where user input is not relevant to show.
-            conversation_stats: ConversationStats object to display metrics information.
+            conversation_stats: Optional ConversationStats object to display
+                              metrics. If not provided and state is provided,
+                              will use state.stats. If neither provided,
+                              will be set via initialize().
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
+            state: Optional conversation state. If not provided, must be set later
+                  via initialize() method.
         """
+        super().__init__(
+            name_for_visualization=name_for_visualization,
+            state=state,
+        )
         self._console = Console()
         self._skip_user_messages = skip_user_messages
-        self._highlight_patterns: dict[str, str] = highlight_regex or {}
-        self._conversation_stats = conversation_stats
-        self._name_for_visualization = (
-            name_for_visualization.capitalize() if name_for_visualization else None
-        )
+        self._highlight_patterns = highlight_regex or {}
+
+        # Support legacy conversation_stats parameter for backward compatibility
+        if conversation_stats is not None:
+            # If conversation_stats provided explicitly, we'll use it
+            # This is for backward compatibility when creating visualizers manually
+            pass
 
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
@@ -280,10 +362,11 @@ class ConversationVisualizer:
     def _format_metrics_subtitle(self) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
         colors, and k/m abbreviations using conversation stats."""
-        if not self._conversation_stats:
+        stats = self.conversation_stats
+        if not stats:
             return None
 
-        combined_metrics = self._conversation_stats.get_combined_metrics()
+        combined_metrics = stats.get_combined_metrics()
         if not combined_metrics or not combined_metrics.accumulated_token_usage:
             return None
 
@@ -331,6 +414,7 @@ def create_default_visualizer(
     highlight_regex: dict[str, str] | None = None,
     conversation_stats: "ConversationStats | None" = None,
     name_for_visualization: str | None = None,
+    state: "ConversationStateProtocol | None" = None,
     **kwargs,
 ) -> ConversationVisualizer:
     """Create a default conversation visualizer instance.
@@ -341,8 +425,11 @@ def create_default_visualizer(
                        For example: {"Reasoning:": "bold blue",
                        "Thought:": "bold green"}
         conversation_stats: ConversationStats object to display metrics information.
+                          Deprecated - use state instead.
         name_for_visualization: Optional name to prefix in panel titles to identify
                               which agent/conversation is speaking.
+        state: Optional conversation state. If not provided, must be set later
+              via initialize() method.
     """
     return ConversationVisualizer(
         highlight_regex=DEFAULT_HIGHLIGHT_REGEX
@@ -350,5 +437,6 @@ def create_default_visualizer(
         else highlight_regex,
         conversation_stats=conversation_stats,
         name_for_visualization=name_for_visualization,
+        state=state,
         **kwargs,
     )

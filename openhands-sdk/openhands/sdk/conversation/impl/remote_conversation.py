@@ -21,7 +21,7 @@ from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
+    ConversationVisualizerBase,
     create_default_visualizer,
 )
 from openhands.sdk.event.base import Event
@@ -386,6 +386,13 @@ class RemoteState(ConversationStateProtocol):
             )
         return persistence_dir
 
+    @property
+    def stats(self) -> ConversationStats:
+        """Get conversation stats (fetched from remote)."""
+        info = self._get_conversation_info()
+        stats_data = info.get("conversation_stats", {})
+        return ConversationStats.model_validate(stats_data)
+
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
@@ -406,7 +413,7 @@ class RemoteState(ConversationStateProtocol):
 class RemoteConversation(BaseConversation):
     _id: uuid.UUID
     _state: "RemoteState"
-    _visualizer: ConversationVisualizer | None
+    _visualizer: ConversationVisualizerBase | None
     _ws_client: "WebSocketCallbackClient | None"
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
@@ -422,7 +429,7 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: ConversationVisualizerBase | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -439,7 +446,7 @@ class RemoteConversation(BaseConversation):
             visualizer: Visualization configuration. Can be:
                        - Default: Use default visualizer (when omitted)
                        - None: No visualization
-                       - ConversationVisualizer instance: Use custom visualizer
+                       - ConversationVisualizerBase instance: Use custom visualizer
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             secrets: Optional secrets to initialize the conversation with
@@ -492,9 +499,11 @@ class RemoteConversation(BaseConversation):
         self._callbacks.append(state_update_callback)
 
         # Handle visualization configuration
-        if isinstance(visualizer, ConversationVisualizer):
+        if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
             self._visualizer = visualizer
+            # Initialize the visualizer with conversation state
+            self._visualizer.initialize(self._state)
             self._callbacks.append(self._visualizer.on_event)
         elif visualizer is _DEFAULT_VISUALIZER:
             # Create default visualizer
@@ -502,6 +511,8 @@ class RemoteConversation(BaseConversation):
                 name_for_visualization=name_for_visualization,
             )
             if self._visualizer is not None:
+                # Initialize with state
+                self._visualizer.initialize(self._state)
                 self._callbacks.append(self._visualizer.on_event)
         else:
             # No visualization (visualizer is None)

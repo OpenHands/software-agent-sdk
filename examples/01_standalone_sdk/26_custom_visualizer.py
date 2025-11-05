@@ -25,7 +25,7 @@ from collections.abc import Callable
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation
-from openhands.sdk.conversation.visualizer import ConversationVisualizer
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -78,7 +78,7 @@ class EventHandlerMixin:
         pass
 
 
-class MinimalProgressVisualizer(EventHandlerMixin, ConversationVisualizer):
+class MinimalProgressVisualizer(EventHandlerMixin, ConversationVisualizerBase):
     """A minimal progress visualizer that shows step counts and tool names.
 
     This visualizer produces concise output showing:
@@ -95,18 +95,16 @@ class MinimalProgressVisualizer(EventHandlerMixin, ConversationVisualizer):
         Step 2: Executing str_replace_editor (str_replace: .../FACTS.txt)... ✓
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, name_for_visualization: str | None = None):
         """Initialize the minimal progress visualizer.
 
         Args:
-            **kwargs: Additional arguments passed to ConversationVisualizer.
-                     Note: We override visualization, so most ConversationVisualizer
-                     parameters are ignored, but we keep the signature for
-                     compatibility.
+            name_for_visualization: Optional name to identify the agent/conversation.
+                                  Note: This simple visualizer doesn't use it in output,
+                                  but accepts it for compatibility with the base class.
         """
-        # Initialize parent but we'll override on_event
-        # We don't need the console/panels from the parent
-        super().__init__(**kwargs)
+        # Initialize parent - state will be set later via initialize()
+        super().__init__(name_for_visualization=name_for_visualization)
 
         # Track state for minimal progress output
         self._step_count = 0
