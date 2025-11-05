@@ -37,7 +37,7 @@ def test_llm_config_defaults():
     assert config.log_completions is False
     assert config.custom_tokenizer is None
     assert config.native_tool_calling is True
-    assert config.reasoning_effort == "high" 
+    assert config.reasoning_effort == "high"
     assert config.seed is None
     assert config.safety_settings is None
 
@@ -367,8 +367,6 @@ def test_llm_config_optional_fields():
     assert config.disable_vision is None
     assert config.disable_stop_word is None
     assert config.custom_tokenizer is None
-    assert (
-        config.reasoning_effort is None
-    )  # Explicitly set to None overrides default
+    assert config.reasoning_effort is None  # Explicitly set to None overrides default
     assert config.seed is None
     assert config.safety_settings is None
