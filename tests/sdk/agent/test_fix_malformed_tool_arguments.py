@@ -11,7 +11,7 @@ from typing import Annotated
 import pytest
 from pydantic import Field, ValidationError
 
-from openhands.sdk.agent.agent import fix_malformed_tool_arguments
+from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.tool.schema import Action
 
 
