@@ -164,12 +164,20 @@ class ConversationVisualizer(ConversationVisualizerBase):
         self._console = Console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
+        self._explicit_conversation_stats = conversation_stats
 
-        # Support legacy conversation_stats parameter for backward compatibility
-        if conversation_stats is not None:
-            # If conversation_stats provided explicitly, we'll use it
-            # This is for backward compatibility when creating visualizers manually
-            pass
+    @property
+    def conversation_stats(self) -> "ConversationStats | None":
+        """Get conversation stats.
+
+        Returns stats in this order:
+        1. Explicitly provided conversation_stats (for backward compatibility)
+        2. Stats from state (if state is initialized)
+        3. None
+        """
+        if self._explicit_conversation_stats is not None:
+            return self._explicit_conversation_stats
+        return super().conversation_stats
 
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
