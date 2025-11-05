@@ -52,6 +52,7 @@ jobs:
               run: |
                   # List of examples to test
                   # Excluded examples:
+                  # - 01_hello_world.py: requires LiteLLM proxy URL (OPENAI_BASE_URL) not set in CI
                   # - 04_confirmation_mode_example.py: requires user input
                   # - 06_interactive_terminal_w_reasoning.py: interactive terminal
                   # - 08_mcp_with_oauth.py: requires OAuth setup
@@ -61,7 +62,6 @@ jobs:
                   # - 04_vscode_with_docker_sandboxed_server.py: requires VSCode setup
                   set -e
                   EXAMPLES=(
-                      "examples/01_standalone_sdk/01_hello_world.py"
                       "examples/01_standalone_sdk/02_custom_tools.py"
                       "examples/01_standalone_sdk/03_activate_skill.py"
                       "examples/01_standalone_sdk/05_use_llm_registry.py"
