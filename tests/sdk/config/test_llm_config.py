@@ -84,9 +84,9 @@ def test_llm_config_custom_values():
     )
 
     assert config.model == "gpt-4"
-    assert (
-        config.api_key is not None and config.api_key.get_secret_value() == "test-key"
-    )
+    assert config.api_key is not None
+    assert isinstance(config.api_key, SecretStr)
+    assert config.api_key.get_secret_value() == "test-key"
     assert config.base_url == "https://api.example.com"
     assert config.api_version == "v1"
     assert config.num_retries == 3
@@ -122,9 +122,9 @@ def test_llm_config_custom_values():
 def test_llm_config_secret_str():
     """Test that api_key is properly handled as SecretStr."""
     config = LLM(model="gpt-4", api_key=SecretStr("secret-key"), usage_id="test-llm")
-    assert (
-        config.api_key is not None and config.api_key.get_secret_value() == "secret-key"
-    )
+    assert config.api_key is not None
+    assert isinstance(config.api_key, SecretStr)
+    assert config.api_key.get_secret_value() == "secret-key"
     # Ensure the secret is not exposed in string representation
     assert "secret-key" not in str(config)
 
@@ -138,14 +138,12 @@ def test_llm_config_aws_credentials():
         aws_secret_access_key=SecretStr("test-secret-key"),
         aws_region_name="us-east-1",
     )
-    assert (
-        config.aws_access_key_id is not None
-        and config.aws_access_key_id.get_secret_value() == "test-access-key"
-    )
-    assert (
-        config.aws_secret_access_key is not None
-        and config.aws_secret_access_key.get_secret_value() == "test-secret-key"
-    )
+    assert config.aws_access_key_id is not None
+    assert isinstance(config.aws_access_key_id, SecretStr)
+    assert config.aws_access_key_id.get_secret_value() == "test-access-key"
+    assert config.aws_secret_access_key is not None
+    assert isinstance(config.aws_secret_access_key, SecretStr)
+    assert config.aws_secret_access_key.get_secret_value() == "test-secret-key"
     assert config.aws_region_name == "us-east-1"
 
 
