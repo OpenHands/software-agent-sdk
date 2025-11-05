@@ -822,6 +822,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_tokens")
 
+        if "o3" in self.model:
+            o3_limit = 100000
+            if self.max_output_tokens is None or self.max_output_tokens > o3_limit:
+                self.max_output_tokens = o3_limit
+                logger.debug(
+                    "Clamping max_output_tokens to %s for %s",
+                    self.max_output_tokens,
+                    self.model,
+                )
+
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
