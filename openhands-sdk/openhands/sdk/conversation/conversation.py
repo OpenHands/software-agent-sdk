@@ -1,9 +1,6 @@
-from typing import TYPE_CHECKING, Any, Self, overload
+from typing import TYPE_CHECKING, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
-
-# Import sentinel value for default visualizer
-from openhands.sdk.conversation._sentinel import _DEFAULT_VISUALIZER
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
@@ -50,7 +47,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: bool | ConversationVisualizer | None = True,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "LocalConversation": ...
@@ -65,7 +62,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: bool | ConversationVisualizer | None = True,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "RemoteConversation": ...
@@ -80,7 +77,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: bool | ConversationVisualizer | None = True,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> BaseConversation:
