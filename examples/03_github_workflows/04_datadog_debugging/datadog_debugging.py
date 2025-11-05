@@ -86,7 +86,8 @@ def fetch_datadog_errors(
     Args:
         query: Datadog query string (search query or error tracking ID)
         working_dir: Directory to save the error examples
-        query_type: Type of query - "log-query" (uses Logs API) or "log-error-id" (uses Error Tracking API)
+        query_type: Type of query - "log-query" (uses Logs API) or
+            "log-error-id" (uses Error Tracking API)
         limit: Maximum number of error examples to fetch (default: 5)
 
     Returns:
@@ -170,10 +171,8 @@ def fetch_datadog_errors(
                 "from": thirty_days_ago.isoformat() + "Z",
                 "to": now.isoformat() + "Z",
             },
-            "page": {
-                "limit": limit
-            },
-            "sort": "-timestamp"
+            "page": {"limit": limit},
+            "sort": "-timestamp",
         }
 
         print(f"📡 Fetching up to {limit} log entries from Datadog...")
