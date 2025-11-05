@@ -1,6 +1,7 @@
 import json
 from typing import TYPE_CHECKING, Literal
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import ToolExecutor
 
@@ -148,7 +149,9 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
 
                 observation = command_result.model_copy(
                     update={
-                        "content": f"{reset_text}\n\n{command_text}",
+                        "content": [
+                            TextContent(text=f"{reset_text}\n\n{command_text}")
+                        ],
                         "command": f"[RESET] {action.command}",
                     }
                 )

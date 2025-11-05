@@ -16,10 +16,8 @@ def get_output_text(obs: ExecuteBashObservation) -> str:
     """Extract text from observation content field.
 
     This helper handles type-safe extraction of text from the observation's
-    content field, which can be a str or list of Content items.
+    content field, which is a list of Content items.
     """
-    if isinstance(obs.content, str):
-        return obs.content
     if not obs.content:
         return ""
     first_item = obs.content[0]
