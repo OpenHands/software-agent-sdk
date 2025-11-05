@@ -3,7 +3,7 @@ name: Agent Server
 
 on:
     push:
-        branches: [rel-1.0.0a5]
+        branches: [rel-1.0.0a6]
         tags:
             - build-docker
     pull_request:
