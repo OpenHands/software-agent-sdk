@@ -59,6 +59,7 @@ jobs:
                   # - 16_llm_security_analyzer.py: requires user input
                   # - 04_convo_with_api_sandboxed_server.py: requires sandbox API keys
                   # - 04_vscode_with_docker_sandboxed_server.py: requires VSCode setup
+                  set -o pipefail
                   EXAMPLES=(
                       "examples/01_standalone_sdk/01_hello_world.py"
                       "examples/01_standalone_sdk/02_custom_tools.py"
