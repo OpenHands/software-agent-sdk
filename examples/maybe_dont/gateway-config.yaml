@@ -1,0 +1,223 @@
+# Maybe Don't Security Gateway Configuration
+# Place this file in current directory or ~/.maybe-dont/
+#
+# This example configuration sets up Maybe Don't as an MCP gateway
+# with security policies for OpenHands Agent SDK integration.
+
+# Server Configuration
+# How MCP clients (like OpenHands) connect to Maybe Don't
+server:
+  # HTTP transport - accessible over network
+  type: http
+  listen_addr: "127.0.0.1:8080"
+
+  # Alternative: STDIO for local process communication
+  # type: stdio
+
+  # Alternative: SSE (Server-Sent Events) with TLS
+  # type: sse
+  # listen_addr: "127.0.0.1:8443"
+  # tls:
+  #   cert_file: "/path/to/cert.pem"
+  #   key_file: "/path/to/key.pem"
+
+# Downstream MCP Servers
+# Tools that Maybe Don't proxies to after security validation
+downstream:
+  # Filesystem access with restricted directory
+  - name: "filesystem"
+    type: stdio
+    command: "uvx"
+    args:
+      - "mcp-server-filesystem"
+      - "--allowed-directory"
+      - "./workspace"
+    description: "Secure filesystem access limited to workspace directory"
+
+  # Web fetching capabilities
+  - name: "fetch"
+    type: stdio
+    command: "uvx"
+    args: ["mcp-server-fetch"]
+    description: "HTTP/HTTPS fetching with security policies"
+
+  # Example: Remote HTTP MCP server with authentication
+  # - name: "github"
+  #   type: http
+  #   url: "https://api.github.com/mcp"
+  #   headers:
+  #     Authorization: "Bearer ${GITHUB_TOKEN}"
+  #     Accept: "application/vnd.github.v3+json"
+  #   description: "GitHub API access via MCP"
+
+  # Example: SSE connection to streaming MCP server
+  # - name: "realtime-data"
+  #   type: sse
+  #   url: "https://data.example.com/mcp/events"
+  #   headers:
+  #     Authorization: "Bearer ${DATA_API_TOKEN}"
+
+# CEL-Based Validation
+# Fast, deterministic rules using Common Expression Language
+cel_validation:
+  enabled: true
+
+  # Built-in rules include:
+  # - Prevent mass deletion (rm -rf, wildcards)
+  # - Block system directory access (/etc, /sys, /proc)
+  # - Prevent credential file access (.env, secrets.yaml)
+  # - Validate dangerous command patterns
+
+  # Custom rules (optional)
+  custom_rules:
+    # Example: Prevent access to production paths
+    - name: "block_production_access"
+      expression: |
+        !has(request.arguments.path) ||
+        (!request.arguments.path.contains('/production') &&
+         !request.arguments.path.contains('/prod'))
+      message: "Access to production paths is not allowed"
+
+    # Example: Limit file size operations
+    - name: "file_size_limit"
+      expression: |
+        !has(request.arguments.size) ||
+        request.arguments.size < 10485760
+      message: "File operations over 10MB require explicit approval"
+
+    # Example: Prevent network operations to sensitive domains
+    - name: "block_sensitive_domains"
+      expression: |
+        !has(request.arguments.url) ||
+        (!request.arguments.url.contains('internal.company.com') &&
+         !request.arguments.url.contains('admin.'))
+      message: "Access to internal/admin domains is restricted"
+
+# AI-Powered Validation
+# LLM-based contextual analysis for sophisticated threats
+ai_validation:
+  enabled: true
+
+  # OpenAI API configuration
+  endpoint: "https://api.openai.com/v1/chat/completions"
+  api_key: "${OPENAI_API_KEY}"
+  model: "gpt-4o-mini"
+
+  # Alternative: Use other OpenAI-compatible APIs
+  # endpoint: "https://api.anthropic.com/v1/chat/completions"
+  # api_key: "${ANTHROPIC_API_KEY}"
+  # model: "claude-3-5-sonnet-20241022"
+
+  # AI validation detects:
+  # - Mass deletion attempts
+  # - Command injection patterns
+  # - Data exfiltration attempts
+  # - Privilege escalation
+  # - Suspicious file operations
+  # - Unusual network access
+  # - Large-scale modifications
+
+  # Timeout for AI validation calls (milliseconds)
+  timeout: 5000
+
+  # System prompt customization (optional)
+  # system_prompt: |
+  #   You are a security validator for AI tool execution.
+  #   Analyze the tool call and determine if it poses security risks.
+
+# Pass-Through Authentication
+# Forward client credentials to downstream servers
+# Useful for multi-user scenarios where each user has their own credentials
+pass_through:
+  enabled: false
+
+  # Example configuration
+  # enabled: true
+  # headers:
+  #   - source_header: "X-GitHub-Token"
+  #     target_header: "Authorization"
+  #     format: "Bearer {value}"
+  #   - source_header: "X-User-ID"
+  #     target_header: "X-User-ID"
+  #     format: "{value}"
+
+# Audit Logging
+# Comprehensive logging of all tool calls and security decisions
+audit:
+  enabled: true
+  file_path: "./maybe-dont-audit.log"
+
+  # Log format options
+  format: "json"  # or "text"
+
+  # Log rotation (optional)
+  # max_size_mb: 100
+  # max_backups: 10
+  # max_age_days: 30
+
+  # What to log
+  log_allowed: true      # Log allowed operations
+  log_denied: true       # Log denied operations
+  log_flagged: true      # Log flagged operations
+  log_errors: true       # Log errors and exceptions
+
+  # Include request/response details
+  include_request: true
+  include_response: false  # May contain sensitive data
+  include_arguments: true
+  include_results: false   # May contain sensitive data
+
+# Rate Limiting (optional)
+# Prevent abuse through excessive tool calls
+# rate_limiting:
+#   enabled: true
+#
+#   # Per-client limits
+#   requests_per_minute: 60
+#   requests_per_hour: 1000
+#
+#   # Global limits
+#   global_requests_per_minute: 1000
+
+# Policy Actions
+# Configure what happens when policies are violated
+policy:
+  # Default action for CEL rule violations
+  cel_violation_action: "deny"  # or "flag", "allow"
+
+  # Default action for AI validation failures
+  ai_violation_action: "deny"  # or "flag", "allow"
+
+  # Action for high-severity threats
+  high_severity_action: "deny"
+
+  # Action for medium-severity threats
+  medium_severity_action: "flag"
+
+  # Action for low-severity threats
+  low_severity_action: "allow"
+
+# Monitoring and Health Checks
+monitoring:
+  enabled: true
+
+  # Health check endpoint
+  health_check_path: "/health"
+
+  # Metrics endpoint (Prometheus format)
+  metrics_path: "/metrics"
+
+  # Performance monitoring
+  log_slow_requests: true
+  slow_request_threshold_ms: 1000
+
+# Environment Variable Substitution
+# Reference environment variables using ${VAR_NAME} syntax
+# Example: api_key: "${OPENAI_API_KEY}"
+#
+# Required environment variables for this config:
+# - OPENAI_API_KEY: OpenAI API key for AI validation
+#
+# Optional environment variables:
+# - GITHUB_TOKEN: If using GitHub downstream server
+# - DATA_API_TOKEN: If using data streaming server

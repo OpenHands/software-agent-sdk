@@ -30,6 +30,7 @@ The OpenHands SDK allows you to build applications with agents that write softwa
 
 - **Single Python API**: Unified interface for building coding agents with minimal boilerplate
 - **Pre-defined Tools**: Built-in tools for bash commands, file editing, task tracking, and web browsing
+- **MCP Integration**: Native support for Model Context Protocol servers and security gateways
 - **REST-based Agent Server**: Deploy agents as scalable web services with WebSocket support for real-time interactions
 
 ## Why OpenHands Agent SDK?
@@ -74,9 +75,10 @@ The documentation includes:
 
 The `examples/` directory contains comprehensive usage examples:
 
-- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, and microagents
+- **Standalone SDK** (`examples/01_standalone_sdk/`) - Basic agent usage, custom tools, MCP integration, and microagents
 - **Remote Agent Server** (`examples/02_remote_agent_server/`) - Client-server architecture and WebSocket connections
 - **GitHub Workflows** (`examples/03_github_workflows/`) - CI/CD integration and automated workflows
+- **Security Gateway** (`examples/maybe_dont/`) - Maybe Don't security gateway integration for runtime policy enforcement
 
 ## Contributing
 
