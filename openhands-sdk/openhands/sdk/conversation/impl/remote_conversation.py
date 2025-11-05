@@ -3,13 +3,16 @@ import json
 import threading
 import uuid
 from collections.abc import Mapping
-from typing import SupportsIndex, overload
+from typing import Any, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
 import websockets
 
 from openhands.sdk.agent.base import AgentBase
+
+# Import sentinel value for default visualizer
+from openhands.sdk.conversation._sentinel import _DEFAULT_VISUALIZER
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
@@ -419,7 +422,7 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool | ConversationVisualizer | None = False,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -489,11 +492,11 @@ class RemoteConversation(BaseConversation):
         self._callbacks.append(state_update_callback)
 
         # Handle visualization configuration
-        if isinstance(visualize, ConversationVisualizer):
+        if isinstance(visualizer, ConversationVisualizer):
             # Use custom visualizer instance
-            self._visualizer = visualize
+            self._visualizer = visualizer
             self._callbacks.append(self._visualizer.on_event)
-        elif visualize is True:
+        elif visualizer is _DEFAULT_VISUALIZER:
             # Create default visualizer
             self._visualizer = create_default_visualizer(
                 name_for_visualization=name_for_visualization,
@@ -501,7 +504,7 @@ class RemoteConversation(BaseConversation):
             if self._visualizer is not None:
                 self._callbacks.append(self._visualizer.on_event)
         else:
-            # No visualization (visualize is False or None)
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         # Compose all callbacks into a single callback

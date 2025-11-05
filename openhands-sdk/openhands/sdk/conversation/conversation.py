@@ -1,6 +1,9 @@
-from typing import TYPE_CHECKING, Self, overload
+from typing import TYPE_CHECKING, Any, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
+
+# Import sentinel value for default visualizer
+from openhands.sdk.conversation._sentinel import _DEFAULT_VISUALIZER
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
@@ -47,7 +50,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "LocalConversation": ...
@@ -62,7 +65,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "RemoteConversation": ...
@@ -77,7 +80,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> BaseConversation:
@@ -99,7 +102,7 @@ class Conversation:
                 callbacks=callbacks,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
-                visualize=visualize,
+                visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
                 name_for_visualization=name_for_visualization,
@@ -111,7 +114,7 @@ class Conversation:
             callbacks=callbacks,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
-            visualize=visualize,
+            visualizer=visualizer,
             workspace=workspace,
             persistence_dir=persistence_dir,
             secrets=secrets,

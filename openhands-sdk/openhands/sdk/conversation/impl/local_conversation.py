@@ -2,8 +2,12 @@ import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.agent.base import AgentBase
+
+# Import sentinel value for default visualizer
+from openhands.sdk.conversation._sentinel import _DEFAULT_VISUALIZER
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -61,7 +65,7 @@ class LocalConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizer | None = DefaultVisualizer,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -77,10 +81,10 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             max_iteration_per_run: Maximum number of iterations per run
-            visualize: Visualization configuration. Can be:
-                      - True: Use default visualizer (default behavior)
-                      - False or None: No visualization
-                      - ConversationVisualizer instance: Use custom visualizer
+            visualizer: Visualization configuration. Can be:
+                       - ConversationVisualizer instance: Use custom visualizer
+                       - None: No visualization
+                       - Default: Use default visualizer (default behavior)
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             stuck_detection: Whether to enable stuck detection
@@ -114,21 +118,21 @@ class LocalConversation(BaseConversation):
 
         composed_list = (callbacks if callbacks else []) + [_default_callback]
         # Handle visualization configuration
-        if isinstance(visualize, ConversationVisualizer):
+        if isinstance(visualizer, ConversationVisualizer):
             # Use custom visualizer instance
-            self._visualizer = visualize
+            self._visualizer = visualizer
             composed_list = [self._visualizer.on_event] + composed_list
-            # visualize should happen first for visibility
-        elif visualize is True:
+            # visualizer should happen first for visibility
+        elif visualizer is _DEFAULT_VISUALIZER:
             # Create default visualizer
             self._visualizer = create_default_visualizer(
                 conversation_stats=self._state.stats,
                 name_for_visualization=name_for_visualization,
             )
             composed_list = [self._visualizer.on_event] + composed_list
-            # visualize should happen first for visibility
+            # visualizer should happen first for visibility
         else:
-            # No visualization (visualize is False or None)
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
