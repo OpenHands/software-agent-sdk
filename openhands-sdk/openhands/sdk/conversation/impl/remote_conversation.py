@@ -28,12 +28,7 @@ from openhands.sdk.event.conversation_state import (
 )
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.observability.laminar import (
-    end_active_span,
-    observe,
-    should_enable_observability,
-    start_active_span,
-)
+from openhands.sdk.observability.laminar import observe
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -438,6 +433,7 @@ class RemoteConversation(BaseConversation):
                                   which agent/conversation is speaking.
             secrets: Optional secrets to initialize the conversation with
         """
+        super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
@@ -513,8 +509,7 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        if should_enable_observability():
-            start_active_span("conversation", session_id=str(self._id))
+        self._start_observability_span(str(self._id))
 
     @property
     def id(self) -> ConversationID:
@@ -653,7 +648,7 @@ class RemoteConversation(BaseConversation):
         except Exception:
             pass
 
-        end_active_span()
+        self._end_observability_span()
 
         try:
             self._client.close()
