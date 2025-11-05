@@ -123,14 +123,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Config fields
     # =========================================================================
     model: str = Field(default="claude-sonnet-4-20250514", description="Model name.")
-    api_key: SecretStr | None = Field(default=None, description="API key.")
+    api_key: str | SecretStr | None = Field(default=None, description="API key.")
     base_url: str | None = Field(default=None, description="Custom base URL.")
     api_version: str | None = Field(
         default=None, description="API version (e.g., Azure)."
     )
 
-    aws_access_key_id: SecretStr | None = Field(default=None)
-    aws_secret_access_key: SecretStr | None = Field(default=None)
+    aws_access_key_id: str | SecretStr | None = Field(default=None)
+    aws_secret_access_key: str | SecretStr | None = Field(default=None)
     aws_region_name: str | None = Field(default=None)
 
     openrouter_site_url: str = Field(default="https://docs.all-hands.dev/")
@@ -290,7 +290,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     @field_validator("api_key", "aws_access_key_id", "aws_secret_access_key")
     @classmethod
-    def _validate_secrets(cls, v: SecretStr | None, info):
+    def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
 
     @model_validator(mode="before")
@@ -344,8 +344,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.openrouter_app_name:
             os.environ["OR_APP_NAME"] = self.openrouter_app_name
         if self.aws_access_key_id:
+            assert isinstance(self.aws_access_key_id, SecretStr)
             os.environ["AWS_ACCESS_KEY_ID"] = self.aws_access_key_id.get_secret_value()
         if self.aws_secret_access_key:
+            assert isinstance(self.aws_secret_access_key, SecretStr)
             os.environ["AWS_SECRET_ACCESS_KEY"] = (
                 self.aws_secret_access_key.get_secret_value()
             )
@@ -635,14 +637,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     typed_input: ResponseInputParam | str = (
                         cast(ResponseInputParam, input_items) if input_items else ""
                     )
+                    # Extract api_key value with type assertion for type checker
+                    api_key_value: str | None = None
+                    if self.api_key:
+                        assert isinstance(self.api_key, SecretStr)
+                        api_key_value = self.api_key.get_secret_value()
+
                     ret = litellm_responses(
                         model=self.model,
                         input=typed_input,
                         instructions=instructions,
                         tools=resp_tools,
-                        api_key=self.api_key.get_secret_value()
-                        if self.api_key
-                        else None,
+                        api_key=api_key_value,
                         api_base=self.base_url,
                         api_version=self.api_version,
                         timeout=self.timeout,
@@ -710,10 +716,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "ignore",
                     category=UserWarning,
                 )
+                # Extract api_key value with type assertion for type checker
+                api_key_value: str | None = None
+                if self.api_key:
+                    assert isinstance(self.api_key, SecretStr)
+                    api_key_value = self.api_key.get_secret_value()
+
                 # Some providers need renames handled in _normalize_call_kwargs.
                 ret = litellm_completion(
                     model=self.model,
-                    api_key=self.api_key.get_secret_value() if self.api_key else None,
+                    api_key=api_key_value,
                     api_base=self.base_url,
                     api_version=self.api_version,
                     timeout=self.timeout,
@@ -757,7 +769,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 base_url = "http://" + base_url
             try:
                 headers = {}
-                api_key = self.api_key.get_secret_value() if self.api_key else ""
+                # Extract api_key value with type assertion for type checker
+                api_key = ""
+                if self.api_key:
+                    assert isinstance(self.api_key, SecretStr)
+                    api_key = self.api_key.get_secret_value()
                 if api_key:
                     headers["Authorization"] = f"Bearer {api_key}"
 

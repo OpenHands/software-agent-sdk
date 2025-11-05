@@ -1,9 +1,10 @@
 import os
 
-from openhands.sdk import LLM, Conversation, Tool
+from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
+
 
 llm = LLM(
     model="anthropic/claude-sonnet-4-5-20250929",
@@ -13,9 +14,9 @@ llm = LLM(
 agent = Agent(
     llm=llm,
     tools=[
-       Tool(name=BashTool.name),
-       Tool(name=FileEditorTool.name),
-       Tool(name=TaskTrackerTool.name),
+        Tool(name=BashTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
     ],
 )
 
