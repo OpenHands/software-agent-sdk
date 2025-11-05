@@ -15,8 +15,8 @@ from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
+    ConversationVisualizer,
     ConversationVisualizerBase,
-    create_default_visualizer,
 )
 from openhands.sdk.event import (
     MessageEvent,
@@ -62,8 +62,8 @@ class LocalConversation(BaseConversation):
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
-            bool | type[ConversationVisualizerBase] | ConversationVisualizerBase | None
-        ) = True,
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = ConversationVisualizer,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -80,10 +80,10 @@ class LocalConversation(BaseConversation):
             callbacks: Optional list of callback functions to handle events
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
-                       - True: Use default visualizer (default)
-                       - False or None: No visualization
+                       - ConversationVisualizerBase subclass: Class to instantiate
+                         (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
-                       - type[ConversationVisualizerBase]: Class to instantiate
+                       - None: No visualization
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             stuck_detection: Whether to enable stuck detection
@@ -127,24 +127,14 @@ class LocalConversation(BaseConversation):
         elif isinstance(visualizer, type) and issubclass(
             visualizer, ConversationVisualizerBase
         ):
-            # Instantiate the visualizer class
+            # Instantiate the visualizer class with appropriate parameters
             self._visualizer = visualizer(name_for_visualization=name_for_visualization)
             # Initialize with state
             self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
             # visualizer should happen first for visibility
-        elif visualizer is True:
-            # Create default visualizer
-            self._visualizer = create_default_visualizer(
-                conversation_stats=self._state.stats,
-                name_for_visualization=name_for_visualization,
-            )
-            # Initialize with state (though create_default_visualizer already has stats)
-            self._visualizer.initialize(self._state)
-            composed_list = [self._visualizer.on_event] + composed_list
-            # visualizer should happen first for visibility
         else:
-            # No visualization (visualizer is False or None)
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)

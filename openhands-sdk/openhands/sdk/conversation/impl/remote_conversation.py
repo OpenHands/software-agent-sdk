@@ -18,8 +18,8 @@ from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
+    ConversationVisualizer,
     ConversationVisualizerBase,
-    create_default_visualizer,
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.conversation_state import (
@@ -427,8 +427,8 @@ class RemoteConversation(BaseConversation):
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
-            bool | type[ConversationVisualizerBase] | ConversationVisualizerBase | None
-        ) = True,
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = ConversationVisualizer,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -443,10 +443,10 @@ class RemoteConversation(BaseConversation):
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
             visualizer: Visualization configuration. Can be:
-                       - True: Use default visualizer (default)
-                       - False or None: No visualization
+                       - ConversationVisualizerBase subclass: Class to instantiate
+                         (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
-                       - type[ConversationVisualizerBase]: Class to instantiate
+                       - None: No visualization
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             secrets: Optional secrets to initialize the conversation with
@@ -508,22 +508,13 @@ class RemoteConversation(BaseConversation):
         elif isinstance(visualizer, type) and issubclass(
             visualizer, ConversationVisualizerBase
         ):
-            # Instantiate the visualizer class
+            # Instantiate the visualizer class with appropriate parameters
             self._visualizer = visualizer(name_for_visualization=name_for_visualization)
             # Initialize with state
             self._visualizer.initialize(self._state)
             self._callbacks.append(self._visualizer.on_event)
-        elif visualizer is True:
-            # Create default visualizer
-            self._visualizer = create_default_visualizer(
-                name_for_visualization=name_for_visualization,
-            )
-            if self._visualizer is not None:
-                # Initialize with state
-                self._visualizer.initialize(self._state)
-                self._callbacks.append(self._visualizer.on_event)
         else:
-            # No visualization (visualizer is False or None)
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         # Compose all callbacks into a single callback

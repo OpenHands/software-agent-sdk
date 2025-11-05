@@ -30,8 +30,8 @@ def mock_agent():
     return agent
 
 
-def test_conversation_with_visualize_true(mock_agent):
-    """Test Conversation with visualizer=default (omitted parameter)."""
+def test_conversation_with_default_visualizer(mock_agent):
+    """Test Conversation with default visualizer (omitted parameter)."""
     with patch.object(Agent, "init_state") as mock_init_state:
         conversation = Conversation(agent=mock_agent)
 
@@ -77,8 +77,8 @@ def test_conversation_default_visualize_is_true(mock_agent):
         assert isinstance(conversation._visualizer, ConversationVisualizer)
 
 
-def test_conversation_with_custom_callbacks_and_visualize_true(mock_agent):
-    """Test Conversation with custom callbacks and visualize=True."""
+def test_conversation_with_custom_callbacks_and_default_visualizer(mock_agent):
+    """Test Conversation with custom callbacks and default visualizer."""
     custom_callback = Mock()
     callbacks = [custom_callback]
 
@@ -143,20 +143,19 @@ def test_conversation_callback_order(mock_agent):
     def callback2(event):
         call_order.append("callback2")
 
-    # Mock the visualizer to track when it's called
-    with (
-        patch(
-            "openhands.sdk.conversation.impl.local_conversation.create_default_visualizer"
-        ) as mock_create_viz,
-        patch.object(Agent, "init_state") as mock_init_state,
-    ):
-        mock_visualizer = Mock()
+    # Create a custom visualizer that tracks when it's called
+    with patch.object(Agent, "init_state") as mock_init_state:
+        # Create a mock visualizer instance
+        mock_visualizer = Mock(spec=ConversationVisualizer)
         mock_visualizer.on_event = Mock(
             side_effect=lambda e: call_order.append("visualizer")
         )
-        mock_create_viz.return_value = mock_visualizer
 
-        conversation = Conversation(agent=mock_agent, callbacks=[callback1, callback2])
+        conversation = Conversation(
+            agent=mock_agent,
+            callbacks=[callback1, callback2],
+            visualizer=mock_visualizer,
+        )
 
         # Get the composed callback
         mock_init_state.assert_called_once()
@@ -174,8 +173,8 @@ def test_conversation_callback_order(mock_agent):
         assert test_event in conversation.state.events
 
 
-def test_conversation_no_callbacks_with_visualize_true(mock_agent):
-    """Test Conversation with no custom callbacks but visualize=True."""
+def test_conversation_no_callbacks_with_default_visualizer(mock_agent):
+    """Test Conversation with no custom callbacks but default visualizer."""
     with patch.object(Agent, "init_state") as mock_init_state:
         conversation = Conversation(agent=mock_agent, callbacks=None)
 
