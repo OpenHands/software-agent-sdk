@@ -51,6 +51,7 @@ class LocalConversation(BaseConversation):
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
+    _span_ended: bool
 
     def __init__(
         self,
@@ -145,6 +146,7 @@ class LocalConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._cleanup_initiated = False
+        self._span_ended = False
         atexit.register(self.close)
         if should_enable_observability():
             start_active_span("conversation", session_id=str(desired_id))
@@ -306,7 +308,9 @@ class LocalConversation(BaseConversation):
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
         finally:
-            end_active_span()
+            if not self._span_ended and should_enable_observability():
+                end_active_span()
+                self._span_ended = True
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -389,7 +393,9 @@ class LocalConversation(BaseConversation):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
-        end_active_span()
+        if not self._span_ended and should_enable_observability():
+            end_active_span()
+            self._span_ended = True
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()
