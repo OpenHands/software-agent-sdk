@@ -68,7 +68,7 @@ def test_browser_observation_to_llm_content_with_error():
 
     assert len(agent_obs) == 2
     assert isinstance(agent_obs[0], TextContent)
-    assert agent_obs[0].text == "Tool Execution Error. "
+    assert agent_obs[0].text == BrowserObservation.ERROR_MESSAGE_HEADER
     assert isinstance(agent_obs[1], TextContent)
     assert "Test error" in agent_obs[1].text
 

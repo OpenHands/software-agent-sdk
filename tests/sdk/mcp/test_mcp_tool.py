@@ -123,7 +123,7 @@ class TestMCPToolObservation:
         agent_obs = observation.to_llm_content
         assert len(agent_obs) == 2
         assert isinstance(agent_obs[0], TextContent)
-        assert agent_obs[0].text == "Tool Execution Error. "
+        assert agent_obs[0].text == MCPToolObservation.ERROR_MESSAGE_HEADER
         assert isinstance(agent_obs[1], TextContent)
         assert "[Tool 'test_tool' executed.]" in agent_obs[1].text
         assert "[An error occurred during execution.]" in agent_obs[1].text
