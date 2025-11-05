@@ -57,9 +57,9 @@ jobs:
                   # - 08_mcp_with_oauth.py: requires OAuth setup
                   # - 15_browser_use.py: requires browser setup
                   # - 16_llm_security_analyzer.py: requires user input
-                  # - 03_browser_use_with_docker_sandboxed_server.py: Docker build cache issues
                   # - 04_convo_with_api_sandboxed_server.py: requires sandbox API keys
                   # - 04_vscode_with_docker_sandboxed_server.py: requires VSCode setup
+                  set -e
                   EXAMPLES=(
                       "examples/01_standalone_sdk/01_hello_world.py"
                       "examples/01_standalone_sdk/02_custom_tools.py"
@@ -82,6 +82,7 @@ jobs:
                       "examples/01_standalone_sdk/24_planning_agent_workflow.py"
                       "examples/02_remote_agent_server/01_convo_with_local_agent_server.py"
                       "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py"
+                      "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py"
                   )
 
                   # GitHub API setup (only for PR events)
@@ -196,28 +197,38 @@ jobs:
                       echo ""
                       echo "Running: $example"
                       echo "------------------------------------------"
-                      
+                                  
                       START_TIME=$(date +%s)
-                      
+                                  
                       # Create temp file to capture output
                       OUTPUT_FILE=$(mktemp)
-                      
+                                  
                       # Run example with timeout (20 minutes per example)
                       # Capture output while still displaying it
-                      if timeout 1200 uv run python "$example" 2>&1 | tee "$OUTPUT_FILE"; then
-                          END_TIME=$(date +%s)
-                          DURATION=$((END_TIME - START_TIME))
-                          DURATION_STR="${DURATION}s"
-                          
-                          # Extract cost from output
-                          COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1)
-                          if [ -z "$COST" ]; then
-                              COST="0.00"
-                          fi
-                          
-                          # Accumulate total cost
-                          TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l)
-                          
+                      # Use || true to prevent script exit on failure
+                      (timeout 1200 uv run python "$example" 2>&1 || true) | tee "$OUTPUT_FILE"
+                                  
+                      # Check if command succeeded by looking at Python exit
+                      if ! grep -q "EXAMPLE_COST:" "$OUTPUT_FILE"; then
+                          EXIT_CODE=1
+                      else
+                          EXIT_CODE=0
+                      fi
+                                  
+                      END_TIME=$(date +%s)
+                      DURATION=$((END_TIME - START_TIME))
+                      DURATION_STR="${DURATION}s"
+                                  
+                      # Extract cost from output
+                      COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1 || echo "0.00")
+                      if [ -z "$COST" ]; then
+                          COST="0.00"
+                      fi
+                                  
+                      # Accumulate total cost
+                      TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l 2>/dev/null || echo "$TOTAL_COST")
+                                  
+                      if [ "$EXIT_CODE" -eq 0 ]; then
                           echo "✓ PASSED: $example (${DURATION_STR}, cost: \$${COST})"
                           PASSED=$((PASSED + 1))
                           COMPLETED=$((COMPLETED + 1))
@@ -226,20 +237,6 @@ jobs:
                           TEST_COST[$example]="$(format_cost $COST)"
                           echo "PASS|$example|${DURATION}|${COST}" >> "$RESULTS_FILE"
                       else
-                          EXIT_CODE=$?
-                          END_TIME=$(date +%s)
-                          DURATION=$((END_TIME - START_TIME))
-                          DURATION_STR="${DURATION}s"
-                          
-                          # Try to extract cost even for failed tests
-                          COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1)
-                          if [ -z "$COST" ]; then
-                              COST="0.00"
-                          fi
-                          
-                          # Accumulate total cost
-                          TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l)
-                          
                           echo "✗ FAILED: $example (exit code: $EXIT_CODE, ${DURATION_STR}, cost: \$${COST})"
                           FAILED=$((FAILED + 1))
                           COMPLETED=$((COMPLETED + 1))
@@ -249,13 +246,13 @@ jobs:
                           TEST_COST[$example]="$(format_cost $COST)"
                           echo "FAIL|$example|$EXIT_CODE|${DURATION}|${COST}" >> "$RESULTS_FILE"
                       fi
-                      
+                                  
                       # Clean up temp file
                       rm -f "$OUTPUT_FILE"
-                      
-                      # Update PR comment after each test
+                                  
+                      # Update PR comment after each test (with error handling)
                       echo "Updating PR comment..."
-                      update_comment "$(generate_table)"
+                      update_comment "$(generate_table)" || echo "Warning: Failed to update PR comment"
                   done
 
                   echo ""

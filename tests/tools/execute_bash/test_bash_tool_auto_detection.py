@@ -52,7 +52,7 @@ def test_default_auto_detection():
         # Test that it works
         action = ExecuteBashAction(command="echo 'Auto-detection test'")
         obs = executor(action)
-        assert "Auto-detection test" in obs.output
+        assert "Auto-detection test" in obs.text
 
 
 def test_forced_terminal_types():
@@ -138,7 +138,7 @@ def test_backward_compatibility():
         assert tool.executor is not None
         action = ExecuteBashAction(command="echo 'Backward compatibility test'")
         obs = tool.executor(action)
-        assert "Backward compatibility test" in obs.output
+        assert "Backward compatibility test" in obs.text
         assert obs.metadata.exit_code == 0
 
 

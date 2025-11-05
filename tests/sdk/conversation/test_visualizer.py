@@ -1,7 +1,6 @@
 """Tests for the conversation visualizer and event visualization."""
 
 import json
-from collections.abc import Sequence
 
 from rich.text import Text
 
@@ -19,7 +18,6 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.llm import (
-    ImageContent,
     Message,
     MessageToolCall,
     TextContent,
@@ -153,14 +151,10 @@ def test_observation_event_visualize():
     from openhands.sdk.tool import Observation
 
     class VisualizerMockObservation(Observation):
-        content: str = "Command output"
-
-        @property
-        def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-            return [TextContent(text=self.content)]
+        pass
 
     observation = VisualizerMockObservation(
-        content="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 ."
+        content=[TextContent(text="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 .")]
     )
     event = ObservationEvent(
         observation=observation,

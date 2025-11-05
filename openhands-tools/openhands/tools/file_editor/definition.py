@@ -11,7 +11,6 @@ if TYPE_CHECKING:
 
 from rich.text import Text
 
-from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -69,12 +68,12 @@ class FileEditorObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
     command: CommandLiteral = Field(
-        description="The commands to run. Allowed options are: `view`, `create`, "
-        "`str_replace`, `insert`, `undo_edit`."
+        description=(
+            "The command that was run: `view`, `create`, `str_replace`, "
+            "`insert`, or `undo_edit`."
+        )
     )
-    output: str = Field(
-        default="", description="The output message from the tool for the LLM to see."
-    )
+
     path: str | None = Field(default=None, description="The file path that was edited.")
     prev_exist: bool = Field(
         default=True,
@@ -86,15 +85,8 @@ class FileEditorObservation(Observation):
     new_content: str | None = Field(
         default=None, description="The content of the file after the edit."
     )
-    error: str | None = Field(default=None, description="Error message if any.")
 
     _diff_cache: Text | None = PrivateAttr(default=None)
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        if self.error:
-            return [TextContent(text=self.error)]
-        return [TextContent(text=self.output)]
 
     @property
     def visualize(self) -> Text:
@@ -103,6 +95,11 @@ class FileEditorObservation(Observation):
         Shows diff visualization for meaningful changes (file creation, successful
         edits), otherwise falls back to agent observation.
         """
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         if not self._has_meaningful_diff:
             return super().visualize
@@ -110,7 +107,7 @@ class FileEditorObservation(Observation):
         assert self.path is not None, "path should be set for meaningful diff"
         # Generate and cache diff visualization
         if not self._diff_cache:
-            change_applied = self.command != "view" and not self.error
+            change_applied = self.command != "view" and not self.is_error
             self._diff_cache = visualize_diff(
                 self.path,
                 self.old_content,
@@ -119,12 +116,14 @@ class FileEditorObservation(Observation):
                 change_applied=change_applied,
             )
 
-        return self._diff_cache
+        # Combine error prefix with diff visualization
+        text.append(self._diff_cache)
+        return text
 
     @property
     def _has_meaningful_diff(self) -> bool:
         """Check if there's a meaningful diff to display."""
-        if self.error:
+        if self.is_error:
             return False
 
         if not self.path:
