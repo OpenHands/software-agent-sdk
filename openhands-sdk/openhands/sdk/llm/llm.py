@@ -166,6 +166,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
     )
+    extra_headers: dict[str, str] | None = Field(
+        default=None,
+        description="Optional HTTP headers to forward to LiteLLM requests.",
+    )
     input_cost_per_token: float | None = Field(
         default=None,
         ge=0,
@@ -242,10 +246,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "telemetry, and spend tracking."
         ),
     )
-    metadata: dict[str, Any] = Field(
+    litellm_extra_body: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Additional metadata for the LLM instance. "
+            "Additional key-value pairs to pass to litellm's extra_body parameter. "
+            "This is useful for custom inference clusters that need additional "
+            "metadata for logging, tracking, or routing purposes. "
             "Example structure: "
             "{'trace_version': '1.0.0', 'tags': ['model:gpt-4', 'agent:my-agent'], "
             "'session_id': 'session-123', 'trace_user_id': 'user-456'}"
@@ -708,7 +714,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 ret = litellm_completion(
                     model=self.model,
                     api_key=self.api_key.get_secret_value() if self.api_key else None,
-                    base_url=self.base_url,
+                    api_base=self.base_url,
                     api_version=self.api_version,
                     timeout=self.timeout,
                     drop_params=self.drop_params,
@@ -750,11 +756,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if not base_url.startswith(("http://", "https://")):
                 base_url = "http://" + base_url
             try:
+                headers = {}
                 api_key = self.api_key.get_secret_value() if self.api_key else ""
-                response = httpx.get(
-                    f"{base_url}/v1/model/info",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+
+                response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
                 data = response.json().get("data", [])
                 current = next(
                     (
@@ -771,7 +778,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Got model info from litellm proxy: {self._model_info}"
                     )
             except Exception as e:
-                logger.debug(f"Error fetching model info from proxy: {e}")
+                logger.debug(
+                    f"Error fetching model info from proxy: {e}",
+                    exc_info=True,
+                    stack_info=True,
+                )
 
         # Fallbacks: try base name variants
         if not self._model_info:

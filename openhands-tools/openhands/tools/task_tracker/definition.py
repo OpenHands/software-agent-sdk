@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
     from openhands.sdk.conversation.state import ConversationState
+
 from rich.text import Text
 
 from openhands.sdk import ImageContent, TextContent
@@ -19,6 +20,7 @@ from openhands.sdk.tool import (
     ToolAnnotations,
     ToolDefinition,
     ToolExecutor,
+    register_tool,
 )
 
 
@@ -408,7 +410,6 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name="task_tracker",
                 description=TASK_TRACKER_DESCRIPTION,
                 action_type=TaskTrackerAction,
                 observation_type=TaskTrackerObservation,
@@ -421,3 +422,7 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(TaskTrackerTool.name, TaskTrackerTool)

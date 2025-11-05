@@ -22,7 +22,7 @@ from openhands.agent_server.models import (
     UpdateSecretsRequest,
 )
 from openhands.sdk import LLM, Agent, TextContent, Tool
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -66,8 +66,8 @@ async def search_conversations(
         Query(title="The max number of results in the page", gt=0, lte=100),
     ] = 100,
     status: Annotated[
-        AgentExecutionStatus | None,
-        Query(title="Optional filter by agent execution status"),
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
     ] = None,
     sort_order: Annotated[
         ConversationSortOrder,
@@ -86,8 +86,8 @@ async def search_conversations(
 @conversation_router.get("/count")
 async def count_conversations(
     status: Annotated[
-        AgentExecutionStatus | None,
-        Query(title="Optional filter by agent execution status"),
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:

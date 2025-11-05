@@ -190,7 +190,7 @@ with ManagedAPIServer(port=8001) as server:
         conversation.run()
 
         logger.info("✅ First task completed!")
-        logger.info(f"Agent status: {conversation.state.agent_status}")
+        logger.info(f"Agent status: {conversation.state.execution_status}")
 
         # Wait for events to stop coming (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
