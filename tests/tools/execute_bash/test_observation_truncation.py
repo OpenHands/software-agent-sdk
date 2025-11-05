@@ -85,9 +85,12 @@ def test_execute_bash_observation_truncation_with_error():
         pid=123,
     )
 
+    # Create output that exceeds the limit
+    long_output = "B" * (MAX_CMD_OUTPUT_SIZE + 500)
+
     observation = ExecuteBashObservation(
         command="false",
-        content=[TextContent(text="Command failed")],
+        content=[TextContent(text=long_output)],
         metadata=metadata,
         is_error=True,
     )
@@ -96,16 +99,18 @@ def test_execute_bash_observation_truncation_with_error():
     assert len(result) == 2
     assert isinstance(result[0], TextContent)
     assert isinstance(result[1], TextContent)
+    result = result[1].text
 
-    # First part is the error prefix
-    assert result[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
-
-    # Second part includes the error message with metadata
-    full_text = result[1].text
-    assert "Command failed" in full_text
-    assert "[Current working directory: /test]" in full_text
-    assert "[Python interpreter: /usr/bin/python]" in full_text
-    assert "[Command finished with exit code 1]" in full_text
+    # The result should be truncated and have error prefix
+    assert result.startswith("[There was an error during command execution.]")
+    assert len(result) < len(long_output) + 300  # Account for metadata and error prefix
+    # With head-and-tail truncation, should end with original content + metadata
+    expected_end = (
+        "B\n[Current working directory: /test]\n[Python interpreter: /usr/bin/python]\n"
+        "[Command finished with exit code 1]"
+    )
+    assert result.endswith(expected_end)
+    assert "<response clipped>" in result  # Should contain truncation notice
 
 
 def test_execute_bash_observation_truncation_exact_limit():
