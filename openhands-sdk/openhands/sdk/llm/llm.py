@@ -822,7 +822,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_tokens")
 
-        if self.model.startswith("openai/o3-"):
+        if "o3" in self.model:
             o3_limit = 100000
             if self.max_output_tokens is None or self.max_output_tokens > o3_limit:
                 self.max_output_tokens = o3_limit
