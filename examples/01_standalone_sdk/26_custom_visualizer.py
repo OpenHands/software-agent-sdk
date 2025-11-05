@@ -13,8 +13,8 @@ The MinimalProgressVisualizer produces concise output showing:
 - Agent thinking indicators
 - Error messages
 
-This demonstrates the new API improvement where you can pass a ConversationVisualizer
-instance directly to the visualize parameter instead of using callbacks.
+This demonstrates how you can pass a ConversationVisualizer instance directly
+to the visualize parameter for clean, reusable visualization logic.
 """
 
 import logging
@@ -193,14 +193,11 @@ def main():
     minimal_visualizer = MinimalProgressVisualizer()
 
     # Start a conversation with custom visualizer
-    # NEW API: You can now pass a ConversationVisualizer instance directly!
-    # This is much cleaner than the old approach of:
-    #   visualize=False, callbacks=[custom_visualizer.on_event]
     cwd = os.getcwd()
     conversation = Conversation(
         agent=agent,
         workspace=cwd,
-        visualize=minimal_visualizer,  # Direct and clear!
+        visualize=minimal_visualizer,
     )
 
     # Send a message and let the agent run
@@ -212,28 +209,6 @@ def main():
     # Report cost
     cost = llm.metrics.accumulated_cost
     print(f"EXAMPLE_COST: ${cost:.4f}")
-
-    # ============================================================================
-    # API Improvement Summary
-    # ============================================================================
-    print("\n" + "=" * 80)
-    print("🎉 API IMPROVEMENT DEMONSTRATED")
-    print("=" * 80)
-    print("OLD WAY (confusing):")
-    print("  conversation = Conversation(")
-    print("      agent=agent,")
-    print("      workspace=cwd,")
-    print("      visualize=False,  # Confusing: we DO want visualization!")
-    print("      callbacks=[custom_visualizer.on_event],")
-    print("  )")
-    print()
-    print("NEW WAY (clear and direct):")
-    print("  conversation = Conversation(")
-    print("      agent=agent,")
-    print("      workspace=cwd,")
-    print("      visualize=custom_visualizer,  # Direct and clear!")
-    print("  )")
-    print("=" * 80)
 
 
 if __name__ == "__main__":
