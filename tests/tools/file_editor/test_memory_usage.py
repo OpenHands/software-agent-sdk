@@ -187,11 +187,7 @@ def test_file_editor_memory_leak(temp_file):
                     new_str=new_content,
                 )
                 if i == 0:
-                    content_str = (
-                        result.content
-                        if isinstance(result.content, str)
-                        else str(result.content)
-                    )
+                    content_str = result.text
                     print(f"First edit result: {content_str[:200]}...")
             except Exception as e:
                 print(f"\nError during edit {i}:")

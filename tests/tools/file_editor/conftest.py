@@ -85,6 +85,4 @@ def create_test_file(path: Path, content: str):
 
 def get_output_text(result: FileEditorObservation) -> str:
     """Extract text content from a FileEditorObservation's content."""
-    if isinstance(result.content, str):
-        return result.content
-    return "".join([c.text for c in result.content if isinstance(c, TextContent)])
+    return result.text
