@@ -6,6 +6,7 @@ ConversationVisualizer. This approach provides:
 - Direct configuration (just pass the visualizer instance to visualize parameter)
 - Reusable visualizer that can be shared across conversations
 - Better separation of concerns compared to callback functions
+- Event handler registration to avoid long if/elif chains
 
 The MinimalProgressVisualizer produces concise output showing:
 - LLM call completions
@@ -19,6 +20,7 @@ to the visualize parameter for clean, reusable visualization logic.
 
 import logging
 import os
+from collections.abc import Callable
 
 from pydantic import SecretStr
 
@@ -27,13 +29,56 @@ from openhands.sdk.conversation.visualizer import ConversationVisualizer
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    Event,
     MessageEvent,
     ObservationEvent,
 )
 from openhands.tools.preset.default import get_default_agent
 
 
-class MinimalProgressVisualizer(ConversationVisualizer):
+def handles(event_type: type[Event]):
+    """Decorator to register a method as an event handler."""
+
+    def decorator(func):
+        func._handles_event_type = event_type
+        return func
+
+    return decorator
+
+
+class EventHandlerMixin:
+    """Mixin that provides event handler registration via decorators."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._event_handlers: dict[type[Event], Callable[[Event], None]] = {}
+        self._register_handlers()
+
+    def _register_handlers(self):
+        """Automatically discover and register event handlers."""
+        for attr_name in dir(self):
+            attr = getattr(self, attr_name)
+            if hasattr(attr, "_handles_event_type"):
+                event_type = attr._handles_event_type
+                self._event_handlers[event_type] = attr
+
+    def on_event(self, event: Event) -> None:
+        """Dispatch events to registered handlers."""
+        event_type = type(event)
+        handler = self._event_handlers.get(event_type)
+        if handler:
+            handler(event)
+        # Optionally handle unknown events - subclasses can override this
+        else:
+            self._handle_unknown_event(event)
+
+    def _handle_unknown_event(self, event: Event) -> None:
+        """Handle unknown event types. Override in subclasses if needed."""
+        # Default: do nothing for unknown events
+        pass
+
+
+class MinimalProgressVisualizer(EventHandlerMixin, ConversationVisualizer):
     """A minimal progress visualizer that shows step counts and tool names.
 
     This visualizer produces concise output showing:
@@ -68,17 +113,9 @@ class MinimalProgressVisualizer(ConversationVisualizer):
         self._pending_action = False
         self._seen_llm_response_ids: set[str] = set()
 
-    def on_event(self, event) -> None:
-        """Handle events and produce minimal progress output."""
-        if isinstance(event, ActionEvent):
-            self._handle_action_event(event)
-        elif isinstance(event, ObservationEvent):
-            self._handle_observation_event()
-        elif isinstance(event, AgentErrorEvent):
-            self._handle_error_event(event)
-        elif isinstance(event, MessageEvent):
-            self._handle_message_event(event)
+    # Event handlers are now registered via decorators - no need for on_event override
 
+    @handles(ActionEvent)
     def _handle_action_event(self, event: ActionEvent) -> None:
         """Handle ActionEvent - track LLM calls and show tool execution."""
         # Track LLM calls by monitoring new llm_response_id values
@@ -124,12 +161,15 @@ class MinimalProgressVisualizer(ConversationVisualizer):
         )
         self._pending_action = True
 
-    def _handle_observation_event(self) -> None:
+    @handles(ObservationEvent)
+    def _handle_observation_event(self, event: ObservationEvent) -> None:
         """Handle ObservationEvent - show completion indicator."""
+        _ = event  # Event parameter required for handler signature
         if self._pending_action:
             print(" ✓", flush=True)
             self._pending_action = False
 
+    @handles(AgentErrorEvent)
     def _handle_error_event(self, event: AgentErrorEvent) -> None:
         """Handle AgentErrorEvent - show errors."""
         if self._pending_action:
@@ -141,6 +181,7 @@ class MinimalProgressVisualizer(ConversationVisualizer):
         error_preview = error_msg[:100] + "..." if len(error_msg) > 100 else error_msg
         print(f"⚠️  Error: {error_preview}", flush=True)
 
+    @handles(MessageEvent)
     def _handle_message_event(self, event: MessageEvent) -> None:
         """Handle MessageEvent - track LLM calls and show thinking indicators."""
         # Track LLM calls from MessageEvent (agent messages without tool calls)
