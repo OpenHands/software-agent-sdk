@@ -8,7 +8,7 @@ def test_browser_observation_basic_output():
     """Test basic BrowserObservation creation with output."""
     observation = BrowserObservation.from_text(text="Test output")
 
-    assert observation.get_text() == "Test output"
+    assert observation.text == "Test output"
     assert observation.is_error is False
     assert observation.screenshot_data is None
 
@@ -17,7 +17,7 @@ def test_browser_observation_with_error():
     """Test BrowserObservation with error."""
     observation = BrowserObservation.from_text(text="Test error", is_error=True)
 
-    assert observation.get_text() == "Test error"
+    assert observation.text == "Test error"
     assert observation.is_error is True
     assert observation.screenshot_data is None
 
@@ -29,7 +29,7 @@ def test_browser_observation_with_screenshot():
         text="Screenshot taken", screenshot_data=screenshot_data
     )
 
-    assert observation.get_text() == "Screenshot taken"
+    assert observation.text == "Screenshot taken"
     assert observation.is_error is False
     assert observation.screenshot_data == screenshot_data
 

@@ -61,4 +61,4 @@ def assert_browser_observation_error(
     assert isinstance(observation, BrowserObservation)
     assert observation.is_error is True
     if expected_error:
-        assert expected_error in observation.get_text()
+        assert expected_error in observation.text

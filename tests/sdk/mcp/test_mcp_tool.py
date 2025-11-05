@@ -216,7 +216,7 @@ class TestMCPToolExecutor:
         assert observation.tool_name == "test_tool"
         assert observation.is_error is True
         assert observation.is_error is True
-        assert "Connection failed" in observation.get_text()
+        assert "Connection failed" in observation.text
 
 
 class TestMCPTool:

@@ -193,6 +193,8 @@ class Action(Schema, ABC):
 class Observation(Schema, ABC):
     """Base schema for output observation."""
 
+    ERROR_MESSAGE_HEADER: ClassVar[str] = "Tool Execution Error. "
+
     content: list[TextContent | ImageContent] = Field(
         default_factory=list,
         description=(
@@ -203,12 +205,6 @@ class Observation(Schema, ABC):
     )
     is_error: bool = Field(
         default=False, description="Whether the observation indicates an error"
-    )
-    error_message_header: str = Field(
-        default="Tool Execution Error. ",
-        description=(
-            "Header prepended to content and visualization when is_error is True"
-        ),
     )
 
     @classmethod
@@ -230,7 +226,8 @@ class Observation(Schema, ABC):
         """
         return cls(content=[TextContent(text=text)], is_error=is_error, **kwargs)
 
-    def get_text(self) -> str:
+    @property
+    def text(self) -> str:
         """Extract all text content from the observation.
 
         Returns:
@@ -250,7 +247,7 @@ class Observation(Schema, ABC):
 
         # If is_error is true, prepend error message
         if self.is_error:
-            llm_content.append(TextContent(text=self.error_message_header))
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
 
         # Add content (now always a list)
         llm_content.extend(self.content)
@@ -268,7 +265,7 @@ class Observation(Schema, ABC):
 
         if self.is_error:
             text.append("❌ ", style="red bold")
-            text.append(self.error_message_header, style="bold red")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         text_parts = content_to_str(self.to_llm_content)
         if text_parts:

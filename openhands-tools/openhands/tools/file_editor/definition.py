@@ -99,7 +99,7 @@ class FileEditorObservation(Observation):
 
         if self.is_error:
             text.append("❌ ", style="red bold")
-            text.append(self.error_message_header, style="bold red")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         if not self._has_meaningful_diff:
             return super().visualize

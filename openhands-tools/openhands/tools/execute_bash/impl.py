@@ -144,8 +144,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 command_result = self.session.execute(command_action)
 
                 # Extract text from content
-                reset_text = reset_result.get_text()
-                command_text = command_result.get_text()
+                reset_text = reset_result.text
+                command_text = command_result.text
 
                 observation = command_result.model_copy(
                     update={
@@ -164,7 +164,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             observation = self.session.execute(action)
 
         # Apply automatic secrets masking
-        content_text = observation.get_text()
+        content_text = observation.text
 
         if content_text and conversation is not None:
             try:

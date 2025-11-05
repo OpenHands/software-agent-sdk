@@ -38,10 +38,10 @@ class BrowserObservation(Observation):
 
         # If is_error is true, prepend error message
         if self.is_error:
-            llm_content.append(TextContent(text=self.error_message_header))
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
 
         # Get text content and truncate if needed
-        content_text = self.get_text()
+        content_text = self.text
         if content_text:
             llm_content.append(
                 TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))

@@ -107,10 +107,10 @@ class ExecuteBashObservation(Observation):
 
         # If is_error is true, prepend error message
         if self.is_error:
-            llm_content.append(TextContent(text=self.error_message_header))
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
 
         # ExecuteBashObservation always has content as a single TextContent
-        content_text = self.get_text()
+        content_text = self.text
 
         ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
         if self.metadata.working_dir:
@@ -130,10 +130,10 @@ class ExecuteBashObservation(Observation):
 
         if self.is_error:
             text.append("❌ ", style="red bold")
-            text.append(self.error_message_header, style="bold red")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         # ExecuteBashObservation always has content as a single TextContent
-        content_text = self.get_text()
+        content_text = self.text
 
         if content_text:
             # Style the output based on content

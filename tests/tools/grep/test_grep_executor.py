@@ -106,7 +106,7 @@ def test_grep_executor_invalid_path():
         observation = executor(action)
 
         assert observation.is_error is True
-        assert "not a valid directory" in observation.get_text()
+        assert "not a valid directory" in observation.text
 
 
 def test_grep_executor_no_matches():
@@ -186,4 +186,4 @@ def test_grep_executor_invalid_regex():
         observation = executor(action)
 
         assert observation.is_error is True
-        assert "Invalid regex pattern" in observation.get_text()
+        assert "Invalid regex pattern" in observation.text

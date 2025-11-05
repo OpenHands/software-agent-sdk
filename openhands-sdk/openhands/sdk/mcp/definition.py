@@ -89,7 +89,7 @@ class MCPToolObservation(Observation):
 
         if self.is_error:
             text.append("❌ ", style="red bold")
-            text.append(self.error_message_header, style="bold red")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         text.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
         for block in self.content:

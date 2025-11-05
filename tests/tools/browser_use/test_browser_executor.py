@@ -105,7 +105,7 @@ async def test_browser_executor_error_wrapping(mock_navigate, mock_browser_execu
     result = await mock_browser_executor._execute_action(action)
 
     assert_browser_observation_error(result, "Browser operation failed")
-    assert "Browser error occurred" in result.get_text()
+    assert "Browser error occurred" in result.text
 
 
 def test_browser_executor_async_execution(mock_browser_executor):
