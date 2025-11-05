@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Self, overload
+from typing import TYPE_CHECKING, Any, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
@@ -7,6 +7,10 @@ from openhands.sdk.conversation.types import ConversationCallbackType, Conversat
 from openhands.sdk.conversation.visualizer import ConversationVisualizer
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
+
+
+# Sentinel value for default visualizer - more explicit than using True
+_DEFAULT_VISUALIZER = object()
 
 
 if TYPE_CHECKING:
@@ -47,7 +51,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "LocalConversation": ...
@@ -62,7 +66,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "RemoteConversation": ...
@@ -77,7 +81,7 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> BaseConversation:

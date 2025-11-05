@@ -2,9 +2,13 @@ import atexit
 import uuid
 from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
+
+# Import sentinel value for default visualizer
+from openhands.sdk.conversation.conversation import _DEFAULT_VISUALIZER
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -61,7 +65,7 @@ class LocalConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None | Any = _DEFAULT_VISUALIZER,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -119,7 +123,7 @@ class LocalConversation(BaseConversation):
             self._visualizer = visualizer
             composed_list = [self._visualizer.on_event] + composed_list
             # visualizer should happen first for visibility
-        elif visualizer is True:
+        elif visualizer is _DEFAULT_VISUALIZER:
             # Create default visualizer
             self._visualizer = create_default_visualizer(
                 conversation_stats=self._state.stats,
@@ -128,7 +132,7 @@ class LocalConversation(BaseConversation):
             composed_list = [self._visualizer.on_event] + composed_list
             # visualizer should happen first for visibility
         else:
-            # No visualization (visualizer is False or None)
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
