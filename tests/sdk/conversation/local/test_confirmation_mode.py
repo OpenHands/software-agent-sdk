@@ -553,7 +553,9 @@ class TestConfirmationMode:
         ]
         assert len(obs_events) == 1
         # FinishObservation should contain the finish message in content
-        assert obs_events[0].observation.content == "Task completed successfully!"
+        assert (
+            obs_events[0].observation.get_text_safe() == "Task completed successfully!"
+        )
 
     def test_think_and_finish_action_skips_confirmation_entirely(self):
         """First step: ThinkAction (skips confirmation). Second step: FinishAction."""
@@ -597,11 +599,13 @@ class TestConfirmationMode:
 
         # 1) ThinkAction observation - should contain the standard message
         assert hasattr(obs_events[0].observation, "content")
-        assert obs_events[0].observation.content == "Your thought has been logged."
+        assert (
+            obs_events[0].observation.get_text_safe() == "Your thought has been logged."
+        )
 
         # 2) FinishAction observation - should contain the finish message
         assert hasattr(obs_events[1].observation, "content")
-        assert obs_events[1].observation.content == "Analysis complete"
+        assert obs_events[1].observation.get_text_safe() == "Analysis complete"
 
     def test_pause_during_confirmation_preserves_waiting_status(self):
         """Test that pausing during WAITING_FOR_CONFIRMATION preserves the status.
