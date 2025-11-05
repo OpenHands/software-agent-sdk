@@ -344,37 +344,19 @@ I'll create or update the full plan based on your requirements and current progr
 <parameter=task_list>
 [
   {
-    "id": "task-1",
     "title": "Initialize repo",
     "status": "done",
-    "notes": "Repository created and README added.",
-    "description": "Create repository and basic docs."
+    "notes": "Repository created and README added."
   },
   {
-    "id": "task-2",
     "title": "Implement nested param parsing",
     "status": "in_progress",
-    "notes": "Add recursive parsing for array-typed parameters.",
-    "description": "Update fn_call_converter.convert_tools_to_description to walk nested objects in arrays."
-  },
-  {
-    "id": "task-3",
-    "title": "Complete task_tracker prompt examples",
-    "status": "todo",
-    "notes": "Add clear examples for view/plan.",
-    "description": "Provide canonical examples so LLM fills task_list with proper fields (id/title/status/notes/description)."
-  },
-  {
-    "id": "task-4",
-    "title": "Add tests for nested arrays",
-    "status": "todo",
-    "notes": "Cover arrays of objects and missing fields.",
-    "description": "Write unit tests ensuring inner fields are preserved in generated descriptions."
+    "notes": "Add recursive parsing for array-typed parameters."
   }
 ]
 </parameter>
 </function>
-"""
+""",
     },
 }
 
@@ -563,7 +545,10 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                                 )
                                 item_desc += f" Allowed values: [{item_enum_values}]"
 
-                            ret += f"       - {item_param_name} ({item_type}, {item_status}): {item_desc}\n"
+                            ret += (
+                                f"       - {item_param_name} ({item_type}, "
+                                f"{item_status}): {item_desc}\n"
+                            )
         else:
             ret += "No parameters are required for this function.\n"
 
