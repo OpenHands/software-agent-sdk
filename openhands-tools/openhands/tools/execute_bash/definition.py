@@ -126,12 +126,11 @@ class ExecuteBashObservation(Observation):
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation with terminal-style output formatting."""
-        content_obj = Text()
+        text = Text()
 
-        # Add error indicator if present
         if self.is_error:
-            content_obj.append("❌ ", style="red bold")
-            content_obj.append("Command execution error\n", style="red")
+            text.append("❌ ", style="red bold")
+            text.append(self.error_message_header, style="bold red")
 
         # ExecuteBashObservation always has content as a single TextContent
         content_text = self.get_text()
@@ -146,28 +145,28 @@ class ExecuteBashObservation(Observation):
                         keyword in line.lower()
                         for keyword in ["error", "failed", "exception", "traceback"]
                     ):
-                        content_obj.append(line, style="red")
+                        text.append(line, style="red")
                     elif any(
                         keyword in line.lower() for keyword in ["warning", "warn"]
                     ):
-                        content_obj.append(line, style="yellow")
+                        text.append(line, style="yellow")
                     elif line.startswith("+ "):  # bash -x output
-                        content_obj.append(line, style="cyan")
+                        text.append(line, style="cyan")
                     else:
-                        content_obj.append(line, style="white")
-                content_obj.append("\n")
+                        text.append(line, style="white")
+                text.append("\n")
 
         # Add metadata with styling
         if hasattr(self, "metadata") and self.metadata:
             if self.metadata.working_dir:
-                content_obj.append("\n📁 ", style="blue")
-                content_obj.append(
+                text.append("\n📁 ", style="blue")
+                text.append(
                     f"Working directory: {self.metadata.working_dir}", style="blue"
                 )
 
             if self.metadata.py_interpreter_path:
-                content_obj.append("\n🐍 ", style="green")
-                content_obj.append(
+                text.append("\n🐍 ", style="green")
+                text.append(
                     f"Python interpreter: {self.metadata.py_interpreter_path}",
                     style="green",
                 )
@@ -177,22 +176,16 @@ class ExecuteBashObservation(Observation):
                 and self.metadata.exit_code is not None
             ):
                 if self.metadata.exit_code == 0:
-                    content_obj.append("\n✅ ", style="green")
-                    content_obj.append(
-                        f"Exit code: {self.metadata.exit_code}", style="green"
-                    )
+                    text.append("\n✅ ", style="green")
+                    text.append(f"Exit code: {self.metadata.exit_code}", style="green")
                 elif self.metadata.exit_code == -1:
-                    content_obj.append("\n⏳ ", style="yellow")
-                    content_obj.append(
-                        "Process still running (soft timeout)", style="yellow"
-                    )
+                    text.append("\n⏳ ", style="yellow")
+                    text.append("Process still running (soft timeout)", style="yellow")
                 else:
-                    content_obj.append("\n❌ ", style="red")
-                    content_obj.append(
-                        f"Exit code: {self.metadata.exit_code}", style="red"
-                    )
+                    text.append("\n❌ ", style="red")
+                    text.append(f"Exit code: {self.metadata.exit_code}", style="red")
 
-        return content_obj
+        return text
 
 
 TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.

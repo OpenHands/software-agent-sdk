@@ -81,7 +81,11 @@ class TaskTrackerObservation(Observation):
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation with task list formatting."""
-        content = Text()
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.error_message_header, style="bold red")
 
         if self.task_list:
             # Count tasks by status
@@ -93,11 +97,11 @@ class TaskTrackerObservation(Observation):
 
             # Show status summary
             if self.command == "plan":
-                content.append("✅ ", style="green")
-                content.append("Task list updated: ", style="green")
+                text.append("✅ ", style="green")
+                text.append("Task list updated: ", style="green")
             else:  # view command
-                content.append("📋 ", style="blue")
-                content.append("Current task list: ", style="blue")
+                text.append("📋 ", style="blue")
+                text.append("Current task list: ", style="blue")
 
             # Status counts
             status_parts = []
@@ -109,33 +113,33 @@ class TaskTrackerObservation(Observation):
                 status_parts.append(f"{done_count} done")
 
             if status_parts:
-                content.append(", ".join(status_parts), style="white")
-                content.append("\n\n")
+                text.append(", ".join(status_parts), style="white")
+                text.append("\n\n")
 
             # Show the actual task list
             for i, task in enumerate(self.task_list, 1):
                 # Status icon
                 if task.status == "done":
-                    content.append("✅ ", style="green")
+                    text.append("✅ ", style="green")
                 elif task.status == "in_progress":
-                    content.append("🔄 ", style="yellow")
+                    text.append("🔄 ", style="yellow")
                 else:  # todo
-                    content.append("⏳ ", style="blue")
+                    text.append("⏳ ", style="blue")
 
                 # Task title
-                content.append(f"{i}. {task.title}", style="white")
+                text.append(f"{i}. {task.title}", style="white")
 
                 # NEW: show notes under the title if present
                 if task.notes:
-                    content.append("\n   Notes: " + task.notes, style="italic")
+                    text.append("\n   Notes: " + task.notes, style="italic")
 
                 if i < len(self.task_list):
-                    content.append("\n")
+                    text.append("\n")
         else:
-            content.append("📝 ", style="blue")
-            content.append("Task list is empty")
+            text.append("📝 ", style="blue")
+            text.append("Task list is empty")
 
-        return content
+        return text
 
 
 class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation]):

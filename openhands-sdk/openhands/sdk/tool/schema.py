@@ -262,11 +262,16 @@ class Observation(Schema, ABC):
         Subclasses can override for custom visualization; by default we show the
         same text that would be sent to the LLM.
         """
-        content = Text()
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.error_message_header, style="bold red")
+
         text_parts = content_to_str(self.to_llm_content)
         if text_parts:
             full_content = "".join(text_parts)
-            content.append(full_content)
+            text.append(full_content)
         else:
-            content.append("[no text content]")
-        return content
+            text.append("[no text content]")
+        return text

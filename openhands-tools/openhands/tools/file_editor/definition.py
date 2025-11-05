@@ -95,6 +95,11 @@ class FileEditorObservation(Observation):
         Shows diff visualization for meaningful changes (file creation, successful
         edits), otherwise falls back to agent observation.
         """
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.error_message_header, style="bold red")
 
         if not self._has_meaningful_diff:
             return super().visualize
@@ -111,7 +116,9 @@ class FileEditorObservation(Observation):
                 change_applied=change_applied,
             )
 
-        return self._diff_cache
+        # Combine error prefix with diff visualization
+        text.append(self._diff_cache)
+        return text
 
     @property
     def _has_meaningful_diff(self) -> bool:
