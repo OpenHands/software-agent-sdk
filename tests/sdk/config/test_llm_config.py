@@ -37,7 +37,7 @@ def test_llm_config_defaults():
     assert config.log_completions is False
     assert config.custom_tokenizer is None
     assert config.native_tool_calling is True
-    assert config.reasoning_effort is None  # No default, must be explicitly set
+    assert config.reasoning_effort == "high" 
     assert config.seed is None
     assert config.safety_settings is None
 
@@ -170,17 +170,17 @@ def test_llm_config_post_init_openrouter_env_vars():
 
 
 def test_llm_config_post_init_reasoning_effort_default():
-    """Test reasoning_effort is None by default unless explicitly set."""
+    """Test reasoning_effort defaults to high."""
     config = LLM(model="gpt-4", usage_id="test-llm")
-    assert config.reasoning_effort is None
+    assert config.reasoning_effort == "high"
 
-    # Test that Gemini models also default to None
+    # Test that Gemini models also default to high
     config = LLM(model="gemini-2.5-pro-experimental", usage_id="test-llm")
-    assert config.reasoning_effort is None
+    assert config.reasoning_effort == "high"
 
     # Test that explicit reasoning_effort is preserved
-    config = LLM(model="gpt-4", reasoning_effort="high", usage_id="test-llm")
-    assert config.reasoning_effort == "high"
+    config = LLM(model="gpt-4", reasoning_effort="low", usage_id="test-llm")
+    assert config.reasoning_effort == "low"
 
 
 def test_llm_config_post_init_azure_api_version():
@@ -369,6 +369,6 @@ def test_llm_config_optional_fields():
     assert config.custom_tokenizer is None
     assert (
         config.reasoning_effort is None
-    )  # When set to None, it remains None (no automatic default)
+    )  # Explicitly set to None overrides default
     assert config.seed is None
     assert config.safety_settings is None

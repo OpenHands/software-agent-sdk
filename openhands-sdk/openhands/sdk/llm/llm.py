@@ -209,7 +209,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Whether to use native tool calling.",
     )
     reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
-        default=None,
+        default="high",
         description="The effort to put into reasoning. "
         "This is a string that can be one of 'low', 'medium', 'high', or 'none'. "
         "Can apply to all reasoning models.",
