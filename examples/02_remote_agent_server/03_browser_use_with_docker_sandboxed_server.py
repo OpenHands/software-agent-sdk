@@ -78,14 +78,19 @@ with DockerWorkspace(
     cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
     print(f"EXAMPLE_COST: {cost}")
 
-    # Wait for user confirm to exit
-    y = None
-    while y != "y":
-        y = input(
-            "Because you've enabled extra_ports=True in DockerWorkspace, "
-            "you can open a browser tab to see the *actual* browser OpenHands "
-            "is interacting with via VNC.\n\n"
-            "Link: http://localhost:8012/vnc.html?autoconnect=1&resize=remote\n\n"
-            "Press 'y' and Enter to exit and terminate the workspace.\n"
-            ">> "
+    if os.getenv("CI"):
+        logger.info(
+            "CI environment detected; skipping interactive prompt and closing workspace."  # noqa: E501
         )
+    else:
+        # Wait for user confirm to exit when running locally
+        y = None
+        while y != "y":
+            y = input(
+                "Because you've enabled extra_ports=True in DockerWorkspace, "
+                "you can open a browser tab to see the *actual* browser OpenHands "
+                "is interacting with via VNC.\n\n"
+                "Link: http://localhost:8012/vnc.html?autoconnect=1&resize=remote\n\n"
+                "Press 'y' and Enter to exit and terminate the workspace.\n"
+                ">> "
+            )
