@@ -170,8 +170,8 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
             # Save to file if save_dir is provided
             if self.save_dir:
                 self._save_tasks()
-            return TaskTrackerObservation(
-                content=(
+            return TaskTrackerObservation.from_text(
+                text=(
                     f"Task list has been updated with {len(self._task_list)} item(s)."
                 ),
                 command=action.command,
@@ -180,22 +180,20 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
         elif action.command == "view":
             # Return the current task list
             if not self._task_list:
-                return TaskTrackerObservation(
-                    content=(
-                        'No task list found. Use the "plan" command to create one.'
-                    ),
+                return TaskTrackerObservation.from_text(
+                    text=('No task list found. Use the "plan" command to create one.'),
                     command=action.command,
                     task_list=[],
                 )
             content = self._format_task_list(self._task_list)
-            return TaskTrackerObservation(
-                content=content,
+            return TaskTrackerObservation.from_text(
+                text=content,
                 command=action.command,
                 task_list=self._task_list,
             )
         else:
-            return TaskTrackerObservation(
-                content=(
+            return TaskTrackerObservation.from_text(
+                text=(
                     f"Unknown command: {action.command}. "
                     'Supported commands are "view" and "plan".'
                 ),

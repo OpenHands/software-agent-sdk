@@ -109,15 +109,8 @@ class ExecuteBashObservation(Observation):
         if self.is_error:
             llm_content.append(TextContent(text=self.error_message_header))
 
-        # Extract text from content (handle both str and list types)
-        if isinstance(self.content, str):
-            content_text = self.content
-        else:
-            # It's a list of TextContent | ImageContent
-            first_item = self.content[0] if self.content else None
-            content_text = (
-                first_item.text if isinstance(first_item, TextContent) else ""
-            )
+        # ExecuteBashObservation always has content as a single TextContent
+        content_text = self.get_text_safe()
 
         ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
         if self.metadata.working_dir:
@@ -140,15 +133,8 @@ class ExecuteBashObservation(Observation):
             content_obj.append("❌ ", style="red bold")
             content_obj.append("Command execution error\n", style="red")
 
-        # Extract text from content (handle both str and list types)
-        if isinstance(self.content, str):
-            content_text = self.content
-        else:
-            # It's a list of TextContent | ImageContent
-            first_item = self.content[0] if self.content else None
-            content_text = (
-                first_item.text if isinstance(first_item, TextContent) else ""
-            )
+        # ExecuteBashObservation always has content as a single TextContent
+        content_text = self.get_text_safe()
 
         if content_text:
             # Style the output based on content

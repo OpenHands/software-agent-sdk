@@ -84,7 +84,7 @@ def test_execute_bash_observation_truncation_with_error():
     )
 
     observation = ExecuteBashObservation(
-        content="Command failed",
+        content=[TextContent(text="Command failed")],
         metadata=metadata,
         is_error=True,
     )

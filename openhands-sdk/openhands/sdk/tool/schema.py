@@ -1,6 +1,6 @@
 from abc import ABC
 from collections.abc import Sequence
-from typing import Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from pydantic import ConfigDict, Field, create_model
 from rich.text import Text
@@ -12,6 +12,9 @@ from openhands.sdk.utils.models import (
 )
 from openhands.sdk.utils.visualize import display_dict
 
+
+if TYPE_CHECKING:
+    from typing import Self
 
 S = TypeVar("S", bound="Schema")
 
@@ -190,11 +193,11 @@ class Action(Schema, ABC):
 class Observation(Schema, ABC):
     """Base schema for output observation."""
 
-    content: str | list[TextContent | ImageContent] = Field(
-        default="",
+    content: list[TextContent | ImageContent] = Field(
+        default_factory=list,
         description=(
-            "Content returned from the tool. Can be a simple string for most tools, "
-            "or a list of TextContent/ImageContent for tools that need rich content. "
+            "Content returned from the tool as a list of "
+            "TextContent/ImageContent objects. "
             "When there is an error, it should be written in this field."
         ),
     )
@@ -205,6 +208,57 @@ class Observation(Schema, ABC):
         default="Tool Execution Error. ",
         description="Header prepended to content when is_error is True",
     )
+
+    @classmethod
+    def from_text(
+        cls,
+        text: str,
+        is_error: bool = False,
+        **kwargs: Any,
+    ) -> "Self":
+        """Utility to create an Observation from a simple text string.
+
+        Args:
+            text: The text content to include in the observation.
+            is_error: Whether this observation represents an error.
+            **kwargs: Additional fields for the observation subclass.
+
+        Returns:
+            An Observation instance with the text wrapped in a TextContent.
+        """
+        return cls(content=[TextContent(text=text)], is_error=is_error, **kwargs)
+
+    def get_text(self) -> str:
+        """Extract text when observation contains a single TextContent.
+
+        Returns:
+            Text from the first TextContent item, or empty string if none.
+
+        Raises:
+            ValueError: If content has multiple items or non-text content.
+        """
+        if not self.content:
+            return ""
+        if len(self.content) > 1:
+            raise ValueError(
+                "get_text() can only be used when content contains a single item"
+            )
+        item = self.content[0]
+        if not isinstance(item, TextContent):
+            raise ValueError(
+                "get_text() can only be used when content contains TextContent"
+            )
+        return item.text
+
+    def get_text_safe(self) -> str:
+        """Safely extract all text content from the observation.
+
+        Returns:
+            Concatenated text from all TextContent items in content.
+        """
+        return "".join(
+            item.text for item in self.content if isinstance(item, TextContent)
+        )
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
@@ -218,14 +272,8 @@ class Observation(Schema, ABC):
         if self.is_error:
             llm_content.append(TextContent(text=self.error_message_header))
 
-        # Add content
-        if self.content:
-            # Handle both str and list types
-            if isinstance(self.content, str):
-                llm_content.append(TextContent(text=self.content))
-            else:
-                # It's a list of TextContent | ImageContent
-                llm_content.extend(self.content)
+        # Add content (now always a list)
+        llm_content.extend(self.content)
 
         return llm_content
 

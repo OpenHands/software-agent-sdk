@@ -32,12 +32,10 @@ def create_mock_browser_response(
 ):
     """Helper to create mock browser responses."""
     if error:
-        return BrowserObservation(
-            content=error, is_error=True, screenshot_data=screenshot_data
+        return BrowserObservation.from_text(
+            text=error, is_error=True, screenshot_data=screenshot_data
         )
-    return BrowserObservation(
-        content=[TextContent(text=output)], screenshot_data=screenshot_data
-    )
+    return BrowserObservation.from_text(text=output, screenshot_data=screenshot_data)
 
 
 def assert_browser_observation_success(
@@ -63,4 +61,4 @@ def assert_browser_observation_error(
     assert isinstance(observation, BrowserObservation)
     assert observation.is_error is True
     if expected_error:
-        assert expected_error in observation.content
+        assert expected_error in observation.get_text()

@@ -112,8 +112,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             f"Terminal session reset successfully with working_dir: {original_work_dir}"
         )
 
-        return ExecuteBashObservation(
-            content=(
+        return ExecuteBashObservation.from_text(
+            text=(
                 "Terminal session has been reset. All previous environment "
                 "variables and session state have been cleared."
             ),
@@ -179,13 +179,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             observation = self.session.execute(action)
 
         # Apply automatic secrets masking
-        if isinstance(observation.content, str):
-            content_text = observation.content
-        else:
-            first_item = observation.content[0] if observation.content else None
-            content_text = (
-                first_item.text if isinstance(first_item, TextContent) else ""
-            )
+        content_text = observation.get_text_safe()
 
         if content_text and conversation is not None:
             try:
@@ -193,7 +187,9 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 masked_content = secret_registry.mask_secrets_in_output(content_text)
                 if masked_content:
                     data = observation.model_dump(exclude={"content"})
-                    return ExecuteBashObservation(**data, content=masked_content)
+                    return ExecuteBashObservation(
+                        **data, content=[TextContent(text=masked_content)]
+                    )
             except Exception:
                 pass
 

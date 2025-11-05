@@ -89,9 +89,6 @@ class MCPToolObservation(Observation):
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this observation."""
-        # MCPToolObservation always has content as a list
-        assert isinstance(self.content, list)
-
         content_obj = Text()
         content_obj.append(f"[MCP Tool '{self.tool_name}' Observation]\n", style="bold")
         if self.is_error:

@@ -4,6 +4,7 @@ import re
 import time
 from enum import Enum
 
+from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.tools.execute_bash.constants import (
     CMD_OUTPUT_PS1_END,
@@ -188,7 +189,7 @@ class TerminalSession(TerminalSessionBase):
         self._ready_for_next_command()
         return ExecuteBashObservation(
             command=command,
-            content=command_output,
+            content=[TextContent(text=command_output)],
             metadata=metadata,
         )
 
@@ -222,7 +223,7 @@ class TerminalSession(TerminalSessionBase):
         )
         return ExecuteBashObservation(
             command=command,
-            content=command_output,
+            content=[TextContent(text=command_output)],
             metadata=metadata,
         )
 
@@ -257,7 +258,7 @@ class TerminalSession(TerminalSessionBase):
         )
         return ExecuteBashObservation(
             command=command,
-            content=command_output,
+            content=[TextContent(text=command_output)],
             metadata=metadata,
         )
 
@@ -312,15 +313,15 @@ class TerminalSession(TerminalSessionBase):
             TerminalCommandStatus.HARD_TIMEOUT,
         }:
             if command == "":
-                return ExecuteBashObservation(
+                return ExecuteBashObservation.from_text(
+                    text="No previous running command to retrieve logs from.",
                     command=command,
-                    content="No previous running command to retrieve logs from.",
                     is_error=True,
                 )
             if is_input:
-                return ExecuteBashObservation(
+                return ExecuteBashObservation.from_text(
+                    text="No previous running command to interact with.",
                     command=command,
-                    content="No previous running command to interact with.",
                     is_error=True,
                 )
 
@@ -330,13 +331,13 @@ class TerminalSession(TerminalSessionBase):
             commands_list = "\n".join(
                 f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands)
             )
-            return ExecuteBashObservation(
-                command=command,
-                content=(
+            return ExecuteBashObservation.from_text(
+                text=(
                     "Cannot execute multiple commands at once.\n"
                     "Please run each command separately OR chain them into a single "
                     f"command via && or ;\nProvided commands:\n{commands_list}"
                 ),
+                command=command,
                 is_error=True,
             )
 
@@ -390,7 +391,7 @@ class TerminalSession(TerminalSessionBase):
             )
             obs = ExecuteBashObservation(
                 command=command,
-                content=command_output,
+                content=[TextContent(text=command_output)],
                 metadata=metadata,
             )
             logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")

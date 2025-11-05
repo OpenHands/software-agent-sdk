@@ -164,7 +164,7 @@ def test_grep_tool_invalid_regex():
         observation = tool.executor(action)
 
         assert observation.is_error is True
-        assert "Invalid regex pattern" in observation.content
+        assert "Invalid regex pattern" in observation.get_text_safe()
 
 
 def test_grep_tool_invalid_directory():
@@ -179,7 +179,7 @@ def test_grep_tool_invalid_directory():
         observation = tool.executor(action)
 
         assert observation.is_error is True
-        assert "not a valid directory" in observation.content
+        assert "not a valid directory" in observation.get_text_safe()
 
 
 def test_grep_tool_hidden_files_excluded():
