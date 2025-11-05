@@ -11,7 +11,7 @@ from filelock import FileLock
 
 from openhands.tools.file_editor import file_editor
 
-from .conftest import assert_successful_result, get_output_text
+from .conftest import assert_successful_result
 
 
 # Apply the forked marker and serialize execution across workers
@@ -71,7 +71,7 @@ def test_file_read_memory_usage(temp_file):
 
     # Pull output before measuring and drop references to encourage GC
     assert_successful_result(result)
-    content = get_output_text(result)
+    content = result.text
     del result
     gc.collect()
 

@@ -11,7 +11,6 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool.schema import TextContent
 from openhands.tools.execute_bash import ExecuteBashAction, ExecuteBashObservation
 from openhands.tools.execute_bash.impl import BashExecutor
-from tests.tools.execute_bash.conftest import get_output_text
 
 
 def test_bash_executor_without_conversation():
@@ -26,8 +25,8 @@ def test_bash_executor_without_conversation():
             result = executor(action)
 
             # Check that the output is not masked (no conversation provided)
-            assert "secret-value-123" in get_output_text(result)
-            assert "<secret-hidden>" not in get_output_text(result)
+            assert "secret-value-123" in result.text
+            assert "<secret-hidden>" not in result.text
 
         finally:
             executor.close()
@@ -82,10 +81,10 @@ def test_bash_executor_with_conversation_secrets():
             assert mock_session.execute.called
 
             # Check that both secrets were masked in the output
-            assert "secret-value-123" not in get_output_text(result)
-            assert "another-secret-456" not in get_output_text(result)
+            assert "secret-value-123" not in result.text
+            assert "another-secret-456" not in result.text
             # SecretsManager uses <secret-hidden> as the mask
-            assert "<secret-hidden>" in get_output_text(result)
+            assert "<secret-hidden>" in result.text
 
         finally:
             executor.close()

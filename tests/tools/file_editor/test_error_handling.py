@@ -2,7 +2,7 @@
 
 from openhands.tools.file_editor.impl import file_editor
 
-from .conftest import assert_error_result, get_output_text
+from .conftest import assert_error_result
 
 
 def test_validation_error_formatting():
@@ -12,7 +12,7 @@ def test_validation_error_formatting():
         path="/nonexistent/file.txt",
     )
     assert_error_result(result)
-    assert result.is_error and "does not exist" in get_output_text(result)
+    assert result.is_error and "does not exist" in result.text
 
     # Test directory validation for non-view commands
     result = file_editor(
@@ -22,10 +22,7 @@ def test_validation_error_formatting():
         new_str="new",
     )
     assert_error_result(result)
-    assert (
-        result.is_error
-        and "directory and only the `view` command" in get_output_text(result)
-    )
+    assert result.is_error and "directory and only the `view` command" in result.text
 
 
 def test_str_replace_error_handling(temp_file):
@@ -43,7 +40,7 @@ def test_str_replace_error_handling(temp_file):
         new_str="something",
     )
     assert_error_result(result)
-    assert result.is_error and "did not appear verbatim" in get_output_text(result)
+    assert result.is_error and "did not appear verbatim" in result.text
 
     # Test multiple occurrences
     with open(temp_file, "w") as f:
@@ -56,8 +53,8 @@ def test_str_replace_error_handling(temp_file):
         new_str="new_line",
     )
     assert_error_result(result)
-    assert result.is_error and "Multiple occurrences" in get_output_text(result)
-    assert result.is_error and "lines [1, 2]" in get_output_text(result)
+    assert result.is_error and "Multiple occurrences" in result.text
+    assert result.is_error and "lines [1, 2]" in result.text
 
 
 def test_view_range_validation(temp_file):
@@ -74,9 +71,7 @@ def test_view_range_validation(temp_file):
         view_range=[1],  # Should be [start, end]
     )
     assert_error_result(result)
-    assert result.is_error and "should be a list of two integers" in get_output_text(
-        result
-    )
+    assert result.is_error and "should be a list of two integers" in result.text
 
     # Test out of bounds range: should clamp to file end and show a warning
     result = file_editor(
@@ -88,7 +83,7 @@ def test_view_range_validation(temp_file):
     assert not result.is_error
     assert (
         "NOTE: We only show up to 3 since there're only 3 lines in this file."
-        in get_output_text(result)
+        in result.text
     )
 
     # Test invalid range order
@@ -98,9 +93,7 @@ def test_view_range_validation(temp_file):
         view_range=[3, 1],  # End before start
     )
     assert_error_result(result)
-    assert result.is_error and "should be greater than or equal to" in get_output_text(
-        result
-    )
+    assert result.is_error and "should be greater than or equal to" in result.text
 
 
 def test_insert_validation(temp_file):
@@ -118,7 +111,7 @@ def test_insert_validation(temp_file):
         new_str="new line",
     )
     assert_error_result(result)
-    assert result.is_error and "should be within the range" in get_output_text(result)
+    assert result.is_error and "should be within the range" in result.text
 
     # Test insert beyond file length
     result = file_editor(
@@ -128,7 +121,7 @@ def test_insert_validation(temp_file):
         new_str="new line",
     )
     assert_error_result(result)
-    assert result.is_error and "should be within the range" in get_output_text(result)
+    assert result.is_error and "should be within the range" in result.text
 
 
 def test_undo_validation(temp_file):
@@ -144,4 +137,4 @@ def test_undo_validation(temp_file):
         path=temp_file,
     )
     assert_error_result(result)
-    assert result.is_error and "No edit history found" in get_output_text(result)
+    assert result.is_error and "No edit history found" in result.text

@@ -81,8 +81,3 @@ def create_test_file(path: Path, content: str):
     """Helper to create a test file with given content."""
     path.write_text(content)
     return path
-
-
-def get_output_text(result: FileEditorObservation) -> str:
-    """Extract text content from a FileEditorObservation's content."""
-    return result.text
