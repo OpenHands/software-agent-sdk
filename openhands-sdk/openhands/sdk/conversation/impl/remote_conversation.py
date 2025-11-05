@@ -3,7 +3,7 @@ import json
 import threading
 import uuid
 from collections.abc import Mapping
-from typing import Any, SupportsIndex, overload
+from typing import SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -11,9 +11,6 @@ import websockets
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
-
-# Import sentinel value for default visualizer
-from openhands.sdk.conversation.conversation import _DEFAULT_VISUALIZER
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -429,7 +426,9 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualizer: ConversationVisualizerBase | None | Any = _DEFAULT_VISUALIZER,
+        visualizer: (
+            bool | type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = True,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
@@ -444,9 +443,10 @@ class RemoteConversation(BaseConversation):
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
             visualizer: Visualization configuration. Can be:
-                       - Default: Use default visualizer (when omitted)
-                       - None: No visualization
+                       - True: Use default visualizer (default)
+                       - False or None: No visualization
                        - ConversationVisualizerBase instance: Use custom visualizer
+                       - type[ConversationVisualizerBase]: Class to instantiate
             name_for_visualization: Optional name to prefix in panel titles to identify
                                   which agent/conversation is speaking.
             secrets: Optional secrets to initialize the conversation with
@@ -505,7 +505,15 @@ class RemoteConversation(BaseConversation):
             # Initialize the visualizer with conversation state
             self._visualizer.initialize(self._state)
             self._callbacks.append(self._visualizer.on_event)
-        elif visualizer is _DEFAULT_VISUALIZER:
+        elif isinstance(visualizer, type) and issubclass(
+            visualizer, ConversationVisualizerBase
+        ):
+            # Instantiate the visualizer class
+            self._visualizer = visualizer(name_for_visualization=name_for_visualization)
+            # Initialize with state
+            self._visualizer.initialize(self._state)
+            self._callbacks.append(self._visualizer.on_event)
+        elif visualizer is True:
             # Create default visualizer
             self._visualizer = create_default_visualizer(
                 name_for_visualization=name_for_visualization,
@@ -515,7 +523,7 @@ class RemoteConversation(BaseConversation):
                 self._visualizer.initialize(self._state)
                 self._callbacks.append(self._visualizer.on_event)
         else:
-            # No visualization (visualizer is None)
+            # No visualization (visualizer is False or None)
             self._visualizer = None
 
         # Compose all callbacks into a single callback

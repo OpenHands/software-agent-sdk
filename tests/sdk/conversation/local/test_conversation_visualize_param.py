@@ -291,3 +291,27 @@ def test_conversation_with_visualize_none(mock_agent):
         # The on_event callback should still exist (for state persistence)
         on_event = kwargs["on_event"]
         assert callable(on_event)
+
+
+def test_conversation_with_visualizer_class(mock_agent):
+    """Test Conversation with a visualizer class (not instance)."""
+    with patch.object(Agent, "init_state") as mock_init_state:
+        # Pass the class itself, not an instance
+        conversation = Conversation(
+            agent=mock_agent,
+            visualizer=ConversationVisualizer,
+            name_for_visualization="test_agent",
+        )
+
+        # Should have instantiated the visualizer
+        assert conversation._visualizer is not None
+        assert isinstance(conversation._visualizer, ConversationVisualizer)
+
+        # Agent should be initialized with callbacks that include visualizer
+        mock_init_state.assert_called_once()
+        args, kwargs = mock_init_state.call_args
+        assert "on_event" in kwargs
+
+        # The on_event callback should be composed of multiple callbacks
+        on_event = kwargs["on_event"]
+        assert callable(on_event)
