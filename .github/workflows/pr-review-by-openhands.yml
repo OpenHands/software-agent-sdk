@@ -5,7 +5,7 @@ on:
     # Use pull_request_target to allow fork PRs to access secrets when triggered by maintainers
     # Security: This workflow only runs when:
     #   1. A maintainer adds the 'review-this' label, OR
-    #   2. A maintainer requests OpenHands/OpenHands-agent as a reviewer
+    #   2. A maintainer requests openhands-agent as a reviewer
     # Only users with write access can add labels or request reviews, ensuring security.
     # The PR code is explicitly checked out for review, but secrets are only accessible
     # because the workflow runs in the base repository context
@@ -21,13 +21,11 @@ jobs:
     pr-review:
         # Security: Only run when one of the following conditions is met:
         #   1. 'review-this' label is added by a maintainer, OR
-        #   2. OpenHands or OpenHands-agent is requested as a reviewer by a maintainer
+        #   2. openhands-agent is requested as a reviewer by a maintainer
         # Maintainers should review PR code before triggering this workflow
         if: |
             github.event.label.name == 'review-this' ||
-            (github.event.requested_reviewer != null && 
-             (github.event.requested_reviewer.login == 'OpenHands' || 
-              github.event.requested_reviewer.login == 'OpenHands-agent'))
+            github.event.requested_reviewer.login == 'openhands-agent'
         runs-on: blacksmith-4vcpu-ubuntu-2404
         env:
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929

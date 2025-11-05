@@ -5,7 +5,7 @@
 #  3. Commit this file to your repository
 #  4. Trigger the review by either:
 #     - Adding the "review-this" label to any PR, OR
-#     - Requesting OpenHands or OpenHands-agent as a reviewer
+#     - Requesting openhands-agent as a reviewer
 name: PR Review by OpenHands
 
 on:
@@ -20,12 +20,10 @@ permissions:
 
 jobs:
     pr-review:
-        # Run when review-this label is added OR OpenHands/OpenHands-agent is requested as reviewer
+        # Run when review-this label is added OR openhands-agent is requested as reviewer
         if: |
             github.event.label.name == 'review-this' ||
-            (github.event.requested_reviewer != null && 
-             (github.event.requested_reviewer.login == 'OpenHands' || 
-              github.event.requested_reviewer.login == 'OpenHands-agent'))
+            github.event.requested_reviewer.login == 'openhands-agent'
         runs-on: ubuntu-latest
         env:
             # Configuration (modify these values as needed)

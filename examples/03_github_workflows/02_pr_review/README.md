@@ -1,6 +1,6 @@
 # PR Review Workflow
 
-This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this` or when OpenHands is added as a reviewer, OpenHands will analyze the changes and provide detailed, constructive feedback.
+This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this` or when openhands-agent is added as a reviewer, OpenHands will analyze the changes and provide detailed, constructive feedback.
 
 ## Files
 
@@ -13,7 +13,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 
 - **Automatic Trigger**: Reviews are triggered when:
   - The `review-this` label is added to a PR, OR
-  - OpenHands or OpenHands-agent is requested as a reviewer
+  - openhands-agent is requested as a reviewer
 - **Comprehensive Analysis**: Analyzes code changes in context of the entire repository
 - **Detailed Feedback**: Provides structured review comments covering:
   - Overall assessment of changes
@@ -82,7 +82,7 @@ There are two ways to trigger an automated review of a pull request:
 
 1. Open the pull request you want reviewed
 2. Click on "Reviewers" in the right sidebar
-3. Search for and select "OpenHands" or "OpenHands-agent" as a reviewer
+3. Search for and select "openhands-agent" as a reviewer
 4. The workflow will automatically start and analyze the changes
 5. Review comments will be posted to the PR when complete
 
