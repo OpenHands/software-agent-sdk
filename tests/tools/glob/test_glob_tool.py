@@ -162,7 +162,7 @@ def test_glob_tool_invalid_directory():
         observation = tool.executor(action)
 
         assert observation.is_error is True
-        assert "is not a valid directory" in observation.get_text_safe()
+        assert "is not a valid directory" in observation.get_text()
         assert len(observation.files) == 0
 
 

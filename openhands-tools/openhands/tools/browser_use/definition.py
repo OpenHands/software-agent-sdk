@@ -41,7 +41,7 @@ class BrowserObservation(Observation):
             llm_content.append(TextContent(text=self.error_message_header))
 
         # Get text content and truncate if needed
-        content_text = self.get_text_safe()
+        content_text = self.get_text()
         if content_text:
             llm_content.append(
                 TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))

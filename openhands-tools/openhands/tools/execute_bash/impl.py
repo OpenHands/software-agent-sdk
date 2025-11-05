@@ -179,7 +179,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             observation = self.session.execute(action)
 
         # Apply automatic secrets masking
-        content_text = observation.get_text_safe()
+        content_text = observation.get_text()
 
         if content_text and conversation is not None:
             try:

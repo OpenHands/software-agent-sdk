@@ -110,7 +110,7 @@ class ExecuteBashObservation(Observation):
             llm_content.append(TextContent(text=self.error_message_header))
 
         # ExecuteBashObservation always has content as a single TextContent
-        content_text = self.get_text_safe()
+        content_text = self.get_text()
 
         ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
         if self.metadata.working_dir:
@@ -134,7 +134,7 @@ class ExecuteBashObservation(Observation):
             content_obj.append("Command execution error\n", style="red")
 
         # ExecuteBashObservation always has content as a single TextContent
-        content_text = self.get_text_safe()
+        content_text = self.get_text()
 
         if content_text:
             # Style the output based on content

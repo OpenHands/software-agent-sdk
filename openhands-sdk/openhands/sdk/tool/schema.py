@@ -229,29 +229,7 @@ class Observation(Schema, ABC):
         return cls(content=[TextContent(text=text)], is_error=is_error, **kwargs)
 
     def get_text(self) -> str:
-        """Extract text when observation contains a single TextContent.
-
-        Returns:
-            Text from the first TextContent item, or empty string if none.
-
-        Raises:
-            ValueError: If content has multiple items or non-text content.
-        """
-        if not self.content:
-            return ""
-        if len(self.content) > 1:
-            raise ValueError(
-                "get_text() can only be used when content contains a single item"
-            )
-        item = self.content[0]
-        if not isinstance(item, TextContent):
-            raise ValueError(
-                "get_text() can only be used when content contains TextContent"
-            )
-        return item.text
-
-    def get_text_safe(self) -> str:
-        """Safely extract all text content from the observation.
+        """Extract all text content from the observation.
 
         Returns:
             Concatenated text from all TextContent items in content.

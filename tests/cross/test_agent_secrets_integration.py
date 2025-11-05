@@ -234,13 +234,13 @@ def test_mask_secrets(
     try:
         action = ExecuteBashAction(command="echo $API_KEY")
         result = bash_executor(action, conversation=conversation)
-        assert "test-api-key" not in result.get_text_safe()
-        assert "<secret-hidden>" in result.get_text_safe()
+        assert "test-api-key" not in result.get_text()
+        assert "<secret-hidden>" in result.get_text()
 
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "dynamic-secret" not in result.get_text_safe()
-        assert "<secret-hidden>" in result.get_text_safe()
+        assert "dynamic-secret" not in result.get_text()
+        assert "<secret-hidden>" in result.get_text()
 
     finally:
         bash_executor.close()
@@ -265,13 +265,13 @@ def test_mask_changing_secrets(
     try:
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.get_text_safe()
-        assert "<secret-hidden>" in result.get_text_safe()
+        assert "changing-secret" not in result.get_text()
+        assert "<secret-hidden>" in result.get_text()
 
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.get_text_safe()
-        assert "<secret-hidden>" in result.get_text_safe()
+        assert "changing-secret" not in result.get_text()
+        assert "<secret-hidden>" in result.get_text()
 
     finally:
         bash_executor.close()
@@ -303,13 +303,13 @@ def test_masking_persists(
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         print(result)
-        assert "changing-secret" not in result.get_text_safe()
-        assert "<secret-hidden>" in result.get_text_safe()
+        assert "changing-secret" not in result.get_text()
+        assert "<secret-hidden>" in result.get_text()
 
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.get_text_safe()
-        assert "<secret-hidden>" in result.get_text_safe()
+        assert "changing-secret" not in result.get_text()
+        assert "<secret-hidden>" in result.get_text()
         assert dynamic_secret.raised_on_second
 
     finally:

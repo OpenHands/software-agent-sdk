@@ -92,7 +92,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         files: set[str] = set()
 
         # grep returns exit code 1 when no matches; treat as empty
-        output_text = result.get_text_safe()
+        output_text = result.get_text()
 
         if output_text.strip():
             for line in output_text.strip().splitlines():
