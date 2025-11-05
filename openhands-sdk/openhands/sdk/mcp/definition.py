@@ -57,14 +57,16 @@ class MCPToolObservation(Observation):
         cls, tool_name: str, result: mcp.types.CallToolResult
     ) -> "MCPToolObservation":
         """Create an MCPToolObservation from a CallToolResult."""
-        content: list[mcp.types.ContentBlock] = result.content
-        converted_content: list[TextContent | ImageContent] = []
 
-        for block in content:
+        native_content: list[mcp.types.ContentBlock] = result.content
+        content: list[TextContent | ImageContent] = [
+            TextContent(text=f"[Tool '{tool_name}' executed.]")
+        ]
+        for block in native_content:
             if isinstance(block, mcp.types.TextContent):
-                converted_content.append(TextContent(text=block.text))
+                content.append(TextContent(text=block.text))
             elif isinstance(block, mcp.types.ImageContent):
-                converted_content.append(
+                content.append(
                     ImageContent(
                         image_urls=[f"data:{block.mimeType};base64,{block.data}"],
                     )
@@ -74,14 +76,8 @@ class MCPToolObservation(Observation):
                     f"Unsupported MCP content block type: {type(block)}. Ignoring."
                 )
 
-        # Build initial message
-        initial_message = f"[Tool '{tool_name}' executed.]"
-
-        # Prepend initial message to content
-        content_with_header = [TextContent(text=initial_message)] + converted_content
-
         return cls(
-            content=content_with_header,
+            content=content,
             is_error=result.isError,
             tool_name=tool_name,
         )
