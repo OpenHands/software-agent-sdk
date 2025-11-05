@@ -155,9 +155,6 @@ def fetch_datadog_errors(
         error_examples.append(error_example)
 
     else:  # log-query
-        # Use Logs Search API (not Error Tracking API)
-        # Error Tracking API only searches pre-indexed error tracking issues,
-        # not arbitrary log text. For text-based log searches, use Logs API.
         api_url = f"https://api.{dd_site}/api/v2/logs/events/search"
 
         # Calculate timestamps (30 days back)
