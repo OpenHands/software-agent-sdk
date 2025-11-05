@@ -1,7 +1,8 @@
 """PTY-based terminal backend implementation (replaces pipe-based subprocess)."""
 
+import fcntl
 import os
-import platform
+import pty
 import re
 import select
 import signal
@@ -10,15 +11,6 @@ import threading
 import time
 import uuid
 from collections import deque
-
-# Unix-specific imports
-if platform.system() != "Windows":
-    import fcntl
-    import pty
-else:
-    # Provide dummy values for Windows (this module shouldn't be used on Windows)
-    fcntl = None
-    pty = None
 
 from openhands.sdk.logger import get_logger
 from openhands.tools.execute_bash.constants import (
