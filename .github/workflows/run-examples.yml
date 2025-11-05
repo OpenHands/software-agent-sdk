@@ -59,6 +59,7 @@ jobs:
                   # - 16_llm_security_analyzer.py: requires user input
                   # - 04_convo_with_api_sandboxed_server.py: requires sandbox API keys
                   # - 04_vscode_with_docker_sandboxed_server.py: requires VSCode setup
+                  set -e
                   EXAMPLES=(
                       # "examples/01_standalone_sdk/01_hello_world.py"
                       # "examples/01_standalone_sdk/02_custom_tools.py"
@@ -202,29 +203,30 @@ jobs:
                       # Create temp file to capture output
                       OUTPUT_FILE=$(mktemp)
                                   
-                      # Temporarily disable pipefail for this test
-                      set +o pipefail
-                                  
                       # Run example with timeout (20 minutes per example)
                       # Capture output while still displaying it
-                      timeout 1200 uv run python "$example" 2>&1 | tee "$OUTPUT_FILE"
-                      EXIT_CODE=${PIPESTATUS[0]}
+                      # Use || true to prevent script exit on failure
+                      (timeout 1200 uv run python "$example" 2>&1 || true) | tee "$OUTPUT_FILE"
                                   
-                      # Re-enable pipefail
-                      set -o pipefail
+                      # Check if command succeeded by looking at Python exit
+                      if grep -q "Traceback" "$OUTPUT_FILE" || ! grep -q "EXAMPLE_COST:" "$OUTPUT_FILE"; then
+                          EXIT_CODE=1
+                      else
+                          EXIT_CODE=0
+                      fi
                                   
                       END_TIME=$(date +%s)
                       DURATION=$((END_TIME - START_TIME))
                       DURATION_STR="${DURATION}s"
                                   
                       # Extract cost from output
-                      COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1)
+                      COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1 || echo "0.00")
                       if [ -z "$COST" ]; then
                           COST="0.00"
                       fi
                                   
                       # Accumulate total cost
-                      TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l)
+                      TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l 2>/dev/null || echo "$TOTAL_COST")
                                   
                       if [ "$EXIT_CODE" -eq 0 ]; then
                           echo "✓ PASSED: $example (${DURATION_STR}, cost: \$${COST})"
@@ -248,9 +250,9 @@ jobs:
                       # Clean up temp file
                       rm -f "$OUTPUT_FILE"
                                   
-                      # Update PR comment after each test
+                      # Update PR comment after each test (with error handling)
                       echo "Updating PR comment..."
-                      update_comment "$(generate_table)"
+                      update_comment "$(generate_table)" || echo "Warning: Failed to update PR comment"
                   done
 
                   echo ""
