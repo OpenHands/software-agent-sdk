@@ -61,7 +61,7 @@ class LocalConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool | ConversationVisualizer | None = True,
+        visualizer: ConversationVisualizer | None = DefaultVisualizer,
         name_for_visualization: str | None = None,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
