@@ -329,3 +329,105 @@ def test_state_update_callback_integration():
         # Verify the state was updated
         assert conv.state._cached_state is not None
         assert conv.state._cached_state["execution_status"] == "running"
+
+
+def test_conversation_stats_reads_from_stats_field():
+    """Test that conversation_stats property reads from 'stats' field."""
+    agent = create_test_agent()
+
+    # Mock httpx client with stats data
+    mock_client_instance = create_mock_http_client()
+
+    # Mock conversation info response with stats field
+    mock_info_response = {
+        "conversation_id": "test-id",
+        "execution_status": "idle",
+        "stats": {
+            "usage_to_metrics": {
+                "test-llm": {
+                    "model_name": "gpt-4o-mini",
+                    "accumulated_cost": 1.23,
+                    "accumulated_token_usage": {
+                        "prompt_tokens": 100,
+                        "completion_tokens": 50,
+                    },
+                }
+            }
+        },
+    }
+
+    with (
+        patch("httpx.Client", return_value=mock_client_instance),
+        patch(
+            "openhands.sdk.conversation.impl.remote_conversation"
+            ".WebSocketCallbackClient"
+        ),
+    ):
+        # Create RemoteConversation
+        conv = RemoteConversation(
+            agent=agent,
+            workspace=RemoteWorkspace(working_dir="/tmp", host="http://localhost:3000"),
+        )
+
+        # Manually set cached state to simulate REST API response
+        conv.state._cached_state = mock_info_response
+
+        # Access conversation_stats property
+        stats = conv.conversation_stats
+
+        # Verify stats are correctly read from "stats" field
+        assert stats is not None
+        assert "test-llm" in stats.usage_to_metrics
+        assert stats.usage_to_metrics["test-llm"].accumulated_cost == 1.23
+
+
+def test_stats_update_via_state_event():
+    """Test that stats updates are received via ConversationStateUpdateEvent."""
+    agent = create_test_agent()
+
+    # Mock httpx client
+    mock_client_instance = create_mock_http_client()
+
+    with (
+        patch("httpx.Client", return_value=mock_client_instance),
+        patch(
+            "openhands.sdk.conversation.impl.remote_conversation"
+            ".WebSocketCallbackClient"
+        ),
+    ):
+        # Create RemoteConversation
+        conv = RemoteConversation(
+            agent=agent,
+            workspace=RemoteWorkspace(working_dir="/tmp", host="http://localhost:3000"),
+        )
+
+        # Set initial state with empty stats
+        initial_state = {
+            "execution_status": "running",
+            "stats": {"usage_to_metrics": {}},
+        }
+        event1 = ConversationStateUpdateEvent(key="full_state", value=initial_state)
+        conv.state.update_state_from_event(event1)
+
+        # Verify initial stats are empty
+        stats = conv.conversation_stats
+        assert stats is not None
+        assert stats.usage_to_metrics == {}
+
+        # Simulate state update with new stats
+        updated_stats = {
+            "usage_to_metrics": {
+                "test-llm": {
+                    "model_name": "gpt-4o-mini",
+                    "accumulated_cost": 2.45,
+                }
+            }
+        }
+        event2 = ConversationStateUpdateEvent(key="stats", value=updated_stats)
+        conv.state.update_state_from_event(event2)
+
+        # Verify stats are updated
+        stats = conv.conversation_stats
+        assert stats is not None
+        assert "test-llm" in stats.usage_to_metrics
+        assert stats.usage_to_metrics["test-llm"].accumulated_cost == 2.45
