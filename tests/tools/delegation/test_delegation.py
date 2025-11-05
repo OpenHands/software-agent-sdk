@@ -146,13 +146,7 @@ def test_delegate_executor_missing_task():
     # Error message should be in the error field
     assert observation.is_error
     assert observation.is_error is True
-    content_text = (
-        observation.content
-        if isinstance(observation.content, str)
-        else "".join(
-            [c.text for c in observation.content if isinstance(c, TextContent)]
-        )
-    )
+    content_text = observation.text
     assert (
         "task is required" in content_text.lower()
         or "at least one task" in content_text.lower()
