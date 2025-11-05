@@ -11,13 +11,7 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
 from openhands.sdk.llm import ImageContent, TextContent
-from openhands.sdk.tool import (
-    Action,
-    Observation,
-    ToolAnnotations,
-    ToolDefinition,
-    register_tool,
-)
+from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
 
 
 class GlobAction(Action):
@@ -123,6 +117,7 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
+                name="glob",
                 description=enhanced_description,
                 action_type=GlobAction,
                 observation_type=GlobObservation,
@@ -136,7 +131,3 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
                 executor=executor,
             )
         ]
-
-
-# Automatically register the tool when this module is imported
-register_tool(GlobTool.name, GlobTool)

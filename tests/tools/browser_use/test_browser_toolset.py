@@ -1,7 +1,20 @@
 """Test BrowserToolSet functionality."""
 
 from openhands.sdk.tool import ToolDefinition
-from openhands.tools.browser_use import BrowserToolSet
+from openhands.sdk.tool.tool import ToolBase
+from openhands.tools.browser_use import (
+    BrowserToolSet,
+    browser_click_tool,
+    browser_close_tab_tool,
+    browser_get_content_tool,
+    browser_get_state_tool,
+    browser_go_back_tool,
+    browser_list_tabs_tool,
+    browser_navigate_tool,
+    browser_scroll_tool,
+    browser_switch_tab_tool,
+    browser_type_tool,
+)
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
@@ -26,16 +39,16 @@ def test_browser_toolset_create_includes_all_browser_tools():
 
     # Expected tool names based on the browser tools
     expected_names = [
-        "browser_navigate",
-        "browser_click",
-        "browser_get_state",
-        "browser_get_content",
-        "browser_type",
-        "browser_scroll",
-        "browser_go_back",
-        "browser_list_tabs",
-        "browser_switch_tab",
-        "browser_close_tab",
+        browser_navigate_tool.name,
+        browser_click_tool.name,
+        browser_get_state_tool.name,
+        browser_get_content_tool.name,
+        browser_type_tool.name,
+        browser_scroll_tool.name,
+        browser_go_back_tool.name,
+        browser_list_tabs_tool.name,
+        browser_switch_tab_tool.name,
+        browser_close_tab_tool.name,
     ]
 
     # Verify all expected tools are present
@@ -67,14 +80,14 @@ def test_browser_toolset_create_tools_are_properly_configured():
     # Find a specific tool to test (e.g., navigate tool)
     navigate_tool = None
     for tool in tools:
-        if tool.name == "browser_navigate":
+        if tool.name == browser_navigate_tool.name:
             navigate_tool = tool
             break
 
     assert navigate_tool is not None
-    assert navigate_tool.description is not None
-    assert navigate_tool.action_type is not None
-    assert navigate_tool.observation_type is not None
+    assert navigate_tool.description == browser_navigate_tool.description
+    assert navigate_tool.action_type == browser_navigate_tool.action_type
+    assert navigate_tool.observation_type == browser_navigate_tool.observation_type
     assert navigate_tool.executor is not None
 
 
@@ -121,11 +134,11 @@ def test_browser_toolset_create_no_parameters():
 
 def test_browser_toolset_inheritance():
     """Test that BrowserToolSet properly inherits from Tool."""
-    assert issubclass(BrowserToolSet, ToolDefinition)
+    assert issubclass(BrowserToolSet, ToolBase)
 
     # BrowserToolSet should not be instantiable directly (it's a factory)
     # The create method returns a list, not an instance of BrowserToolSet
     tools = BrowserToolSet.create()
     for tool in tools:
         assert not isinstance(tool, BrowserToolSet)
-        assert isinstance(tool, ToolDefinition)
+        assert isinstance(tool, ToolBase)

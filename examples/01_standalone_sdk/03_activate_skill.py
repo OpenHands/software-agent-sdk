@@ -15,7 +15,7 @@ from openhands.sdk.context import (
     KeywordTrigger,
     Skill,
 )
-from openhands.sdk.tool import Tool
+from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 
@@ -36,11 +36,13 @@ llm = LLM(
 
 # Tools
 cwd = os.getcwd()
+register_tool("BashTool", BashTool)
+register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name=BashTool.name,
+        name="BashTool",
     ),
-    Tool(name=FileEditorTool.name),
+    Tool(name="FileEditorTool"),
 ]
 
 agent_context = AgentContext(
@@ -71,8 +73,10 @@ agent_context = AgentContext(
     user_message_suffix="The first character of your response should be 'I'",
 )
 
+
 # Agent
 agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
+
 
 llm_messages = []  # collect raw LLM messages
 
@@ -100,7 +104,3 @@ print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
-
-# Report cost
-cost = llm.metrics.accumulated_cost
-print(f"EXAMPLE_COST: {cost}")

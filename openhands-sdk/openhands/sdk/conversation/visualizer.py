@@ -199,24 +199,15 @@ class ConversationVisualizer:
             }
             role_color = role_colors.get(event.llm_message.role, "white")
 
-            # "User Message To [Name] Agent" for user
-            # "Message from [Name] Agent" for agent
-            agent_name = (
-                f"{self._name_for_visualization} "
-                if self._name_for_visualization
-                else ""
-            )
-
-            if event.llm_message.role == "user":
-                title_text = (
-                    f"[bold {role_color}]User Message to "
-                    f"{agent_name}Agent[/bold {role_color}]"
-                )
+            # Use "to" for user messages (user sending to agent)
+            # and "from" for assistant messages
+            direction = "to" if event.llm_message.role == "user" else "from"
+            title_text = f"[bold {role_color}]Message {direction} "
+            if self._name_for_visualization:
+                title_text += f"{self._name_for_visualization} Agent"
             else:
-                title_text = (
-                    f"[bold {role_color}]Message from "
-                    f"{agent_name}Agent[/bold {role_color}]"
-                )
+                title_text += event.source.capitalize()
+            title_text += f"[/bold {role_color}]"
             return Panel(
                 content,
                 title=title_text,
@@ -294,14 +285,14 @@ class ConversationVisualizer:
         def abbr(n: int | float) -> str:
             n = int(n or 0)
             if n >= 1_000_000_000:
-                val, suffix = n / 1_000_000_000, "B"
+                s = f"{n / 1_000_000_000:.2f}B"
             elif n >= 1_000_000:
-                val, suffix = n / 1_000_000, "M"
+                s = f"{n / 1_000_000:.2f}M"
             elif n >= 1_000:
-                val, suffix = n / 1_000, "K"
+                s = f"{n / 1_000:.2f}K"
             else:
                 return str(n)
-            return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
+            return s.replace(".0", "")
 
         input_tokens = abbr(usage.prompt_tokens or 0)
         output_tokens = abbr(usage.completion_tokens or 0)
@@ -313,7 +304,7 @@ class ConversationVisualizer:
         reasoning_tokens = usage.reasoning_tokens or 0
 
         # Cost
-        cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
+        cost_str = f"{cost:.4f}" if cost > 0 else "$0.00"
 
         # Build with fixed color scheme
         parts: list[str] = []

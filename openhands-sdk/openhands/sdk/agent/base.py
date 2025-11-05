@@ -28,11 +28,8 @@ logger = get_logger(__name__)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
-    """Abstract base class for OpenHands agents.
-
+    """Abstract base class for agents.
     Agents are stateless and should be fully defined by their configuration.
-    This base class provides the common interface and functionality that all
-    agent implementations must follow.
     """
 
     model_config = ConfigDict(
@@ -223,9 +220,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
 
         # Always include built-in tools; not subject to filtering
-        # Instantiate built-in tools using their .create() method
-        for tool_class in BUILT_IN_TOOLS:
-            tools.extend(tool_class.create(state))
+        tools.extend(BUILT_IN_TOOLS)
 
         # Check tool types
         for tool in tools:
@@ -257,7 +252,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         2. Executing the tool
         3. Updating the conversation state with
             LLM calls (role="assistant") and tool results (role="tool")
-        4.1 If conversation is finished, set state.execution_status to FINISHED
+        4.1 If conversation is finished, set state.agent_status to FINISHED
         4.2 Otherwise, just return, Conversation will kick off the next step
 
         NOTE: state will be mutated in-place.

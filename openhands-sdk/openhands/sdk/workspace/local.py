@@ -14,18 +14,7 @@ logger = get_logger(__name__)
 
 
 class LocalWorkspace(BaseWorkspace):
-    """Local workspace implementation that operates on the host filesystem.
-
-    LocalWorkspace provides direct access to the local filesystem and command execution
-    environment. It's suitable for development and testing scenarios where the agent
-    should operate directly on the host system.
-
-    Example:
-        >>> workspace = LocalWorkspace(working_dir="/path/to/project")
-        >>> with workspace:
-        ...     result = workspace.execute_command("ls -la")
-        ...     content = workspace.read_file("README.md")
-    """
+    """Mixin providing local workspace operations."""
 
     def execute_command(
         self,

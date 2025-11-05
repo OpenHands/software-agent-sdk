@@ -17,7 +17,8 @@ from openhands.sdk.llm.utils.model_features import get_features
 class _HostSupports(Protocol):
     model: str
     disable_stop_word: bool | None
-    native_tool_calling: bool
+
+    def is_function_calling_active(self) -> bool: ...
 
 
 class NonNativeToolCallingMixin:
@@ -26,13 +27,13 @@ class NonNativeToolCallingMixin:
     Host requirements:
     - self.model: str
     - self.disable_stop_word: bool | None
-    - self.native_tool_calling -> bool
+    - self.is_function_calling_active() -> bool
     """
 
     def should_mock_tool_calls(
         self: _HostSupports, tools: list[ChatCompletionToolParam] | None
     ) -> bool:
-        return bool(tools) and not self.native_tool_calling
+        return bool(tools) and not self.is_function_calling_active()
 
     def pre_request_prompt_mock(
         self: _HostSupports,

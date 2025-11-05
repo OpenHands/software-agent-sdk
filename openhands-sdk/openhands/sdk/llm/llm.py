@@ -26,7 +26,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
-    from openhands.sdk.tool.tool import ToolDefinition
+    from openhands.sdk.tool.tool import ToolBase
 
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -44,7 +44,10 @@ from litellm import (
 )
 from litellm.exceptions import (
     APIConnectionError,
+    BadRequestError,
+    ContextWindowExceededError,
     InternalServerError,
+    OpenAIError,
     RateLimitError,
     ServiceUnavailableError,
     Timeout as LiteLLMTimeout,
@@ -59,10 +62,7 @@ from litellm.utils import (
     token_counter,
 )
 
-from openhands.sdk.llm.exceptions import (
-    LLMNoResponseError,
-    map_provider_exception,
-)
+from openhands.sdk.llm.exceptions import LLMNoResponseError
 
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
@@ -101,23 +101,7 @@ SERVICE_ID_DEPRECATION_MSG = (
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
-    """Language model interface for OpenHands agents.
-
-    The LLM class provides a unified interface for interacting with various
-    language models through the litellm library. It handles model configuration,
-    API authentication,
-    retry logic, and tool calling capabilities.
-
-    Example:
-        >>> from openhands.sdk import LLM
-        >>> from pydantic import SecretStr
-        >>> llm = LLM(
-        ...     model="claude-sonnet-4-20250514",
-        ...     api_key=SecretStr("your-api-key"),
-        ...     usage_id="my-agent"
-        ... )
-        >>> # Use with agent or conversation
-    """
+    """Refactored LLM: simple `completion()`, centralized Telemetry, tiny helpers."""
 
     # =========================================================================
     # Config fields
@@ -166,10 +150,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
     )
-    extra_headers: dict[str, str] | None = Field(
-        default=None,
-        description="Optional HTTP headers to forward to LiteLLM requests.",
-    )
     input_cost_per_token: float | None = Field(
         default=None,
         ge=0,
@@ -208,9 +188,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     custom_tokenizer: str | None = Field(
         default=None, description="A custom tokenizer to use for token counting."
     )
-    native_tool_calling: bool = Field(
-        default=True,
-        description="Whether to use native tool calling.",
+    native_tool_calling: bool | None = Field(
+        default=None,
+        description="Whether to use native tool calling "
+        "if supported by the model. Can be True, False, or not set.",
     )
     reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
         default=None,
@@ -246,12 +227,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "telemetry, and spend tracking."
         ),
     )
-    litellm_extra_body: dict[str, Any] = Field(
+    metadata: dict[str, Any] = Field(
         default_factory=dict,
         description=(
-            "Additional key-value pairs to pass to litellm's extra_body parameter. "
-            "This is useful for custom inference clusters that need additional "
-            "metadata for logging, tracking, or routing purposes. "
+            "Additional metadata for the LLM instance. "
             "Example structure: "
             "{'trace_version': '1.0.0', 'tags': ['model:gpt-4', 'agent:my-agent'], "
             "'session_id': 'session-123', 'trace_user_id': 'user-456'}"
@@ -279,6 +258,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
+    _function_calling_active: bool = PrivateAttr(default=False)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -410,15 +390,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @property
     def metrics(self) -> Metrics:
-        """Get usage metrics for this LLM instance.
-
-        Returns:
-            Metrics object containing token usage, costs, and other statistics.
-
-        Example:
-            >>> cost = llm.metrics.accumulated_cost
-            >>> print(f"Total cost: ${cost}")
-        """
         assert self._metrics is not None, (
             "Metrics should be initialized after model validation"
         )
@@ -431,27 +402,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def completion(
         self,
         messages: list[Message],
-        tools: Sequence[ToolDefinition] | None = None,
+        tools: Sequence[ToolBase] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
         **kwargs,
     ) -> LLMResponse:
-        """Generate a completion from the language model.
+        """Single entry point for LLM completion.
 
-        This is the method for getting responses from the model via Completion API.
-        It handles message formatting, tool calling, and response processing.
-
-        Returns:
-            LLMResponse containing the model's response and metadata.
-
-        Raises:
-            ValueError: If streaming is requested (not supported).
-
-        Example:
-            >>> from openhands.sdk.llm import Message, TextContent
-            >>> messages = [Message(role="user", content=[TextContent(text="Hello")])]
-            >>> response = llm.completion(messages)
-            >>> print(response.content)
+        Normalize → (maybe) mock tools → transport → postprocess.
         """
         # Check if streaming is requested
         if kwargs.get("stream", False):
@@ -461,7 +419,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         formatted_messages = self.format_messages_for_llm(messages)
 
         # 2) choose function-calling strategy
-        use_native_fc = self.native_tool_calling
+        use_native_fc = self.is_function_calling_active()
         original_fncall_msgs = copy.deepcopy(formatted_messages)
 
         # Convert Tool objects to ChatCompletionToolParam once here
@@ -503,6 +461,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             }
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
+        self._telemetry.on_request(log_ctx=log_ctx)
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -515,7 +474,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
-            self._telemetry.on_request(log_ctx=log_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(messages=formatted_messages, **final_kwargs)
@@ -557,9 +515,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
             raise
 
     # =========================================================================
@@ -568,7 +523,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def responses(
         self,
         messages: list[Message],
-        tools: Sequence[ToolDefinition] | None = None,
+        tools: Sequence[ToolBase] | None = None,
         include: list[str] | None = None,
         store: bool | None = None,
         _return_metrics: bool = False,
@@ -679,9 +634,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         except Exception as e:
             self._telemetry.on_error(e)
-            mapped = map_provider_exception(e)
-            if mapped is not e:
-                raise mapped from e
             raise
 
     # =========================================================================
@@ -714,7 +666,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 ret = litellm_completion(
                     model=self.model,
                     api_key=self.api_key.get_secret_value() if self.api_key else None,
-                    api_base=self.base_url,
+                    base_url=self.base_url,
                     api_version=self.api_version,
                     timeout=self.timeout,
                     drop_params=self.drop_params,
@@ -756,12 +708,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if not base_url.startswith(("http://", "https://")):
                 base_url = "http://" + base_url
             try:
-                headers = {}
                 api_key = self.api_key.get_secret_value() if self.api_key else ""
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-
-                response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
+                response = httpx.get(
+                    f"{base_url}/v1/model/info",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
                 data = response.json().get("data", [])
                 current = next(
                     (
@@ -778,11 +729,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Got model info from litellm proxy: {self._model_info}"
                     )
             except Exception as e:
-                logger.debug(
-                    f"Error fetching model info from proxy: {e}",
-                    exc_info=True,
-                    stack_info=True,
-                )
+                logger.debug(f"Error fetching model info from proxy: {e}")
 
         # Fallbacks: try base name variants
         if not self._model_info:
@@ -821,6 +768,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     self.max_output_tokens = self._model_info.get("max_output_tokens")
                 elif isinstance(self._model_info.get("max_tokens"), int):
                     self.max_output_tokens = self._model_info.get("max_tokens")
+
+        # Function-calling capabilities
+        feats = get_features(self.model)
+        logger.debug(f"Model features for {self.model}: {feats}")
+        self._function_calling_active = (
+            self.native_tool_calling
+            if self.native_tool_calling is not None
+            else feats.supports_function_calling
+        )
 
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
@@ -862,6 +818,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # only Anthropic models need explicit caching breakpoints
         return self.caching_prompt and get_features(self.model).supports_prompt_cache
 
+    def is_function_calling_active(self) -> bool:
+        """Returns whether function calling is supported
+        and enabled for this LLM instance.
+        """
+        return bool(self._function_calling_active)
+
     def uses_responses_api(self) -> bool:
         """Whether this model uses the OpenAI Responses API path."""
 
@@ -902,10 +864,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         for message in messages:
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
-            message.function_calling_enabled = self.native_tool_calling
-            message.force_string_serializer = get_features(
-                self.model
-            ).force_string_serializer
+            message.function_calling_enabled = self.is_function_calling_active()
+            if "deepseek" in self.model or (
+                "kimi-k2-instruct" in self.model and "groq" in self.model
+            ):
+                message.force_string_serializer = True
 
         formatted_messages = [message.to_chat_dict() for message in messages]
 
@@ -1069,3 +1032,51 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 f"Diff: {pretty_pydantic_diff(self, reconciled)}"
             )
         return reconciled
+
+    @staticmethod
+    def is_context_window_exceeded_exception(exception: Exception) -> bool:
+        """Check if the exception indicates a context window exceeded error.
+
+        Context window exceeded errors vary by provider, and LiteLLM does not do a
+        consistent job of identifying and wrapping them.
+        """
+        # A context window exceeded error from litellm is the best signal we have.
+        if isinstance(exception, ContextWindowExceededError):
+            return True
+
+        # But with certain providers the exception might be a bad request or generic
+        # OpenAI error, and we have to use the content of the error to figure out what
+        # is wrong.
+        if not isinstance(exception, (BadRequestError, OpenAIError)):
+            return False
+
+        # Not all BadRequestError or OpenAIError are context window exceeded errors, so
+        # we need to check the message content for known patterns.
+        error_string = str(exception).lower()
+
+        known_exception_patterns: list[str] = [
+            "contextwindowexceedederror",
+            "prompt is too long",
+            "input length and `max_tokens` exceed context limit",
+            "please reduce the length of",
+            "the request exceeds the available context size",
+            "context length exceeded",
+        ]
+
+        if any(pattern in error_string for pattern in known_exception_patterns):
+            return True
+
+        # A special case for SambaNova, where multiple patterns are needed
+        # simultaneously.
+        samba_nova_patterns: list[str] = [
+            "sambanovaexception",
+            "maximum context length",
+        ]
+
+        if all(pattern in error_string for pattern in samba_nova_patterns):
+            return True
+
+        # If we've made it this far and haven't managed to positively ID it as a context
+        # window exceeded error, we'll have to assume it's not and rely on the call-site
+        # context to handle it appropriately.
+        return False

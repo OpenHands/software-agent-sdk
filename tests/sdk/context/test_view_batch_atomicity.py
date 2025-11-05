@@ -7,6 +7,7 @@ with their associated tool calls.
 """
 
 from openhands.sdk.context.view import View
+from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
@@ -108,7 +109,7 @@ def test_batch_atomicity_partial_batch_forgotten() -> None:
     # Condensation forgets the first 3 actions (E44-E46), but not the 4th (E47)
     # This simulates what might happen if the condenser uses event indices without
     # considering batch boundaries
-    events = [
+    events: list[Event] = [
         message_event("User message"),
         action1,
         action2,
@@ -118,10 +119,7 @@ def test_batch_atomicity_partial_batch_forgotten() -> None:
         obs2,
         obs3,
         obs4,
-        Condensation(
-            forgotten_event_ids=[action1.id, action2.id, action3.id],
-            llm_response_id="condensation_response_1",
-        ),
+        Condensation(forgotten_event_ids=[action1.id, action2.id, action3.id]),
     ]
 
     view = View.from_events(events)
@@ -162,16 +160,13 @@ def test_batch_atomicity_complete_batch_forgotten() -> None:
     obs1 = create_observation_event("tool_call_1")
     obs2 = create_observation_event("tool_call_2")
 
-    events = [
+    events: list[Event] = [
         message_event("User message"),
         action1,
         action2,
         obs1,
         obs2,
-        Condensation(
-            forgotten_event_ids=[action1.id, action2.id],
-            llm_response_id="condensation_response_1",
-        ),
+        Condensation(forgotten_event_ids=[action1.id, action2.id]),
     ]
 
     view = View.from_events(events)
@@ -208,7 +203,7 @@ def test_batch_atomicity_no_forgetting_preserves_batch() -> None:
     obs2 = create_observation_event("tool_call_2")
     obs3 = create_observation_event("tool_call_3")
 
-    events = [
+    events: list[Event] = [
         message_event("User message"),
         action1,
         action2,
@@ -216,9 +211,7 @@ def test_batch_atomicity_no_forgetting_preserves_batch() -> None:
         obs1,
         obs2,
         obs3,
-        Condensation(
-            forgotten_event_ids=[], llm_response_id="condensation_response_1"
-        ),  # Don't forget anything
+        Condensation(forgotten_event_ids=[]),  # Don't forget anything
     ]
 
     view = View.from_events(events)
@@ -262,7 +255,7 @@ def test_batch_atomicity_multiple_batches() -> None:
 
     # Forget only the first action of the first batch
     # This should cause the entire first batch to be forgotten, but not the second batch
-    events = [
+    events: list[Event] = [
         message_event("User message"),
         action1_1,
         action1_2,
@@ -273,10 +266,7 @@ def test_batch_atomicity_multiple_batches() -> None:
         action2_2,
         obs2_1,
         obs2_2,
-        Condensation(
-            forgotten_event_ids=[action1_1.id],
-            llm_response_id="condensation_response_1",
-        ),
+        Condensation(forgotten_event_ids=[action1_1.id]),
     ]
 
     view = View.from_events(events)
@@ -307,13 +297,11 @@ def test_batch_atomicity_single_action_batch() -> None:
     )
     obs = create_observation_event("tool_call_1")
 
-    events = [
+    events: list[Event] = [
         message_event("User message"),
         action,
         obs,
-        Condensation(
-            forgotten_event_ids=[action.id], llm_response_id="condensation_response_1"
-        ),
+        Condensation(forgotten_event_ids=[action.id]),
     ]
 
     view = View.from_events(events)
@@ -340,7 +328,7 @@ def test_batch_atomicity_no_thinking_blocks() -> None:
     obs3 = create_observation_event("tool_call_3")
 
     # Forget first two actions
-    events = [
+    events: list[Event] = [
         message_event("User message"),
         action1,
         obs1,
@@ -348,10 +336,7 @@ def test_batch_atomicity_no_thinking_blocks() -> None:
         obs2,
         action3,
         obs3,
-        Condensation(
-            forgotten_event_ids=[action1.id, action2.id],
-            llm_response_id="condensation_response_1",
-        ),
+        Condensation(forgotten_event_ids=[action1.id, action2.id]),
     ]
 
     view = View.from_events(events)

@@ -11,10 +11,7 @@ from pydantic import SecretStr
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.state import (
-    ConversationExecutionStatus,
-    ConversationState,
-)
+from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
@@ -469,7 +466,7 @@ def test_conversation_state_flags_persistence():
         state.stats.register_llm(RegistryEvent(llm=llm))
 
         # Set various flags
-        state.execution_status = ConversationExecutionStatus.FINISHED
+        state.agent_status = AgentExecutionStatus.FINISHED
         state.confirmation_policy = AlwaysConfirm()
         state.activated_knowledge_skills = ["agent1", "agent2"]
 
@@ -485,7 +482,7 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.id == state.id
         assert loaded_state.agent.llm.model == state.agent.llm.model
         # Verify flags are preserved
-        assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
+        assert loaded_state.agent_status == AgentExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
         assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
         # Test model_dump equality

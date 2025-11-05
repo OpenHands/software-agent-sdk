@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING, Protocol
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secrets_manager import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
@@ -18,7 +18,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.conversation.state import ConversationExecutionStatus
+    from openhands.sdk.conversation.state import AgentExecutionStatus
 
 
 class ConversationStateProtocol(Protocol):
@@ -35,8 +35,8 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def execution_status(self) -> "ConversationExecutionStatus":
-        """The current conversation execution status."""
+    def agent_status(self) -> "AgentExecutionStatus":
+        """The current agent execution status."""
         ...
 
     @property
@@ -69,13 +69,6 @@ class ConversationStateProtocol(Protocol):
 
 
 class BaseConversation(ABC):
-    """Abstract base class for conversation implementations.
-
-    This class defines the interface that all conversation implementations must follow.
-    Conversations manage the interaction between users and agents, handling message
-    exchange, execution control, and state management.
-    """
-
     @property
     @abstractmethod
     def id(self) -> ConversationID: ...
@@ -89,23 +82,13 @@ class BaseConversation(ABC):
     def conversation_stats(self) -> ConversationStats: ...
 
     @abstractmethod
-    def send_message(self, message: str | Message) -> None:
-        """Send a message to the agent."""
-        ...
+    def send_message(self, message: str | Message) -> None: ...
 
     @abstractmethod
-    def run(self) -> None:
-        """Execute the agent to process messages and perform actions.
-
-        This method runs the agent until it finishes processing the current
-        message or reaches the maximum iteration limit.
-        """
-        ...
+    def run(self) -> None: ...
 
     @abstractmethod
-    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
-        """Set the confirmation policy for the conversation."""
-        ...
+    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None: ...
 
     @property
     def confirmation_policy_active(self) -> bool:

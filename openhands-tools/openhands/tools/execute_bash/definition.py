@@ -17,8 +17,6 @@ from openhands.sdk.tool import (
     Observation,
     ToolAnnotations,
     ToolDefinition,
-    ToolExecutor,
-    register_tool,
 )
 from openhands.sdk.utils import maybe_truncate
 from openhands.tools.execute_bash.constants import (
@@ -219,6 +217,21 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
+execute_bash_tool = ToolDefinition(
+    name="execute_bash",
+    action_type=ExecuteBashAction,
+    observation_type=ExecuteBashObservation,
+    description=TOOL_DESCRIPTION,
+    annotations=ToolAnnotations(
+        title="execute_bash",
+        readOnlyHint=False,
+        destructiveHint=True,
+        idempotentHint=False,
+        openWorldHint=True,
+    ),
+)
+
+
 class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
     """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
 
@@ -229,7 +242,6 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
-        executor: ToolExecutor | None = None,
     ) -> Sequence["BashTool"]:
         """Initialize BashTool with executor parameters.
 
@@ -253,31 +265,21 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
             raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
 
         # Initialize the executor
-        if executor is None:
-            executor = BashExecutor(
-                working_dir=working_dir,
-                username=username,
-                no_change_timeout_seconds=no_change_timeout_seconds,
-                terminal_type=terminal_type,
-            )
+        executor = BashExecutor(
+            working_dir=working_dir,
+            username=username,
+            no_change_timeout_seconds=no_change_timeout_seconds,
+            terminal_type=terminal_type,
+        )
 
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
+                name=execute_bash_tool.name,
+                description=TOOL_DESCRIPTION,
                 action_type=ExecuteBashAction,
                 observation_type=ExecuteBashObservation,
-                description=TOOL_DESCRIPTION,
-                annotations=ToolAnnotations(
-                    title="bash",
-                    readOnlyHint=False,
-                    destructiveHint=True,
-                    idempotentHint=False,
-                    openWorldHint=True,
-                ),
+                annotations=execute_bash_tool.annotations,
                 executor=executor,
             )
         ]
-
-
-# Automatically register the tool when this module is imported
-register_tool(BashTool.name, BashTool)

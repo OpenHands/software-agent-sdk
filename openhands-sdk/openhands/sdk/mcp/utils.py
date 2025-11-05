@@ -8,7 +8,7 @@ from fastmcp.mcp_config import MCPConfig
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import MCPClient, MCPToolDefinition
-from openhands.sdk.tool.tool import ToolDefinition
+from openhands.sdk.tool.tool import ToolBase
 
 
 logger = get_logger(__name__)
@@ -30,9 +30,9 @@ async def log_handler(message: LogMessage):
     logger.log(level, msg, extra=extra)
 
 
-async def _list_tools(client: MCPClient) -> list[ToolDefinition]:
+async def _list_tools(client: MCPClient) -> list[ToolBase]:
     """List tools from an MCP client."""
-    tools: list[ToolDefinition] = []
+    tools: list[ToolBase] = []
 
     async with client:
         assert client.is_connected(), "MCP client is not connected."

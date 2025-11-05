@@ -1,48 +1,16 @@
-from collections.abc import Sequence
-from typing import ClassVar
-
 from pydantic import Field
 
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
+from openhands.sdk.tool import Action, ToolAnnotations, ToolDefinition
 
 
 class TRTSAction(Action):
     x: int = Field(description="x")
 
 
-class MockSecurityTool1(ToolDefinition[TRTSAction, Observation]):
-    """Concrete mock tool for security testing - readonly."""
-
-    name: ClassVar[str] = "t1"
-
-    @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["MockSecurityTool1"]:
-        return [cls(**params)]
-
-
-class MockSecurityTool2(ToolDefinition[TRTSAction, Observation]):
-    """Concrete mock tool for security testing - writable."""
-
-    name: ClassVar[str] = "t2"
-
-    @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["MockSecurityTool2"]:
-        return [cls(**params)]
-
-
-class MockSecurityTool3(ToolDefinition[TRTSAction, Observation]):
-    """Concrete mock tool for security testing - no flag."""
-
-    name: ClassVar[str] = "t3"
-
-    @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["MockSecurityTool3"]:
-        return [cls(**params)]
-
-
 def test_to_responses_tool_security_gating():
     # readOnlyHint=True -> do not add security_risk even if requested
-    readonly = MockSecurityTool1(
+    readonly = ToolDefinition(
+        name="t1",
         description="d",
         action_type=TRTSAction,
         observation_type=None,
@@ -56,7 +24,8 @@ def test_to_responses_tool_security_gating():
     assert "security_risk" not in props
 
     # readOnlyHint=False -> add when requested
-    writable = MockSecurityTool2(
+    writable = ToolDefinition(
+        name="t2",
         description="d",
         action_type=TRTSAction,
         observation_type=None,
@@ -70,7 +39,8 @@ def test_to_responses_tool_security_gating():
     assert "security_risk" in props2
 
     # add_security_risk_prediction=False -> never add
-    noflag = MockSecurityTool3(
+    noflag = ToolDefinition(
+        name="t3",
         description="d",
         action_type=TRTSAction,
         observation_type=None,

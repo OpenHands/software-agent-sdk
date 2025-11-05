@@ -64,8 +64,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         env_vars = {}
         if conversation is not None:
             try:
-                secret_registry = conversation.state.secret_registry
-                env_vars = secret_registry.get_secrets_as_env_vars(action.command)
+                secrets_manager = conversation.state.secrets_manager
+                env_vars = secrets_manager.get_secrets_as_env_vars(action.command)
             except Exception:
                 env_vars = {}
 
@@ -129,7 +129,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
 
-        if action.reset or self.session._closed:
+        if action.reset:
             reset_result = self.reset()
 
             # Handle command execution after reset
@@ -160,8 +160,8 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         # Apply automatic secrets masking
         if observation.output and conversation is not None:
             try:
-                secret_registry = conversation.state.secret_registry
-                masked_output = secret_registry.mask_secrets_in_output(
+                secrets_manager = conversation.state.secrets_manager
+                masked_output = secrets_manager.mask_secrets_in_output(
                     observation.output
                 )
                 if masked_output:

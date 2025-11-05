@@ -182,7 +182,7 @@ class RemoteWorkspaceMixin(BaseModel):
             # Make HTTP call
             response: httpx.Response = yield {
                 "method": "POST",
-                "url": f"{self.host}/api/file/upload/{destination}",
+                "url": f"{self.host}/api/file/upload",
                 "files": files,
                 "data": data,
                 "headers": self._headers,

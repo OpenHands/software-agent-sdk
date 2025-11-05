@@ -1,3 +1,5 @@
+"""OpenHands runtime package."""
+
 from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, FinishTool, ThinkTool
 from openhands.sdk.tool.registry import (
     list_registered_tools,
@@ -12,6 +14,7 @@ from openhands.sdk.tool.spec import Tool
 from openhands.sdk.tool.tool import (
     ExecutableTool,
     ToolAnnotations,
+    ToolBase,
     ToolDefinition,
     ToolExecutor,
 )
@@ -20,6 +23,7 @@ from openhands.sdk.tool.tool import (
 __all__ = [
     "Tool",
     "ToolDefinition",
+    "ToolBase",
     "ToolAnnotations",
     "ToolExecutor",
     "ExecutableTool",

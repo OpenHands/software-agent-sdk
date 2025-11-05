@@ -10,7 +10,7 @@ from openhands.sdk.conversation import (
     ConversationState,
     LocalConversation,
 )
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import AgentExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -28,48 +28,22 @@ from openhands.sdk.llm import (
     TextContent,
     ThinkingBlock,
 )
-from openhands.sdk.llm.exceptions import (
-    FunctionCallValidationError,
-    LLMContextWindowExceedError,
-)
+from openhands.sdk.llm.exceptions import FunctionCallValidationError
 from openhands.sdk.logger import get_logger
-from openhands.sdk.observability.laminar import (
-    maybe_init_laminar,
-    observe,
-    should_enable_observability,
-)
-from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
+    FinishTool,
     Observation,
 )
-from openhands.sdk.tool.builtins import (
-    FinishAction,
-    FinishTool,
-    ThinkAction,
-)
+from openhands.sdk.tool.builtins import FinishAction, ThinkAction
 
 
 logger = get_logger(__name__)
-maybe_init_laminar()
 
 
 class Agent(AgentBase):
-    """Main agent implementation for OpenHands.
-
-    The Agent class provides the core functionality for running AI agents that can
-    interact with tools, process messages, and execute actions. It inherits from
-    AgentBase and implements the agent execution logic.
-
-    Example:
-        >>> from openhands.sdk import LLM, Agent, Tool
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="BashTool"), Tool(name="FileEditorTool")]
-        >>> agent = Agent(llm=llm, tools=tools)
-    """
-
     @property
     def _add_security_risk_prediction(self) -> bool:
         return isinstance(self.security_analyzer, LLMSecurityAnalyzer)
@@ -121,7 +95,6 @@ class Agent(AgentBase):
         for action_event in action_events:
             self._execute_action_event(conversation, action_event, on_event=on_event)
 
-    @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
         self,
         conversation: LocalConversation,
@@ -175,13 +148,13 @@ class Agent(AgentBase):
                     include=None,
                     store=False,
                     add_security_risk_prediction=self._add_security_risk_prediction,
-                    extra_body=self.llm.litellm_extra_body,
+                    metadata=self.llm.metadata,
                 )
             else:
                 llm_response = self.llm.completion(
                     messages=_messages,
                     tools=list(self.tools_map.values()),
-                    extra_body=self.llm.litellm_extra_body,
+                    extra_body={"metadata": self.llm.metadata},
                     add_security_risk_prediction=self._add_security_risk_prediction,
                 )
         except FunctionCallValidationError as e:
@@ -195,19 +168,22 @@ class Agent(AgentBase):
             )
             on_event(error_message)
             return
-        except LLMContextWindowExceedError:
-            # If condenser is available and handles requests, trigger condensation
+        except Exception as e:
+            # If there is a condenser registered and the exception is a context window
+            # exceeded, we can recover by triggering a condensation request.
             if (
                 self.condenser is not None
                 and self.condenser.handles_condensation_requests()
+                and self.llm.is_context_window_exceeded_exception(e)
             ):
                 logger.warning(
                     "LLM raised context window exceeded error, triggering condensation"
                 )
                 on_event(CondensationRequest())
                 return
-            # No condenser available; re-raise for client handling
-            raise
+            # If the error isn't recoverable, keep propagating it up the stack.
+            else:
+                raise e
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
@@ -252,11 +228,10 @@ class Agent(AgentBase):
 
         else:
             logger.info("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.agent_status = AgentExecutionStatus.FINISHED
             msg_event = MessageEvent(
                 source="agent",
                 llm_message=message,
-                llm_response_id=llm_response.id,
             )
             on_event(msg_event)
 
@@ -296,9 +271,7 @@ class Agent(AgentBase):
 
         # Grab the confirmation policy from the state and pass in the risks.
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
-            state.execution_status = (
-                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-            )
+            state.agent_status = AgentExecutionStatus.WAITING_FOR_CONFIRMATION
             return True
 
         return False
@@ -410,7 +383,6 @@ class Agent(AgentBase):
         on_event(action_event)
         return action_event
 
-    @observe(ignore_inputs=["state", "on_event"])
     def _execute_action_event(
         self,
         conversation: LocalConversation,
@@ -431,13 +403,7 @@ class Agent(AgentBase):
             )
 
         # Execute actions!
-        if should_enable_observability():
-            tool_name = extract_action_name(action_event)
-            observation: Observation = observe(name=tool_name, span_type="TOOL")(tool)(
-                action_event.action, conversation
-            )
-        else:
-            observation = tool(action_event.action, conversation)
+        observation: Observation = tool(action_event.action, conversation)
         assert isinstance(observation, Observation), (
             f"Tool '{tool.name}' executor must return an Observation"
         )
@@ -452,5 +418,5 @@ class Agent(AgentBase):
 
         # Set conversation state
         if tool.name == FinishTool.name:
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            state.agent_status = AgentExecutionStatus.FINISHED
         return obs_event

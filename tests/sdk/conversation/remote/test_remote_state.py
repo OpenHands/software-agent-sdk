@@ -9,7 +9,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.remote_conversation import RemoteState
-from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.conversation.state import AgentExecutionStatus
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 
@@ -37,7 +37,7 @@ def create_mock_conversation_info(conversation_id: str, mock_agent: Agent, **ove
     """Create mock conversation info response."""
     default_info = {
         "id": conversation_id,
-        "execution_status": "running",
+        "agent_status": "running",
         "confirmation_policy": {"kind": "NeverConfirm"},
         "activated_knowledge_skills": [],
         "agent": mock_agent.model_dump(mode="json"),
@@ -86,29 +86,27 @@ def test_remote_state_initialization(mock_client, conversation_id):
 @pytest.mark.parametrize(
     "status_value,expected",
     [
-        ("running", ConversationExecutionStatus.RUNNING),
-        ("paused", ConversationExecutionStatus.PAUSED),
-        ("finished", ConversationExecutionStatus.FINISHED),
+        ("running", AgentExecutionStatus.RUNNING),
+        ("paused", AgentExecutionStatus.PAUSED),
+        ("finished", AgentExecutionStatus.FINISHED),
     ],
 )
-def test_remote_state_execution_status(
+def test_remote_state_agent_status(
     mock_client, conversation_id, mock_agent, status_value, expected
 ):
-    """Test execution_status property with different values."""
+    """Test agent_status property with different values."""
     conversation_info = create_mock_conversation_info(
-        conversation_id, mock_agent, execution_status=status_value
+        conversation_id, mock_agent, agent_status=status_value
     )
     setup_mock_responses(mock_client, conversation_info)
 
     state = RemoteState(mock_client, conversation_id)
 
-    assert state.execution_status == expected
+    assert state.agent_status == expected
 
 
-def test_remote_state_execution_status_setter_not_implemented(
-    mock_client, conversation_id
-):
-    """Test that setting execution_status raises NotImplementedError."""
+def test_remote_state_agent_status_setter_not_implemented(mock_client, conversation_id):
+    """Test that setting agent_status raises NotImplementedError."""
     mock_events_response = Mock()
     mock_events_response.raise_for_status.return_value = None
     mock_events_response.json.return_value = {"items": [], "next_page_id": None}
@@ -117,10 +115,9 @@ def test_remote_state_execution_status_setter_not_implemented(
     state = RemoteState(mock_client, conversation_id)
 
     with pytest.raises(
-        NotImplementedError,
-        match="Setting execution_status on RemoteState has no effect",
+        NotImplementedError, match="Setting agent_status on RemoteState has no effect"
     ):
-        state.execution_status = ConversationExecutionStatus.PAUSED
+        state.agent_status = AgentExecutionStatus.PAUSED
 
 
 def test_remote_state_confirmation_policy(mock_client, conversation_id, mock_agent):
@@ -165,11 +162,7 @@ def test_remote_state_agent_property(mock_client, conversation_id, mock_agent):
 @pytest.mark.parametrize(
     "missing_field,property_name,error_match",
     [
-        (
-            "execution_status",
-            "execution_status",
-            "execution_status missing in conversation info",
-        ),
+        ("agent_status", "agent_status", "agent_status missing in conversation info"),
         (
             "confirmation_policy",
             "confirmation_policy",
@@ -248,4 +241,4 @@ def test_remote_state_api_error_handling(mock_client, conversation_id):
     state = RemoteState(mock_client, conversation_id)
 
     with pytest.raises(httpx.HTTPStatusError):
-        _ = state.execution_status
+        _ = state.agent_status

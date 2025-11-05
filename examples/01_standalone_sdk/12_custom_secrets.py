@@ -8,7 +8,7 @@ from openhands.sdk import (
     Conversation,
 )
 from openhands.sdk.conversation.secret_source import SecretSource
-from openhands.sdk.tool import Tool
+from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 
@@ -26,9 +26,11 @@ llm = LLM(
 )
 
 # Tools
+register_tool("BashTool", BashTool)
+register_tool("FileEditorTool", FileEditorTool)
 tools = [
-    Tool(name=BashTool.name),
-    Tool(name=FileEditorTool.name),
+    Tool(name="BashTool"),
+    Tool(name="FileEditorTool"),
 ]
 
 # Agent
@@ -52,7 +54,3 @@ conversation.run()
 conversation.send_message("just echo $SECRET_FUNCTION_TOKEN")
 
 conversation.run()
-
-# Report cost
-cost = llm.metrics.accumulated_cost
-print(f"EXAMPLE_COST: {cost}")

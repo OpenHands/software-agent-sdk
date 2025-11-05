@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secrets_manager import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
@@ -16,23 +16,11 @@ logger = get_logger(__name__)
 
 
 class Conversation:
-    """Factory class for creating conversation instances with OpenHands agents.
+    """Factory entrypoint that returns a LocalConversation or RemoteConversation.
 
-    This factory automatically creates either a LocalConversation or RemoteConversation
-    based on the workspace type provided. LocalConversation runs the agent locally,
-    while RemoteConversation connects to a remote agent server.
-
-    Returns:
-        LocalConversation if workspace is local, RemoteConversation if workspace
-        is remote.
-
-    Example:
-        >>> from openhands.sdk import LLM, Agent, Conversation
-        >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> agent = Agent(llm=llm, tools=[])
-        >>> conversation = Conversation(agent=agent, workspace="./workspace")
-        >>> conversation.send_message("Hello!")
-        >>> conversation.run()
+    Usage:
+        - Conversation(agent=...) -> LocalConversation
+        - Conversation(agent=..., host="http://...") -> RemoteConversation
     """
 
     @overload

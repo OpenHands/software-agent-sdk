@@ -13,7 +13,7 @@ from openhands.sdk import (
     TextContent,
     get_logger,
 )
-from openhands.sdk.tool import Tool
+from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.execute_bash import BashTool
 
 
@@ -42,7 +42,8 @@ llm = llm_registry.get("agent")
 
 # Tools
 cwd = os.getcwd()
-tools = [Tool(name=BashTool.name)]
+register_tool("BashTool", BashTool)
+tools = [Tool(name="BashTool")]
 
 # Agent
 agent = Agent(llm=llm, tools=tools)
@@ -75,16 +76,15 @@ same_llm = llm_registry.get("agent")
 print(f"Same LLM instance: {llm is same_llm}")
 
 # Demonstrate requesting a completion directly from an LLM
-resp = llm.completion(
+completion_response = llm.completion(
     messages=[
         Message(role="user", content=[TextContent(text="Say hello in one word.")])
     ]
 )
-# Access the response content via OpenHands LLMResponse
-msg = resp.message
-texts = [c.text for c in msg.content if isinstance(c, TextContent)]
-print(f"Direct completion response: {texts[0] if texts else str(msg)}")
-
-# Report cost
-cost = llm.metrics.accumulated_cost
-print(f"EXAMPLE_COST: {cost}")
+# Access the response content
+raw_response = completion_response.raw_response
+if raw_response.choices and raw_response.choices[0].message:  # type: ignore
+    content = raw_response.choices[0].message.content  # type: ignore
+    print(f"Direct completion response: {content}")
+else:
+    print("No response content available")

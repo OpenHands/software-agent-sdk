@@ -14,16 +14,13 @@ logger = get_logger(__name__)
 
 
 class BaseWorkspace(DiscriminatedUnionMixin, ABC):
-    """Abstract base class for workspace implementations.
+    """Abstract base mixin for workspace.
 
-    Workspaces provide a sandboxed environment where agents can execute commands,
-    read/write files, and perform other operations. All workspace implementations
-    support the context manager protocol for safe resource management.
+    All workspace implementations support the context manager protocol,
+    allowing safe resource management:
 
-    Example:
-        >>> with workspace:
-        ...     result = workspace.execute_command("echo 'hello'")
-        ...     content = workspace.read_file("example.txt")
+        with workspace:
+            workspace.execute_command("echo 'hello'")
     """
 
     working_dir: str = Field(
