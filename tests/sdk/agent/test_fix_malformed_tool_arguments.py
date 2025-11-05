@@ -1,6 +1,6 @@
-"""Tests for JSON string decoding in Schema validator.
+"""Tests for fix_malformed_tool_arguments helper function.
 
-This module tests the _decode_json_strings validator that automatically
+This module tests the fix_malformed_tool_arguments helper that automatically
 decodes JSON strings for list/dict fields. This handles cases where LLMs
 (like GLM-4) return array/object values as JSON strings instead of native
 JSON arrays/objects.
@@ -11,6 +11,7 @@ from typing import Annotated
 import pytest
 from pydantic import Field, ValidationError
 
+from openhands.sdk.agent.agent import fix_malformed_tool_arguments
 from openhands.sdk.tool.schema import Action
 
 
@@ -50,7 +51,8 @@ def test_decode_json_string_list():
         "config": '{"x": 1, "y": 2}',
         "name": "test",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == ["a", "b", "c"]
     assert action.config == {"x": 1, "y": 2}
@@ -64,7 +66,8 @@ def test_decode_json_string_dict():
         "config": '{"key1": 10, "key2": 20}',
         "name": "dict_test",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == ["item1", "item2"]
     assert action.config == {"key1": 10, "key2": 20}
@@ -78,7 +81,8 @@ def test_native_list_dict_passthrough():
         "config": {"direct": 42},
         "name": "native_test",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == ["direct", "list"]
     assert action.config == {"direct": 42}
@@ -92,7 +96,8 @@ def test_regular_string_not_decoded():
         "config": "{}",
         "name": "this is not json but a regular string",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == []
     assert action.config == {}
@@ -106,7 +111,8 @@ def test_annotated_types():
         "items": '["x", "y", "z"]',
         "config": '{"a": 1, "b": 2}',
     }
-    action = JsonDecodingAnnotatedAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingAnnotatedAction)
+    action = JsonDecodingAnnotatedAction.model_validate(fixed_data)
 
     assert action.items == ["x", "y", "z"]
     assert action.config == {"a": 1, "b": 2}
@@ -118,7 +124,8 @@ def test_field_aliases():
         "myList": "[1, 2, 3]",
         "myDict": '{"key": "value"}',
     }
-    action = JsonDecodingAliasAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingAliasAction)
+    action = JsonDecodingAliasAction.model_validate(fixed_data)
 
     assert action.my_list == [1, 2, 3]
     assert action.my_dict == {"key": "value"}
@@ -130,7 +137,8 @@ def test_optional_fields_with_json_strings():
         "items": '["opt1", "opt2"]',
         "config": '{"opt": 99}',
     }
-    action = JsonDecodingOptionalAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingOptionalAction)
+    action = JsonDecodingOptionalAction.model_validate(fixed_data)
 
     assert action.items == ["opt1", "opt2"]
     assert action.config == {"opt": 99}
@@ -139,7 +147,8 @@ def test_optional_fields_with_json_strings():
 def test_optional_fields_with_none():
     """Test that optional fields can be None."""
     data = {}
-    action = JsonDecodingOptionalAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingOptionalAction)
+    action = JsonDecodingOptionalAction.model_validate(fixed_data)
 
     assert action.items is None
     assert action.config is None
@@ -151,7 +160,8 @@ def test_optional_fields_with_native_values():
         "items": ["native1", "native2"],
         "config": {"native": 100},
     }
-    action = JsonDecodingOptionalAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingOptionalAction)
+    action = JsonDecodingOptionalAction.model_validate(fixed_data)
 
     assert action.items == ["native1", "native2"]
     assert action.config == {"native": 100}
@@ -164,9 +174,10 @@ def test_invalid_json_string_rejected():
         "config": "{}",
         "name": "test",
     }
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
 
     with pytest.raises(ValidationError) as exc_info:
-        JsonDecodingTestAction.model_validate(data)
+        JsonDecodingTestAction.model_validate(fixed_data)
 
     # Should fail validation because "not valid json" can't be parsed as list
     assert "items" in str(exc_info.value)
@@ -180,9 +191,10 @@ def test_json_string_with_wrong_type_rejected():
         "config": "{}",
         "name": "test",
     }
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
 
     with pytest.raises(ValidationError) as exc_info:
-        JsonDecodingTestAction.model_validate(data)
+        JsonDecodingTestAction.model_validate(fixed_data)
 
     assert "items" in str(exc_info.value)
 
@@ -198,7 +210,8 @@ def test_nested_structures():
         "nested_list": "[[1, 2], [3, 4]]",
         "nested_dict": '{"outer": {"inner": "value"}}',
     }
-    action = NestedAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, NestedAction)
+    action = NestedAction.model_validate(fixed_data)
 
     assert action.nested_list == [[1, 2], [3, 4]]
     assert action.nested_dict == {"outer": {"inner": "value"}}
@@ -211,7 +224,8 @@ def test_empty_collections():
         "config": "{}",
         "name": "empty",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == []
     assert action.config == {}
@@ -224,7 +238,8 @@ def test_mixed_native_and_json_strings():
         "config": '{"from": 1, "json": 2}',  # JSON string
         "name": "mixed",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == ["native", "list"]
     assert action.config == {"from": 1, "json": 2}
@@ -238,7 +253,8 @@ def test_unicode_in_json_strings():
         "config": '{"greeting": 1, "你好": 2}',
         "name": "unicode",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == ["hello", "世界", "🌍"]
     assert action.config == {"greeting": 1, "你好": 2}
@@ -251,7 +267,8 @@ def test_whitespace_in_json_strings():
         "config": '  { "x" : 1 , "y" : 2 }  ',
         "name": "whitespace",
     }
-    action = JsonDecodingTestAction.model_validate(data)
+    fixed_data = fix_malformed_tool_arguments(data, JsonDecodingTestAction)
+    action = JsonDecodingTestAction.model_validate(fixed_data)
 
     assert action.items == ["a", "b", "c"]
     assert action.config == {"x": 1, "y": 2}
