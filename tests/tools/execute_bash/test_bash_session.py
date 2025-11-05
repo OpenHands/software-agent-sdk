@@ -17,7 +17,10 @@ import pytest
 
 from openhands.sdk import TextContent
 from openhands.sdk.logger import get_logger
-from openhands.tools.execute_bash.definition import ExecuteBashAction
+from openhands.tools.execute_bash.definition import (
+    ExecuteBashAction,
+    ExecuteBashObservation,
+)
 from openhands.tools.execute_bash.terminal import (
     TerminalCommandStatus,
     create_terminal_session,
@@ -323,7 +326,7 @@ def test_empty_command_error(terminal_type):
     assert obs.text == "No previous running command to retrieve logs from."
     assert len(obs.to_llm_content) == 2
     assert isinstance(obs.to_llm_content[0], TextContent)
-    assert obs.to_llm_content[0].text == "Tool Execution Error. "
+    assert obs.to_llm_content[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
     assert isinstance(obs.to_llm_content[1], TextContent)
     assert (
         "No previous running command to retrieve logs from."

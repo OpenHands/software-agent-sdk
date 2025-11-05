@@ -106,7 +106,7 @@ class TestMCPToolObservation:
         assert isinstance(agent_obs[0], TextContent)
         assert "[Tool 'test_tool' executed.]" in agent_obs[0].text
         assert "Success result" in agent_obs[0].text
-        assert "Tool Execution Error." not in agent_obs[0].text
+        assert MCPToolObservation.ERROR_MESSAGE_HEADER not in agent_obs[0].text
 
     def test_to_llm_content_error(self):
         """Test agent observation formatting for error."""

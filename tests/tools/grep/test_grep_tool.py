@@ -270,7 +270,7 @@ def test_grep_tool_to_llm_content_error():
 
         content = observation.to_llm_content
         assert len(content) == 2
-        assert content[0].text == "Tool Execution Error. "
+        assert content[0].text == GrepObservation.ERROR_MESSAGE_HEADER
         text = content[1].text
         assert "Invalid regex pattern" in text
 

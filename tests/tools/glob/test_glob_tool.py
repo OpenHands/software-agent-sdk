@@ -288,7 +288,7 @@ def test_glob_tool_to_llm_content_error():
 
         content = observation.to_llm_content
         assert len(content) == 2
-        assert content[0].text == "Tool Execution Error. "
+        assert content[0].text == GlobObservation.ERROR_MESSAGE_HEADER
         text_content = content[1].text
         assert "is not a valid directory" in text_content
 

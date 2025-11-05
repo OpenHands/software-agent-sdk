@@ -303,7 +303,7 @@ def test_cmd_output_observation_properties():
     assert obs.is_error
     assert len(obs.to_llm_content) == 2
     assert isinstance(obs.to_llm_content[0], TextContent)
-    assert obs.to_llm_content[0].text == "Tool Execution Error. "
+    assert obs.to_llm_content[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
     assert isinstance(obs.to_llm_content[1], TextContent)
     assert "Command failed" in obs.to_llm_content[1].text
 

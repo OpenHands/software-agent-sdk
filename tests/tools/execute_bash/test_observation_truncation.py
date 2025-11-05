@@ -98,7 +98,7 @@ def test_execute_bash_observation_truncation_with_error():
     assert isinstance(result[1], TextContent)
 
     # First part is the error prefix
-    assert result[0].text == "Tool Execution Error. "
+    assert result[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
 
     # Second part includes the error message with metadata
     full_text = result[1].text
