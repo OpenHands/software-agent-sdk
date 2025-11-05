@@ -18,6 +18,7 @@ def test_execute_bash_observation_truncation_under_limit():
     )
 
     observation = ExecuteBashObservation(
+        command="echo test",
         content=[TextContent(text="Short output")],
         metadata=metadata,
     )
@@ -51,6 +52,7 @@ def test_execute_bash_observation_truncation_over_limit():
     long_output = "A" * (MAX_CMD_OUTPUT_SIZE + 1000)
 
     observation = ExecuteBashObservation(
+        command="echo test",
         content=[TextContent(text=long_output)],
         metadata=metadata,
     )
@@ -84,6 +86,7 @@ def test_execute_bash_observation_truncation_with_error():
     )
 
     observation = ExecuteBashObservation(
+        command="false",
         content=[TextContent(text="Command failed")],
         metadata=metadata,
         is_error=True,
@@ -126,6 +129,7 @@ def test_execute_bash_observation_truncation_exact_limit():
     exact_output = "C" * exact_output_size
 
     observation = ExecuteBashObservation(
+        command="echo test",
         content=[TextContent(text=exact_output)],
         metadata=metadata,
     )
@@ -155,6 +159,7 @@ def test_execute_bash_observation_truncation_with_prefix_suffix():
     long_output = "D" * (MAX_CMD_OUTPUT_SIZE + 200)
 
     observation = ExecuteBashObservation(
+        command="echo test",
         content=[TextContent(text=long_output)],
         metadata=metadata,
     )
