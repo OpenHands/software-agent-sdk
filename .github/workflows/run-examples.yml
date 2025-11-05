@@ -209,7 +209,7 @@ jobs:
                       (timeout 1200 uv run python "$example" 2>&1 || true) | tee "$OUTPUT_FILE"
                                   
                       # Check if command succeeded by looking at Python exit
-                      if grep -q "Traceback" "$OUTPUT_FILE" || ! grep -q "EXAMPLE_COST:" "$OUTPUT_FILE"; then
+                      if ! grep -q "EXAMPLE_COST:" "$OUTPUT_FILE" || grep -q "Traceback" "$OUTPUT_FILE"; then
                           EXIT_CODE=1
                       else
                           EXIT_CODE=0
