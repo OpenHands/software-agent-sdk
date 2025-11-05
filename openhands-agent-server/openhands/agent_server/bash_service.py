@@ -181,11 +181,11 @@ class BashEventService:
         await self._pub_sub(command)
 
         # Execute the bash command in a background task
-        task = asyncio.create_task(self._execute_terminal_command(command))
+        task = asyncio.create_task(self._execute_bash_command(command))
 
         return command, task
 
-    async def _execute_terminal_command(self, command: BashCommand) -> None:
+    async def _execute_bash_command(self, command: BashCommand) -> None:
         """Execute the bash event and create an observation event."""
         try:
             # Create subprocess

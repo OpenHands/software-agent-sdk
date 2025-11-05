@@ -88,8 +88,8 @@ async def start_bash_command(request: ExecuteBashRequest) -> BashCommand:
     return command
 
 
-@bash_router.post("/execute_terminal_command")
-async def execute_terminal_command(request: ExecuteBashRequest) -> BashOutput:
+@bash_router.post("/execute_bash_command")
+async def execute_bash_command(request: ExecuteBashRequest) -> BashOutput:
     """Execute a bash command and wait for a result"""
     command, task = await bash_event_service.start_bash_command(request)
     await task
