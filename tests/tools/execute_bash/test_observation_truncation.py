@@ -98,11 +98,12 @@ def test_execute_bash_observation_truncation_with_error():
     result = observation.to_llm_content
     assert len(result) == 2
     assert isinstance(result[0], TextContent)
+    assert result[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
+
     assert isinstance(result[1], TextContent)
     result = result[1].text
 
-    # The result should be truncated and have error prefix
-    assert result.startswith("[There was an error during command execution.]")
+    # The result should be truncated
     assert len(result) < len(long_output) + 300  # Account for metadata and error prefix
     # With head-and-tail truncation, should end with original content + metadata
     expected_end = (
