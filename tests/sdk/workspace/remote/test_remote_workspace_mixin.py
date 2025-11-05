@@ -627,7 +627,8 @@ def test_start_bash_command_endpoint_used():
     # Verify the correct endpoint is used for starting the command
     start_kwargs = next(generator)
     assert start_kwargs["method"] == "POST"
-    # This is the critical check - must use start_bash_command, not execute_terminal_command
+    # This is the critical check - must use start_bash_command,
+    # not execute_terminal_command
     assert start_kwargs["url"] == "http://localhost:8000/api/bash/start_bash_command"
     assert "start_bash_command" in start_kwargs["url"], (
         "Must use /api/bash/start_bash_command endpoint. "

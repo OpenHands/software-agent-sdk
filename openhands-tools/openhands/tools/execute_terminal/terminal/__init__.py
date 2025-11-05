@@ -10,9 +10,13 @@ from openhands.tools.execute_terminal.terminal.terminal_session import (
     TerminalSession,
 )
 
+
 # Conditionally import platform-specific terminals
 if platform.system() == "Windows":
-    from openhands.tools.execute_terminal.terminal.windows_terminal import WindowsTerminal
+    from openhands.tools.execute_terminal.terminal.windows_terminal import (
+        WindowsTerminal,
+    )
+
     __all__ = [
         "TerminalInterface",
         "TerminalSessionBase",
@@ -22,8 +26,11 @@ if platform.system() == "Windows":
         "create_terminal_session",
     ]
 else:
-    from openhands.tools.execute_terminal.terminal.subprocess_terminal import SubprocessTerminal
+    from openhands.tools.execute_terminal.terminal.subprocess_terminal import (
+        SubprocessTerminal,
+    )
     from openhands.tools.execute_terminal.terminal.tmux_terminal import TmuxTerminal
+
     __all__ = [
         "TerminalInterface",
         "TerminalSessionBase",
