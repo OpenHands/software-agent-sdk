@@ -3,7 +3,7 @@
 This example demonstrates how to create and use a custom visualizer by subclassing
 ConversationVisualizer. This approach provides:
 - Clean, testable code with class-based state management
-- Direct configuration (just pass the visualizer instance to visualize parameter)
+- Direct configuration (just pass the visualizer instance to visualizer parameter)
 - Reusable visualizer that can be shared across conversations
 - Better separation of concerns compared to callback functions
 - Event handler registration to avoid long if/elif chains
@@ -15,7 +15,7 @@ The MinimalProgressVisualizer produces concise output showing:
 - Error messages
 
 This demonstrates how you can pass a ConversationVisualizer instance directly
-to the visualize parameter for clean, reusable visualization logic.
+to the visualizer parameter for clean, reusable visualization logic.
 """
 
 import logging
@@ -238,7 +238,7 @@ def main():
     conversation = Conversation(
         agent=agent,
         workspace=cwd,
-        visualize=minimal_visualizer,
+        visualizer=minimal_visualizer,
     )
 
     # Send a message and let the agent run
