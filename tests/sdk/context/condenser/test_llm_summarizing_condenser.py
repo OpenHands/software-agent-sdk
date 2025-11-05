@@ -43,6 +43,7 @@ def mock_llm() -> LLM:
         )
         # Create a mock ModelResponse
         raw_response = MagicMock(spec=ModelResponse)
+        raw_response.id = "mock-llm-response-id"
         return LLMResponse(message=message, metrics=metrics, raw_response=raw_response)
 
     mock_llm.completion.return_value = create_completion_result(
@@ -63,7 +64,7 @@ def mock_llm() -> LLM:
     mock_llm.custom_tokenizer = None
     mock_llm.base_url = None
     mock_llm.reasoning_effort = None
-    mock_llm.metadata = {}
+    mock_llm.litellm_extra_body = {}
 
     # Explicitly set pricing attributes required by LLM -> Telemetry wiring
     mock_llm.input_cost_per_token = None
@@ -158,6 +159,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
         forgotten_event_ids=[events[3].id, events[4].id],
         summary="Previous summary content",
         summary_offset=keep_first,
+        llm_response_id="condensation_response_1",
     )
     events_with_condensation = (
         events[:keep_first] + [condensation] + events[keep_first:]

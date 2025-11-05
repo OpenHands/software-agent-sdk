@@ -1,6 +1,28 @@
-# OpenHands Agent SDK
+<a name="readme-top"></a>
 
-Build AI agents that write software. A clean, modular SDK with production-ready tools.
+<div align="center">
+  <img src="https://raw.githubusercontent.com/OpenHands/docs/main/openhands/static/img/logo.png" alt="Logo" width="200">
+  <h1 align="center">OpenHands Software Agent SDK </h1>
+</div>
+
+
+<div align="center">
+  <a href="https://docs.openhands.dev/sdk"><img src="https://img.shields.io/badge/Documentation-000?logo=googledocs&logoColor=FFE165&style=for-the-badge" alt="Check out the documentation"></a>
+  <a href="https://github.com/OpenHands/software-agent-sdk/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OpenHands/software-agent-sdk?style=for-the-badge&color=blue" alt="MIT License"></a>
+  <a href="https://all-hands.dev/joinslack"><img src="https://img.shields.io/badge/Slack-Join%20Us-red?logo=slack&logoColor=white&style=for-the-badge" alt="Join our Slack community"></a>
+  <br>
+  <!-- Keep these links. Translations will automatically update with the README. -->
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=de">Deutsch</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=es">Español</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=fr">français</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=ja">日本語</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=ko">한국어</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=pt">Português</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=ru">Русский</a> |
+  <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=zh">中文</a>
+
+  <hr>
+</div>
 
 The OpenHands SDK allows you to build applications with agents that write software. This SDK also powers [OpenHands](https://github.com/OpenHands/OpenHands), an all-batteries-included coding agent that you can access through a GUI, CLI, or API.
 
@@ -25,7 +47,7 @@ from openhands.sdk import LLM, Conversation
 from openhands.tools.preset.default import get_default_agent
 
 # Configure LLM and create agent
-llm = LLM(model="openhands/claude-sonnet-4-5-20250929", api_key=api_key)
+llm = LLM(model="openhands/claude-sonnet-4-5-20250929", api_key='...')
 agent = get_default_agent(llm=llm)
 
 # Start a conversation
@@ -65,7 +87,3 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 - [Join Slack](https://openhands.dev/joinslack) - Connect with the OpenHands community
 - [GitHub Repository](https://github.com/OpenHands/agent-sdk) - Source code and issues
 - [Documentation](https://docs.openhands.dev/sdk) - Complete documentation
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.

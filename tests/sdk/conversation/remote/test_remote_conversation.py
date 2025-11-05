@@ -9,7 +9,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
-from openhands.sdk.conversation.secrets_manager import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import RemoteWorkspace
@@ -472,7 +472,7 @@ class TestRemoteConversation:
         # Test with string secrets
         from typing import cast
 
-        from openhands.sdk.conversation.secrets_manager import SecretValue
+        from openhands.sdk.conversation.secret_registry import SecretValue
 
         secrets = cast(
             dict[str, SecretValue],

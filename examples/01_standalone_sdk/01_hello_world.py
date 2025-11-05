@@ -27,3 +27,7 @@ conversation = Conversation(agent=agent, workspace=cwd)
 # Send a message and let the agent run
 conversation.send_message("Write 3 facts about the current project into FACTS.txt.")
 conversation.run()
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

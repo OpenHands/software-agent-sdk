@@ -25,6 +25,11 @@ class Condensation(Event):
         description="An optional offset to the start of the resulting view"
         " indicating where the summary should be inserted.",
     )
+    llm_response_id: EventID = Field(
+        description=(
+            "Completion or Response ID of the LLM response that generated this event"
+        ),
+    )
 
     source: SourceType = "environment"
 

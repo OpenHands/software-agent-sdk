@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
 
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM
 from openhands.tools.delegate import (
     DelegateAction,
@@ -38,7 +38,7 @@ def create_mock_conversation():
     """Helper to create a mock conversation."""
     mock_conv = MagicMock()
     mock_conv.id = str(uuid.uuid4())
-    mock_conv.state.agent_status = AgentExecutionStatus.FINISHED
+    mock_conv.state.execution_status = ConversationExecutionStatus.FINISHED
     return mock_conv
 
 

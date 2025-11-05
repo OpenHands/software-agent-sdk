@@ -294,12 +294,15 @@ def test_file_upload_generator_basic_flow(temp_file):
     upload_response.raise_for_status = Mock()
     upload_response.json.return_value = {"success": True, "file_size": 12}
 
+    destination = "/remote/file.txt"
     generator = mixin._file_upload_generator(temp_file, "/remote/file.txt")
 
     # Get upload request
     upload_kwargs = next(generator)
     assert upload_kwargs["method"] == "POST"
-    assert upload_kwargs["url"] == "http://localhost:8000/api/file/upload"
+    assert (
+        upload_kwargs["url"] == f"http://localhost:8000/api/file/upload/{destination}"
+    )
     assert upload_kwargs["data"]["destination_path"] == "/remote/file.txt"
     assert "file" in upload_kwargs["files"]
     assert upload_kwargs["headers"] == {"X-Session-API-Key": "test-key"}

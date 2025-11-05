@@ -95,7 +95,6 @@ def test_llm_private_attributes_not_serialized() -> None:
     # Set private attributes (these would normally be set internally)
     llm._model_info = {"some": "info"}
     llm._tokenizer = "mock-tokenizer"
-    llm._function_calling_active = True
 
     # Serialize to dict
     llm_dict = llm.model_dump()
@@ -103,7 +102,6 @@ def test_llm_private_attributes_not_serialized() -> None:
     # Private attributes should not be present
     assert "_model_info" not in llm_dict
     assert "_tokenizer" not in llm_dict
-    assert "_function_calling_active" not in llm_dict
     assert "_telemetry" not in llm_dict
 
     # Serialize to JSON and deserialize
@@ -114,7 +112,7 @@ def test_llm_private_attributes_not_serialized() -> None:
     # (LLM creates telemetry automatically)
     assert deserialized_llm._model_info is None
     assert deserialized_llm._tokenizer is None
-    assert deserialized_llm._function_calling_active is False
+    assert deserialized_llm.native_tool_calling is True
     assert (
         deserialized_llm._telemetry is not None
     )  # LLM creates telemetry automatically

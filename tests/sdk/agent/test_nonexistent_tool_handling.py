@@ -13,7 +13,7 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import AgentErrorEvent, MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 
@@ -97,9 +97,9 @@ def test_nonexistent_tool_returns_error_and_continues_conversation():
 
     # Verify that the conversation is NOT finished (this is the key fix)
     with conversation.state:
-        assert conversation.state.agent_status != AgentExecutionStatus.FINISHED, (
-            "Agent should not be finished after encountering non-existent tool"
-        )
+        assert (
+            conversation.state.execution_status != ConversationExecutionStatus.FINISHED
+        ), "Agent should not be finished after encountering non-existent tool"
 
     # Verify that the error event is properly formatted for LLM
     llm_message = error_event.to_llm_message()
@@ -278,7 +278,10 @@ def test_conversation_continues_after_tool_error():
 
         # Verify conversation is not finished
         with conversation.state:
-            assert conversation.state.agent_status != AgentExecutionStatus.FINISHED
+            assert (
+                conversation.state.execution_status
+                != ConversationExecutionStatus.FINISHED
+            )
 
         # Run second step - should continue normally
         agent.step(conversation, on_event=event_callback)
@@ -298,7 +301,10 @@ def test_conversation_continues_after_tool_error():
 
         # Now the conversation should be finished
         with conversation.state:
-            assert conversation.state.agent_status == AgentExecutionStatus.FINISHED
+            assert (
+                conversation.state.execution_status
+                == ConversationExecutionStatus.FINISHED
+            )
 
     # Verify we made two LLM calls
     assert call_count == 2

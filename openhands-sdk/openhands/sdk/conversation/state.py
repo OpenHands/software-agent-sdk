@@ -4,14 +4,14 @@ from collections.abc import Sequence
 from enum import Enum
 from typing import Any, Self
 
-from pydantic import Field, PrivateAttr
+from pydantic import AliasChoices, Field, PrivateAttr
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.persistence_const import BASE_STATE, EVENTS_DIR
-from openhands.sdk.conversation.secrets_manager import SecretsManager
+from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
@@ -28,18 +28,18 @@ from openhands.sdk.workspace.base import BaseWorkspace
 logger = get_logger(__name__)
 
 
-class AgentExecutionStatus(str, Enum):
-    """Enum representing the current execution state of the agent."""
+class ConversationExecutionStatus(str, Enum):
+    """Enum representing the current execution state of the conversation."""
 
-    IDLE = "idle"  # Agent is ready to receive tasks
-    RUNNING = "running"  # Agent is actively processing
-    PAUSED = "paused"  # Agent execution is paused by user
+    IDLE = "idle"  # Conversation is ready to receive tasks
+    RUNNING = "running"  # Conversation is actively processing
+    PAUSED = "paused"  # Conversation execution is paused by user
     WAITING_FOR_CONFIRMATION = (
-        "waiting_for_confirmation"  # Agent is waiting for user confirmation
+        "waiting_for_confirmation"  # Conversation is waiting for user confirmation
     )
-    FINISHED = "finished"  # Agent has completed the current task
-    ERROR = "error"  # Agent encountered an error (optional for future use)
-    STUCK = "stuck"  # Agent is stuck in a loop or unable to proceed
+    FINISHED = "finished"  # Conversation has completed the current task
+    ERROR = "error"  # Conversation encountered an error (optional for future use)
+    STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
 
 
 class ConversationState(OpenHandsModel):
@@ -77,7 +77,9 @@ class ConversationState(OpenHandsModel):
     )
 
     # Enum-based state management
-    agent_status: AgentExecutionStatus = Field(default=AgentExecutionStatus.IDLE)
+    execution_status: ConversationExecutionStatus = Field(
+        default=ConversationExecutionStatus.IDLE
+    )
     confirmation_policy: ConfirmationPolicyBase = NeverConfirm()
 
     activated_knowledge_skills: list[str] = Field(
@@ -91,10 +93,12 @@ class ConversationState(OpenHandsModel):
         description="Conversation statistics for tracking LLM metrics",
     )
 
-    # Secrets manager for handling sensitive data (changed from private attribute)
-    secrets_manager: SecretsManager = Field(
-        default_factory=SecretsManager,
-        description="Manager for handling secrets and sensitive data",
+    # Secret registry for handling sensitive data
+    secret_registry: SecretRegistry = Field(
+        default_factory=SecretRegistry,
+        description="Registry for handling secrets and sensitive data",
+        validation_alias=AliasChoices("secret_registry", "secrets_manager"),
+        serialization_alias="secret_registry",
     )
 
     # ===== Private attrs (NOT Fields) =====
