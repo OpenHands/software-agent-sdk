@@ -40,9 +40,11 @@ class BrowserObservation(Observation):
         if self.is_error:
             llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
 
-        if self.text:
+        # Get text content and truncate if needed
+        content_text = self.text
+        if content_text:
             llm_content.append(
-                TextContent(text=maybe_truncate(self.text, MAX_BROWSER_OUTPUT_SIZE))
+                TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
             )
 
         if self.screenshot_data:
