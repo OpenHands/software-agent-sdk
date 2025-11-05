@@ -60,13 +60,13 @@ class WindowsTerminal(TerminalInterface):
         self.reader_thread = None
         self._command_running_event = threading.Event()
         self._stop_reader = False
-        self._decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def initialize(self) -> None:
         """Initialize the Windows terminal session."""
         if self._initialized:
             return
-        
+
         self._start_session()
         self._initialized = True
 
@@ -76,7 +76,7 @@ class WindowsTerminal(TerminalInterface):
         startupinfo = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
         # Hide the console window (prevents popup on Windows)
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW  # type: ignore[attr-defined]
-        
+
         self.process = subprocess.Popen(
             POWERSHELL_CMD,
             stdin=subprocess.PIPE,
@@ -98,7 +98,7 @@ class WindowsTerminal(TerminalInterface):
 
     def _setup_prompt(self) -> None:
         """Configure PowerShell prompt."""
-        # For PowerShell, we'll append the PS1 marker to each command instead of 
+        # For PowerShell, we'll append the PS1 marker to each command instead of
         # using a custom prompt function, since prompt output isn't reliably captured
         # Wait for PowerShell initialization (copyright, welcome messages) to complete
         start_time = time.time()
@@ -108,10 +108,10 @@ class WindowsTerminal(TerminalInterface):
             with self.output_lock:
                 if len(self.output_buffer) > 0:
                     break
-        
+
         # Additional small delay for stability
         time.sleep(SETUP_DELAY)
-        
+
         with self.output_lock:
             self.output_buffer.clear()
 
@@ -119,7 +119,7 @@ class WindowsTerminal(TerminalInterface):
         """Write data to stdin."""
         if self.process and self.process.stdin:
             try:
-                self.process.stdin.write(data.encode('utf-8'))
+                self.process.stdin.write(data.encode("utf-8"))
                 self.process.stdin.flush()
             except (BrokenPipeError, OSError) as e:
                 logger.error(f"Failed to write to stdin: {e}")
@@ -131,20 +131,20 @@ class WindowsTerminal(TerminalInterface):
 
         # Cache stdout reference to prevent race condition during close()
         stdout = self.process.stdout
-        
+
         while not self._stop_reader:
             try:
                 # Read in chunks
                 chunk = stdout.read(READ_CHUNK_SIZE)
                 if not chunk:
                     break
-                
+
                 # Use incremental decoder to handle UTF-8 boundary splits correctly
                 decoded = self._decoder.decode(chunk, False)
                 if decoded:  # Only append non-empty strings
                     with self.output_lock:
                         self.output_buffer.append(decoded)
-                    
+
             except (ValueError, OSError) as e:
                 # Expected when stdout is closed
                 logger.debug(f"Output reading stopped: {e}")
@@ -152,10 +152,10 @@ class WindowsTerminal(TerminalInterface):
             except Exception as e:
                 logger.error(f"Error reading output: {e}")
                 break
-        
+
         # Flush any remaining bytes when stopping
         try:
-            final = self._decoder.decode(b'', True)
+            final = self._decoder.decode(b"", True)
             if final:
                 with self.output_lock:
                     self.output_buffer.append(final)
@@ -164,7 +164,7 @@ class WindowsTerminal(TerminalInterface):
 
     def _get_buffered_output(self, clear: bool = True) -> str:
         """Get all buffered output.
-        
+
         Args:
             clear: Whether to clear the buffer after reading
         """
@@ -173,14 +173,14 @@ class WindowsTerminal(TerminalInterface):
             buffer_copy = list(self.output_buffer)
             if clear:
                 self.output_buffer.clear()
-            return ''.join(buffer_copy)
+            return "".join(buffer_copy)
 
     def _is_special_key(self, text: str) -> bool:
         """Check if text is a special key sequence.
-        
+
         Args:
             text: Text to check
-            
+
         Returns:
             True if special key
         """
@@ -188,31 +188,30 @@ class WindowsTerminal(TerminalInterface):
 
     def _escape_powershell_string(self, s: str) -> str:
         """Escape a string for safe use in PowerShell single quotes.
-        
+
         In PowerShell single-quoted strings, only the single quote character
         needs escaping (by doubling it).
-        
+
         Args:
             s: String to escape
-            
+
         Returns:
             Escaped string with single quotes doubled
         """
         # In PowerShell single quotes, only single quote needs escaping
         return s.replace("'", "''")
-    
+
     def _parse_metadata(self, output: str) -> CmdOutputMetadata | None:
         """Extract metadata from command output.
-        
+
         Args:
             output: Command output containing metadata markers
-            
+
         Returns:
             Parsed metadata or None if not found/invalid
         """
         pattern = (
-            f"{re.escape(CMD_OUTPUT_PS1_BEGIN)}"
-            f"(.+?){re.escape(CMD_OUTPUT_PS1_END)}"
+            f"{re.escape(CMD_OUTPUT_PS1_BEGIN)}(.+?){re.escape(CMD_OUTPUT_PS1_END)}"
         )
         match = re.search(pattern, output, re.DOTALL)
         if match:
@@ -230,7 +229,7 @@ class WindowsTerminal(TerminalInterface):
             text: Text to send
             enter: Whether to add newline
             _internal: Internal flag for system commands (don't track as user command)
-            
+
         Raises:
             RuntimeError: If terminal process is not running
         """
@@ -239,20 +238,20 @@ class WindowsTerminal(TerminalInterface):
             error_msg = "Cannot send keys: terminal process is not running"
             logger.error(error_msg)
             raise RuntimeError(error_msg)
-        
+
         # Check if this is a special key (like C-c or Ctrl+C)
         is_special_key = self._is_special_key(text)
-        
+
         # Clear old output buffer when sending a new command (not for special keys)
         if not is_special_key and not _internal:
             self._get_buffered_output(clear=True)
-        
+
         # For regular commands (not special keys or internal),
         # append PS1 marker with metadata
         if not is_special_key and text.strip() and not _internal:
             # Set command running flag
             self._command_running_event.set()
-            
+
             # Build PowerShell metadata output command with proper escaping
             ps1_begin = self._escape_powershell_string(CMD_OUTPUT_PS1_BEGIN.strip())
             ps1_end = self._escape_powershell_string(CMD_OUTPUT_PS1_END.strip())
@@ -274,14 +273,14 @@ class WindowsTerminal(TerminalInterface):
                 f"Write-Host '{ps1_end}'"
             )
             text = text.rstrip() + metadata_cmd
-        
-        if enter and not text.endswith('\n'):
-            text = text + '\n'
+
+        if enter and not text.endswith("\n"):
+            text = text + "\n"
         self._write_to_stdin(text)
 
     def read_screen(self) -> str:
         """Read current terminal output without clearing buffer.
-        
+
         This allows TerminalSession to poll the output multiple times
         until it detects the PS1 prompt marker.
 
@@ -357,9 +356,9 @@ class WindowsTerminal(TerminalInterface):
         """Close the terminal session."""
         if self._closed:
             return
-            
+
         self._stop_reader = True
-        
+
         # Close pipes to unblock reader thread
         if self.process:
             try:
@@ -369,7 +368,7 @@ class WindowsTerminal(TerminalInterface):
                 logger.debug(f"Error closing stdin: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error closing stdin: {e}")
-            
+
             try:
                 if self.process.stdout:
                     self.process.stdout.close()
@@ -377,13 +376,13 @@ class WindowsTerminal(TerminalInterface):
                 logger.debug(f"Error closing stdout: {e}")
             except Exception as e:
                 logger.error(f"Unexpected error closing stdout: {e}")
-        
+
         # Now join the reader thread
         if self.reader_thread and self.reader_thread.is_alive():
             self.reader_thread.join(timeout=READER_THREAD_TIMEOUT)
             if self.reader_thread.is_alive():
                 logger.warning("Reader thread did not terminate within timeout")
-        
+
         if self.process:
             try:
                 self.process.terminate()
@@ -395,14 +394,14 @@ class WindowsTerminal(TerminalInterface):
                 logger.error(f"Error terminating process: {e}")
             finally:
                 self.process = None
-        
+
         self._closed = True
 
     def __enter__(self):
         """Context manager entry."""
         self.initialize()
         return self
-    
+
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit."""
         self.close()
@@ -415,4 +414,3 @@ class WindowsTerminal(TerminalInterface):
         except Exception:
             # Suppress errors during interpreter shutdown
             pass
-
