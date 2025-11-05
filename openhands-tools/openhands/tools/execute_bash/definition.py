@@ -82,7 +82,7 @@ class ExecuteBashObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
     command: str | None = Field(
-        default=None, description="The command that was executed"
+        description="The bash command that was executed. Can be empty string if the observation is from a previous command that hit soft timeout and is not yet finished.",  # noqa
     )
     exit_code: int | None = Field(
         default=None,
