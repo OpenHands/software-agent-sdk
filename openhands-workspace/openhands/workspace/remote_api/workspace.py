@@ -262,7 +262,13 @@ class APIRemoteWorkspace(RemoteWorkspace):
         """Send an API request with error handling."""
         logger.debug(f"Sending {method} request to {url}")
         logger.debug(f"Request kwargs: {kwargs}")
-        response = self.client.request(method, url, **kwargs)
+
+        # 1. If headers were provided in kwargs (when accessing runtime API to
+        # manage container), use them
+        # 2. otherwise, use the workspace's API headers (this is for
+        # accessing the agent-server API inside container)
+        headers = kwargs.pop("headers", self._headers)
+        response = self.client.request(method, url, headers=headers, **kwargs)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError:
