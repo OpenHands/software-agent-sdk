@@ -39,7 +39,6 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
@@ -70,12 +69,6 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
-    @property
-    def _add_security_risk_prediction(self) -> bool:
-        # Always include security_risk field in tool schemas
-        # This ensures consistent tool schemas regardless of security analyzer type
-        return True
-
     def init_state(
         self,
         state: ConversationState,
@@ -85,18 +78,6 @@ class Agent(AgentBase):
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
-        # Validate security analyzer configuration once during initialization
-        if self._add_security_risk_prediction and isinstance(
-            state.confirmation_policy, NeverConfirm
-        ):
-            # If security analyzer is enabled, we always need a policy that is not
-            # NeverConfirm, otherwise we are just predicting risks without using them,
-            # and waste tokens!
-            logger.warning(
-                "LLM security analyzer is enabled but confirmation "
-                "policy is set to NeverConfirm"
-            )
-
         llm_convertible_messages = [
             event for event in state.events if isinstance(event, LLMConvertibleEvent)
         ]
@@ -105,10 +86,9 @@ class Agent(AgentBase):
             event = SystemPromptEvent(
                 source="agent",
                 system_prompt=TextContent(text=self.system_message),
+                # Always include security_risk field in tools
                 tools=[
-                    t.to_openai_tool(
-                        add_security_risk_prediction=self._add_security_risk_prediction
-                    )
+                    t.to_openai_tool(add_security_risk_prediction=True)
                     for t in self.tools_map.values()
                 ],
             )
@@ -176,7 +156,7 @@ class Agent(AgentBase):
                     tools=list(self.tools_map.values()),
                     include=None,
                     store=False,
-                    add_security_risk_prediction=self._add_security_risk_prediction,
+                    add_security_risk_prediction=True,
                     extra_body=self.llm.litellm_extra_body,
                 )
             else:
@@ -184,7 +164,7 @@ class Agent(AgentBase):
                     messages=_messages,
                     tools=list(self.tools_map.values()),
                     extra_body=self.llm.litellm_extra_body,
-                    add_security_risk_prediction=self._add_security_risk_prediction,
+                    add_security_risk_prediction=True,
                 )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -359,6 +339,8 @@ class Agent(AgentBase):
             # When using LLMSecurityAnalyzer, security_risk field must always be present
             if isinstance(self.security_analyzer, LLMSecurityAnalyzer):
                 if _predicted_risk is None:
+                    # TODO: Send back agent error event instead
+                    # of breaking the conversation
                     raise ValueError(
                         f"LLMSecurityAnalyzer is configured but security_risk field "
                         f"is missing from LLM response for tool '{tool.name}'. "
@@ -368,6 +350,8 @@ class Agent(AgentBase):
                     try:
                         security_risk = risk.SecurityRisk(_predicted_risk)
                     except ValueError:
+                        # TODO: Send back agent error event instead
+                        # of breaking the conversation
                         raise ValueError(
                             f"Invalid security_risk value from LLM: {_predicted_risk}. "
                             f"Expected one of: {list(risk.SecurityRisk)}"
