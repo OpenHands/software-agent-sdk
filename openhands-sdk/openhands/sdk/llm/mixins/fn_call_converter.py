@@ -33,7 +33,7 @@ class TextPart(TypedDict):
 
 Content = str | list[TextPart]
 
-terminal_TOOL_NAME = "bash"
+TERMINAL_TOOL_NAME = "bash"
 STR_REPLACE_EDITOR_TOOL_NAME = "file_editor"
 BROWSER_TOOL_NAME = "browser"
 FINISH_TOOL_NAME = "finish"
@@ -338,7 +338,7 @@ def get_example_for_tools(tools: list[ChatCompletionToolParam]) -> str:
     for tool in tools:
         if tool["type"] == "function":
             name = tool["function"]["name"]
-            if name == terminal_TOOL_NAME:
+            if name == TERMINAL_TOOL_NAME:
                 available_tools.add("bash")
             elif name == STR_REPLACE_EDITOR_TOOL_NAME:
                 available_tools.add("file_editor")
