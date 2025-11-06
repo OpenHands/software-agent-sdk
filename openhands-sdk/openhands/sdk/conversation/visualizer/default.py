@@ -61,7 +61,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
     def __init__(
         self,
         name: str | None = None,
-        highlight_regex: dict[str, str] | None = None,
+        highlight_regex: dict[str, str] | None = DEFAULT_HIGHLIGHT_REGEX,
         skip_user_messages: bool = False,
     ):
         """Initialize the visualizer.
