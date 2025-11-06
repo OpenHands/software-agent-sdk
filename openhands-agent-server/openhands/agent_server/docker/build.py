@@ -112,6 +112,14 @@ def _sanitize_branch(ref: str) -> str:
 
 
 def _sdk_version() -> str:
+    """
+    Get SDK version or commit hash.
+    Respects SDK_VERSION_OVERRIDE env var for submodule/vendored contexts.
+    """
+    override = os.environ.get("SDK_VERSION_OVERRIDE")
+    if override:
+        return override
+
     from importlib.metadata import version
 
     return version("openhands-sdk")
@@ -263,6 +271,10 @@ class BuildOptions(BaseModel):
         default=None,
         description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
     )
+    include_versioned_tag: bool = Field(
+        default=True,
+        description="Whether to include the versioned tag in all_tags output",
+    )
 
     @field_validator("target")
     @classmethod
@@ -278,10 +290,6 @@ class BuildOptions(BaseModel):
     @property
     def base_image_slug(self) -> str:
         return _base_slug(self.base_image)
-
-    @property
-    def is_dev(self) -> bool:
-        return self.target in ("source", "source-minimal")
 
     @property
     def versioned_tag(self) -> str:
@@ -337,9 +345,13 @@ class BuildOptions(BaseModel):
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
-        tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
-        if self.is_dev:
-            tags = [f"{t}-dev" for t in tags]
+
+        # Only include versioned tag if requested
+        if self.include_versioned_tag:
+            tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
+
+        # Append target suffix to all tags for clarity
+        tags = [f"{t}-{self.target}" for t in tags]
         return tags
 
 
