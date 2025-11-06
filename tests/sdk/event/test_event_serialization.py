@@ -1,7 +1,5 @@
 """Comprehensive tests for event serialization and deserialization."""
 
-from collections.abc import Sequence
-
 import pytest
 from pydantic import ValidationError
 
@@ -16,7 +14,6 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.llm import (
-    ImageContent,
     Message,
     MessageToolCall,
     TextContent,
@@ -32,17 +29,15 @@ class EventsSerializationMockAction(Action):
     """Mock action for testing."""
 
     def execute(self) -> "EventsSerializationMockObservation":
-        return EventsSerializationMockObservation(content="mock result")
+        return EventsSerializationMockObservation(
+            content=[TextContent(text="mock result")]
+        )
 
 
 class EventsSerializationMockObservation(Observation):
     """Mock observation for testing."""
 
-    content: str
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        return [TextContent(text=self.content)]
+    pass
 
 
 def test_event_base_serialization() -> None:
@@ -100,7 +95,9 @@ def test_action_event_serialization() -> None:
 
 def test_observation_event_serialization() -> None:
     """Test ObservationEvent serialization/deserialization."""
-    observation = EventsSerializationMockObservation(content="test result")
+    observation = EventsSerializationMockObservation(
+        content=[TextContent(text="test result")]
+    )
     event = ObservationEvent(
         observation=observation,
         action_id="action_123",

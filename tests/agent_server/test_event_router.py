@@ -11,8 +11,9 @@ from fastapi.testclient import TestClient
 from openhands.agent_server.dependencies import get_event_service
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
+from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
-from openhands.sdk.llm.message import TextContent
+from openhands.sdk.llm.message import ImageContent, TextContent
 
 
 @pytest.fixture
@@ -293,6 +294,19 @@ class TestSendMessageEndpoint:
         finally:
             # Clean up the dependency override
             client.app.dependency_overrides.clear()
+
+    def test_create_message(self):
+        content: list[TextContent | ImageContent] = [
+            TextContent(
+                text="This is a message",
+            )
+        ]
+        request = SendMessageRequest(
+            role="user",
+            content=content,
+        )
+        message = request.create_message()
+        assert message.content == content
 
 
 class TestSearchEventsEndpoint:

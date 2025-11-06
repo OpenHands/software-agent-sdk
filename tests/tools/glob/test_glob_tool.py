@@ -85,7 +85,7 @@ def test_glob_tool_find_files():
         observation = tool.executor(action)
 
         assert isinstance(observation, GlobObservation)
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 3  # test.py, src/app.py, tests/test_main.py
         assert observation.pattern == "**/*.py"
         assert observation.search_path == str(Path(temp_dir).resolve())
@@ -119,7 +119,7 @@ def test_glob_tool_specific_directory():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 2  # app.py, utils.py
         assert observation.search_path == str(src_dir.resolve())
 
@@ -143,7 +143,7 @@ def test_glob_tool_no_matches():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 0
         assert observation.pattern == "**/*.py"
         assert not observation.truncated
@@ -161,8 +161,8 @@ def test_glob_tool_invalid_directory():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is not None
-        assert "is not a valid directory" in observation.error
+        assert observation.is_error is True
+        assert "is not a valid directory" in observation.text
         assert len(observation.files) == 0
 
 
@@ -191,7 +191,7 @@ def test_glob_tool_complex_patterns():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 4  # All config files
         assert observation.pattern == "config.*"
 
@@ -218,7 +218,7 @@ def test_glob_tool_directories_excluded():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         # Should find all files recursively, but not directories
         assert len(observation.files) == 2  # app.py and src/utils.py
         # Verify both files are present
@@ -287,9 +287,9 @@ def test_glob_tool_to_llm_content_error():
         observation = tool.executor(action)
 
         content = observation.to_llm_content
-        assert len(content) == 1
-        text_content = content[0].text
-        assert "Error:" in text_content
+        assert len(content) == 2
+        assert content[0].text == GlobObservation.ERROR_MESSAGE_HEADER
+        text_content = content[1].text
         assert "is not a valid directory" in text_content
 
 
@@ -309,7 +309,7 @@ def test_glob_tool_truncation():
         assert tool.executor is not None
         observation = tool.executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.files) == 100  # Truncated to 100
         assert observation.truncated is True
 

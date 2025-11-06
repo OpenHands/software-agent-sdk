@@ -50,9 +50,11 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     # Verify the conversation was created successfully
     assert conversation1.id == conversation_id
     assert conversation1.agent.llm.api_key is not None
+    assert isinstance(conversation1.agent.llm.api_key, SecretStr)
     assert conversation1.agent.llm.api_key.get_secret_value() == "llm-api-key"
     assert isinstance(conversation1.agent.condenser, LLMSummarizingCondenser)
     assert conversation1.agent.condenser.llm.api_key is not None
+    assert isinstance(conversation1.agent.condenser.llm.api_key, SecretStr)
     assert conversation1.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
 
     # Attempt to restart the conversation - this should work without errors
@@ -65,9 +67,11 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     # Make sure the conversation gets initialized properly with no errors
     assert conversation2.id == conversation_id
     assert conversation2.agent.llm.api_key is not None
+    assert isinstance(conversation2.agent.llm.api_key, SecretStr)
     assert conversation2.agent.llm.api_key.get_secret_value() == "llm-api-key"
     assert isinstance(conversation2.agent.condenser, LLMSummarizingCondenser)
     assert conversation2.agent.condenser.llm.api_key is not None
+    assert isinstance(conversation2.agent.condenser.llm.api_key, SecretStr)
     assert conversation2.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
 
     # Verify that the agent configuration is properly reconciled
