@@ -540,6 +540,7 @@ def test_conversation_with_agent_different_llm_config():
         )
 
         assert new_conversation._state.agent.llm.api_key is not None
+        assert isinstance(new_conversation._state.agent.llm.api_key, SecretStr)
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})

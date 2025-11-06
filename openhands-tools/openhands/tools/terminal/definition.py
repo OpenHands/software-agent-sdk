@@ -21,11 +21,11 @@ from openhands.sdk.tool import (
     register_tool,
 )
 from openhands.sdk.utils import maybe_truncate
-from openhands.tools.execute_bash.constants import (
+from openhands.tools.terminal.constants import (
     MAX_CMD_OUTPUT_SIZE,
     NO_CHANGE_TIMEOUT_SECONDS,
 )
-from openhands.tools.execute_bash.metadata import CmdOutputMetadata
+from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
 class ExecuteBashAction(Action):
@@ -81,18 +81,12 @@ class ExecuteBashAction(Action):
 class ExecuteBashObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
-    output: str = Field(description="The raw output from the tool.")
     command: str | None = Field(
-        default=None,
         description="The bash command that was executed. Can be empty string if the observation is from a previous command that hit soft timeout and is not yet finished.",  # noqa
     )
     exit_code: int | None = Field(
         default=None,
         description="The exit code of the command. -1 indicates the process hit the soft timeout and is not yet finished.",  # noqa
-    )
-    error: bool = Field(
-        default=False,
-        description="Whether there was an error during command execution.",
     )
     timeout: bool = Field(
         default=False, description="Whether the command execution timed out."
@@ -109,31 +103,41 @@ class ExecuteBashObservation(Observation):
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        ret = f"{self.metadata.prefix}{self.output}{self.metadata.suffix}"
+        llm_content: list[TextContent | ImageContent] = []
+
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
+
+        # ExecuteBashObservation always has content as a single TextContent
+        content_text = self.text
+
+        ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
         if self.metadata.working_dir:
             ret += f"\n[Current working directory: {self.metadata.working_dir}]"
         if self.metadata.py_interpreter_path:
             ret += f"\n[Python interpreter: {self.metadata.py_interpreter_path}]"
         if self.metadata.exit_code != -1:
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
-        if self.error:
-            ret = f"[There was an error during command execution.]\n{ret}"
-        return [TextContent(text=maybe_truncate(ret, MAX_CMD_OUTPUT_SIZE))]
+        llm_content.append(TextContent(text=maybe_truncate(ret, MAX_CMD_OUTPUT_SIZE)))
+
+        return llm_content
 
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation with terminal-style output formatting."""
-        content = Text()
+        text = Text()
 
-        # Add error indicator if present
-        if self.error:
-            content.append("❌ ", style="red bold")
-            content.append("Command execution error\n", style="red")
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
-        # Add command output with proper styling
-        if self.output:
+        # ExecuteBashObservation always has content as a single TextContent
+        content_text = self.text
+
+        if content_text:
             # Style the output based on content
-            output_lines = self.output.split("\n")
+            output_lines = content_text.split("\n")
             for line in output_lines:
                 if line.strip():
                     # Color error-like lines differently
@@ -141,28 +145,28 @@ class ExecuteBashObservation(Observation):
                         keyword in line.lower()
                         for keyword in ["error", "failed", "exception", "traceback"]
                     ):
-                        content.append(line, style="red")
+                        text.append(line, style="red")
                     elif any(
                         keyword in line.lower() for keyword in ["warning", "warn"]
                     ):
-                        content.append(line, style="yellow")
+                        text.append(line, style="yellow")
                     elif line.startswith("+ "):  # bash -x output
-                        content.append(line, style="cyan")
+                        text.append(line, style="cyan")
                     else:
-                        content.append(line, style="white")
-                content.append("\n")
+                        text.append(line, style="white")
+                text.append("\n")
 
         # Add metadata with styling
         if hasattr(self, "metadata") and self.metadata:
             if self.metadata.working_dir:
-                content.append("\n📁 ", style="blue")
-                content.append(
+                text.append("\n📁 ", style="blue")
+                text.append(
                     f"Working directory: {self.metadata.working_dir}", style="blue"
                 )
 
             if self.metadata.py_interpreter_path:
-                content.append("\n🐍 ", style="green")
-                content.append(
+                text.append("\n🐍 ", style="green")
+                text.append(
                     f"Python interpreter: {self.metadata.py_interpreter_path}",
                     style="green",
                 )
@@ -172,20 +176,16 @@ class ExecuteBashObservation(Observation):
                 and self.metadata.exit_code is not None
             ):
                 if self.metadata.exit_code == 0:
-                    content.append("\n✅ ", style="green")
-                    content.append(
-                        f"Exit code: {self.metadata.exit_code}", style="green"
-                    )
+                    text.append("\n✅ ", style="green")
+                    text.append(f"Exit code: {self.metadata.exit_code}", style="green")
                 elif self.metadata.exit_code == -1:
-                    content.append("\n⏳ ", style="yellow")
-                    content.append(
-                        "Process still running (soft timeout)", style="yellow"
-                    )
+                    text.append("\n⏳ ", style="yellow")
+                    text.append("Process still running (soft timeout)", style="yellow")
                 else:
-                    content.append("\n❌ ", style="red")
-                    content.append(f"Exit code: {self.metadata.exit_code}", style="red")
+                    text.append("\n❌ ", style="red")
+                    text.append(f"Exit code: {self.metadata.exit_code}", style="red")
 
-        return content
+        return text
 
 
 TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.
@@ -219,7 +219,7 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
+class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
     """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
 
     @classmethod
@@ -230,8 +230,8 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         executor: ToolExecutor | None = None,
-    ) -> Sequence["BashTool"]:
-        """Initialize BashTool with executor parameters.
+    ) -> Sequence["TerminalTool"]:
+        """Initialize TerminalTool with executor parameters.
 
         Args:
             conv_state: Conversation state to get working directory from.
@@ -246,7 +246,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                          - On Unix-like: tmux if available, otherwise subprocess
         """
         # Import here to avoid circular imports
-        from openhands.tools.execute_bash.impl import BashExecutor
+        from openhands.tools.terminal.impl import BashExecutor
 
         working_dir = conv_state.workspace.working_dir
         if not os.path.isdir(working_dir):
@@ -268,7 +268,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 observation_type=ExecuteBashObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
-                    title="bash",
+                    title="terminal",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,
@@ -280,4 +280,4 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
 
 # Automatically register the tool when this module is imported
-register_tool(BashTool.name, BashTool)
+register_tool(TerminalTool.name, TerminalTool)
