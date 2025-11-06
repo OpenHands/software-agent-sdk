@@ -234,7 +234,7 @@ def test_windows_terminal_close_and_reopen(temp_dir):
     session1.initialize()
 
     obs = session1.execute(ExecuteBashAction(command="echo Session1"))
-    assert "Session1" in obs.output
+    assert "Session1" in obs.text
 
     # Close first session
     session1.close()
@@ -245,7 +245,7 @@ def test_windows_terminal_close_and_reopen(temp_dir):
     session2.initialize()
 
     obs = session2.execute(ExecuteBashAction(command="echo Session2"))
-    assert "Session2" in obs.output
+    assert "Session2" in obs.text
 
     session2.close()
 
