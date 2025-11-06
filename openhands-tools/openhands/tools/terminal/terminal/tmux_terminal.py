@@ -71,7 +71,7 @@ class TmuxTerminal(TerminalInterface):
         # Create a new pane because the initial pane's history limit is (default) 2000
         _initial_window = self.session.active_window
         self.window = self.session.new_window(
-            window_name="bash",
+            window_name="terminal",
             window_shell=window_command,
             start_directory=self.work_dir,
             environment=env,

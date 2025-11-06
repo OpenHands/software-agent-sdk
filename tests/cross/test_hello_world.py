@@ -165,10 +165,10 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("bash", TerminalTool)
+        register_tool("terminal", TerminalTool)
         register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="bash"),
+            Tool(name="terminal"),
             Tool(name="file_editor"),
         ]
 
@@ -285,10 +285,10 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("bash", TerminalTool)
+        register_tool("terminal", TerminalTool)
         register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="bash"),
+            Tool(name="terminal"),
             Tool(name="file_editor"),
         ]
 

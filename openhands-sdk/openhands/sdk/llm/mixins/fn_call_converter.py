@@ -33,7 +33,7 @@ class TextPart(TypedDict):
 
 Content = str | list[TextPart]
 
-TERMINAL_TOOL_NAME = "bash"
+TERMINAL_TOOL_NAME = "terminal"
 STR_REPLACE_EDITOR_TOOL_NAME = "file_editor"
 BROWSER_TOOL_NAME = "browser"
 FINISH_TOOL_NAME = "finish"
@@ -339,7 +339,7 @@ def get_example_for_tools(tools: list[ChatCompletionToolParam]) -> str:
         if tool["type"] == "function":
             name = tool["function"]["name"]
             if name == TERMINAL_TOOL_NAME:
-                available_tools.add("bash")
+                available_tools.add("terminal")
             elif name == STR_REPLACE_EDITOR_TOOL_NAME:
                 available_tools.add("file_editor")
             elif name == BROWSER_TOOL_NAME:
@@ -361,7 +361,7 @@ USER: Create a list of numbers from 1 to 10, and display them in a web page at p
 """  # noqa: E501
 
     # Build example based on available tools
-    if "bash" in available_tools:
+    if "terminal" in available_tools:
         example += TOOL_EXAMPLES["bash"]["check_dir"]
 
     if "file_editor" in available_tools:
@@ -369,13 +369,13 @@ USER: Create a list of numbers from 1 to 10, and display them in a web page at p
     elif "edit_file" in available_tools:
         example += TOOL_EXAMPLES["edit_file"]["create_file"]
 
-    if "bash" in available_tools:
+    if "terminal" in available_tools:
         example += TOOL_EXAMPLES["bash"]["run_server"]
 
     if "browser" in available_tools:
         example += TOOL_EXAMPLES["browser"]["view_page"]
 
-    if "bash" in available_tools:
+    if "terminal" in available_tools:
         example += TOOL_EXAMPLES["bash"]["kill_server"]
 
     if "file_editor" in available_tools:
@@ -383,7 +383,7 @@ USER: Create a list of numbers from 1 to 10, and display them in a web page at p
     elif "edit_file" in available_tools:
         example += TOOL_EXAMPLES["edit_file"]["edit_file"]
 
-    if "bash" in available_tools:
+    if "terminal" in available_tools:
         example += TOOL_EXAMPLES["bash"]["run_server_again"]
 
     if "finish" in available_tools:

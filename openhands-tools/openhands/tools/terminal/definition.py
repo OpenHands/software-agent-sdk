@@ -268,7 +268,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 observation_type=ExecuteBashObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
-                    title="bash",
+                    title="terminal",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,

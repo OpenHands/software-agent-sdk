@@ -173,7 +173,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                         working_dir=conv_state.workspace.working_dir,
                         **params,
                     )
-                    return [cls(name="bash", ..., executor=executor)]
+                    return [cls(name="terminal", ..., executor=executor)]
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
