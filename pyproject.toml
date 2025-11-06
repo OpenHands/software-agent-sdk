@@ -43,6 +43,12 @@ select = [
     "UP",   # pyupgrade
     "ARG",  # flake8-unused-arguments
 ]
+# Enforce rules that catch mutable defaults and related pitfalls
+# - B006: mutable-argument-default
+# - B008: function-call-in-default-argument
+# - B039: mutable-contextvar-default
+# - RUF012: mutable-class-default
+extend-select = ["B006", "B008", "B039", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)
