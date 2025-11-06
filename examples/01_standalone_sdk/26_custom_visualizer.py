@@ -33,8 +33,6 @@ class MinimalVisualizer(ConversationVisualizerBase):
 
         Args:
             name: Optional name to identify the agent/conversation.
-                                  Note: This simple visualizer doesn't use it in output,
-                                  but accepts it for compatibility with the base class.
         """
         # Initialize parent - state will be set later via initialize()
         super().__init__(name=name)
