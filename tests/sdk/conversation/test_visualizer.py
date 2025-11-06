@@ -6,8 +6,7 @@ from collections.abc import Sequence
 from rich.text import Text
 
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
-    create_default_visualizer,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
     ActionEvent,
@@ -229,22 +228,16 @@ def test_pause_event_visualize():
 
 
 def test_conversation_visualizer_initialization():
-    """Test ConversationVisualizer can be initialized."""
-    visualizer = ConversationVisualizer()
+    """Test DefaultConversationVisualizer can be initialized."""
+    visualizer = DefaultConversationVisualizer()
     assert visualizer is not None
     assert hasattr(visualizer, "on_event")
     assert hasattr(visualizer, "_create_event_panel")
 
 
-def test_create_default_visualizer():
-    """Test create_default_visualizer function."""
-    visualizer = create_default_visualizer()
-    assert isinstance(visualizer, ConversationVisualizer)
-
-
 def test_visualizer_event_panel_creation():
     """Test that visualizer creates panels for different event types."""
-    conv_viz = ConversationVisualizer()
+    conv_viz = DefaultConversationVisualizer()
 
     # Test with a simple action event
     action = VisualizerMockAction(command="test")
@@ -264,7 +257,7 @@ def test_visualizer_event_panel_creation():
 
 def test_visualizer_action_event_with_none_action_panel():
     """ActionEvent with action=None should render as 'Agent Action (Not Executed)'."""
-    visualizer = ConversationVisualizer()
+    visualizer = DefaultConversationVisualizer()
     tc = create_tool_call("call_ne_1", "missing_fn", {})
     action_event = ActionEvent(
         thought=[TextContent(text="...")],
@@ -284,7 +277,7 @@ def test_visualizer_action_event_with_none_action_panel():
 
 def test_visualizer_user_reject_observation_panel():
     """UserRejectObservation should render a dedicated panel."""
-    visualizer = ConversationVisualizer()
+    visualizer = DefaultConversationVisualizer()
     event = UserRejectObservation(
         tool_name="demo_tool",
         tool_call_id="fc_call_1",
@@ -328,7 +321,7 @@ def test_metrics_formatting():
     conversation_stats.usage_to_metrics["test_usage"] = metrics
 
     # Create visualizer with conversation stats
-    visualizer = ConversationVisualizer(conversation_stats=conversation_stats)
+    visualizer = DefaultConversationVisualizer(conversation_stats=conversation_stats)
 
     # Test the metrics subtitle formatting
     subtitle = visualizer._format_metrics_subtitle()
@@ -371,7 +364,7 @@ def test_metrics_abbreviation_formatting():
         )
         stats.usage_to_metrics["test"] = metrics
 
-        visualizer = ConversationVisualizer(conversation_stats=stats)
+        visualizer = DefaultConversationVisualizer(conversation_stats=stats)
         subtitle = visualizer._format_metrics_subtitle()
 
         assert subtitle is not None, f"Failed for {tokens}"

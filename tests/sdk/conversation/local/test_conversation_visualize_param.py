@@ -8,7 +8,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -37,7 +37,7 @@ def test_conversation_with_default_visualizer(mock_agent):
 
         # Should have a visualizer
         assert conversation._visualizer is not None
-        assert isinstance(conversation._visualizer, ConversationVisualizer)
+        assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
 
         # Agent should be initialized with callbacks that include visualizer
         mock_init_state.assert_called_once()
@@ -74,7 +74,7 @@ def test_conversation_default_visualize_is_true(mock_agent):
 
         # Should have a visualizer by default
         assert conversation._visualizer is not None
-        assert isinstance(conversation._visualizer, ConversationVisualizer)
+        assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
 
 
 def test_conversation_with_custom_callbacks_and_default_visualizer(mock_agent):
@@ -146,7 +146,7 @@ def test_conversation_callback_order(mock_agent):
     # Create a custom visualizer that tracks when it's called
     with patch.object(Agent, "init_state") as mock_init_state:
         # Create a mock visualizer instance
-        mock_visualizer = Mock(spec=ConversationVisualizer)
+        mock_visualizer = Mock(spec=DefaultConversationVisualizer)
         mock_visualizer.on_event = Mock(
             side_effect=lambda e: call_order.append("visualizer")
         )
@@ -216,9 +216,9 @@ def test_conversation_no_callbacks_with_visualize_false(mock_agent):
 
 
 def test_conversation_with_custom_visualizer_instance(mock_agent):
-    """Test Conversation with a custom ConversationVisualizer instance."""
+    """Test Conversation with a custom DefaultConversationVisualizer instance."""
     # Create a custom visualizer
-    custom_visualizer = ConversationVisualizer(
+    custom_visualizer = DefaultConversationVisualizer(
         highlight_regex={"Test:": "bold red"},
         skip_user_messages=True,
     )
@@ -228,7 +228,7 @@ def test_conversation_with_custom_visualizer_instance(mock_agent):
 
         # Should use the custom visualizer
         assert conversation._visualizer is custom_visualizer
-        assert isinstance(conversation._visualizer, ConversationVisualizer)
+        assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
 
         # Agent should be initialized with callbacks that include the custom visualizer
         mock_init_state.assert_called_once()
@@ -246,7 +246,7 @@ def test_conversation_with_custom_visualizer_and_callbacks(mock_agent):
     callbacks = [custom_callback]
 
     # Create a custom visualizer with mocked on_event to track calls
-    custom_visualizer = Mock(spec=ConversationVisualizer)
+    custom_visualizer = Mock(spec=DefaultConversationVisualizer)
     custom_visualizer.on_event = Mock()
 
     with patch.object(Agent, "init_state") as mock_init_state:
@@ -298,13 +298,12 @@ def test_conversation_with_visualizer_class(mock_agent):
         # Pass the class itself, not an instance
         conversation = Conversation(
             agent=mock_agent,
-            visualizer=ConversationVisualizer,
-            name_for_visualization="test_agent",
+            visualizer=DefaultConversationVisualizer,
         )
 
         # Should have instantiated the visualizer
         assert conversation._visualizer is not None
-        assert isinstance(conversation._visualizer, ConversationVisualizer)
+        assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
 
         # Agent should be initialized with callbacks that include visualizer
         mock_init_state.assert_called_once()

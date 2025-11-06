@@ -1,11 +1,13 @@
 import re
-from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.text import Text
 
+from openhands.sdk.conversation.visualizer.base import (
+    ConversationVisualizerBase,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -20,8 +22,7 @@ from openhands.sdk.event.condenser import Condensation
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.base import ConversationStateProtocol
-    from openhands.sdk.conversation.conversation_stats import ConversationStats
+    pass
 
 
 # These are external inputs
@@ -52,76 +53,7 @@ DEFAULT_HIGHLIGHT_REGEX = {
 _PANEL_PADDING = (1, 1)
 
 
-class ConversationVisualizerBase(ABC):
-    """Base class for conversation visualizers.
-
-    This abstract base class defines the interface that all conversation visualizers
-    must implement. Visualizers can be created before the Conversation is initialized
-    and will be configured with the conversation state automatically.
-
-    The typical usage pattern:
-    1. Create a visualizer instance:
-       `viz = MyVisualizer(name_for_visualization="agent1")`
-    2. Pass it to Conversation: `conv = Conversation(agent, visualizer=viz)`
-    3. Conversation automatically calls `viz.initialize(state)` to attach the state
-    """
-
-    _name_for_visualization: str | None
-    _state: "ConversationStateProtocol | None"
-
-    def __init__(
-        self,
-        name_for_visualization: str | None = None,
-        state: "ConversationStateProtocol | None" = None,
-    ):
-        """Initialize the visualizer base.
-
-        Args:
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking. Will be
-                                  capitalized automatically.
-            state: Optional conversation state. If not provided, must be set later
-                  via initialize() method.
-        """
-        self._name_for_visualization = (
-            name_for_visualization.capitalize() if name_for_visualization else None
-        )
-        self._state = state
-
-    def initialize(self, state: "ConversationStateProtocol") -> None:
-        """Initialize the visualizer with conversation state.
-
-        This method is called by Conversation after the state is created,
-        allowing the visualizer to access conversation stats and other
-        state information.
-
-        Subclasses can override this method to add custom initialization logic,
-        but should call super().initialize(state) to ensure the state is set.
-
-        Args:
-            state: The conversation state object
-        """
-        self._state = state
-
-    @property
-    def conversation_stats(self) -> "ConversationStats | None":
-        """Get conversation stats from the state."""
-        return self._state.stats if self._state else None
-
-    @abstractmethod
-    def on_event(self, event: Event) -> None:
-        """Handle a conversation event.
-
-        This method is called for each event in the conversation and should
-        implement the visualization logic.
-
-        Args:
-            event: The event to visualize
-        """
-        pass
-
-
-class ConversationVisualizer(ConversationVisualizerBase):
+class DefaultConversationVisualizer(ConversationVisualizerBase):
     """Handles visualization of conversation events with Rich formatting.
 
     Provides Rich-formatted output with panels and complete content display.
@@ -133,51 +65,28 @@ class ConversationVisualizer(ConversationVisualizerBase):
 
     def __init__(
         self,
+        name: str | None = None,
         highlight_regex: dict[str, str] | None = None,
         skip_user_messages: bool = False,
-        conversation_stats: "ConversationStats | None" = None,
-        name_for_visualization: str | None = None,
-        state: "ConversationStateProtocol | None" = None,
     ):
         """Initialize the visualizer.
 
         Args:
+            name: Optional name to prefix in panel titles to identify
+                                  which agent/conversation is speaking.
             highlight_regex: Dictionary mapping regex patterns to Rich color styles
                            for highlighting keywords in the visualizer.
                            For example: {"Reasoning:": "bold blue",
                            "Thought:": "bold green"}
             skip_user_messages: If True, skip displaying user messages. Useful for
                                 scenarios where user input is not relevant to show.
-            conversation_stats: Optional ConversationStats object to display
-                              metrics. If not provided and state is provided,
-                              will use state.stats. If neither provided,
-                              will be set via initialize().
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
-            state: Optional conversation state. If not provided, must be set later
-                  via initialize() method.
         """
         super().__init__(
-            name_for_visualization=name_for_visualization,
-            state=state,
+            name=name,
         )
         self._console = Console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
-        self._explicit_conversation_stats = conversation_stats
-
-    @property
-    def conversation_stats(self) -> "ConversationStats | None":
-        """Get conversation stats.
-
-        Returns stats in this order:
-        1. Explicitly provided conversation_stats (for backward compatibility)
-        2. Stats from state (if state is initialized)
-        3. None
-        """
-        if self._explicit_conversation_stats is not None:
-            return self._explicit_conversation_stats
-        return super().conversation_stats
 
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
@@ -223,8 +132,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
         # Determine panel styling based on event type
         if isinstance(event, SystemPromptEvent):
             title = f"[bold {_SYSTEM_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"System Prompt[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
@@ -236,8 +145,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
         elif isinstance(event, ActionEvent):
             # Check if action is None (non-executable)
             title = f"[bold {_ACTION_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             if event.action is None:
                 title += f"Agent Action (Not Executed)[/bold {_ACTION_COLOR}]"
             else:
@@ -252,8 +161,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
             )
         elif isinstance(event, ObservationEvent):
             title = f"[bold {_OBSERVATION_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"Observation[/bold {_OBSERVATION_COLOR}]"
             return Panel(
                 content,
@@ -264,8 +173,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
             )
         elif isinstance(event, UserRejectObservation):
             title = f"[bold {_ERROR_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"User Rejected Action[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
@@ -291,11 +200,7 @@ class ConversationVisualizer(ConversationVisualizerBase):
 
             # "User Message To [Name] Agent" for user
             # "Message from [Name] Agent" for agent
-            agent_name = (
-                f"{self._name_for_visualization} "
-                if self._name_for_visualization
-                else ""
-            )
+            agent_name = f"{self._name} " if self._name else ""
 
             if event.llm_message.role == "user":
                 title_text = (
@@ -317,8 +222,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
             )
         elif isinstance(event, AgentErrorEvent):
             title = f"[bold {_ERROR_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"Agent Error[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
@@ -330,8 +235,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
             )
         elif isinstance(event, PauseEvent):
             title = f"[bold {_PAUSE_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"User Paused[/bold {_PAUSE_COLOR}]"
             return Panel(
                 content,
@@ -342,8 +247,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
             )
         elif isinstance(event, Condensation):
             title = f"[bold {_SYSTEM_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"Condensation[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
@@ -355,8 +260,8 @@ class ConversationVisualizer(ConversationVisualizerBase):
         else:
             # Fallback panel for unknown event types
             title = f"[bold {_ERROR_COLOR}]"
-            if self._name_for_visualization:
-                title += f"{self._name_for_visualization} "
+            if self._name:
+                title += f"{self._name} "
             title += f"UNKNOWN Event: {event.__class__.__name__}[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
@@ -416,35 +321,3 @@ class ConversationVisualizer(ConversationVisualizerBase):
         parts.append(f"[green]$ {cost_str}[/green]")
 
         return "Tokens: " + " • ".join(parts)
-
-
-def create_default_visualizer(
-    highlight_regex: dict[str, str] | None = None,
-    conversation_stats: "ConversationStats | None" = None,
-    name_for_visualization: str | None = None,
-    state: "ConversationStateProtocol | None" = None,
-    **kwargs,
-) -> ConversationVisualizer:
-    """Create a default conversation visualizer instance.
-
-    Args:
-        highlight_regex: Dictionary mapping regex patterns to Rich color styles
-                       for highlighting keywords in the visualizer.
-                       For example: {"Reasoning:": "bold blue",
-                       "Thought:": "bold green"}
-        conversation_stats: ConversationStats object to display metrics information.
-                          Deprecated - use state instead.
-        name_for_visualization: Optional name to prefix in panel titles to identify
-                              which agent/conversation is speaking.
-        state: Optional conversation state. If not provided, must be set later
-              via initialize() method.
-    """
-    return ConversationVisualizer(
-        highlight_regex=DEFAULT_HIGHLIGHT_REGEX
-        if highlight_regex is None
-        else highlight_regex,
-        conversation_stats=conversation_stats,
-        name_for_visualization=name_for_visualization,
-        state=state,
-        **kwargs,
-    )

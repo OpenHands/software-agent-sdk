@@ -15,8 +15,8 @@ from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
     ConversationVisualizerBase,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
     MessageEvent,
@@ -63,8 +63,7 @@ class LocalConversation(BaseConversation):
         stuck_detection: bool = True,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
-        ) = ConversationVisualizer,
-        name_for_visualization: str | None = None,
+        ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
     ):
@@ -84,8 +83,6 @@ class LocalConversation(BaseConversation):
                          (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
             stuck_detection: Whether to enable stuck detection
         """
         self.agent = agent
@@ -128,7 +125,7 @@ class LocalConversation(BaseConversation):
             visualizer, ConversationVisualizerBase
         ):
             # Instantiate the visualizer class with appropriate parameters
-            self._visualizer = visualizer(name_for_visualization=name_for_visualization)
+            self._visualizer = visualizer()
             # Initialize with state
             self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list

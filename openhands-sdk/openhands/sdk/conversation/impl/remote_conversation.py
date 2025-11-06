@@ -18,8 +18,8 @@ from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
     ConversationVisualizerBase,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.conversation_state import (
@@ -428,8 +428,7 @@ class RemoteConversation(BaseConversation):
         stuck_detection: bool = True,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
-        ) = ConversationVisualizer,
-        name_for_visualization: str | None = None,
+        ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
     ) -> None:
@@ -447,8 +446,6 @@ class RemoteConversation(BaseConversation):
                          (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
             secrets: Optional secrets to initialize the conversation with
         """
         self.agent = agent
@@ -509,7 +506,7 @@ class RemoteConversation(BaseConversation):
             visualizer, ConversationVisualizerBase
         ):
             # Instantiate the visualizer class with appropriate parameters
-            self._visualizer = visualizer(name_for_visualization=name_for_visualization)
+            self._visualizer = visualizer()
             # Initialize with state
             self._visualizer.initialize(self._state)
             self._callbacks.append(self._visualizer.on_event)
