@@ -73,9 +73,7 @@ def fix_malformed_tool_arguments(
         origin = get_origin(expected_type)
 
         # For Union types, we need to check all union members
-        if origin is Union or (
-            hasattr(types, "UnionType") and origin is types.UnionType
-        ):
+        if origin is Union or origin is types.UnionType:
             # For Union types, check each union member
             type_args = get_args(expected_type)
             expected_origins = [get_origin(arg) or arg for arg in type_args]
