@@ -49,7 +49,7 @@ class SecurityAnalyzerConfigurationEvent(Event):
 
     @property
     def visualize(self) -> Text:
-        """Return Rich Text representation of this security analyzer configuration event."""  # type: ignore[misc]
+        """Return Rich Text representation of this security analyzer configuration event."""  # type: ignore[misc]  # noqa: E501
         content = Text()
         content.append("Security Analyzer Configuration", style="bold cyan")
         if self.analyzer_type:
@@ -70,3 +70,13 @@ class SecurityAnalyzerConfigurationEvent(Event):
                 f"{self.__class__.__name__} ({self.source}): "
                 f"No security analyzer configured"
             )
+
+    def __eq__(self, other: object) -> bool:
+        """Compare SecurityAnalyzerConfigurationEvents based on analyzer_type only.
+
+        This allows us to detect when the security analyzer configuration has actually
+        changed, ignoring differences in id, timestamp, and other metadata.
+        """
+        if not isinstance(other, SecurityAnalyzerConfigurationEvent):
+            return False
+        return self.analyzer_type == other.analyzer_type
