@@ -10,7 +10,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.visualizer import ConversationVisualizer
+from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import RemoteWorkspace
@@ -626,7 +626,7 @@ class TestRemoteConversation:
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
     def test_remote_conversation_with_visualize(self, mock_ws_client):
-        """Test RemoteConversation with visualizer=ConversationVisualizer()."""
+        """Test RemoteConversation with visualizer=DefaultConversationVisualizer()."""
         # Setup mocks
         mock_client_instance = self.setup_mock_client()
 
@@ -641,9 +641,9 @@ class TestRemoteConversation:
         mock_ws_client.return_value = mock_ws_instance
 
         # Create a custom visualizer instance
-        custom_visualizer = ConversationVisualizer()
+        custom_visualizer = DefaultConversationVisualizer()
 
-        # Create conversation with visualizer=ConversationVisualizer()
+        # Create conversation with visualizer=DefaultConversationVisualizer()
         conversation = RemoteConversation(
             agent=self.agent,
             workspace=self.workspace,

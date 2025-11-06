@@ -298,6 +298,8 @@ def test_visualizer_user_reject_observation_panel():
 
 def test_metrics_formatting():
     """Test metrics subtitle formatting."""
+    from unittest.mock import MagicMock
+
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.llm.utils.metrics import Metrics
 
@@ -320,8 +322,11 @@ def test_metrics_formatting():
     # Add metrics to conversation stats
     conversation_stats.usage_to_metrics["test_usage"] = metrics
 
-    # Create visualizer with conversation stats
-    visualizer = DefaultConversationVisualizer(conversation_stats=conversation_stats)
+    # Create visualizer and initialize with mock state
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = conversation_stats
+    visualizer.initialize(mock_state)
 
     # Test the metrics subtitle formatting
     subtitle = visualizer._format_metrics_subtitle()
@@ -335,6 +340,8 @@ def test_metrics_formatting():
 
 def test_metrics_abbreviation_formatting():
     """Test number abbreviation with various edge cases."""
+    from unittest.mock import MagicMock
+
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.llm.utils.metrics import Metrics
 
@@ -364,7 +371,10 @@ def test_metrics_abbreviation_formatting():
         )
         stats.usage_to_metrics["test"] = metrics
 
-        visualizer = DefaultConversationVisualizer(conversation_stats=stats)
+        visualizer = DefaultConversationVisualizer()
+        mock_state = MagicMock()
+        mock_state.stats = stats
+        visualizer.initialize(mock_state)
         subtitle = visualizer._format_metrics_subtitle()
 
         assert subtitle is not None, f"Failed for {tokens}"

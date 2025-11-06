@@ -18,7 +18,7 @@ from openhands.sdk import (
     TextContent,
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.visualizer import ConversationVisualizer
+from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import (
     MessageEvent,
@@ -90,7 +90,7 @@ class BaseIntegrationTest(ABC):
             agent=self.agent,
             workspace=self.workspace,
             callbacks=[self.conversation_callback],
-            visualizer=ConversationVisualizer(),  # Use default visualizer
+            visualizer=DefaultConversationVisualizer(),  # Use default visualizer
         )
 
     def conversation_callback(self, event: Event):

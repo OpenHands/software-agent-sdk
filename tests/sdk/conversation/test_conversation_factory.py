@@ -9,7 +9,6 @@ from pydantic import SecretStr
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
-from openhands.sdk.conversation.visualizer import ConversationVisualizer
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import RemoteWorkspace
 
@@ -88,7 +87,6 @@ def test_conversation_factory_forwards_remote_parameters(
         workspace=remote_workspace,
         max_iteration_per_run=200,
         stuck_detection=True,
-        visualizer=ConversationVisualizer(),
     )
 
     assert isinstance(conversation, RemoteConversation)
