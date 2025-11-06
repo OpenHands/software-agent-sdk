@@ -350,8 +350,9 @@ class BuildOptions(BaseModel):
         if self.include_versioned_tag:
             tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
 
-        # Append target suffix to all tags for clarity
-        tags = [f"{t}-{self.target}" for t in tags]
+        # Append target suffix for clarity (binary is default, no suffix needed)
+        if self.target != "binary":
+            tags = [f"{t}-{self.target}" for t in tags]
         return tags
 
 
