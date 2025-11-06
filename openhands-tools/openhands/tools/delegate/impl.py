@@ -99,7 +99,7 @@ class DelegateExecutor(ToolExecutor):
         try:
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
-            parent_visualizer = getattr(parent_conversation, "visualizer", None)
+            parent_visualizer = parent_conversation._visualizer
 
             workspace_path = parent_conversation.state.workspace.working_dir
 
