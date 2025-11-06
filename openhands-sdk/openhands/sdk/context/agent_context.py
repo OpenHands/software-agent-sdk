@@ -1,11 +1,12 @@
 import pathlib
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.skills import (
     Skill,
     SkillKnowledge,
+    load_user_skills,
 )
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
@@ -48,6 +49,13 @@ class AgentContext(BaseModel):
     user_message_suffix: str | None = Field(
         default=None, description="Optional suffix to append to the user's message."
     )
+    load_user_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to automatically load user skills from ~/.openhands/skills/ "
+            "and ~/.openhands/microagents/ (for backward compatibility). "
+        ),
+    )
 
     @field_validator("skills")
     @classmethod
@@ -61,6 +69,29 @@ class AgentContext(BaseModel):
                 raise ValueError(f"Duplicate skill name found: {skill.name}")
             seen_names.add(skill.name)
         return v
+
+    @model_validator(mode="after")
+    def _load_user_skills(self):
+        """Load user skills from home directory if enabled."""
+        if not self.load_user_skills:
+            return self
+
+        try:
+            user_skills = load_user_skills()
+            # Merge user skills with explicit skills, avoiding duplicates
+            existing_names = {skill.name for skill in self.skills}
+            for user_skill in user_skills:
+                if user_skill.name not in existing_names:
+                    self.skills.append(user_skill)
+                else:
+                    logger.warning(
+                        f"Skipping user skill '{user_skill.name}' "
+                        f"(already in explicit skills)"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to load user skills: {str(e)}")
+
+        return self
 
     def get_system_message_suffix(self) -> str | None:
         """Get the system message with repo skill content and custom suffix.

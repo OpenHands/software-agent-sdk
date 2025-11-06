@@ -9,7 +9,7 @@ from openhands.sdk import (
     Agent,
     Conversation,
 )
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 
@@ -27,19 +27,16 @@ llm = LLM(
 )
 
 # Tools
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=BashTool.name,
     ),
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
 ]
 
 # Agent
 agent = Agent(llm=llm, tools=tools)
 conversation = Conversation(agent, workspace=os.getcwd())
-
 
 print("=" * 60)
 print("Pause and Continue Example")
@@ -53,7 +50,7 @@ conversation.send_message(
     "one number per line. After you finish, summarize what you did."
 )
 
-print(f"Initial status: {conversation.state.agent_status}")
+print(f"Initial status: {conversation.state.execution_status}")
 print()
 
 # Start the agent in a background thread
@@ -72,9 +69,8 @@ conversation.pause()
 # Wait for the thread to finish (it will stop when paused)
 thread.join()
 
-print(f"Agent status after pause: {conversation.state.agent_status}")
+print(f"Agent status after pause: {conversation.state.execution_status}")
 print()
-
 
 # Phase 3: Send a new message while paused
 print("Phase 3: Sending a new message while agent is paused...")
@@ -86,12 +82,12 @@ print()
 
 # Phase 4: Resume the agent with .run()
 print("Phase 4: Resuming agent with .run()...")
-print(f"Status before resume: {conversation.state.agent_status}")
+print(f"Status before resume: {conversation.state.execution_status}")
 
 # Resume execution
 conversation.run()
 
-print(f"Final status: {conversation.state.agent_status}")
+print(f"Final status: {conversation.state.execution_status}")
 
 # Report cost
 cost = llm.metrics.accumulated_cost

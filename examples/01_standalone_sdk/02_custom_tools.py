@@ -34,7 +34,6 @@ from openhands.tools.file_editor import FileEditorTool
 
 logger = get_logger(__name__)
 
-
 # --- Action / Observation ---
 
 
@@ -93,8 +92,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         files: set[str] = set()
 
         # grep returns exit code 1 when no matches; treat as empty
-        if result.output.strip():
-            for line in result.output.strip().splitlines():
+        output_text = result.text
+
+        if output_text.strip():
+            for line in output_text.strip().splitlines():
                 matches.append(line)
                 # Expect "path:line:content" — take the file part before first ":"
                 file_path = line.split(":", 1)[0]
@@ -142,7 +143,6 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
 
         return [
             cls(
-                name="grep",
                 description=_GREP_DESCRIPTION,
                 action_type=GrepAction,
                 observation_type=GrepObservation,
@@ -180,11 +180,10 @@ def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
     return [bash_tool, grep_tool]
 
 
-register_tool("FileEditorTool", FileEditorTool)
 register_tool("BashAndGrepToolSet", _make_bash_and_grep_tools)
 
 tools = [
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
     Tool(name="BashAndGrepToolSet"),
 ]
 

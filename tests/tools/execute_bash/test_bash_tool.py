@@ -35,7 +35,7 @@ def test_bash_tool_initialization():
         tool = tools[0]
 
         # Check that the tool has the correct name and properties
-        assert tool.name == "execute_bash"
+        assert tool.name == "bash"
         assert tool.executor is not None
         assert tool.action_type == ExecuteBashAction
 
@@ -48,7 +48,7 @@ def test_bash_tool_with_username():
         tool = tools[0]
 
         # Check that the tool has the correct name and properties
-        assert tool.name == "execute_bash"
+        assert tool.name == "bash"
         assert tool.executor is not None
         assert tool.action_type == ExecuteBashAction
 
@@ -69,7 +69,7 @@ def test_bash_tool_execution():
         # Check the result
         assert result is not None
         assert isinstance(result, ExecuteBashObservation)
-        assert "Hello, World!" in result.output
+        assert "Hello, World!" in result.text
 
 
 def test_bash_tool_working_directory():
@@ -87,7 +87,7 @@ def test_bash_tool_working_directory():
 
         # Check that the working directory is correct
         assert isinstance(result, ExecuteBashObservation)
-        assert temp_dir in result.output
+        assert temp_dir in result.text
 
 
 def test_bash_tool_to_openai_tool():
@@ -102,6 +102,6 @@ def test_bash_tool_to_openai_tool():
 
         # Check the format
         assert openai_tool["type"] == "function"
-        assert openai_tool["function"]["name"] == "execute_bash"
+        assert openai_tool["function"]["name"] == "bash"
         assert "description" in openai_tool["function"]
         assert "parameters" in openai_tool["function"]

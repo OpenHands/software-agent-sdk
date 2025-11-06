@@ -4,7 +4,7 @@ from openhands.sdk import Agent
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool
 
 
 logger = get_logger(__name__)
@@ -90,15 +90,15 @@ def get_plan_headers() -> str:
 
 def register_planning_tools() -> None:
     """Register the planning agent tools."""
-    from openhands.tools.glob import GlobTool
-    from openhands.tools.grep import GrepTool
-    from openhands.tools.planning_file_editor import PlanningFileEditorTool
+    # Tools are now automatically registered when imported
+    from openhands.tools.glob import GlobTool  # noqa: F401
+    from openhands.tools.grep import GrepTool  # noqa: F401
+    from openhands.tools.planning_file_editor import (
+        PlanningFileEditorTool,  # noqa: F401
+    )
 
-    register_tool("GlobTool", GlobTool)
     logger.debug("Tool: GlobTool registered.")
-    register_tool("GrepTool", GrepTool)
     logger.debug("Tool: GrepTool registered.")
-    register_tool("PlanningFileEditorTool", PlanningFileEditorTool)
     logger.debug("Tool: PlanningFileEditorTool registered.")
 
 
@@ -112,10 +112,15 @@ def get_planning_tools() -> list[Tool]:
     """
     register_planning_tools()
 
+    # Import tools to access their name attributes
+    from openhands.tools.glob import GlobTool
+    from openhands.tools.grep import GrepTool
+    from openhands.tools.planning_file_editor import PlanningFileEditorTool
+
     return [
-        Tool(name="GlobTool"),
-        Tool(name="GrepTool"),
-        Tool(name="PlanningFileEditorTool"),
+        Tool(name=GlobTool.name),
+        Tool(name=GrepTool.name),
+        Tool(name=PlanningFileEditorTool.name),
     ]
 
 

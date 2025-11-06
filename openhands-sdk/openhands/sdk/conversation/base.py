@@ -9,6 +9,11 @@ from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
+from openhands.sdk.observability.laminar import (
+    end_active_span,
+    should_enable_observability,
+    start_active_span,
+)
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -18,7 +23,7 @@ from openhands.sdk.workspace.base import BaseWorkspace
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.conversation.state import AgentExecutionStatus
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
 
 
 class ConversationStateProtocol(Protocol):
@@ -35,8 +40,8 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def agent_status(self) -> "AgentExecutionStatus":
-        """The current agent execution status."""
+    def execution_status(self) -> "ConversationExecutionStatus":
+        """The current conversation execution status."""
         ...
 
     @property
@@ -75,6 +80,25 @@ class BaseConversation(ABC):
     Conversations manage the interaction between users and agents, handling message
     exchange, execution control, and state management.
     """
+
+    def __init__(self) -> None:
+        """Initialize the base conversation with span tracking."""
+        self._span_ended = False
+
+    def _start_observability_span(self, session_id: str) -> None:
+        """Start an observability span if observability is enabled.
+
+        Args:
+            session_id: The session ID to associate with the span
+        """
+        if should_enable_observability():
+            start_active_span("conversation", session_id=session_id)
+
+    def _end_observability_span(self) -> None:
+        """End the observability span if it hasn't been ended already."""
+        if not self._span_ended and should_enable_observability():
+            end_active_span()
+            self._span_ended = True
 
     @property
     @abstractmethod

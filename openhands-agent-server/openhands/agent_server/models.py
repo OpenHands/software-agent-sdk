@@ -9,7 +9,10 @@ from pydantic import BaseModel, Field
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
 from openhands.sdk.conversation.secret_source import SecretSource
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -129,7 +132,7 @@ class ConversationPage(BaseModel):
 
 class ConversationResponse(BaseModel):
     conversation_id: str
-    state: AgentExecutionStatus
+    state: ConversationExecutionStatus
 
 
 class ConfirmationResponseRequest(BaseModel):

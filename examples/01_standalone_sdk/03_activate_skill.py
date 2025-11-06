@@ -15,7 +15,7 @@ from openhands.sdk.context import (
     KeywordTrigger,
     Skill,
 )
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool
 from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 
@@ -36,13 +36,11 @@ llm = LLM(
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=BashTool.name,
     ),
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
 ]
 
 agent_context = AgentContext(
@@ -73,10 +71,8 @@ agent_context = AgentContext(
     user_message_suffix="The first character of your response should be 'I'",
 )
 
-
 # Agent
 agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
-
 
 llm_messages = []  # collect raw LLM messages
 
