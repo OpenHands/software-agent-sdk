@@ -7,13 +7,10 @@ on:
 
 permissions:
     contents: read
-    packages: write
 
 jobs:
     publish:
         runs-on: blacksmith-4vcpu-ubuntu-2404
-        outputs:
-            package_version: ${{ steps.extract_version.outputs.version }}
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -22,14 +19,6 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-
-            - name: Extract package version
-              id: extract_version
-              run: |
-                  # Extract version from openhands-sdk/pyproject.toml
-                  VERSION=$(grep -m1 '^version = ' openhands-sdk/pyproject.toml | cut -d'"' -f2)
-                  echo "version=$VERSION" >> $GITHUB_OUTPUT
-                  echo "📦 Package version: $VERSION"
 
             - name: Build and publish all packages
               env:
@@ -56,153 +45,7 @@ jobs:
                     done
                   uv publish --token "$UV_PUBLISH_TOKEN"
                   echo "✅ All packages built and published successfully!"
-
-    build-docker-images:
-        needs: publish
-        uses: ./.github/workflows/server.yml
-        secrets: inherit
-
-    tag-versioned-images:
-        needs: [publish, build-docker-images]
-        runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                variant: [java, python, golang]
-                arch: [amd64, arm64]
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v5
-
-            - name: Log in to GitHub Container Registry
-              uses: docker/login-action@v3
-              with:
-                  registry: ghcr.io
-                  username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v7
-              with:
-                  version: latest
-
-            - name: Generate versioned tags and tag images
-              env:
-                  PACKAGE_VERSION: ${{ needs.publish.outputs.package_version }}
-                  VARIANT: ${{ matrix.variant }}
-                  ARCH: ${{ matrix.arch }}
-              run: |
-                  set -euo pipefail
-
-                  # Extract short SHA
-                  SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
-
-                  # Get base image for this variant
-                  case "$VARIANT" in
-                    java)
-                      BASE_IMAGE="eclipse-temurin:17-jdk"
-                      ;;
-                    python)
-                      BASE_IMAGE="nikolaik/python-nodejs:python3.12-nodejs22"
-                      ;;
-                    golang)
-                      BASE_IMAGE="golang:1.21-bookworm"
-                      ;;
-                  esac
-
-                  # Generate versioned tag using build.py
-                  uv sync --frozen
-                  VERSIONED_TAG=$(uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
-                      --build-ctx-only \
-                      --arch "$ARCH" \
-                      --custom-tags "$VARIANT" \
-                      --base-image "$BASE_IMAGE" \
-                      --versioned-tag 2>&1 | grep "^versioned_tag=" | cut -d= -f2-)
-
-                  # SHA-based tag that was built by server.yml
-                  SHA_TAG="ghcr.io/openhands/agent-server:${SHORT_SHA}-${VARIANT}-${ARCH}"
-
-                  # New versioned tag
-                  VERSION_TAG="ghcr.io/openhands/agent-server:${VERSIONED_TAG}"
-
-                  echo "📦 Tagging image:"
-                  echo "  Source: $SHA_TAG"
-                  echo "  Target: $VERSION_TAG"
-
-                  # Pull SHA-based image
-                  docker pull "$SHA_TAG"
-
-                  # Tag with versioned tag
-                  docker tag "$SHA_TAG" "$VERSION_TAG"
-
-                  # Push versioned tag
-                  docker push "$VERSION_TAG"
-
-                  echo "✅ Successfully tagged and pushed versioned image!"
-
-    create-manifest:
-        needs: [publish, tag-versioned-images]
-        runs-on: ubuntu-latest
-        strategy:
-            matrix:
-                variant: [java, python, golang]
-        steps:
-            - name: Checkout
-              uses: actions/checkout@v5
-
-            - name: Log in to GitHub Container Registry
-              uses: docker/login-action@v3
-              with:
-                  registry: ghcr.io
-                  username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v7
-              with:
-                  version: latest
-
-            - name: Create multi-arch manifest for versioned tags
-              env:
-                  PACKAGE_VERSION: ${{ needs.publish.outputs.package_version }}
-                  VARIANT: ${{ matrix.variant }}
-              run: |
-                  set -euo pipefail
-
-                  # Get base image for this variant
-                  case "$VARIANT" in
-                    java)
-                      BASE_IMAGE="eclipse-temurin:17-jdk"
-                      ;;
-                    python)
-                      BASE_IMAGE="nikolaik/python-nodejs:python3.12-nodejs22"
-                      ;;
-                    golang)
-                      BASE_IMAGE="golang:1.21-bookworm"
-                      ;;
-                  esac
-
-                  # Generate versioned tag (without arch suffix)
-                  uv sync --frozen
-                  VERSIONED_TAG=$(uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
-                      --build-ctx-only \
-                      --custom-tags "$VARIANT" \
-                      --base-image "$BASE_IMAGE" \
-                      --versioned-tag 2>&1 | grep "^versioned_tag=" | cut -d= -f2-)
-
-                  MANIFEST_TAG="ghcr.io/openhands/agent-server:${VERSIONED_TAG}"
-                  AMD64_TAG="${MANIFEST_TAG}-amd64"
-                  ARM64_TAG="${MANIFEST_TAG}-arm64"
-
-                  echo "🔨 Creating multi-arch manifest:"
-                  echo "  Manifest: $MANIFEST_TAG"
-                  echo "  AMD64: $AMD64_TAG"
-                  echo "  ARM64: $ARM64_TAG"
-
-                  # Create and push multi-arch manifest
-                  docker manifest create "$MANIFEST_TAG" \
-                      --amend "$AMD64_TAG" \
-                      --amend "$ARM64_TAG"
-
-                  docker manifest push "$MANIFEST_TAG"
-
-                  echo "✅ Multi-arch manifest created and pushed!"
+                  echo ""
+                  echo "📝 Next steps:"
+                  echo "  1. Create and push a git tag (e.g., git tag v1.0.0 && git push origin v1.0.0)"
+                  echo "  2. This will trigger server.yml to build versioned Docker images"
