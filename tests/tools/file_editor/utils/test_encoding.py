@@ -287,9 +287,9 @@ def test_view_non_utf8_file(temp_non_utf8_file):
     # Parse the result - now using direct access
 
     # Verify the content was read correctly
-    assert result.output is not None and "Привет, мир!" in result.output
-    assert result.output is not None and "Тестовый файл с кириллицей" in result.output
-    assert result.output is not None and "Это тестовая строка" in result.output
+    assert result.text is not None and "Привет, мир!" in result.text
+    assert result.text is not None and "Тестовый файл с кириллицей" in result.text
+    assert result.text is not None and "Это тестовая строка" in result.text
 
 
 def test_view_range_non_utf8_file(temp_non_utf8_file):
@@ -305,11 +305,11 @@ def test_view_range_non_utf8_file(temp_non_utf8_file):
     # Parse the result - now using direct access
 
     # Verify the content was read correctly
-    assert result.output is not None and "Тестовый файл с кириллицей" in result.output
-    assert result.output is not None and "Привет, мир!" in result.output
+    assert result.text is not None and "Тестовый файл с кириллицей" in result.text
+    assert result.text is not None and "Привет, мир!" in result.text
 
     # Verify that line 6 is not included
-    assert result.output is not None and "Это тестовая строка" not in result.output
+    assert result.text is not None and "Это тестовая строка" not in result.text
 
 
 def test_str_replace_non_utf8_file(temp_non_utf8_file):
@@ -326,8 +326,8 @@ def test_str_replace_non_utf8_file(temp_non_utf8_file):
     # Parse the result - now using direct access
 
     # Verify the replacement was successful
-    assert result.output is not None and "Здравствуй, мир!" in result.output
-    assert result.output is not None and "Привет, мир!" not in result.output
+    assert result.text is not None and "Здравствуй, мир!" in result.text
+    assert result.text is not None and "Привет, мир!" not in result.text
 
     # Verify the file was saved with the correct encoding
     with open(temp_non_utf8_file, "rb") as f:
@@ -354,7 +354,7 @@ def test_insert_non_utf8_file(temp_non_utf8_file):
     # Parse the result - now using direct access
 
     # Verify the insertion was successful
-    assert result.output is not None and "Новая переменная" in result.output
+    assert result.text is not None and "Новая переменная" in result.text
 
     # Verify the file was saved with the correct encoding
     with open(temp_non_utf8_file, "rb") as f:
@@ -391,9 +391,7 @@ def test_create_non_utf8_file():
         # Parse the result - now using direct access
 
         # Verify the file was created successfully
-        assert (
-            result.output is not None and "File created successfully" in result.output
-        )
+        assert result.text is not None and "File created successfully" in result.text
 
         # Read the file with cp1251 encoding to verify content
         encoding_manager = EncodingManager()
@@ -433,7 +431,7 @@ def test_undo_edit_non_utf8_file(temp_non_utf8_file):
     # Parse the result - now using direct access
 
     # Verify the undo was successful
-    assert result.output is not None and "undone successfully" in result.output
+    assert result.text is not None and "undone successfully" in result.text
 
     # Verify the original content was restored with the correct encoding
     with open(temp_non_utf8_file, "rb") as f:
@@ -455,7 +453,7 @@ def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
         path=str(temp_non_utf8_file),
     )
     # Parse the result - now using direct access
-    assert result.output is not None and "Привет, мир!" in result.output
+    assert result.text is not None and "Привет, мир!" in result.text
 
     # 2. Replace text
     result = file_editor(
@@ -465,7 +463,7 @@ def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
         new_str="Здравствуй, мир!",
     )
     # Parse the result - now using direct access
-    assert result.output is not None and "Здравствуй, мир!" in result.output
+    assert result.text is not None and "Здравствуй, мир!" in result.text
 
     # 3. Insert text
     result = file_editor(
@@ -475,7 +473,7 @@ def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
         new_str="# Добавленная строка\nboolean_var = True",
     )
     # Parse the result - now using direct access
-    assert result.output is not None and "Добавленная строка" in result.output
+    assert result.text is not None and "Добавленная строка" in result.text
 
     # 4. View specific range
     result = file_editor(
@@ -484,8 +482,8 @@ def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
         view_range=[5, 7],
     )
     # Parse the result - now using direct access
-    assert result.output is not None and "Добавленная строка" in result.output
-    assert result.output is not None and "boolean_var = True" in result.output
+    assert result.text is not None and "Добавленная строка" in result.text
+    assert result.text is not None and "boolean_var = True" in result.text
 
     # 5. Undo the last edit
     result = file_editor(
@@ -493,7 +491,7 @@ def test_complex_workflow_non_utf8_file(temp_non_utf8_file):
         path=str(temp_non_utf8_file),
     )
     # Parse the result - now using direct access
-    assert result.output is not None and "undone successfully" in result.output
+    assert result.text is not None and "undone successfully" in result.text
 
     # 6. Verify the file content after all operations
     with open(temp_non_utf8_file, "rb") as f:
@@ -532,7 +530,7 @@ def test_mixed_encoding_workflow():
             path=path1,
         )
         # Parse the result - now using direct access
-        assert "Текст в кодировке CP1251" in result1.output
+        assert "Текст в кодировке CP1251" in result1.text
 
         # 2. View the UTF-8 file
         result2 = file_editor(
@@ -540,7 +538,7 @@ def test_mixed_encoding_workflow():
             path=path2,
         )
         # Parse the result - now using direct access
-        assert "Текст в кодировке UTF-8" in result2.output
+        assert "Текст в кодировке UTF-8" in result2.text
 
         # 3. Edit the cp1251 file
         result3 = file_editor(
@@ -550,7 +548,7 @@ def test_mixed_encoding_workflow():
             new_str="Измененный текст в CP1251",
         )
         # Parse the result - now using direct access
-        assert "Измененный текст в CP1251" in result3.output
+        assert "Измененный текст в CP1251" in result3.text
 
         # 4. Edit the UTF-8 file
         result4 = file_editor(
@@ -560,7 +558,7 @@ def test_mixed_encoding_workflow():
             new_str="Измененный текст в UTF-8",
         )
         # Parse the result - now using direct access
-        assert "Измененный текст в UTF-8" in result4.output
+        assert "Измененный текст в UTF-8" in result4.text
 
         # 5. Verify both files maintain their original encodings
         with open(path1, "rb") as f:

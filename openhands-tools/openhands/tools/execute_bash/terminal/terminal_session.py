@@ -21,6 +21,7 @@ from openhands.tools.execute_bash.terminal.interface import (
     TerminalSessionBase,
 )
 from openhands.tools.execute_bash.utils.command import (
+n
     escape_bash_special_chars,
     split_bash_commands,
 )
@@ -186,10 +187,10 @@ class TerminalSession(TerminalSessionBase):
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
         self._ready_for_next_command()
-        return ExecuteBashObservation(
-            output=command_output,
+        return ExecuteBashObservation.from_text(
             command=command,
             exit_code=metadata.exit_code if metadata.exit_code != -1 else None,
+            text=command_output,
             metadata=metadata,
         )
 
@@ -221,9 +222,9 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        return ExecuteBashObservation(
-            output=command_output,
+        return ExecuteBashObservation.from_text(
             command=command,
+            text=command_output,
             metadata=metadata,
         )
 
@@ -256,10 +257,9 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-
-        return ExecuteBashObservation(
-            output=command_output,
+        return ExecuteBashObservation.from_text(
             command=command,
+            text=command_output,
             metadata=metadata,
         )
 
@@ -314,27 +314,32 @@ class TerminalSession(TerminalSessionBase):
             TerminalCommandStatus.HARD_TIMEOUT,
         }:
             if command == "":
-                return ExecuteBashObservation(
-                    output="ERROR: No previous running command to retrieve logs from.",
-                    error=True,
+                return ExecuteBashObservation.from_text(
+                    text="No previous running command to retrieve logs from.",
+                    command=command,
+                    is_error=True,
                 )
             if is_input:
-                return ExecuteBashObservation(
-                    output="ERROR: No previous running command to interact with.",
-                    error=True,
+                return ExecuteBashObservation.from_text(
+                    text="No previous running command to interact with.",
+                    command=command,
+                    is_error=True,
                 )
 
         # Check if the command is a single command or multiple commands
         splited_commands = split_bash_commands(command)
         if len(splited_commands) > 1:
-            return ExecuteBashObservation(
-                output=(
-                    f"ERROR: Cannot execute multiple commands at once.\n"
-                    f"Please run each command separately OR chain them into a single "
-                    f"command via && or ;\nProvided commands:\n"
-                    f"{'\n'.join(f'({i + 1}) {cmd}' for i, cmd in enumerate(splited_commands))}"  # noqa: E501
+            commands_list = "\n".join(
+                f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands)
+            )
+            return ExecuteBashObservation.from_text(
+                text=(
+                    "Cannot execute multiple commands at once.\n"
+                    "Please run each command separately OR chain them into a single "
+                    f"command via && or ;\nProvided commands:\n{commands_list}"
                 ),
-                error=True,
+                command=command,
+                is_error=True,
             )
 
         # Get initial state before sending command
@@ -385,10 +390,11 @@ class TerminalSession(TerminalSessionBase):
                 metadata,
                 continue_prefix="[Below is the output of the previous command.]\n",
             )
-            obs = ExecuteBashObservation(
-                output=command_output,
+            obs = ExecuteBashObservation.from_text(
                 command=command,
+                text=command_output,
                 metadata=metadata,
+                is_error=True,
             )
             logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")
             return obs

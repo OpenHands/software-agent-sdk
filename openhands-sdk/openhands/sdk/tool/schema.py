@@ -1,6 +1,6 @@
-from abc import ABC, abstractmethod
+from abc import ABC
 from collections.abc import Sequence
-from typing import Any, ClassVar, TypeVar
+from typing import TYPE_CHECKING, Any, ClassVar, TypeVar
 
 from pydantic import ConfigDict, Field, create_model
 from rich.text import Text
@@ -12,6 +12,9 @@ from openhands.sdk.utils.models import (
 )
 from openhands.sdk.utils.visualize import display_dict
 
+
+if TYPE_CHECKING:
+    from typing import Self
 
 S = TypeVar("S", bound="Schema")
 
@@ -190,23 +193,84 @@ class Action(Schema, ABC):
 class Observation(Schema, ABC):
     """Base schema for output observation."""
 
+    ERROR_MESSAGE_HEADER: ClassVar[str] = "[An error occurred during execution.]\n"
+
+    content: list[TextContent | ImageContent] = Field(
+        default_factory=list,
+        description=(
+            "Content returned from the tool as a list of "
+            "TextContent/ImageContent objects. "
+            "When there is an error, it should be written in this field."
+        ),
+    )
+    is_error: bool = Field(
+        default=False, description="Whether the observation indicates an error"
+    )
+
+    @classmethod
+    def from_text(
+        cls,
+        text: str,
+        is_error: bool = False,
+        **kwargs: Any,
+    ) -> "Self":
+        """Utility to create an Observation from a simple text string.
+
+        Args:
+            text: The text content to include in the observation.
+            is_error: Whether this observation represents an error.
+            **kwargs: Additional fields for the observation subclass.
+
+        Returns:
+            An Observation instance with the text wrapped in a TextContent.
+        """
+        return cls(content=[TextContent(text=text)], is_error=is_error, **kwargs)
+
     @property
-    @abstractmethod
+    def text(self) -> str:
+        """Extract all text content from the observation.
+
+        Returns:
+            Concatenated text from all TextContent items in content.
+        """
+        return "".join(
+            item.text for item in self.content if isinstance(item, TextContent)
+        )
+
+    @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        """Get the observation string to show to the agent."""
+        """
+        Default content formatting for converting observation to LLM readable content.
+        Subclasses can override to provide richer content (e.g., images, diffs).
+        """
+        llm_content: list[TextContent | ImageContent] = []
+
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
+
+        # Add content (now always a list)
+        llm_content.extend(self.content)
+
+        return llm_content
 
     @property
     def visualize(self) -> Text:
-        """Return Rich Text representation of this action.
+        """Return Rich Text representation of this observation.
 
-        This method can be overridden by subclasses to customize visualization.
-        The base implementation displays all action fields systematically.
+        Subclasses can override for custom visualization; by default we show the
+        same text that would be sent to the LLM.
         """
-        content = Text()
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
+
         text_parts = content_to_str(self.to_llm_content)
         if text_parts:
             full_content = "".join(text_parts)
-            content.append(full_content)
+            text.append(full_content)
         else:
-            content.append("[no text content]")
-        return content
+            text.append("[no text content]")
+        return text

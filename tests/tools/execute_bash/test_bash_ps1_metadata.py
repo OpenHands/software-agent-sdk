@@ -1,6 +1,5 @@
 import json
 
-from openhands.sdk import TextContent
 from openhands.tools.execute_bash.constants import (
     CMD_OUTPUT_METADATA_PS1_REGEX,
     CMD_OUTPUT_PS1_BEGIN,
@@ -270,14 +269,19 @@ def test_ps1_metadata_regex_pattern():
 
 def test_cmd_output_observation_properties():
     """Test ExecuteBashObservation class properties"""
+    from openhands.sdk.tool.schema import TextContent
+
     # Test with successful command
     metadata = CmdOutputMetadata(exit_code=0, pid=123)
-    obs = ExecuteBashObservation(
-        command="ls", output="file1\nfile2", exit_code=0, metadata=metadata
+    obs = ExecuteBashObservation.from_text(
+        text="file1\nfile2",
+        command="ls",
+        exit_code=0,
+        metadata=metadata,
     )
     assert obs.command_id == 123
     assert obs.exit_code == 0
-    assert not obs.error
+    assert not obs.is_error
     assert len(obs.to_llm_content) == 1
     assert isinstance(obs.to_llm_content[0], TextContent)
     assert "exit code 0" in obs.to_llm_content[0].text
@@ -287,16 +291,21 @@ def test_cmd_output_observation_properties():
 
     # Test with failed command
     metadata = CmdOutputMetadata(exit_code=1, pid=456)
-    obs = ExecuteBashObservation(
-        command="invalid", output="error", exit_code=1, error=True, metadata=metadata
+    obs = ExecuteBashObservation.from_text(
+        text="Command failed",
+        command="invalid",
+        exit_code=1,
+        is_error=True,
+        metadata=metadata,
     )
     assert obs.command_id == 456
     assert obs.exit_code == 1
-    assert obs.error
-    assert len(obs.to_llm_content) == 1
+    assert obs.is_error
+    assert len(obs.to_llm_content) == 2
     assert isinstance(obs.to_llm_content[0], TextContent)
-    assert "exit code 1" in obs.to_llm_content[0].text
-    assert obs.error
+    assert obs.to_llm_content[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
+    assert isinstance(obs.to_llm_content[1], TextContent)
+    assert "Command failed" in obs.to_llm_content[1].text
 
 
 def test_ps1_metadata_empty_fields():
