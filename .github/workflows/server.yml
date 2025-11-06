@@ -22,6 +22,20 @@ on:
                 description: Target platforms
                 type: string
                 default: linux/amd64,linux/arm64
+    workflow_call:
+        inputs:
+            base_image:
+                description: Base runtime image
+                type: string
+                default: nikolaik/python-nodejs:python3.12-nodejs22-slim
+            image:
+                description: GHCR image name
+                type: string
+                default: ghcr.io/openhands/agent-server
+            platforms:
+                description: Target platforms
+                type: string
+                default: linux/amd64,linux/arm64
 
 permissions:
     contents: read

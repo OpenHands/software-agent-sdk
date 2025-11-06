@@ -111,18 +111,15 @@ def _sanitize_branch(ref: str) -> str:
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
-def _git_info_for_repo(repo_dir: Path | None = None) -> tuple[str, str, str]:
+def _git_info() -> tuple[str, str, str]:
     """
-    Get git info (ref, sha, short_sha) for a specific repo directory.
+    Get git info (ref, sha, short_sha) for the current working directory.
     Falls back to GITHUB_* env vars if available.
     """
     git_sha = os.environ.get("GITHUB_SHA")
     if not git_sha:
         try:
-            cmd = ["git", "rev-parse", "--verify", "HEAD"]
-            if repo_dir:
-                cmd = ["git", "-C", str(repo_dir), "rev-parse", "--verify", "HEAD"]
-            git_sha = _run(cmd).stdout.strip()
+            git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
         except subprocess.CalledProcessError:
             git_sha = "unknown"
     short_sha = git_sha[:7] if git_sha != "unknown" else "unknown"
@@ -130,52 +127,38 @@ def _git_info_for_repo(repo_dir: Path | None = None) -> tuple[str, str, str]:
     git_ref = os.environ.get("GITHUB_REF")
     if not git_ref:
         try:
-            cmd = ["git", "symbolic-ref", "-q", "--short", "HEAD"]
-            if repo_dir:
-                cmd = [
-                    "git",
-                    "-C",
-                    str(repo_dir),
-                    "symbolic-ref",
-                    "-q",
-                    "--short",
-                    "HEAD",
-                ]
-            git_ref = _run(cmd).stdout.strip()
+            git_ref = _run(
+                ["git", "symbolic-ref", "-q", "--short", "HEAD"]
+            ).stdout.strip()
         except subprocess.CalledProcessError:
             git_ref = "unknown"
     return git_ref, git_sha, short_sha
 
 
-def _sdk_version() -> str:
+def _package_version() -> str:
     """
-    Get SDK commit hash from the SDK repo itself.
-    This ensures we always use the correct SDK version regardless of CWD.
+    Get the semantic version from the openhands-sdk package.
+    This is used for versioned tags during releases.
     """
-    # Try to find SDK repo root
-    try:
-        sdk_root = _default_sdk_project_root()
-        _, sha, _ = _git_info_for_repo(sdk_root)
-        return sha
-    except Exception:
-        pass
-
-    # Fallback to package version if we can't determine git info
     try:
         from importlib.metadata import version
 
         return version("openhands-sdk")
     except Exception:
+        # If package is not installed, try reading from pyproject.toml
+        try:
+            sdk_root = _default_sdk_project_root()
+            pyproject_path = sdk_root / "openhands-sdk" / "pyproject.toml"
+            if pyproject_path.exists():
+                cfg = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+                return cfg.get("project", {}).get("version", "unknown")
+        except Exception:
+            pass
         return "unknown"
 
 
-def _git_info() -> tuple[str, str, str]:
-    """Get git info for the CWD (used for branch-based cache keys)."""
-    return _git_info_for_repo(None)
-
-
 GIT_REF, GIT_SHA, SHORT_SHA = _git_info()
-SDK_VERSION = _sdk_version()
+PACKAGE_VERSION = _package_version()
 
 
 # --- options ---
@@ -301,8 +284,11 @@ class BuildOptions(BaseModel):
         description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
     )
     include_versioned_tag: bool = Field(
-        default=True,
-        description="Whether to include the versioned tag in all_tags output",
+        default=False,
+        description=(
+            "Whether to include the versioned tag (e.g., v1.0.0_...) in all_tags "
+            "output. Should only be True for release builds."
+        ),
     )
 
     @field_validator("target")
@@ -322,7 +308,7 @@ class BuildOptions(BaseModel):
 
     @property
     def versioned_tag(self) -> str:
-        return f"v{SDK_VERSION}_{self.base_image_slug}_{self.target}"
+        return f"v{PACKAGE_VERSION}_{self.base_image_slug}_{self.target}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
@@ -368,16 +354,15 @@ class BuildOptions(BaseModel):
     def all_tags(self) -> list[str]:
         tags: list[str] = []
         arch_suffix = f"-{self.arch}" if self.arch else ""
-        # Use SDK_VERSION (respects override) for commit-based tags
-        short_version = SDK_VERSION[:7] if len(SDK_VERSION) >= 7 else SDK_VERSION
 
+        # Use git commit SHA for commit-based tags
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{short_version}-{t}{arch_suffix}")
+            tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
 
-        # Only include versioned tag if requested
+        # Only include versioned tag if requested (for releases)
         if self.include_versioned_tag:
             tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
 
@@ -563,7 +548,10 @@ def build(opts: BuildOptions) -> list[str]:
         f"custom_tags='{opts.custom_tags}' from base='{opts.base_image}' "
         f"for platforms='{opts.platforms if push else 'local-arch'}'"
     )
-    logger.info(f"[build] Git ref='{GIT_REF}' sha='{GIT_SHA}' version='{SDK_VERSION}'")
+    logger.info(
+        f"[build] Git ref='{GIT_REF}' sha='{GIT_SHA}' "
+        f"package_version='{PACKAGE_VERSION}'"
+    )
     logger.info(f"[build] Cache tag: {cache_tag}")
 
     try:
@@ -653,6 +641,14 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Only create the clean build context directory and print its path.",
     )
+    parser.add_argument(
+        "--versioned-tag",
+        action="store_true",
+        help=(
+            "Include versioned tag (e.g., v1.0.0_...) in output. "
+            "Should only be used for release builds."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -680,6 +676,7 @@ def main(argv: list[str]) -> int:
             push=None,  # Not relevant for build-ctx-only
             sdk_project_root=sdk_project_root,
             arch=args.arch or None,
+            include_versioned_tag=args.versioned_tag,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -722,6 +719,7 @@ def main(argv: list[str]) -> int:
         push=push,
         sdk_project_root=sdk_project_root,
         arch=args.arch or None,
+        include_versioned_tag=args.versioned_tag,
     )
     tags = build(opts)
 
