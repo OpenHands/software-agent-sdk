@@ -20,6 +20,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
@@ -93,6 +94,12 @@ class Agent(AgentBase):
                 ],
             )
             on_event(event)
+
+        # Always emit SecurityAnalyzerConfigurationEvent to track analyzer status
+        security_analyzer_event = SecurityAnalyzerConfigurationEvent.from_analyzer(
+            analyzer=self.security_analyzer
+        )
+        on_event(security_analyzer_event)
 
     def _execute_actions(
         self,

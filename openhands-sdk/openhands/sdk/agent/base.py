@@ -11,7 +11,6 @@ import openhands.sdk.security.analyzer as analyzer
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
-from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
@@ -186,7 +185,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def init_state(
         self,
         state: "ConversationState",
-        on_event: "ConversationCallbackType",
+        on_event: "ConversationCallbackType",  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -196,12 +195,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
         self._initialize(state)
-
-        # Always emit SecurityAnalyzerConfigurationEvent to track analyzer status
-        security_analyzer_event = SecurityAnalyzerConfigurationEvent.from_analyzer(
-            analyzer=self.security_analyzer
-        )
-        on_event(security_analyzer_event)
 
     def _initialize(self, state: "ConversationState"):
         """Create an AgentBase instance from an AgentSpec."""
