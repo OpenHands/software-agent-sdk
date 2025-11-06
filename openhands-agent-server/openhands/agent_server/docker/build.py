@@ -111,25 +111,18 @@ def _sanitize_branch(ref: str) -> str:
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
-def _sdk_version() -> str:
+def _git_info_for_repo(repo_dir: Path | None = None) -> tuple[str, str, str]:
     """
-    Get SDK version or commit hash.
-    Respects SDK_VERSION_OVERRIDE env var for submodule/vendored contexts.
+    Get git info (ref, sha, short_sha) for a specific repo directory.
+    Falls back to GITHUB_* env vars if available.
     """
-    override = os.environ.get("SDK_VERSION_OVERRIDE")
-    if override:
-        return override
-
-    from importlib.metadata import version
-
-    return version("openhands-sdk")
-
-
-def _git_info() -> tuple[str, str, str]:
     git_sha = os.environ.get("GITHUB_SHA")
     if not git_sha:
         try:
-            git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
+            cmd = ["git", "rev-parse", "--verify", "HEAD"]
+            if repo_dir:
+                cmd = ["git", "-C", str(repo_dir), "rev-parse", "--verify", "HEAD"]
+            git_sha = _run(cmd).stdout.strip()
         except subprocess.CalledProcessError:
             git_sha = "unknown"
     short_sha = git_sha[:7] if git_sha != "unknown" else "unknown"
@@ -137,12 +130,48 @@ def _git_info() -> tuple[str, str, str]:
     git_ref = os.environ.get("GITHUB_REF")
     if not git_ref:
         try:
-            git_ref = _run(
-                ["git", "symbolic-ref", "-q", "--short", "HEAD"]
-            ).stdout.strip()
+            cmd = ["git", "symbolic-ref", "-q", "--short", "HEAD"]
+            if repo_dir:
+                cmd = [
+                    "git",
+                    "-C",
+                    str(repo_dir),
+                    "symbolic-ref",
+                    "-q",
+                    "--short",
+                    "HEAD",
+                ]
+            git_ref = _run(cmd).stdout.strip()
         except subprocess.CalledProcessError:
             git_ref = "unknown"
     return git_ref, git_sha, short_sha
+
+
+def _sdk_version() -> str:
+    """
+    Get SDK commit hash from the SDK repo itself.
+    This ensures we always use the correct SDK version regardless of CWD.
+    """
+    # Try to find SDK repo root
+    try:
+        sdk_root = _default_sdk_project_root()
+        _, sha, _ = _git_info_for_repo(sdk_root)
+        return sha
+    except Exception:
+        pass
+
+    # Fallback to package version if we can't determine git info
+    try:
+        from importlib.metadata import version
+
+        return version("openhands-sdk")
+    except Exception:
+        return "unknown"
+
+
+def _git_info() -> tuple[str, str, str]:
+    """Get git info for the CWD (used for branch-based cache keys)."""
+    return _git_info_for_repo(None)
 
 
 GIT_REF, GIT_SHA, SHORT_SHA = _git_info()
