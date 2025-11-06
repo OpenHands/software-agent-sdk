@@ -5,24 +5,10 @@ on:
     push:
         branches: [main]
         tags:
-            - v*    # Trigger on version tags (e.g., v1.0.0, v1.0.0-beta.1)
+            - '*'  # Trigger on any tag (e.g., 1.0.0, 1.0.0a5, build-docker)
     pull_request:
         branches: [main]
     workflow_dispatch:
-        inputs:
-            base_image:
-                description: Base runtime image
-                type: string
-                default: nikolaik/python-nodejs:python3.12-nodejs22-slim
-            image:
-                description: GHCR image name
-                type: string
-                default: ghcr.io/openhands/agent-server
-            platforms:
-                description: Target platforms
-                type: string
-                default: linux/amd64,linux/arm64
-    workflow_call:
         inputs:
             base_image:
                 description: Base runtime image
