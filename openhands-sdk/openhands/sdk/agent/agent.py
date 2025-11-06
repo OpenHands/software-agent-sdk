@@ -376,6 +376,9 @@ class Agent(AgentBase):
         # Validate arguments
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
+            arguments = json.loads(tool_call.arguments)
+
+            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
             security_risk = self._extract_security_risk(arguments, tool.name)
             assert "security_risk" not in arguments, (
