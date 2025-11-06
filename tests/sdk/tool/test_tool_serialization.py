@@ -9,10 +9,10 @@ from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.tool.builtins import FinishTool, ThinkTool
 
 
-def test_tool_serialization_deserialization() -> None:
+def test_tool_serialization_deserialization(mock_conversation_state) -> None:
     """Test that Tool supports polymorphic JSON serialization/deserialization."""
     # Use FinishTool which is a simple built-in tool
-    tool_instances = FinishTool.create()
+    tool_instances = FinishTool.create(mock_conversation_state)
     tool = tool_instances[0]
 
     # Serialize to JSON
@@ -26,14 +26,16 @@ def test_tool_serialization_deserialization() -> None:
     assert tool.model_dump() == deserialized_tool.model_dump()
 
 
-def test_tool_supports_polymorphic_field_json_serialization() -> None:
+def test_tool_supports_polymorphic_field_json_serialization(
+    mock_conversation_state,
+) -> None:
     """Test that Tool supports polymorphic JSON serialization when used as a field."""
 
     class Container(BaseModel):
         tool: ToolDefinition
 
     # Create container with tool
-    tool_instances = FinishTool.create()
+    tool_instances = FinishTool.create(mock_conversation_state)
     tool = tool_instances[0]
     container = Container(tool=tool)
 
@@ -48,16 +50,18 @@ def test_tool_supports_polymorphic_field_json_serialization() -> None:
     assert tool.model_dump() == deserialized_container.tool.model_dump()
 
 
-def test_tool_supports_nested_polymorphic_json_serialization() -> None:
+def test_tool_supports_nested_polymorphic_json_serialization(
+    mock_conversation_state,
+) -> None:
     """Test that Tool supports nested polymorphic JSON serialization."""
 
     class NestedContainer(BaseModel):
         tools: list[ToolDefinition]
 
     # Create container with multiple tools
-    tool1_instances = FinishTool.create()
+    tool1_instances = FinishTool.create(mock_conversation_state)
     tool1 = tool1_instances[0]
-    tool2_instances = ThinkTool.create()
+    tool2_instances = ThinkTool.create(mock_conversation_state)
     tool2 = tool2_instances[0]
     container = NestedContainer(tools=[tool1, tool2])
 
@@ -75,10 +79,10 @@ def test_tool_supports_nested_polymorphic_json_serialization() -> None:
     assert tool2.model_dump() == deserialized_container.tools[1].model_dump()
 
 
-def test_tool_model_validate_json_dict() -> None:
+def test_tool_model_validate_json_dict(mock_conversation_state) -> None:
     """Test that Tool.model_validate works with dict from JSON."""
     # Create tool
-    tool_instances = FinishTool.create()
+    tool_instances = FinishTool.create(mock_conversation_state)
     tool = tool_instances[0]
 
     # Serialize to JSON, then parse to dict
@@ -109,10 +113,10 @@ def test_tool_no_fallback_behavior_json() -> None:
         ToolDefinition.model_validate_json(tool_json)
 
 
-def test_tool_type_annotation_works_json() -> None:
+def test_tool_type_annotation_works_json(mock_conversation_state) -> None:
     """Test that ToolType annotation works correctly with JSON."""
     # Create tool
-    tool_instances = FinishTool.create()
+    tool_instances = FinishTool.create(mock_conversation_state)
     tool = tool_instances[0]
 
     # Use ToolType annotation
@@ -132,10 +136,10 @@ def test_tool_type_annotation_works_json() -> None:
     assert tool.model_dump() == deserialized_model.tool.model_dump()
 
 
-def test_tool_kind_field_json() -> None:
+def test_tool_kind_field_json(mock_conversation_state) -> None:
     """Test Tool kind field is correctly set and preserved through JSON."""
     # Create tool
-    tool_instances = FinishTool.create()
+    tool_instances = FinishTool.create(mock_conversation_state)
     tool = tool_instances[0]
 
     # Check kind field

@@ -11,6 +11,7 @@ from openhands.sdk import (
     Action,
     Agent,
     Conversation,
+    ConversationState,
     Event,
     ImageContent,
     LLMConvertibleEvent,
@@ -125,7 +126,10 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
 
     @classmethod
     def create(
-        cls, conv_state, bash_executor: BashExecutor | None = None
+        cls,
+        conv_state: ConversationState,
+        bash_executor: BashExecutor | None = None,
+        **kwargs,  # noqa: ARG003
     ) -> Sequence[ToolDefinition]:
         """Create GrepTool instance with a GrepExecutor.
 

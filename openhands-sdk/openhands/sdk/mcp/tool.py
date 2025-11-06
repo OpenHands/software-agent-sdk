@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation import LocalConversation
+    from openhands.sdk.conversation import ConversationState, LocalConversation
 
 import mcp.types
 from litellm import ChatCompletionToolParam
@@ -194,8 +194,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     @classmethod
     def create(
         cls,
+        conv_state: "ConversationState",  # noqa: ARG003
+        *,
         mcp_tool: mcp.types.Tool,
         mcp_client: MCPClient,
+        **kwargs,  # noqa: ARG003
     ) -> Sequence["MCPToolDefinition"]:
         try:
             annotations = (

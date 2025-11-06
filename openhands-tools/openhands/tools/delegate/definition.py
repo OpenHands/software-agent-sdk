@@ -76,6 +76,7 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         cls,
         conv_state: "ConversationState",
         max_children: int = 5,
+        **kwargs,  # noqa: ARG003
     ) -> Sequence["DelegateTool"]:
         """Initialize DelegateTool with a DelegateExecutor.
 

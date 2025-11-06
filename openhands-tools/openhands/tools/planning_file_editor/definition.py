@@ -62,6 +62,7 @@ class PlanningFileEditorTool(
     def create(
         cls,
         conv_state: "ConversationState",
+        **kwargs,  # noqa: ARG003
     ) -> Sequence["PlanningFileEditorTool"]:
         """Initialize PlanningFileEditorTool.
 

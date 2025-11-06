@@ -8,18 +8,19 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
-def _make_tool_with_schema(schema: dict):
+def _make_tool_with_schema(conv_state, schema: dict):
     mcp_tool = mcp.types.Tool(
         name="fetch",
         description="Fetch a URL",
         inputSchema=schema,
     )
     client = Mock(spec=MCPClient)
-    return MCPToolDefinition.create(mcp_tool, client)[0]
+    return MCPToolDefinition.create(conv_state, mcp_tool=mcp_tool, mcp_client=client)[0]
 
 
-def test_mcp_action_from_arguments_validates_and_sanitizes():
+def test_mcp_action_from_arguments_validates_and_sanitizes(mock_conversation_state):
     tool = _make_tool_with_schema(
+        mock_conversation_state,
         {
             "type": "object",
             "properties": {
@@ -27,7 +28,7 @@ def test_mcp_action_from_arguments_validates_and_sanitizes():
                 "timeout": {"type": "number"},
             },
             "required": ["url"],
-        }
+        },
     )
 
     # includes a None that should be dropped
@@ -39,15 +40,16 @@ def test_mcp_action_from_arguments_validates_and_sanitizes():
     assert action.data == {"url": "https://example.com"}
 
 
-def test_mcp_action_from_arguments_raises_on_invalid():
+def test_mcp_action_from_arguments_raises_on_invalid(mock_conversation_state):
     tool = _make_tool_with_schema(
+        mock_conversation_state,
         {
             "type": "object",
             "properties": {
                 "url": {"type": "string"},
             },
             "required": ["url"],
-        }
+        },
     )
 
     # missing required url

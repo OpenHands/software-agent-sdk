@@ -195,6 +195,7 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
     def create(
         cls,
         conv_state: "ConversationState",
+        **kwargs,  # noqa: ARG003
     ) -> Sequence["FileEditorTool"]:
         """Initialize FileEditorTool with a FileEditorExecutor.
 

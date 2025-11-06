@@ -401,7 +401,11 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
     """A ToolDefinition subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
 
     @classmethod
-    def create(cls, conv_state: "ConversationState") -> Sequence["TaskTrackerTool"]:
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        **kwargs,  # noqa: ARG003
+    ) -> Sequence["TaskTrackerTool"]:
         """Initialize TaskTrackerTool with a TaskTrackerExecutor.
 
         Args:

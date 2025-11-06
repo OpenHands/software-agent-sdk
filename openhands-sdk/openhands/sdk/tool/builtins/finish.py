@@ -72,13 +72,13 @@ class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
     @classmethod
     def create(
         cls,
-        conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        conv_state: "ConversationState",  # noqa: ARG003
         **params,
     ) -> Sequence[Self]:
         """Create FinishTool instance.
 
         Args:
-            conv_state: Optional conversation state (not used by FinishTool).
+            conv_state: Conversation state (not used by FinishTool).
             **params: Additional parameters (none supported).
 
         Returns:

@@ -31,13 +31,17 @@ def create_mock_mcp_tool(name: str) -> mcp.types.Tool:
     )
 
 
-def test_mcp_tool_json_serialization_deserialization() -> None:
+def test_mcp_tool_json_serialization_deserialization(
+    mock_conversation_state,
+) -> None:
     # Create mock MCP tool and client
     mock_mcp_tool = create_mock_mcp_tool(
         "test_mcp_tool_json_serialization_deserialization"
     )
     mock_client = Mock(spec=MCPClient)
-    tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mock_mcp_tool, mcp_client=mock_client
+    )
     mcp_tool = tools[0]  # Extract single tool from sequence
 
     tool_json = mcp_tool.model_dump_json()
@@ -47,14 +51,16 @@ def test_mcp_tool_json_serialization_deserialization() -> None:
     assert deserialized_tool.model_dump() == mcp_tool.model_dump()
 
 
-def test_mcp_tool_polymorphic_behavior() -> None:
+def test_mcp_tool_polymorphic_behavior(mock_conversation_state) -> None:
     """Test MCPTool polymorphic behavior using Tool base class."""
     # Create mock MCP tool and client
     mock_mcp_tool = create_mock_mcp_tool("test_mcp_tool_polymorphic_behavior")
     mock_client = Mock(spec=MCPClient)
 
     # Create MCPTool instance
-    tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mock_mcp_tool, mcp_client=mock_client
+    )
     mcp_tool = tools[0]  # Extract single tool from sequence
 
     # Should be instance of ToolDefinition
@@ -67,14 +73,16 @@ def test_mcp_tool_polymorphic_behavior() -> None:
     assert hasattr(mcp_tool, "mcp_tool")
 
 
-def test_mcp_tool_kind_field() -> None:
+def test_mcp_tool_kind_field(mock_conversation_state) -> None:
     """Test that MCPTool kind field is correctly set."""
     # Create mock MCP tool and client
     mock_mcp_tool = create_mock_mcp_tool("test_mcp_tool_kind_field")
     mock_client = Mock(spec=MCPClient)
 
     # Create MCPTool instance
-    tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mock_mcp_tool, mcp_client=mock_client
+    )
     mcp_tool = tools[0]  # Extract single tool from sequence
 
     # Check kind field
@@ -108,7 +116,7 @@ def test_mcp_tool_fallback_behavior() -> None:
     )
 
 
-def test_mcp_tool_essential_properties() -> None:
+def test_mcp_tool_essential_properties(mock_conversation_state) -> None:
     """Test that MCPTool maintains essential properties after creation."""
     # Create mock MCP tool with specific properties
     mock_mcp_tool = mcp.types.Tool(
@@ -123,7 +131,9 @@ def test_mcp_tool_essential_properties() -> None:
     mock_client = Mock(spec=MCPClient)
 
     # Create MCPTool instance
-    tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mock_mcp_tool, mcp_client=mock_client
+    )
     mcp_tool = tools[0]  # Extract single tool from sequence
 
     # Verify essential properties are preserved

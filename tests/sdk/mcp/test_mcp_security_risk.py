@@ -43,7 +43,7 @@ class MockMCPClient(MCPClient):
         pass
 
 
-def test_mcp_tool_to_openai_with_security_risk():
+def test_mcp_tool_to_openai_with_security_risk(mock_conversation_state):
     """Test that MCP tool schema includes security_risk field correctly.
 
     This test reproduces the bug where MCP tools with security_risk enabled
@@ -62,7 +62,9 @@ def test_mcp_tool_to_openai_with_security_risk():
     )
 
     mock_client = MockMCPClient()
-    tools = MCPToolDefinition.create(mcp_tool=mcp_tool_def, mcp_client=mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mcp_tool_def, mcp_client=mock_client
+    )
     tool = tools[0]
 
     # Generate OpenAI tool schema WITH security risk prediction
@@ -94,7 +96,7 @@ def test_mcp_tool_to_openai_with_security_risk():
     )
 
 
-def test_mcp_tool_action_from_arguments_with_security_risk():
+def test_mcp_tool_action_from_arguments_with_security_risk(mock_conversation_state):
     """Test that action_from_arguments works correctly with security_risk popped.
 
     This test simulates what happens in Agent._get_action_event where
@@ -112,7 +114,9 @@ def test_mcp_tool_action_from_arguments_with_security_risk():
     )
 
     mock_client = MockMCPClient()
-    tools = MCPToolDefinition.create(mcp_tool=mcp_tool_def, mcp_client=mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mcp_tool_def, mcp_client=mock_client
+    )
     tool = tools[0]
 
     # Simulate LLM providing arguments with security_risk
@@ -132,7 +136,7 @@ def test_mcp_tool_action_from_arguments_with_security_risk():
     assert action.data == {"url": "https://google.com"}
 
 
-def test_mcp_tool_validates_correctly_after_security_risk_pop():
+def test_mcp_tool_validates_correctly_after_security_risk_pop(mock_conversation_state):
     """Test that MCP tool validation works after security_risk is popped.
 
     This is the full integration test that reproduces the bug scenario:
@@ -153,7 +157,9 @@ def test_mcp_tool_validates_correctly_after_security_risk_pop():
     )
 
     mock_client = MockMCPClient()
-    tools = MCPToolDefinition.create(mcp_tool=mcp_tool_def, mcp_client=mock_client)
+    tools = MCPToolDefinition.create(
+        mock_conversation_state, mcp_tool=mcp_tool_def, mcp_client=mock_client
+    )
     tool = tools[0]
 
     # Simulate what Agent does:

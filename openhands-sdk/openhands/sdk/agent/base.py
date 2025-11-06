@@ -208,7 +208,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Add MCP tools if configured
         if self.mcp_config:
-            mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
+            mcp_tools = create_mcp_tools(state, self.mcp_config, timeout=30)
             tools.extend(mcp_tools)
 
         logger.info(

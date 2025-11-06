@@ -10,12 +10,12 @@ from openhands.sdk.mcp import create_mcp_tools
 
 
 @pytest.fixture
-def fetch_tool():
+def fetch_tool(mock_conversation_state):
     """Create a real MCP fetch tool using the mcp-server-fetch package."""
     mcp_config = {
         "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     }
-    tools = create_mcp_tools(mcp_config)
+    tools = create_mcp_tools(mock_conversation_state, mcp_config)
     assert len(tools) == 1
     return tools[0]
 

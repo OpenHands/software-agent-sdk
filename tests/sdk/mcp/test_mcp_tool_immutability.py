@@ -21,9 +21,11 @@ class MockMCPClient(MCPClient):
 class TestMCPToolImmutability:
     """Test suite for MCPTool immutability features."""
 
-    def setup_method(self):
+    @pytest.fixture(autouse=True)
+    def setup(self, mock_conversation_state):
         """Set up test environment."""
         self.mock_client: MockMCPClient = MockMCPClient()
+        self.mock_conversation_state = mock_conversation_state
 
         # Create a mock MCP tool
         self.mock_mcp_tool: Mock = MagicMock(spec=mcp.types.Tool)
@@ -37,7 +39,9 @@ class TestMCPToolImmutability:
         self.mock_mcp_tool.meta = {"version": "1.0"}
 
         tools = MCPToolDefinition.create(
-            mcp_tool=self.mock_mcp_tool, mcp_client=self.mock_client
+            self.mock_conversation_state,
+            mcp_tool=self.mock_mcp_tool,
+            mcp_client=self.mock_client,
         )
         self.tool: MCPToolDefinition = tools[0]  # Extract single tool from sequence
 
@@ -128,7 +132,9 @@ class TestMCPToolImmutability:
         mock_tool2.meta = None
 
         tools2 = MCPToolDefinition.create(
-            mcp_tool=mock_tool2, mcp_client=self.mock_client
+            self.mock_conversation_state,
+            mcp_tool=mock_tool2,
+            mcp_client=self.mock_client,
         )
         tool2 = tools2[0]  # Extract single tool from sequence
 

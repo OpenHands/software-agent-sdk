@@ -70,6 +70,7 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
     def create(
         cls,
         conv_state: "ConversationState",
+        **kwargs,  # noqa: ARG003
     ) -> Sequence["GrepTool"]:
         """Initialize GrepTool with a GrepExecutor.
 

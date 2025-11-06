@@ -1,6 +1,7 @@
 """Utility functions for MCP integration."""
 
 import logging
+from typing import TYPE_CHECKING
 
 import mcp.types
 from fastmcp.client.logging import LogMessage
@@ -9,6 +10,10 @@ from fastmcp.mcp_config import MCPConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import MCPClient, MCPToolDefinition
 from openhands.sdk.tool.tool import ToolDefinition
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import ConversationState
 
 
 logger = get_logger(__name__)
@@ -30,7 +35,9 @@ async def log_handler(message: LogMessage):
     logger.log(level, msg, extra=extra)
 
 
-async def _list_tools(client: MCPClient) -> list[ToolDefinition]:
+async def _list_tools(
+    conv_state: "ConversationState", client: MCPClient
+) -> list[ToolDefinition]:
     """List tools from an MCP client."""
     tools: list[ToolDefinition] = []
 
@@ -39,7 +46,7 @@ async def _list_tools(client: MCPClient) -> list[ToolDefinition]:
         mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
         for mcp_tool in mcp_type_tools:
             tool_sequence = MCPToolDefinition.create(
-                mcp_tool=mcp_tool, mcp_client=client
+                conv_state=conv_state, mcp_tool=mcp_tool, mcp_client=client
             )
             tools.extend(tool_sequence)  # Flatten sequence into list
     assert not client.is_connected(), (
@@ -49,6 +56,7 @@ async def _list_tools(client: MCPClient) -> list[ToolDefinition]:
 
 
 def create_mcp_tools(
+    conv_state: "ConversationState",
     config: dict | MCPConfig,
     timeout: float = 30.0,
 ) -> list[MCPToolDefinition]:
@@ -57,7 +65,9 @@ def create_mcp_tools(
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
     client = MCPClient(config, log_handler=log_handler)
-    tools = client.call_async_from_sync(_list_tools, timeout=timeout, client=client)
+    tools = client.call_async_from_sync(
+        _list_tools, timeout=timeout, conv_state=conv_state, client=client
+    )
 
     logger.info(f"Created {len(tools)} MCP tools: {[t.name for t in tools]}")
     return tools

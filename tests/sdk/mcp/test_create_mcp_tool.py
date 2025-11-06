@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 from openhands.sdk.mcp import create_mcp_tools
 
 
-def test_mock_create_mcp_tools_empty_config():
+def test_mock_create_mcp_tools_empty_config(mock_conversation_state):
     """Test creating MCP tools with empty configuration."""
     config = {}
 
@@ -17,12 +17,12 @@ def test_mock_create_mcp_tools_empty_config():
         # Mock call_async_from_sync to return empty list
         mock_client.call_async_from_sync.return_value = []
 
-        tools = create_mcp_tools(config)
+        tools = create_mcp_tools(mock_conversation_state, config)
 
         assert len(tools) == 0
 
 
-def test_mock_create_mcp_tools_stdio_server():
+def test_mock_create_mcp_tools_stdio_server(mock_conversation_state):
     """Test creating MCP tools with stdio server configuration."""
     config = {
         "mcpServers": {
@@ -48,13 +48,13 @@ def test_mock_create_mcp_tools_stdio_server():
         # Mock call_async_from_sync to return the tools
         mock_client.call_async_from_sync.return_value = [mock_tool]
 
-        tools = create_mcp_tools(config)
+        tools = create_mcp_tools(mock_conversation_state, config)
 
         assert len(tools) == 1
         assert tools[0] == mock_tool
 
 
-def test_mock_create_mcp_tools_http_server():
+def test_mock_create_mcp_tools_http_server(mock_conversation_state):
     """Test creating MCP tools with HTTP server configuration."""
     config = {
         "mcpServers": {
@@ -79,13 +79,13 @@ def test_mock_create_mcp_tools_http_server():
         # Mock call_async_from_sync to return the tools
         mock_client.call_async_from_sync.return_value = [mock_tool]
 
-        tools = create_mcp_tools(config)
+        tools = create_mcp_tools(mock_conversation_state, config)
 
         assert len(tools) == 1
         assert tools[0] == mock_tool
 
 
-def test_mock_create_mcp_tools_mixed_servers():
+def test_mock_create_mcp_tools_mixed_servers(mock_conversation_state):
     """Test creating MCP tools with mixed server configurations."""
     config = {
         "mcpServers": {
@@ -115,14 +115,14 @@ def test_mock_create_mcp_tools_mixed_servers():
         # Mock call_async_from_sync to return the tools
         mock_client.call_async_from_sync.return_value = [mock_tool1, mock_tool2]
 
-        tools = create_mcp_tools(config)
+        tools = create_mcp_tools(mock_conversation_state, config)
 
         assert len(tools) == 2
         assert tools[0] == mock_tool1
         assert tools[1] == mock_tool2
 
 
-def test_mock_create_mcp_tools_with_timeout():
+def test_mock_create_mcp_tools_with_timeout(mock_conversation_state):
     """Test creating MCP tools with custom timeout."""
     config = {
         "mcpServers": {
@@ -142,7 +142,7 @@ def test_mock_create_mcp_tools_with_timeout():
         # Mock call_async_from_sync to return empty list
         mock_client.call_async_from_sync.return_value = []
 
-        tools = create_mcp_tools(config, timeout=60.0)
+        tools = create_mcp_tools(mock_conversation_state, config, timeout=60.0)
 
         # Verify timeout was passed to call_async_from_sync
         mock_client.call_async_from_sync.assert_called_once()
@@ -152,7 +152,7 @@ def test_mock_create_mcp_tools_with_timeout():
         assert len(tools) == 0
 
 
-def test_mock_create_mcp_tools_connection_error():
+def test_mock_create_mcp_tools_connection_error(mock_conversation_state):
     """Test creating MCP tools with connection error."""
     config = {
         "mcpServers": {
@@ -173,12 +173,12 @@ def test_mock_create_mcp_tools_connection_error():
         mock_client.call_async_from_sync.return_value = []
 
         # Should not raise exception, but return empty list
-        tools = create_mcp_tools(config)
+        tools = create_mcp_tools(mock_conversation_state, config)
 
         assert len(tools) == 0
 
 
-def test_mock_create_mcp_tools_dict_config():
+def test_mock_create_mcp_tools_dict_config(mock_conversation_state):
     """Test creating MCP tools with dict configuration (not MCPConfig object)."""
     config = {
         "mcpServers": {
@@ -202,19 +202,19 @@ def test_mock_create_mcp_tools_dict_config():
         # Mock call_async_from_sync to return the tools
         mock_client.call_async_from_sync.return_value = [mock_tool]
 
-        tools = create_mcp_tools(config)
+        tools = create_mcp_tools(mock_conversation_state, config)
 
         assert len(tools) == 1
         assert tools[0] == mock_tool
 
 
-def test_real_create_mcp_tools_dict_config():
+def test_real_create_mcp_tools_dict_config(mock_conversation_state):
     """Test creating MCP tools with dict configuration (not MCPConfig object)."""
     mcp_config = {
         "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     }
 
-    tools = create_mcp_tools(mcp_config)
+    tools = create_mcp_tools(mock_conversation_state, mcp_config)
     assert len(tools) == 1
     assert tools[0].name == "fetch"
 

@@ -17,7 +17,7 @@ from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.models import OpenHandsModel
 
 
-def create_mock_mcp_tool(name: str) -> MCPToolDefinition:
+def create_mock_mcp_tool(conv_state, name: str) -> MCPToolDefinition:
     # Create mock MCP tool and client
     mock_mcp_tool = mcp.types.Tool(
         name=name,
@@ -31,7 +31,9 @@ def create_mock_mcp_tool(name: str) -> MCPToolDefinition:
         },
     )
     mock_client = Mock(spec=MCPClient)
-    tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
+    tools = MCPToolDefinition.create(
+        conv_state, mcp_tool=mock_mcp_tool, mcp_client=mock_client
+    )
     return tools[0]  # Extract single tool from sequence
 
 
@@ -52,8 +54,8 @@ def test_agent_supports_polymorphic_json_serialization() -> None:
     assert deserialized_agent.model_dump() == agent.model_dump()
 
 
-def test_mcp_tool_serialization():
-    tool = create_mock_mcp_tool("test_mcp_tool_serialization")
+def test_mcp_tool_serialization(mock_conversation_state):
+    tool = create_mock_mcp_tool(mock_conversation_state, "test_mcp_tool_serialization")
     dumped = tool.model_dump_json()
     loaded = ToolDefinition.model_validate_json(dumped)
     assert loaded.model_dump_json() == dumped

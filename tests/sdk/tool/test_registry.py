@@ -45,6 +45,7 @@ class _ConfigurableHelloTool(ToolDefinition):
         conv_state: ConversationState,
         greeting: str = "Hello",
         punctuation: str = "!",
+        **kwargs,  # noqa: ARG003
     ):
         class _ConfigurableExec(ToolExecutor[_HelloAction, _HelloObservation]):
             def __init__(self, greeting: str, punctuation: str) -> None:

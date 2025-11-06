@@ -84,13 +84,13 @@ class ThinkTool(ToolDefinition[ThinkAction, ThinkObservation]):
     @classmethod
     def create(
         cls,
-        conv_state: "ConversationState | None" = None,  # noqa: ARG003
+        conv_state: "ConversationState",  # noqa: ARG003
         **params,
     ) -> Sequence[Self]:
         """Create ThinkTool instance.
 
         Args:
-            conv_state: Optional conversation state (not used by ThinkTool).
+            conv_state: Conversation state (not used by ThinkTool).
             **params: Additional parameters (none supported).
 
         Returns:

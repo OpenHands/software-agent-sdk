@@ -5,9 +5,9 @@ from openhands.tools.browser_use import BrowserToolSet
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
-def test_browser_toolset_create_returns_list():
+def test_browser_toolset_create_returns_list(mock_conversation_state):
     """Test that BrowserToolSet.create() returns a list of tools."""
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
 
     assert isinstance(tools, list)
     assert len(tools) == 10  # All browser tools
@@ -17,9 +17,9 @@ def test_browser_toolset_create_returns_list():
         assert isinstance(tool, ToolDefinition)
 
 
-def test_browser_toolset_create_includes_all_browser_tools():
+def test_browser_toolset_create_includes_all_browser_tools(mock_conversation_state):
     """Test that BrowserToolSet.create() includes all expected browser tools."""
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
 
     # Get tool names
     tool_names = [tool.name for tool in tools]
@@ -46,9 +46,9 @@ def test_browser_toolset_create_includes_all_browser_tools():
     assert len(tool_names) == len(expected_names)
 
 
-def test_browser_toolset_create_tools_have_shared_executor():
+def test_browser_toolset_create_tools_have_shared_executor(mock_conversation_state):
     """Test that all tools from BrowserToolSet.create() share the same executor."""
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
 
     # Get the executor from the first tool
     first_executor = tools[0].executor
@@ -60,9 +60,9 @@ def test_browser_toolset_create_tools_have_shared_executor():
         assert tool.executor is first_executor
 
 
-def test_browser_toolset_create_tools_are_properly_configured():
+def test_browser_toolset_create_tools_are_properly_configured(mock_conversation_state):
     """Test that tools from BrowserToolSet.create() are properly configured."""
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
 
     # Find a specific tool to test (e.g., navigate tool)
     navigate_tool = None
@@ -78,10 +78,12 @@ def test_browser_toolset_create_tools_are_properly_configured():
     assert navigate_tool.executor is not None
 
 
-def test_browser_toolset_create_multiple_calls_create_separate_executors():
+def test_browser_toolset_create_multiple_calls_create_separate_executors(
+    mock_conversation_state,
+):
     """Test that multiple calls to BrowserToolSet.create() create separate executors."""
-    tools1 = BrowserToolSet.create()
-    tools2 = BrowserToolSet.create()
+    tools1 = BrowserToolSet.create(mock_conversation_state)
+    tools2 = BrowserToolSet.create(mock_conversation_state)
 
     # Executors should be different instances
     executor1 = tools1[0].executor
@@ -92,9 +94,9 @@ def test_browser_toolset_create_multiple_calls_create_separate_executors():
     assert isinstance(executor2, BrowserToolExecutor)
 
 
-def test_browser_toolset_create_tools_can_generate_mcp_schema():
+def test_browser_toolset_create_tools_can_generate_mcp_schema(mock_conversation_state):
     """Test that tools from BrowserToolSet.create() can generate MCP schemas."""
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
 
     for tool in tools:
         mcp_tool = tool.to_mcp_tool()
@@ -112,20 +114,20 @@ def test_browser_toolset_create_tools_can_generate_mcp_schema():
         assert "properties" in input_schema
 
 
-def test_browser_toolset_create_no_parameters():
-    """Test that BrowserToolSet.create() works without parameters."""
+def test_browser_toolset_create_no_parameters(mock_conversation_state):
+    """Test that BrowserToolSet.create() works with conv_state parameter."""
     # Should not raise any exceptions
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
     assert len(tools) > 0
 
 
-def test_browser_toolset_inheritance():
+def test_browser_toolset_inheritance(mock_conversation_state):
     """Test that BrowserToolSet properly inherits from Tool."""
     assert issubclass(BrowserToolSet, ToolDefinition)
 
     # BrowserToolSet should not be instantiable directly (it's a factory)
     # The create method returns a list, not an instance of BrowserToolSet
-    tools = BrowserToolSet.create()
+    tools = BrowserToolSet.create(mock_conversation_state)
     for tool in tools:
         assert not isinstance(tool, BrowserToolSet)
         assert isinstance(tool, ToolDefinition)
