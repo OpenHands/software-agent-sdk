@@ -8,12 +8,6 @@ ConversationVisualizer. This approach provides:
 - Better separation of concerns compared to callback functions
 - Event handler registration to avoid long if/elif chains
 
-The MinimalProgressVisualizer produces concise output showing:
-- LLM call completions
-- Tool execution steps with command/path details
-- Agent thinking indicators
-- Error messages
-
 This demonstrates how you can pass a ConversationVisualizer instance directly
 to the visualizer parameter for clean, reusable visualization logic.
 """
