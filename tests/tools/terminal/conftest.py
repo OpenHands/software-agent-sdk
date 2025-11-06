@@ -1,10 +1,10 @@
-"""Shared test utilities for execute_bash tests."""
+"""Shared test utilities for terminal tests."""
 
 import tempfile
 
 from openhands.sdk.logger import get_logger
-from openhands.tools.execute_bash.constants import TIMEOUT_MESSAGE_TEMPLATE
-from openhands.tools.execute_bash.terminal import create_terminal_session
+from openhands.tools.terminal.constants import TIMEOUT_MESSAGE_TEMPLATE
+from openhands.tools.terminal.terminal import create_terminal_session
 
 
 logger = get_logger(__name__)

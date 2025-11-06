@@ -55,7 +55,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_factory=list,
         description="List of tools to initialize for the agent.",
         examples=[
-            {"name": "BashTool", "params": {}},
+            {"name": "TerminalTool", "params": {}},
             {"name": "FileEditorTool", "params": {}},
             {
                 "name": "TaskTrackerTool",

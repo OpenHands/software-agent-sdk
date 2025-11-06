@@ -152,7 +152,7 @@ def test_tool_default_params():
 def test_tool_immutability():
     """Test that Tool behaves correctly with parameter modifications."""
     original_params = {"test_param": "/workspace"}
-    tool = Tool(name="BashTool", params=original_params)
+    tool = Tool(name="TerminalTool", params=original_params)
 
     # Modifying the original params should not affect the tool
     original_params["test_param"] = "/changed"
@@ -172,8 +172,8 @@ def test_tool_validation_edge_cases():
 
 def test_tool_repr():
     """Test Tool string representation."""
-    tool = Tool(name="BashTool", params={"test_param": "/test"})
+    tool = Tool(name="TerminalTool", params={"test_param": "/test"})
     repr_str = repr(tool)
 
     assert "Tool" in repr_str
-    assert "BashTool" in repr_str
+    assert "TerminalTool" in repr_str

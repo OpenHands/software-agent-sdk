@@ -6,7 +6,7 @@ during Python shutdown when terminal sessions are being cleaned up.
 
 from unittest.mock import Mock
 
-from openhands.tools.execute_bash.terminal.tmux_terminal import TmuxTerminal
+from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
 
 
 def test_tmux_terminal_close_normal_operation():

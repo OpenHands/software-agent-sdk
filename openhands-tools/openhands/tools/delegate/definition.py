@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -44,15 +43,7 @@ class DelegateAction(Action):
 class DelegateObservation(Observation):
     """Observation from delegation operations."""
 
-    command: CommandLiteral = Field(
-        description="The command that was executed. Either `spawn` or `delegate`."
-    )
-    message: str = Field(description="Result message from the operation")
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        """Get the observation content to show to the agent."""
-        return [TextContent(text=self.message)]
+    command: CommandLiteral = Field(description="The command that was executed")
 
 
 TOOL_DESCRIPTION = """Delegation tool for spawning sub-agents and delegating tasks to them.

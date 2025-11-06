@@ -1,7 +1,6 @@
 """Tests for the conversation visualizer and event visualization."""
 
 import json
-from collections.abc import Sequence
 
 from rich.text import Text
 
@@ -18,7 +17,6 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.llm import (
-    ImageContent,
     Message,
     MessageToolCall,
     TextContent,
@@ -124,12 +122,12 @@ def test_system_prompt_event_visualize():
 def test_action_event_visualize():
     """Test ActionEvent visualization."""
     action = VisualizerMockAction(command="ls -la", working_dir="/tmp")
-    tool_call = create_tool_call("call_123", "bash", {"command": "ls -la"})
+    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
     event = ActionEvent(
         thought=[TextContent(text="I need to list files")],
         reasoning_content="Let me check the directory contents",
         action=action,
-        tool_name="bash",
+        tool_name="terminal",
         tool_call_id="call_123",
         tool_call=tool_call,
         llm_response_id="response_456",
@@ -152,19 +150,15 @@ def test_observation_event_visualize():
     from openhands.sdk.tool import Observation
 
     class VisualizerMockObservation(Observation):
-        content: str = "Command output"
-
-        @property
-        def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-            return [TextContent(text=self.content)]
+        pass
 
     observation = VisualizerMockObservation(
-        content="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 ."
+        content=[TextContent(text="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 .")]
     )
     event = ObservationEvent(
         observation=observation,
         action_id="action_123",
-        tool_name="bash",
+        tool_name="terminal",
         tool_call_id="call_123",
     )
 
@@ -172,7 +166,7 @@ def test_observation_event_visualize():
     assert isinstance(result, Text)
 
     text_content = result.plain
-    assert "Tool: bash" in text_content
+    assert "Tool: terminal" in text_content
     assert "Result:" in text_content
     assert "total 4" in text_content
 
@@ -205,7 +199,7 @@ def test_agent_error_event_visualize():
     event = AgentErrorEvent(
         error="Failed to execute command: permission denied",
         tool_call_id="call_err_1",
-        tool_name="bash",
+        tool_name="terminal",
     )
 
     result = event.visualize

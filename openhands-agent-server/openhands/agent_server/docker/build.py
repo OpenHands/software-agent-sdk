@@ -14,6 +14,7 @@ Single-entry build helper for agent-server images.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -288,7 +289,37 @@ class BuildOptions(BaseModel):
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        base = f"buildcache-{self.target}-{self.base_image_slug}"
+        # Docker image tags have a 128-character limit.
+        # If the base slug is too long, hash it to create a shorter unique identifier.
+        MAX_TAG_LENGTH = 128
+        base_slug = self.base_image_slug
+
+        # Reserve space for prefix, branch, and separators
+        prefix = f"buildcache-{self.target}-"
+        branch_suffix = (
+            f"-{_sanitize_branch(GIT_REF)}"
+            if GIT_REF not in ("main", "refs/heads/main", "unknown")
+            else ""
+        )
+        main_suffix = "-main" if GIT_REF in ("main", "refs/heads/main") else ""
+
+        # Calculate available space for base_slug
+        reserved = len(prefix) + max(len(branch_suffix), len(main_suffix))
+        available = MAX_TAG_LENGTH - reserved
+
+        # If base_slug is too long, use a hash
+        if len(base_slug) > available:
+            # Use first 8 chars of SHA256 hash for uniqueness while keeping it short
+            hash_digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
+            base_slug_short = hash_digest
+            logger.debug(
+                f"[build] Base image slug too long ({len(base_slug)} chars), "
+                f"using hash: {base_slug_short}"
+            )
+        else:
+            base_slug_short = base_slug
+
+        base = f"{prefix}{base_slug_short}"
         if GIT_REF in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif GIT_REF != "unknown":
