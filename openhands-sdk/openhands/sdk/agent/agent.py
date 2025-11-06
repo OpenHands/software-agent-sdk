@@ -292,11 +292,15 @@ class Agent(AgentBase):
         raw = arguments.pop("security_risk", None)
 
         # Raises exception if failed to pass risk field when expected
+        # Exception will be sent back to agent as error event
+        # Strong models like GPT-5 can correct itself by retrying
         if requires_sr and raw is None:
             raise ValueError(
                 f"Failed to provide security_risk field in tool '{tool_name}'"
             )
 
+        # When using weaker models without security analyzer
+        # safely ignore missing security risk fields
         if not requires_sr and raw is None:
             return risk.SecurityRisk.UNKNOWN
 
