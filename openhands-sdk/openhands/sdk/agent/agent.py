@@ -339,31 +339,30 @@ class Agent(AgentBase):
             # When using LLMSecurityAnalyzer, security_risk field must always be present
             if isinstance(self.security_analyzer, LLMSecurityAnalyzer):
                 if _predicted_risk is None:
-                    # TODO: Send back agent error event instead
-                    # of breaking the conversation
-                    raise ValueError(
-                        f"LLMSecurityAnalyzer is configured but security_risk field "
-                        f"is missing from LLM response for tool '{tool.name}'. "
-                        f"The LLM must provide a security_risk assessment."
+                    event = AgentErrorEvent(
+                        error=(
+                            f"Failed to provide security_risk "
+                            f"field in tool '{tool.name}'"
+                        ),
+                        tool_name=tool_name,
+                        tool_call_id=tool_call.id,
                     )
-                if _predicted_risk is not None:
-                    try:
-                        security_risk = risk.SecurityRisk(_predicted_risk)
-                    except ValueError:
-                        # TODO: Send back agent error event instead
-                        # of breaking the conversation
-                        raise ValueError(
-                            f"Invalid security_risk value from LLM: {_predicted_risk}. "
-                            f"Expected one of: {list(risk.SecurityRisk)}"
-                        )
-            elif _predicted_risk is not None and self.security_analyzer is not None:
-                # For other security analyzers, use the provided risk if available
+                    on_event(event)
+                    return
+
                 try:
                     security_risk = risk.SecurityRisk(_predicted_risk)
                 except ValueError:
-                    logger.warning(
-                        f"Invalid security_risk value from LLM: {_predicted_risk}"
+                    event = AgentErrorEvent(
+                        error=(
+                            f"Invalid security_risk: {_predicted_risk}. "
+                            f"Expected one of: {list(risk.SecurityRisk)}"
+                        ),
+                        tool_name=tool_name,
+                        tool_call_id=tool_call.id,
                     )
+                    on_event(event)
+                    return
 
             assert "security_risk" not in arguments, (
                 "Unexpected 'security_risk' key found in tool arguments"
