@@ -339,9 +339,11 @@ class BuildOptions(BaseModel):
     def all_tags(self) -> list[str]:
         tags: list[str] = []
         arch_suffix = f"-{self.arch}" if self.arch else ""
+        # Use SDK_VERSION (respects override) for commit-based tags
+        short_version = SDK_VERSION[:7] if len(SDK_VERSION) >= 7 else SDK_VERSION
 
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
+            tags.append(f"{self.image}:{short_version}-{t}{arch_suffix}")
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
