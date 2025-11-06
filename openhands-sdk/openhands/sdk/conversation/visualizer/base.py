@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, final
 
 from openhands.sdk.event.base import Event
 
@@ -45,6 +45,7 @@ class ConversationVisualizerBase(ABC):
         self._name = name.capitalize() if name else None
         self._state = None
 
+    @final
     def initialize(self, state: "ConversationStateProtocol") -> None:
         """Initialize the visualizer with conversation state.
 
