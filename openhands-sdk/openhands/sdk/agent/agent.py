@@ -285,6 +285,25 @@ class Agent(AgentBase):
 
         return False
 
+    def _extract_security_risk(
+        self, arguments: dict, tool_name: str
+    ) -> risk.SecurityRisk:
+        requires_sr = isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+        raw = arguments.pop("security_risk", None)
+
+        # Raises exception is failed to pass risk field when expected
+        if requires_sr and raw is None:
+            raise ValueError(
+                f"Failed to provide security_risk field in tool '{tool_name}'"
+            )
+
+        if not requires_sr and raw is None:
+            return risk.SecurityRisk.UNKNOWN
+
+        # Raises exception if invalid risk enum passed by LLM
+        security_risk = risk.SecurityRisk(raw)
+        return security_risk
+
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
@@ -332,38 +351,7 @@ class Agent(AgentBase):
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
             arguments = json.loads(tool_call.arguments)
-
-            # Extract security_risk field from tool call arguments
-            _predicted_risk = arguments.pop("security_risk", None)
-
-            # When using LLMSecurityAnalyzer, security_risk field must always be present
-            if isinstance(self.security_analyzer, LLMSecurityAnalyzer):
-                if _predicted_risk is None:
-                    event = AgentErrorEvent(
-                        error=(
-                            f"Failed to provide security_risk "
-                            f"field in tool '{tool.name}'"
-                        ),
-                        tool_name=tool_name,
-                        tool_call_id=tool_call.id,
-                    )
-                    on_event(event)
-                    return
-
-                try:
-                    security_risk = risk.SecurityRisk(_predicted_risk)
-                except ValueError:
-                    event = AgentErrorEvent(
-                        error=(
-                            f"Invalid security_risk: {_predicted_risk}. "
-                            f"Expected one of: {list(risk.SecurityRisk)}"
-                        ),
-                        tool_name=tool_name,
-                        tool_call_id=tool_call.id,
-                    )
-                    on_event(event)
-                    return
-
+            security_risk = self._extract_security_risk(arguments, tool.name)
             assert "security_risk" not in arguments, (
                 "Unexpected 'security_risk' key found in tool arguments"
             )
