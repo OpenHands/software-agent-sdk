@@ -340,7 +340,7 @@ class FileEditor:
                 with open(path, "rb") as f:
                     image_bytes = f.read()
                 image_base64 = base64.b64encode(image_bytes).decode("utf-8")
-                
+
                 mime_type = "image/png"  # default
                 if image_base64.startswith("/9j/"):
                     mime_type = "image/jpeg"
@@ -353,8 +353,7 @@ class FileEditor:
                 elif image_base64.startswith("Qk"):
                     mime_type = "image/bmp"
                 output_msg = (
-                    f"Image file {path} read successfully. "
-                    "Displaying image content."
+                    f"Image file {path} read successfully. Displaying image content."
                 )
                 image_url = f"data:{mime_type};base64,{image_base64}"
                 return FileEditorObservation(
@@ -367,9 +366,7 @@ class FileEditor:
                     prev_exist=True,
                 )
             except Exception as e:
-                raise ToolError(
-                    f"Failed to read image file {path}: {e}"
-                ) from None
+                raise ToolError(f"Failed to read image file {path}: {e}") from None
 
         # Validate file and count lines
         self.validate_file(path)
