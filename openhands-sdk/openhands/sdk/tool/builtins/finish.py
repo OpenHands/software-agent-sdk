@@ -4,7 +4,6 @@ from typing import TYPE_CHECKING, Self
 from pydantic import Field
 from rich.text import Text
 
-from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -32,16 +31,15 @@ class FinishAction(Action):
 
 
 class FinishObservation(Observation):
-    message: str = Field(description="Final message sent to the user.")
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        return [TextContent(text=self.message)]
+    """
+    Observation returned after finishing a task.
+    The FinishAction itself contains the message sent to the user so no
+    extra fields are needed here.
+    """
 
     @property
     def visualize(self) -> Text:
-        """Return Rich Text representation - empty since action shows the message."""
-        # Don't duplicate the finish message display - action already shows it
+        """Return an empty Text representation since the message is in the action."""
         return Text()
 
 
@@ -65,7 +63,7 @@ class FinishExecutor(ToolExecutor):
         action: FinishAction,
         conversation: "BaseConversation | None" = None,  # noqa: ARG002
     ) -> FinishObservation:
-        return FinishObservation(message=action.message)
+        return FinishObservation.from_text(text=action.message)
 
 
 class FinishTool(ToolDefinition[FinishAction, FinishObservation]):

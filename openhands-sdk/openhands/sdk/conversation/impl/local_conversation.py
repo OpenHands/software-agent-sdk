@@ -26,12 +26,7 @@ from openhands.sdk.event import (
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
-from openhands.sdk.observability.laminar import (
-    end_active_span,
-    observe,
-    should_enable_observability,
-    start_active_span,
-)
+from openhands.sdk.observability.laminar import observe
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -144,10 +139,10 @@ class LocalConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
+        super().__init__()  # Initialize base class with span tracking
         self._cleanup_initiated = False
         atexit.register(self.close)
-        if should_enable_observability():
-            start_active_span("conversation", session_id=str(desired_id))
+        self._start_observability_span(str(desired_id))
 
     @property
     def id(self) -> ConversationID:
@@ -306,7 +301,7 @@ class LocalConversation(BaseConversation):
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
         finally:
-            end_active_span()
+            self._end_observability_span()
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -389,7 +384,7 @@ class LocalConversation(BaseConversation):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
-        end_active_span()
+        self._end_observability_span()
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()
