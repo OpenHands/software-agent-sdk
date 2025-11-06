@@ -382,7 +382,7 @@ class RemoteState(ConversationStateProtocol):
     def stats(self) -> ConversationStats:
         """Get conversation stats (fetched from remote)."""
         info = self._get_conversation_info()
-        stats_data = info.get("conversation_stats", {})
+        stats_data = info.get("stats", {})
         return ConversationStats.model_validate(stats_data)
 
     def model_dump(self, **_kwargs):
@@ -540,11 +540,8 @@ class RemoteConversation(BaseConversation):
         return self._state
 
     @property
-    def conversation_stats(self) -> ConversationStats:
-        """Get conversation stats from remote server."""
-        info = self._state._get_conversation_info()
-        stats_data = info.get("stats", {})
-        return ConversationStats.model_validate(stats_data)
+    def conversation_stats(self):
+        return self._state.stats
 
     @property
     def stuck_detector(self):
