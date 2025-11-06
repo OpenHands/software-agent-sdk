@@ -98,7 +98,7 @@ def create_terminal_session(
     system = platform.system()
 
     if system == "Windows":
-        from openhands.tools.execute_bash.terminal.windows_terminal import (
+        from openhands.tools.terminal.terminal.windows_terminal import (
             WindowsTerminal,
         )
 

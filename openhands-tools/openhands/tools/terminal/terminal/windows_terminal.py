@@ -9,13 +9,13 @@ import time
 from collections import deque
 
 from openhands.sdk.logger import get_logger
-from openhands.tools.execute_bash.constants import (
+from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
     HISTORY_LIMIT,
 )
-from openhands.tools.execute_bash.metadata import CmdOutputMetadata
-from openhands.tools.execute_bash.terminal import TerminalInterface
+from openhands.tools.terminal.metadata import CmdOutputMetadata
+from openhands.tools.terminal.terminal import TerminalInterface
 
 
 logger = get_logger(__name__)

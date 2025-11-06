@@ -12,8 +12,8 @@ import time
 
 import pytest
 
-from openhands.tools.execute_bash.definition import ExecuteBashAction
-from openhands.tools.execute_bash.terminal import create_terminal_session
+from openhands.tools.terminal.definition import ExecuteBashAction
+from openhands.tools.terminal.terminal import create_terminal_session
 
 
 # Skip all tests in this file if not on Windows
