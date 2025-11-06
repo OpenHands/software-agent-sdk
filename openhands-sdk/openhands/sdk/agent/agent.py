@@ -79,6 +79,16 @@ class Agent(AgentBase):
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
+        llm_convertible_messages = []
+        security_analyzer_configuration_events = []
+
+        for event in state.events:
+            if isinstance(event, LLMConvertibleEvent):
+                llm_convertible_messages.append(event)
+
+            if isinstance(event, SecurityAnalyzerConfigurationEvent):
+                security_analyzer_configuration_events.append(event)
+
         llm_convertible_messages = [
             event for event in state.events if isinstance(event, LLMConvertibleEvent)
         ]
@@ -95,11 +105,15 @@ class Agent(AgentBase):
             )
             on_event(event)
 
-        # Always emit SecurityAnalyzerConfigurationEvent to track analyzer status
         security_analyzer_event = SecurityAnalyzerConfigurationEvent.from_analyzer(
             analyzer=self.security_analyzer
         )
-        on_event(security_analyzer_event)
+
+        if (
+            len(security_analyzer_configuration_events) == 0
+            or security_analyzer_event != security_analyzer_configuration_events[-1]
+        ):
+            on_event(security_analyzer_event)
 
     def _execute_actions(
         self,
