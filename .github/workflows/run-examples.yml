@@ -41,6 +41,7 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Run examples
+              shell: bash
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_MODEL: openhands/claude-haiku-4-5-20251001
@@ -60,7 +61,6 @@ jobs:
                   # - 16_llm_security_analyzer.py: requires user input
                   # - 04_convo_with_api_sandboxed_server.py: requires sandbox API keys
                   # - 04_vscode_with_docker_sandboxed_server.py: requires VSCode setup
-                  set -e
                   EXAMPLES=(
                       "examples/01_standalone_sdk/02_custom_tools.py"
                       "examples/01_standalone_sdk/03_activate_skill.py"
@@ -286,6 +286,7 @@ jobs:
             - name: Read examples report for issue comment
               if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
               id: read_report
+              shell: bash
               run: |
                   if [ -f examples_report.md ]; then
                       REPORT_CONTENT=$(cat examples_report.md)
