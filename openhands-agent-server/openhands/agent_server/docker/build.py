@@ -114,9 +114,18 @@ def _sanitize_branch(ref: str) -> str:
 def _git_info() -> tuple[str, str, str]:
     """
     Get git info (ref, sha, short_sha) for the current working directory.
-    Falls back to GITHUB_* env vars if available.
+
+    Priority order for SHA:
+    1. SDK_SHA - Explicit override (e.g., for submodule builds)
+    2. GITHUB_SHA - GitHub Actions environment
+    3. git rev-parse HEAD - Local development
+
+    Priority order for REF:
+    1. SDK_REF - Explicit override (e.g., for submodule builds)
+    2. GITHUB_REF - GitHub Actions environment
+    3. git symbolic-ref HEAD - Local development
     """
-    git_sha = os.environ.get("GITHUB_SHA")
+    git_sha = os.environ.get("SDK_SHA") or os.environ.get("GITHUB_SHA")
     if not git_sha:
         try:
             git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
@@ -124,7 +133,7 @@ def _git_info() -> tuple[str, str, str]:
             git_sha = "unknown"
     short_sha = git_sha[:7] if git_sha != "unknown" else "unknown"
 
-    git_ref = os.environ.get("GITHUB_REF")
+    git_ref = os.environ.get("SDK_REF") or os.environ.get("GITHUB_REF")
     if not git_ref:
         try:
             git_ref = _run(
