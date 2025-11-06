@@ -6,6 +6,7 @@ from fastapi.security import APIKeyHeader
 from openhands.agent_server.bash_service import BashEventService
 from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.desktop_service import DesktopService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.vscode_service import VSCodeService
 
@@ -73,6 +74,10 @@ def websocket_session_api_key_dependency_ws(
 def get_vscode_service(request: Request) -> VSCodeService | None:
     # VSCode may be disabled by config
     return getattr(request.app.state, "vscode_service", None)
+
+
+def get_desktop_service(request: Request) -> DesktopService | None:
+    return getattr(request.app.state, "desktop_service", None)
 
 
 def create_session_api_key_dependency(config: Config):

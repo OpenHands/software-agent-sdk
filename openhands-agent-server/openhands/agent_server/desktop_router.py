@@ -1,9 +1,10 @@
 """Desktop router for agent server API endpoints."""
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from openhands.agent_server.desktop_service import get_desktop_service
+from openhands.agent_server.dependencies import get_desktop_service
+from openhands.agent_server.desktop_service import DesktopService
 from openhands.sdk.logger import get_logger
 
 
@@ -21,6 +22,7 @@ class DesktopUrlResponse(BaseModel):
 @desktop_router.get("/url", response_model=DesktopUrlResponse)
 async def get_desktop_url(
     base_url: str = "http://localhost:8002",
+    desktop_service: DesktopService | None = Depends(get_desktop_service),
 ) -> DesktopUrlResponse:
     """Get the noVNC URL for desktop access.
 
@@ -30,7 +32,6 @@ async def get_desktop_url(
     Returns:
         noVNC URL if available, None otherwise
     """
-    desktop_service = get_desktop_service()
     if desktop_service is None:
         raise HTTPException(
             status_code=503,

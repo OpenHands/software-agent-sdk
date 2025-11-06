@@ -20,7 +20,9 @@ from openhands.agent_server.dependencies import (
     create_session_api_key_dependency,
 )
 from openhands.agent_server.desktop_router import desktop_router
-from openhands.agent_server.desktop_service import get_desktop_service
+from openhands.agent_server.desktop_service import (
+    get_desktop_service as _get_desktop_service,
+)
 from openhands.agent_server.env_parser import from_env as parse_env
 from openhands.agent_server.event_router import event_router
 from openhands.agent_server.file_router import file_router
@@ -64,7 +66,9 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     # Attach optional services as well for DI fallbacks
     api.state.vscode_service = vscode_service
 
-    desktop_service = get_desktop_service()
+    # Back-compat: create desktop service via legacy accessor once, but store on state
+    desktop_service = _get_desktop_service()
+    api.state.desktop_service = desktop_service
 
     # Start VSCode service if enabled
     if vscode_service is not None:
