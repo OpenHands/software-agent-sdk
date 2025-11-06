@@ -72,7 +72,9 @@ class Agent(AgentBase):
 
     @property
     def _add_security_risk_prediction(self) -> bool:
-        return isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+        # Always include security_risk field in tool schemas
+        # This ensures consistent tool schemas regardless of security analyzer type
+        return True
 
     def init_state(
         self,
@@ -351,11 +353,27 @@ class Agent(AgentBase):
         try:
             arguments = json.loads(tool_call.arguments)
 
-            # if the tool has a security_risk field (when security analyzer is set),
-            # pop it out as it's not part of the tool's action schema
-            if (
-                _predicted_risk := arguments.pop("security_risk", None)
-            ) is not None and self.security_analyzer is not None:
+            # Extract security_risk field from tool call arguments
+            _predicted_risk = arguments.pop("security_risk", None)
+
+            # When using LLMSecurityAnalyzer, security_risk field must always be present
+            if isinstance(self.security_analyzer, LLMSecurityAnalyzer):
+                if _predicted_risk is None:
+                    raise ValueError(
+                        f"LLMSecurityAnalyzer is configured but security_risk field "
+                        f"is missing from LLM response for tool '{tool.name}'. "
+                        f"The LLM must provide a security_risk assessment."
+                    )
+                if _predicted_risk is not None:
+                    try:
+                        security_risk = risk.SecurityRisk(_predicted_risk)
+                    except ValueError:
+                        raise ValueError(
+                            f"Invalid security_risk value from LLM: {_predicted_risk}. "
+                            f"Expected one of: {list(risk.SecurityRisk)}"
+                        )
+            elif _predicted_risk is not None and self.security_analyzer is not None:
+                # For other security analyzers, use the provided risk if available
                 try:
                     security_risk = risk.SecurityRisk(_predicted_risk)
                 except ValueError:
@@ -368,7 +386,7 @@ class Agent(AgentBase):
             )
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError) as e:
+        except (json.JSONDecodeError, ValidationError, ValueError) as e:
             err = (
                 f"Error validating args {tool_call.arguments} for tool "
                 f"'{tool.name}': {e}"

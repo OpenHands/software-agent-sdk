@@ -41,7 +41,7 @@ class MockSecurityTool3(ToolDefinition[TRTSAction, Observation]):
 
 
 def test_to_responses_tool_security_gating():
-    # readOnlyHint=True -> do not add security_risk even if requested
+    # security_risk field is now always included regardless of readOnlyHint
     readonly = MockSecurityTool1(
         description="d",
         action_type=TRTSAction,
@@ -53,9 +53,9 @@ def test_to_responses_tool_security_gating():
     assert isinstance(params, dict)
     props = params.get("properties") or {}
     assert isinstance(props, dict)
-    assert "security_risk" not in props
+    assert "security_risk" in props  # Always included now
 
-    # readOnlyHint=False -> add when requested
+    # readOnlyHint=False -> also includes security_risk
     writable = MockSecurityTool2(
         description="d",
         action_type=TRTSAction,

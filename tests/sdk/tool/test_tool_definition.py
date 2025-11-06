@@ -542,8 +542,8 @@ class TestTool:
         assert optional_array_schema["type"] == "array"
         assert optional_array_schema["items"]["type"] == "string"
 
-    def test_security_risk_only_added_for_non_readonly_tools(self):
-        """Test that security_risk is only added if the tool is not read-only."""
+    def test_security_risk_added_for_all_tools_when_enabled(self):
+        """Test that security_risk is added for all tools when prediction is enabled."""
         # Test with read-only tool
         readonly_annotations = ToolAnnotations(
             title="Read-only Tool",
@@ -578,14 +578,16 @@ class TestTool:
             annotations=None,
         )
 
-        # Test read-only tool - security_risk should NOT be added
+        # Test read-only tool - security_risk should be added when enabled
         readonly_openai_tool = readonly_tool.to_openai_tool(
             add_security_risk_prediction=True
         )
         readonly_function = readonly_openai_tool["function"]
         assert "parameters" in readonly_function
         readonly_params = readonly_function["parameters"]
-        assert "security_risk" not in readonly_params["properties"]
+        assert (
+            "security_risk" in readonly_params["properties"]
+        )  # Included for read-only tools too
 
         # Test writable tool - security_risk SHOULD be added
         writable_openai_tool = writable_tool.to_openai_tool(

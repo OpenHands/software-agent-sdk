@@ -363,16 +363,16 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         action_type: type[Schema] | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
-        action_type_with_risk = _create_action_type_with_risk(action_type)
 
-        add_security_risk_prediction = add_security_risk_prediction and (
-            self.annotations is None or (not self.annotations.readOnlyHint)
-        )
-        schema = (
-            action_type_with_risk.to_mcp_schema()
-            if add_security_risk_prediction
-            else action_type.to_mcp_schema()
-        )
+        if add_security_risk_prediction:
+            # Always include security_risk field when prediction is enabled
+            # This ensures consistent tool schemas regardless of tool type
+            # (including read-only tools)
+            action_type_with_risk = _create_action_type_with_risk(action_type)
+            schema = action_type_with_risk.to_mcp_schema()
+        else:
+            schema = action_type.to_mcp_schema()
+
         return schema
 
     def to_openai_tool(
@@ -383,10 +383,9 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         """Convert a Tool to an OpenAI tool.
 
         Args:
-            add_security_risk_prediction: Whether to add a `security_risk` field
-                to the action schema for LLM to predict. This is useful for
-                tools that may have safety risks, so the LLM can reason about
-                the risk level before calling the tool.
+            add_security_risk_prediction: Whether to include the `security_risk`
+                field in the tool schema. When enabled, the field is included
+                for all tool types (including read-only tools).
             action_type: Optionally override the action_type to use for the schema.
                 This is useful for MCPTool to use a dynamically created action type
                 based on the tool's input schema.
@@ -411,6 +410,12 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
         For Responses API, function tools expect top-level keys:
         { "type": "function", "name": ..., "description": ..., "parameters": ... }
+
+        Args:
+            add_security_risk_prediction: Whether to include the `security_risk`
+                field in the tool schema. When enabled, the field is included
+                for all tool types (including read-only tools).
+            action_type: Optionally override the action_type to use for the schema.
         """
 
         return {
