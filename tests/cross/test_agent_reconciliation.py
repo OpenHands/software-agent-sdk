@@ -124,7 +124,7 @@ def test_conversation_with_different_agent_tools_fails():
             agent=original_agent,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message to create some state
@@ -154,7 +154,7 @@ def test_conversation_with_different_agent_tools_fails():
                 workspace=temp_dir,
                 persistence_dir=temp_dir,
                 conversation_id=conversation_id,  # Use same ID to avoid ID mismatch
-                visualize=False,
+                visualizer=None,
             )
 
 
@@ -174,7 +174,7 @@ def test_conversation_with_same_agent_succeeds():
             agent=original_agent,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message
@@ -204,7 +204,7 @@ def test_conversation_with_same_agent_succeeds():
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,  # Use same ID
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify state was loaded
@@ -265,7 +265,7 @@ def test_conversation_persistence_lifecycle(mock_completion):
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=original_id,  # Use same ID to load existing state
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify state was restored
@@ -411,7 +411,7 @@ def test_conversation_restart_with_different_security_analyzer():
             agent=agent_with_security,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message to create some state
@@ -434,7 +434,7 @@ def test_conversation_restart_with_different_security_analyzer():
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify conversation loaded successfully
@@ -462,7 +462,7 @@ def test_conversation_restart_adding_security_analyzer():
             agent=agent_without_security,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message to create some state
@@ -487,7 +487,7 @@ def test_conversation_restart_adding_security_analyzer():
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify conversation loaded successfully
