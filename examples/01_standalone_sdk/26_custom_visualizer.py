@@ -5,8 +5,6 @@ ConversationVisualizer. This approach provides:
 - Clean, testable code with class-based state management
 - Direct configuration (just pass the visualizer instance to visualizer parameter)
 - Reusable visualizer that can be shared across conversations
-- Better separation of concerns compared to callback functions
-- Event handler registration to avoid long if/elif chains
 
 This demonstrates how you can pass a ConversationVisualizer instance directly
 to the visualizer parameter for clean, reusable visualization logic.

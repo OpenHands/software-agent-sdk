@@ -53,8 +53,7 @@ class ConversationVisualizerBase(ABC):
         allowing the visualizer to access conversation stats and other
         state information.
 
-        Subclasses can override this method to add custom initialization logic,
-        but should call super().initialize(state) to ensure the state is set.
+        Subclasses should not override this method, to ensure the state is set.
 
         Args:
             state: The conversation state object
