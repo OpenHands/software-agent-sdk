@@ -90,3 +90,17 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 - [Join Slack](https://openhands.dev/joinslack) - Connect with the OpenHands community
 - [GitHub Repository](https://github.com/OpenHands/agent-sdk) - Source code and issues
 - [Documentation](https://docs.openhands.dev/sdk) - Complete documentation
+
+## Cite
+
+```
+@misc{wang2025openhandssoftwareagentsdk,
+      title={The OpenHands Software Agent SDK: A Composable and Extensible Foundation for Production Agents}, 
+      author={Xingyao Wang and Simon Rosenberg and Juan Michelini and Calvin Smith and Hoang Tran and Engel Nyst and Rohit Malhotra and Xuhui Zhou and Valerie Chen and Robert Brennan and Graham Neubig},
+      year={2025},
+      eprint={2511.03690},
+      archivePrefix={arXiv},
+      primaryClass={cs.SE},
+      url={https://arxiv.org/abs/2511.03690}, 
+}
+```
