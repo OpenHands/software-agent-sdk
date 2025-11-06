@@ -8,6 +8,7 @@ from fastapi import (
     File,
     HTTPException,
     Path as FastApiPath,
+    Query,
     UploadFile,
     status,
 )
@@ -97,6 +98,16 @@ async def download_file(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to download file: {str(e)}",
         )
+
+
+@file_router.get("/download")
+async def download_file_legacy(
+    file_path: Annotated[
+        str, Query(description="Absolute file path (legacy query param).")
+    ],
+) -> FileResponse:
+    # Back-compat for SDK clients that call /api/file/download?file_path=...
+    return await download_file(file_path)
 
 
 @file_router.get("/download-trajectory/{conversation_id}")
