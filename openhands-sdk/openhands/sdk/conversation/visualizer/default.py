@@ -1,5 +1,4 @@
 import re
-from typing import TYPE_CHECKING
 
 from rich.console import Console
 from rich.panel import Panel
@@ -19,10 +18,6 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation
-
-
-if TYPE_CHECKING:
-    pass
 
 
 # These are external inputs
