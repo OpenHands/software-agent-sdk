@@ -13,11 +13,15 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
 )
+from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
     TextContent,
 )
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Action, Observation
 
 
@@ -201,3 +205,43 @@ def test_event_deserialize():
     dumped = original.model_dump_json()
     loaded = Event.model_validate_json(dumped)
     assert loaded == original
+
+
+def test_security_analyzer_event_serialization() -> None:
+    """Round-trip serialize/deserialize and equality when analyzer is not configured."""
+    original = SecurityAnalyzerConfigurationEvent.from_analyzer(None)
+
+    # Serialize/deserialize with the concrete class
+    dumped = original.model_dump_json()
+    loaded = SecurityAnalyzerConfigurationEvent.model_validate_json(dumped)
+    assert loaded == original
+
+    # Deserialize polymorphically via the base Event type as well
+    loaded_poly = Event.model_validate_json(dumped)
+    assert isinstance(loaded_poly, SecurityAnalyzerConfigurationEvent)
+    assert loaded_poly == original
+
+
+def test_security_analyzer_event_equality() -> None:
+    """Round-trip serialize/deserialize and equality when an analyzer is present."""
+
+    class DummyAnalyzer(SecurityAnalyzerBase):
+        def security_risk(self, action: ActionEvent) -> SecurityRisk:
+            return action.security_risk
+
+    dummy_analyzer_event = SecurityAnalyzerConfigurationEvent.from_analyzer(
+        DummyAnalyzer()
+    )
+    assert dummy_analyzer_event.analyzer_type == "DummyAnalyzer"
+
+    # Serialize/deserialize with the concrete class
+    dumped = dummy_analyzer_event.model_dump_json()
+    dummy_analyzer_event = SecurityAnalyzerConfigurationEvent.model_validate_json(
+        dumped
+    )
+
+    llm_analyzer_event = SecurityAnalyzerConfigurationEvent.from_analyzer(
+        LLMSecurityAnalyzer()
+    )
+
+    assert dummy_analyzer_event != llm_analyzer_event
