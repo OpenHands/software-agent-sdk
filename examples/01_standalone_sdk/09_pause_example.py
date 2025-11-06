@@ -10,8 +10,8 @@ from openhands.sdk import (
     Conversation,
 )
 from openhands.sdk.tool import Tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 # Configure LLM
@@ -29,7 +29,7 @@ llm = LLM(
 # Tools
 tools = [
     Tool(
-        name=BashTool.name,
+        name=TerminalTool.name,
     ),
     Tool(name=FileEditorTool.name),
 ]

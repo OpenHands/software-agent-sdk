@@ -52,7 +52,7 @@ def sample_conversation_info():
                 api_key=SecretStr("test-key"),
                 usage_id="test-llm",
             ),
-            tools=[Tool(name="BashTool")],
+            tools=[Tool(name="TerminalTool")],
         ),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
         execution_status=ConversationExecutionStatus.IDLE,
@@ -86,7 +86,7 @@ def sample_start_conversation_request():
                 api_key=SecretStr("test-key"),
                 usage_id="test-llm",
             ),
-            tools=[Tool(name="BashTool")],
+            tools=[Tool(name="TerminalTool")],
         ),
         workspace=LocalWorkspace(working_dir="/tmp/test"),
         initial_message=SendMessageRequest(
@@ -483,7 +483,7 @@ def test_start_conversation_new(
                     "api_key": "test-key",
                     "usage_id": "test-llm",
                 },
-                "tools": [{"name": "BashTool"}],
+                "tools": [{"name": "TerminalTool"}],
             },
             "workspace": {"working_dir": "/tmp/test"},
             "initial_message": {
@@ -529,7 +529,7 @@ def test_start_conversation_existing(
                     "api_key": "test-key",
                     "usage_id": "test-llm",
                 },
-                "tools": [{"name": "BashTool"}],
+                "tools": [{"name": "TerminalTool"}],
             },
             "workspace": {"working_dir": "/tmp/test"},
         }
@@ -588,7 +588,7 @@ def test_start_conversation_minimal_request(
                     "api_key": "test-key",
                     "usage_id": "test-llm",
                 },
-                "tools": [{"name": "BashTool"}],
+                "tools": [{"name": "TerminalTool"}],
             },
             "workspace": {"working_dir": "/tmp/test"},
         }

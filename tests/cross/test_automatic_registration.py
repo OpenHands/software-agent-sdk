@@ -4,13 +4,13 @@ from openhands.sdk.tool.registry import list_registered_tools
 
 
 def test_bash_tool_automatic_registration():
-    """Test that BashTool is automatically registered when imported."""
+    """Test that TerminalTool is automatically registered when imported."""
     # Import the module to trigger registration
-    import openhands.tools.execute_bash.definition  # noqa: F401
+    import openhands.tools.terminal.definition  # noqa: F401
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "bash" in registered_tools
+    assert "terminal" in registered_tools
 
 
 def test_file_editor_tool_automatic_registration():
@@ -76,11 +76,11 @@ def test_planning_file_editor_tool_automatic_registration():
 def test_import_from_init_triggers_registration():
     """Test that importing from __init__.py also triggers registration."""
     # Import from the __init__.py file
-    from openhands.tools.execute_bash import BashTool  # noqa: F401
+    from openhands.tools.terminal import TerminalTool  # noqa: F401
 
     # Check that the tool is registered with snake_case name
     registered_tools = list_registered_tools()
-    assert "bash" in registered_tools
+    assert "terminal" in registered_tools
 
 
 def test_tool_can_be_resolved_after_automatic_registration():
@@ -88,7 +88,7 @@ def test_tool_can_be_resolved_after_automatic_registration():
     from unittest.mock import MagicMock
 
     # Import to trigger registration
-    import openhands.tools.execute_bash.definition  # noqa: F401
+    import openhands.tools.terminal.definition  # noqa: F401
     from openhands.sdk.conversation.state import ConversationState
     from openhands.sdk.tool.registry import resolve_tool
     from openhands.sdk.tool.spec import Tool
@@ -100,9 +100,9 @@ def test_tool_can_be_resolved_after_automatic_registration():
     mock_conv_state.workspace = mock_workspace
 
     # Try to resolve the tool using snake_case name
-    tool_spec = Tool(name="bash")
+    tool_spec = Tool(name="terminal")
     resolved_tools = resolve_tool(tool_spec, mock_conv_state)
 
     # Should successfully resolve
     assert len(resolved_tools) == 1
-    assert resolved_tools[0].name == "bash"
+    assert resolved_tools[0].name == "terminal"

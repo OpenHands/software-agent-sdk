@@ -1,12 +1,12 @@
 """Tests for ExecuteBashObservation truncation functionality."""
 
 from openhands.sdk.llm import TextContent
-from openhands.tools.execute_bash.constants import MAX_CMD_OUTPUT_SIZE
-from openhands.tools.execute_bash.definition import ExecuteBashObservation
-from openhands.tools.execute_bash.metadata import CmdOutputMetadata
+from openhands.tools.terminal.constants import MAX_CMD_OUTPUT_SIZE
+from openhands.tools.terminal.definition import ExecuteBashObservation
+from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
-def test_execute_bash_observation_truncation_under_limit():
+def test_terminal_observation_truncation_under_limit():
     """Test ExecuteBashObservation doesn't truncate when under limit."""
     metadata = CmdOutputMetadata(
         prefix="",
@@ -37,7 +37,7 @@ def test_execute_bash_observation_truncation_under_limit():
     assert result == expected
 
 
-def test_execute_bash_observation_truncation_over_limit():
+def test_terminal_observation_truncation_over_limit():
     """Test ExecuteBashObservation truncates when over limit."""
     metadata = CmdOutputMetadata(
         prefix="",
@@ -74,7 +74,7 @@ def test_execute_bash_observation_truncation_over_limit():
     assert "<response clipped>" in result  # Should contain truncation notice
 
 
-def test_execute_bash_observation_truncation_with_error():
+def test_terminal_observation_truncation_with_error():
     """Test ExecuteBashObservation truncates with error prefix."""
     metadata = CmdOutputMetadata(
         prefix="",
@@ -114,7 +114,7 @@ def test_execute_bash_observation_truncation_with_error():
     assert "<response clipped>" in result  # Should contain truncation notice
 
 
-def test_execute_bash_observation_truncation_exact_limit():
+def test_terminal_observation_truncation_exact_limit():
     """Test ExecuteBashObservation doesn't truncate when exactly at limit."""
     metadata = CmdOutputMetadata(
         prefix="",
@@ -150,7 +150,7 @@ def test_execute_bash_observation_truncation_exact_limit():
     assert not result.endswith("</NOTE>")
 
 
-def test_execute_bash_observation_truncation_with_prefix_suffix():
+def test_terminal_observation_truncation_with_prefix_suffix():
     """Test ExecuteBashObservation truncates with prefix and suffix."""
     metadata = CmdOutputMetadata(
         prefix="[PREFIX] ",

@@ -63,7 +63,7 @@ with APIRemoteWorkspace(
     logger.info(f"Command completed: {result.exit_code}, {result.stdout}")
 
     conversation = Conversation(
-        agent=agent, workspace=workspace, callbacks=[event_callback], visualize=True
+        agent=agent, workspace=workspace, callbacks=[event_callback]
     )
     assert isinstance(conversation, RemoteConversation)
 

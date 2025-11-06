@@ -21,7 +21,7 @@ FNCALL_TOOLS: list[ChatCompletionToolParam] = [
     {
         "type": "function",
         "function": {
-            "name": "bash",
+            "name": "terminal",
             "description": "Execute a bash command in the terminal.",
             "parameters": {
                 "type": "object",
@@ -65,7 +65,7 @@ def test_convert_fncall_to_non_fncall_basic():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -84,12 +84,12 @@ def test_convert_fncall_to_non_fncall_basic():
     # Check that tool calls are converted to text format
     assistant_msg = None
     for msg in non_fncall_messages:
-        if msg.get("role") == "assistant" and "bash" in str(msg.get("content", "")):
+        if msg.get("role") == "assistant" and "terminal" in str(msg.get("content", "")):
             assistant_msg = msg
             break
 
     assert assistant_msg is not None
-    assert "bash" in assistant_msg["content"]
+    assert "terminal" in assistant_msg["content"]
 
 
 def test_convert_non_fncall_to_fncall_basic():
@@ -100,7 +100,7 @@ def test_convert_non_fncall_to_fncall_basic():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command for you.\n\n<function=bash>\n"
+                "I'll run the ls command for you.\n\n<function=terminal>\n"
                 "<parameter=command>ls</parameter>\n</function>"
             ),
         },
@@ -123,7 +123,7 @@ def test_convert_non_fncall_to_fncall_basic():
     assert assistant_msg is not None
     assert "tool_calls" in assistant_msg
     assert len(assistant_msg["tool_calls"]) == 1
-    assert assistant_msg["tool_calls"][0]["function"]["name"] == "bash"
+    assert assistant_msg["tool_calls"][0]["function"]["name"] == "terminal"
 
 
 def test_convert_fncall_to_non_fncall_with_in_context_learning():
@@ -178,7 +178,7 @@ def test_convert_with_multiple_tool_calls():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 },
@@ -186,7 +186,7 @@ def test_convert_with_multiple_tool_calls():
                     "id": "call_456",
                     "type": "function",
                     "function": {
-                        "name": "bash",
+                        "name": "terminal",
                         "arguments": '{"command": "pwd"}',
                     },
                 },
@@ -213,7 +213,7 @@ def test_convert_with_tool_response():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -260,7 +260,7 @@ def test_convert_roundtrip():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -326,7 +326,7 @@ def test_convert_with_malformed_parameters():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command.\n\n<function=execute_bash>\n"
+                "I'll run the ls command.\n\n<function=terminal>\n"
                 "<parameter=invalid_param>ls</parameter>\n</function>"
             ),
         },
@@ -410,7 +410,7 @@ def test_convert_with_system_message():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -474,11 +474,11 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "bash",
+                    "name": "terminal",
                     "arguments": '{"command": "ls -la"}',
                 },
             },
-            ("<function=bash>\n<parameter=command>ls -la</parameter>\n</function>"),
+            ("<function=terminal>\n<parameter=command>ls -la</parameter>\n</function>"),
         ),
         # Multiple parameters with different types
         (

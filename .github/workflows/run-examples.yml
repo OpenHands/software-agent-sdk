@@ -80,6 +80,8 @@ jobs:
                       "examples/01_standalone_sdk/22_anthropic_thinking.py"
                       "examples/01_standalone_sdk/23_responses_reasoning.py"
                       "examples/01_standalone_sdk/24_planning_agent_workflow.py"
+                      "examples/01_standalone_sdk/25_agent_delegation.py"
+                      "examples/01_standalone_sdk/26_custom_visualizer.py"
                       "examples/02_remote_agent_server/01_convo_with_local_agent_server.py"
                       "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py"
                       "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py"

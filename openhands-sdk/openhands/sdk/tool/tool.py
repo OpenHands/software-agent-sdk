@@ -47,7 +47,7 @@ def _camel_to_snake(name: str) -> str:
     """Convert CamelCase to snake_case.
 
     Examples:
-        BashTool -> bash_tool
+        TerminalTool -> bash_tool
         FileEditorTool -> file_editor_tool
         XMLHttpRequest -> xml_http_request
     """
@@ -165,14 +165,15 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                     return [cls(name="finish", ..., executor=FinishExecutor())]
 
         Complex tool with initialization parameters:
-            class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
+            class TerminalTool(ToolDefinition[ExecuteBashAction,
+                ExecuteBashObservation]):
                 @classmethod
                 def create(cls, conv_state, **params):
                     executor = BashExecutor(
                         working_dir=conv_state.workspace.working_dir,
                         **params,
                     )
-                    return [cls(name="bash", ..., executor=executor)]
+                    return [cls(name="terminal", ..., executor=executor)]
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
