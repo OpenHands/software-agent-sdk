@@ -43,9 +43,12 @@ def select_responses_options(
     if include_list:
         out["include"] = include_list
 
-    # Request plaintext reasoning summary
-    effort = llm.reasoning_effort or "high"
-    out["reasoning"] = {"effort": effort, "summary": "detailed"}
+    # Include reasoning effort only if explicitly set
+    if llm.reasoning_effort:
+        out["reasoning"] = {"effort": llm.reasoning_effort}
+        # Optionally include summary if explicitly set (requires verified org)
+        if llm.reasoning_summary:
+            out["reasoning"]["summary"] = llm.reasoning_summary
 
     # Pass through litellm_extra_body if provided
     if llm.litellm_extra_body:

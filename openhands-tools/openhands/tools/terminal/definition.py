@@ -21,11 +21,11 @@ from openhands.sdk.tool import (
     register_tool,
 )
 from openhands.sdk.utils import maybe_truncate
-from openhands.tools.execute_bash.constants import (
+from openhands.tools.terminal.constants import (
     MAX_CMD_OUTPUT_SIZE,
     NO_CHANGE_TIMEOUT_SECONDS,
 )
-from openhands.tools.execute_bash.metadata import CmdOutputMetadata
+from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
 class ExecuteBashAction(Action):
@@ -219,7 +219,7 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
+class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
     """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
 
     @classmethod
@@ -230,8 +230,8 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         executor: ToolExecutor | None = None,
-    ) -> Sequence["BashTool"]:
-        """Initialize BashTool with executor parameters.
+    ) -> Sequence["TerminalTool"]:
+        """Initialize TerminalTool with executor parameters.
 
         Args:
             conv_state: Conversation state to get working directory from.
@@ -246,7 +246,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                          - On Unix-like: tmux if available, otherwise subprocess
         """
         # Import here to avoid circular imports
-        from openhands.tools.execute_bash.impl import BashExecutor
+        from openhands.tools.terminal.impl import BashExecutor
 
         working_dir = conv_state.workspace.working_dir
         if not os.path.isdir(working_dir):
@@ -268,7 +268,7 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 observation_type=ExecuteBashObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
-                    title="bash",
+                    title="terminal",
                     readOnlyHint=False,
                     destructiveHint=True,
                     idempotentHint=False,
@@ -280,4 +280,4 @@ class BashTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
 
 # Automatically register the tool when this module is imported
-register_tool(BashTool.name, BashTool)
+register_tool(TerminalTool.name, TerminalTool)

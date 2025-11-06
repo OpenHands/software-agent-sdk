@@ -70,7 +70,7 @@ def test_conversation_factory_forwards_local_parameters(agent):
         agent=agent,
         max_iteration_per_run=100,
         stuck_detection=False,
-        visualize=False,
+        visualizer=None,
     )
 
     assert isinstance(conversation, LocalConversation)
@@ -87,7 +87,6 @@ def test_conversation_factory_forwards_remote_parameters(
         workspace=remote_workspace,
         max_iteration_per_run=200,
         stuck_detection=True,
-        visualize=True,
     )
 
     assert isinstance(conversation, RemoteConversation)

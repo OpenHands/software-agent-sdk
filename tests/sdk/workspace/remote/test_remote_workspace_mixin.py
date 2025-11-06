@@ -593,7 +593,7 @@ def test_start_bash_command_endpoint_used():
     """Test that the correct /api/bash/start_bash_command endpoint is used.
 
     This is a regression test for issue #866 where the wrong endpoint
-    (/api/bash/execute_bash_command) was being used, causing commands to timeout.
+    (/api/bash/terminal_command) was being used, causing commands to timeout.
     The correct endpoint is /api/bash/start_bash_command which starts a command
     asynchronously and returns immediately with a command ID that can be polled.
     """
@@ -627,11 +627,12 @@ def test_start_bash_command_endpoint_used():
     # Verify the correct endpoint is used for starting the command
     start_kwargs = next(generator)
     assert start_kwargs["method"] == "POST"
-    # This is the critical check - must use start_bash_command, not execute_bash_command
+    # This is the critical check - must use start_bash_command,
+    # not terminal_command
     assert start_kwargs["url"] == "http://localhost:8000/api/bash/start_bash_command"
     assert "start_bash_command" in start_kwargs["url"], (
         "Must use /api/bash/start_bash_command endpoint. "
-        "The /api/bash/execute_bash_command endpoint does not exist and causes "
+        "The /api/bash/terminal_command endpoint does not exist and causes "
         "timeouts."
     )
     assert start_kwargs["json"]["command"] == command

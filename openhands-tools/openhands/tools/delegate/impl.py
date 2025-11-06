@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
+from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
@@ -98,7 +99,8 @@ class DelegateExecutor(ToolExecutor):
         try:
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
-            visualize = getattr(parent_conversation, "visualize", True)
+            parent_visualizer = parent_conversation._visualizer
+
             workspace_path = parent_conversation.state.workspace.working_dir
 
             for agent_id in action.ids:
@@ -109,11 +111,19 @@ class DelegateExecutor(ToolExecutor):
                     ),
                 )
 
+                if isinstance(parent_visualizer, ConversationVisualizerBase):
+                    sub_visualizer = parent_visualizer.__class__(name=agent_id)
+                elif isinstance(parent_visualizer, type) and issubclass(
+                    parent_visualizer, ConversationVisualizerBase
+                ):
+                    sub_visualizer = parent_visualizer(name=agent_id)
+                else:
+                    sub_visualizer = None
+
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
                     workspace=workspace_path,
-                    visualize=visualize,
-                    name_for_visualization=agent_id,
+                    visualize=sub_visualizer,
                 )
 
                 self._sub_agents[agent_id] = sub_conversation

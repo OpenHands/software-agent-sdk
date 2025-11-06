@@ -17,11 +17,11 @@ import pytest
 
 from openhands.sdk import TextContent
 from openhands.sdk.logger import get_logger
-from openhands.tools.execute_bash.definition import (
+from openhands.tools.terminal.definition import (
     ExecuteBashAction,
     ExecuteBashObservation,
 )
-from openhands.tools.execute_bash.terminal import (
+from openhands.tools.terminal.terminal import (
     TerminalCommandStatus,
     create_terminal_session,
 )

@@ -5,12 +5,12 @@ from unittest.mock import patch
 
 import pytest
 
-from openhands.tools.execute_bash.terminal import (
+from openhands.tools.terminal.terminal import (
     SubprocessTerminal,
     TerminalSession,
     TmuxTerminal,
 )
-from openhands.tools.execute_bash.terminal.factory import (
+from openhands.tools.terminal.terminal.factory import (
     _is_tmux_available,
     create_terminal_session,
 )
@@ -52,7 +52,7 @@ def test_unavailable_terminal_type():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Mock tmux as unavailable
         with patch(
-            "openhands.tools.execute_bash.terminal.factory._is_tmux_available",
+            "openhands.tools.terminal.terminal.factory._is_tmux_available",
             return_value=False,
         ):
             with pytest.raises(RuntimeError, match="Tmux is not available"):
@@ -67,7 +67,7 @@ def test_auto_detection_unix(mock_system):
     with tempfile.TemporaryDirectory() as temp_dir:
         # Mock tmux as available
         with patch(
-            "openhands.tools.execute_bash.terminal.factory._is_tmux_available",
+            "openhands.tools.terminal.terminal.factory._is_tmux_available",
             return_value=True,
         ):
             session = create_terminal_session(work_dir=temp_dir)
@@ -77,7 +77,7 @@ def test_auto_detection_unix(mock_system):
 
         # Mock tmux as unavailable
         with patch(
-            "openhands.tools.execute_bash.terminal.factory._is_tmux_available",
+            "openhands.tools.terminal.terminal.factory._is_tmux_available",
             return_value=False,
         ):
             session = create_terminal_session(work_dir=temp_dir)

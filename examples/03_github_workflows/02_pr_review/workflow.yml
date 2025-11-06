@@ -3,13 +3,15 @@
 #  1. Copy this file to .github/workflows/pr-review.yml in your repository
 #  2. Add your LLM_API_KEY to the repository secrets
 #  3. Commit this file to your repository
-#  4. Add the "review-this" label to any PR to trigger the review
+#  4. Trigger the review by either:
+#     - Adding the "review-this" label to any PR, OR
+#     - Requesting openhands-agent as a reviewer
 name: PR Review by OpenHands
 
 on:
-    # Trigger when a label is added to a pull request
+    # Trigger when a label is added or a reviewer is requested
     pull_request:
-        types: [labeled]
+        types: [labeled, review_requested]
 
 permissions:
     contents: read
@@ -18,7 +20,10 @@ permissions:
 
 jobs:
     pr-review:
-        if: github.event.label.name == 'review-this'
+        # Run when review-this label is added OR openhands-agent is requested as reviewer
+        if: |
+            github.event.label.name == 'review-this' ||
+            github.event.requested_reviewer.login == 'openhands-agent'
         runs-on: ubuntu-latest
         env:
             # Configuration (modify these values as needed)
