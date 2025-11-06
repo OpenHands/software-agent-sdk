@@ -66,7 +66,7 @@ class Agent(AgentBase):
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
         >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="BashTool"), Tool(name="FileEditorTool")]
+        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         >>> agent = Agent(llm=llm, tools=tools)
     """
 

@@ -1,4 +1,4 @@
-"""Tests for BashTool subclass."""
+"""Tests for TerminalTool subclass."""
 
 import tempfile
 from uuid import uuid4
@@ -9,10 +9,10 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.execute_bash import (
-    BashTool,
+from openhands.tools.terminal import (
     ExecuteBashAction,
     ExecuteBashObservation,
+    TerminalTool,
 )
 
 
@@ -28,36 +28,36 @@ def _create_test_conv_state(temp_dir: str) -> ConversationState:
 
 
 def test_bash_tool_initialization():
-    """Test that BashTool initializes correctly."""
+    """Test that TerminalTool initializes correctly."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = BashTool.create(conv_state)
+        tools = TerminalTool.create(conv_state)
         tool = tools[0]
 
         # Check that the tool has the correct name and properties
-        assert tool.name == "bash"
+        assert tool.name == "terminal"
         assert tool.executor is not None
         assert tool.action_type == ExecuteBashAction
 
 
 def test_bash_tool_with_username():
-    """Test that BashTool initializes correctly with username."""
+    """Test that TerminalTool initializes correctly with username."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = BashTool.create(conv_state, username="testuser")
+        tools = TerminalTool.create(conv_state, username="testuser")
         tool = tools[0]
 
         # Check that the tool has the correct name and properties
-        assert tool.name == "bash"
+        assert tool.name == "terminal"
         assert tool.executor is not None
         assert tool.action_type == ExecuteBashAction
 
 
 def test_bash_tool_execution():
-    """Test that BashTool can execute commands."""
+    """Test that TerminalTool can execute commands."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = BashTool.create(conv_state)
+        tools = TerminalTool.create(conv_state)
         tool = tools[0]
 
         # Create an action
@@ -73,10 +73,10 @@ def test_bash_tool_execution():
 
 
 def test_bash_tool_working_directory():
-    """Test that BashTool respects the working directory."""
+    """Test that TerminalTool respects the working directory."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = BashTool.create(conv_state)
+        tools = TerminalTool.create(conv_state)
         tool = tools[0]
 
         # Create an action to check current directory
@@ -91,10 +91,10 @@ def test_bash_tool_working_directory():
 
 
 def test_bash_tool_to_openai_tool():
-    """Test that BashTool can be converted to OpenAI tool format."""
+    """Test that TerminalTool can be converted to OpenAI tool format."""
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
-        tools = BashTool.create(conv_state)
+        tools = TerminalTool.create(conv_state)
         tool = tools[0]
 
         # Convert to OpenAI tool format
@@ -102,6 +102,6 @@ def test_bash_tool_to_openai_tool():
 
         # Check the format
         assert openai_tool["type"] == "function"
-        assert openai_tool["function"]["name"] == "bash"
+        assert openai_tool["function"]["name"] == "terminal"
         assert "description" in openai_tool["function"]
         assert "parameters" in openai_tool["function"]

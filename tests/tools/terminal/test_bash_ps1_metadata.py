@@ -1,14 +1,14 @@
 import json
 
-from openhands.tools.execute_bash.constants import (
+from openhands.tools.terminal.constants import (
     CMD_OUTPUT_METADATA_PS1_REGEX,
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
 )
-from openhands.tools.execute_bash.definition import (
+from openhands.tools.terminal.definition import (
     ExecuteBashObservation,
 )
-from openhands.tools.execute_bash.metadata import CmdOutputMetadata
+from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
 def test_ps1_metadata_format():

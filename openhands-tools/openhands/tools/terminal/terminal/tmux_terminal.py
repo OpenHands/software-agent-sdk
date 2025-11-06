@@ -7,9 +7,9 @@ import uuid
 import libtmux
 
 from openhands.sdk.logger import get_logger
-from openhands.tools.execute_bash.constants import HISTORY_LIMIT
-from openhands.tools.execute_bash.metadata import CmdOutputMetadata
-from openhands.tools.execute_bash.terminal import TerminalInterface
+from openhands.tools.terminal.constants import HISTORY_LIMIT
+from openhands.tools.terminal.metadata import CmdOutputMetadata
+from openhands.tools.terminal.terminal import TerminalInterface
 
 
 logger = get_logger(__name__)
@@ -71,7 +71,7 @@ class TmuxTerminal(TerminalInterface):
         # Create a new pane because the initial pane's history limit is (default) 2000
         _initial_window = self.session.active_window
         self.window = self.session.new_window(
-            window_name="bash",
+            window_name="terminal",
             window_shell=window_command,
             start_directory=self.work_dir,
             environment=env,
@@ -170,7 +170,7 @@ class TmuxTerminal(TerminalInterface):
         try:
             content = self.read_screen()
             # If the screen ends with our PS1 prompt, no command is running
-            from openhands.tools.execute_bash.constants import CMD_OUTPUT_PS1_END
+            from openhands.tools.terminal.constants import CMD_OUTPUT_PS1_END
 
             return not content.rstrip().endswith(CMD_OUTPUT_PS1_END.rstrip())
         except Exception:

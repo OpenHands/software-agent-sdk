@@ -1,16 +1,16 @@
-from openhands.tools.execute_bash import BashTool
+from openhands.tools.terminal import TerminalTool
 
 
 def test_to_mcp_tool_detailed_type_validation_bash(mock_conversation_state):
-    """Test detailed type validation for MCP tool schema generation (execute_bash)."""  # noqa: E501
+    """Test detailed type validation for MCP tool schema generation (terminal)."""  # noqa: E501
 
-    execute_bash_tool = BashTool.create(conv_state=mock_conversation_state)
-    assert len(execute_bash_tool) == 1
-    execute_bash_tool = execute_bash_tool[0]
-    assert isinstance(execute_bash_tool, BashTool)
+    terminal_tool = TerminalTool.create(conv_state=mock_conversation_state)
+    assert len(terminal_tool) == 1
+    terminal_tool = terminal_tool[0]
+    assert isinstance(terminal_tool, TerminalTool)
 
-    # Test execute_bash tool schema
-    bash_mcp = execute_bash_tool.to_mcp_tool()
+    # Test terminal tool schema
+    bash_mcp = terminal_tool.to_mcp_tool()
     bash_schema = bash_mcp["inputSchema"]
     bash_props = bash_schema["properties"]
 

@@ -15,12 +15,12 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import get_default_agent
+from openhands.tools.terminal import TerminalTool
 
 
-register_tool("BashTool", BashTool)
+register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
 
 
@@ -113,7 +113,7 @@ def test_conversation_with_different_agent_tools_fails():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation with original agent
         original_tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -139,7 +139,7 @@ def test_conversation_with_different_agent_tools_fails():
         del conversation
 
         # Try to create new conversation with different tools (only bash tool)
-        different_tools = [Tool(name="BashTool")]  # Missing FileEditorTool
+        different_tools = [Tool(name="TerminalTool")]  # Missing FileEditorTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -163,7 +163,7 @@ def test_conversation_with_same_agent_succeeds():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -190,7 +190,7 @@ def test_conversation_with_same_agent_succeeds():
 
         # Create new conversation with same agent configuration
         same_tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm2 = LLM(
@@ -224,7 +224,7 @@ def test_conversation_persistence_lifecycle(mock_completion):
 
     with tempfile.TemporaryDirectory() as temp_dir:
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -292,7 +292,7 @@ def test_agent_resolve_diff_from_deserialized():
     """Test agent's resolve_diff_from_deserialized method."""
     with tempfile.TemporaryDirectory():
         # Create original agent
-        tools = [Tool(name="BashTool")]
+        tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -322,7 +322,7 @@ def test_agent_resolve_diff_allows_security_analyzer_change():
 
     with tempfile.TemporaryDirectory():
         # Create original agent WITH security analyzer
-        tools = [Tool(name="BashTool")]
+        tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -359,7 +359,7 @@ def test_agent_resolve_diff_allows_adding_security_analyzer():
 
     with tempfile.TemporaryDirectory():
         # Create original agent WITHOUT security analyzer
-        tools = [Tool(name="BashTool")]
+        tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -397,7 +397,7 @@ def test_conversation_restart_with_different_security_analyzer():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with security analyzer
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -450,7 +450,7 @@ def test_conversation_restart_adding_security_analyzer():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation WITHOUT security analyzer
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(

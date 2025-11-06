@@ -123,12 +123,12 @@ def test_system_prompt_event_visualize():
 def test_action_event_visualize():
     """Test ActionEvent visualization."""
     action = VisualizerMockAction(command="ls -la", working_dir="/tmp")
-    tool_call = create_tool_call("call_123", "bash", {"command": "ls -la"})
+    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
     event = ActionEvent(
         thought=[TextContent(text="I need to list files")],
         reasoning_content="Let me check the directory contents",
         action=action,
-        tool_name="bash",
+        tool_name="terminal",
         tool_call_id="call_123",
         tool_call=tool_call,
         llm_response_id="response_456",
@@ -159,7 +159,7 @@ def test_observation_event_visualize():
     event = ObservationEvent(
         observation=observation,
         action_id="action_123",
-        tool_name="bash",
+        tool_name="terminal",
         tool_call_id="call_123",
     )
 
@@ -167,7 +167,7 @@ def test_observation_event_visualize():
     assert isinstance(result, Text)
 
     text_content = result.plain
-    assert "Tool: bash" in text_content
+    assert "Tool: terminal" in text_content
     assert "Result:" in text_content
     assert "total 4" in text_content
 
@@ -200,7 +200,7 @@ def test_agent_error_event_visualize():
     event = AgentErrorEvent(
         error="Failed to execute command: permission denied",
         tool_call_id="call_err_1",
-        tool_name="bash",
+        tool_name="terminal",
     )
 
     result = event.visualize

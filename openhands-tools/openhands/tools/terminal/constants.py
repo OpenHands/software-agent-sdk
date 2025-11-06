@@ -20,7 +20,7 @@ TIMEOUT_MESSAGE_TEMPLATE = (
     "send other commands to interact with the current process, send keys "
     '("C-c", "C-z", "C-d") '
     "to interrupt/kill the previous command before sending your new command, "
-    "or use the timeout parameter in execute_bash for future commands."
+    "or use the timeout parameter in terminal for future commands."
 )
 
 # How long to wait with no new output before considering it a no-change timeout
