@@ -291,7 +291,7 @@ class Agent(AgentBase):
         requires_sr = isinstance(self.security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
-        # Raises exception is failed to pass risk field when expected
+        # Raises exception if failed to pass risk field when expected
         if requires_sr and raw is None:
             raise ValueError(
                 f"Failed to provide security_risk field in tool '{tool_name}'"
