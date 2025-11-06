@@ -45,8 +45,8 @@ async def get_desktop_url(
     """
     if desktop_service is None or not hasattr(desktop_service, "get_vnc_url"):
         # Fallback for direct function invocation in tests
-        # Uses legacy accessor so tests can patch this module's symbol
-        desktop_service = _legacy_get_desktop_service()
+        # Use module-level symbol (re-exported) so tests can patch it
+        desktop_service = get_desktop_service()
         if desktop_service is None:
             raise HTTPException(
                 status_code=503,
