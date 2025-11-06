@@ -11,6 +11,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
     ObservationBaseEvent,
     ObservationEvent,
+    SecurityPromptEvent,
     SystemPromptEvent,
     UserRejectObservation,
 )
@@ -22,6 +23,7 @@ __all__ = [
     "Event",
     "LLMConvertibleEvent",
     "SystemPromptEvent",
+    "SecurityPromptEvent",
     "ActionEvent",
     "ObservationEvent",
     "ObservationBaseEvent",

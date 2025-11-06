@@ -14,6 +14,7 @@ from openhands.sdk.event.base import Event, EventID
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     ObservationBaseEvent,
+    SecurityPromptEvent,
 )
 from openhands.sdk.event.types import ToolCallID
 
@@ -180,9 +181,17 @@ class View(BaseModel):
             return True
 
     @staticmethod
-    def from_events(events: Sequence[Event]) -> "View":
+    def from_events(
+        events: Sequence[Event], *, is_security_analyzer_enabled: bool = False
+    ) -> "View":
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
+
+        Args:
+            events: Sequence of events to create the view from
+            is_security_analyzer_enabled: Whether security analyzer is enabled.
+                If True, SecurityPromptEvent instances will be included in the view.
+                If False, they will be excluded from the view.
         """
         forgotten_event_ids: set[EventID] = set()
         condensations: list[Condensation] = []
@@ -205,6 +214,10 @@ class View(BaseModel):
             for event in events
             if event.id not in forgotten_event_ids
             and isinstance(event, LLMConvertibleEvent)
+            and (
+                not isinstance(event, SecurityPromptEvent)
+                or is_security_analyzer_enabled
+            )
         ]
 
         # If we have a summary, insert it at the specified offset.

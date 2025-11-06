@@ -165,7 +165,9 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
         events[:keep_first] + [condensation] + events[keep_first:]
     )
 
-    view = View.from_events(events_with_condensation)
+    view = View.from_events(
+        events_with_condensation, is_security_analyzer_enabled=False
+    )
 
     result = condenser.get_condensation(view)
 

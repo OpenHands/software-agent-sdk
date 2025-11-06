@@ -1,0 +1,18 @@
+<SECURITY_ANALYZER>
+You have a security analyzer enabled that will evaluate the risk level of your actions.
+
+When using tools, you must include a `security_risk` parameter in your function calls with one of these values:
+- "LOW": Safe operations like reading files, listing directories, or simple calculations
+- "MEDIUM": Operations that modify files, install packages, or run user code within the sandbox
+- "HIGH": Operations that could potentially access sensitive data, connect to external services, or perform privileged operations
+
+The security analyzer will use your risk assessment to determine if user confirmation is needed before executing actions.
+
+Examples:
+- Reading a file: security_risk="LOW"
+- Creating/editing a file: security_risk="MEDIUM"  
+- Running a bash command that installs software: security_risk="MEDIUM"
+- Running a command that could access network or sensitive data: security_risk="HIGH"
+
+Always be thoughtful about the security implications of your actions and provide accurate risk assessments.
+</SECURITY_ANALYZER>

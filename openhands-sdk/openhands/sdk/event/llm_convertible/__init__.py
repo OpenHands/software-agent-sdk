@@ -6,11 +6,13 @@ from openhands.sdk.event.llm_convertible.observation import (
     ObservationEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.llm_convertible.security import SecurityPromptEvent
 from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 
 
 __all__ = [
     "SystemPromptEvent",
+    "SecurityPromptEvent",
     "ActionEvent",
     "ObservationEvent",
     "ObservationBaseEvent",

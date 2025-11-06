@@ -281,7 +281,9 @@ def test_condensation_request_always_removed_from_view() -> None:
         CondensationRequest(),
         message_event(content="Event 1"),
     ]
-    view_unhandled = View.from_events(events_unhandled)
+    view_unhandled = View.from_events(
+        events_unhandled, is_security_analyzer_enabled=False
+    )
 
     assert view_unhandled.unhandled_condensation_request is True
     assert len(view_unhandled) == 2  # Only MessageEvents
@@ -363,7 +365,9 @@ def test_most_recent_condensation_property() -> None:
 
     # Test with no condensations
     events_no_condensation: list[Event] = cast(list[Event], message_events.copy())
-    view_no_condensation = View.from_events(events_no_condensation)
+    view_no_condensation = View.from_events(
+        events_no_condensation, is_security_analyzer_enabled=False
+    )
     assert view_no_condensation.most_recent_condensation is None
 
     # Test with single condensation
@@ -395,7 +399,9 @@ def test_most_recent_condensation_property() -> None:
         message_events[2],
         condensation3,
     ]
-    view_multiple = View.from_events(events_multiple)
+    view_multiple = View.from_events(
+        events_multiple, is_security_analyzer_enabled=False
+    )
     assert view_multiple.most_recent_condensation == condensation3
 
 
