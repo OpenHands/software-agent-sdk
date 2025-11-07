@@ -303,7 +303,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
                 headers=self._api_headers,
             )
         except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+            logger.warning(f"Cleanup error: {e}")
         finally:
             self._runtime_id = None
             self._runtime_url = None
