@@ -17,7 +17,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.llm.llm_registry import RegistryEvent
+from openhands.sdk.llm.llm_registry import LLMRegistry, RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -128,11 +128,98 @@ def test_conversation_state_persistence_save_load():
         assert isinstance(loaded_state.events[1], MessageEvent)
         assert loaded_state.agent.llm.model == agent.llm.model
         assert loaded_state.agent.__class__ == agent.__class__
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+        # Test model_dump equality ignoring any additional runtime stats
+        loaded_dump = loaded_state.model_dump(mode="json")
+        original_dump = state.model_dump(mode="json")
+        loaded_stats = loaded_dump.pop("stats", None)
+        original_stats = original_dump.pop("stats", None)
+        assert loaded_dump == original_dump
+        if original_stats is not None:
+            assert loaded_stats is not None
+            loaded_metrics = loaded_stats.get("service_to_metrics", {})
+            for key, metric in original_stats.get("service_to_metrics", {}).items():
+                assert key in loaded_metrics
+                assert loaded_metrics[key] == metric
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
+
+
+def test_conversation_state_profile_reference_mode(tmp_path, monkeypatch):
+    """When inline persistence is disabled we store profile references."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "false")
+
+    registry = LLMRegistry()
+    llm = LLM(model="litellm_proxy/openai/gpt-5-mini", usage_id="agent")
+    registry.save_profile("profile-tests", llm)
+
+    agent = Agent(llm=registry.load_profile("profile-tests"), tools=[])
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890ff")
+    persistence_root = tmp_path / "conv"
+    persistence_dir = LocalConversation.get_persistence_dir(persistence_root, conv_id)
+
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conv_id,
+    )
+
+    base_state = json.loads((Path(persistence_dir) / "base_state.json").read_text())
+    assert base_state["agent"]["llm"] == {"profile_id": "profile-tests"}
+
+    conversation = Conversation(
+        agent=agent,
+        persistence_dir=persistence_root,
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        conversation_id=conv_id,
+    )
+
+    loaded_state = conversation.state
+    assert loaded_state.agent.llm.profile_id == "profile-tests"
+    assert loaded_state.agent.llm.model == llm.model
+
+
+def test_conversation_state_inline_mode_errors_on_profile_reference(
+    tmp_path, monkeypatch
+):
+    """Inline mode raises when encountering a persisted profile reference."""
+
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "false")
+
+    registry = LLMRegistry()
+    llm = LLM(model="litellm_proxy/openai/gpt-5-mini", usage_id="agent")
+    registry.save_profile("profile-inline", llm)
+    agent = Agent(llm=registry.load_profile("profile-inline"), tools=[])
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890aa")
+    persistence_root = tmp_path / "conv"
+    persistence_dir = LocalConversation.get_persistence_dir(persistence_root, conv_id)
+
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conv_id,
+    )
+
+    # Switch env back to inline mode and expect a failure on reload
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "true")
+
+    with pytest.raises(ValueError) as exc:
+        Conversation(
+            agent=agent,
+            persistence_dir=persistence_root,
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            conversation_id=conv_id,
+        )
+
+    assert "OPENHANDS_INLINE_CONVERSATIONS" in str(exc.value)
 
 
 def test_conversation_state_incremental_save():
@@ -187,8 +274,18 @@ def test_conversation_state_incremental_save():
         assert conversation.state.persistence_dir == persist_path_for_state
         loaded_state = conversation._state
         assert len(loaded_state.events) == 2
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+        # Test model_dump equality ignoring any additional runtime stats
+        loaded_dump = loaded_state.model_dump(mode="json")
+        original_dump = state.model_dump(mode="json")
+        loaded_stats = loaded_dump.pop("stats", None)
+        original_stats = original_dump.pop("stats", None)
+        assert loaded_dump == original_dump
+        if original_stats is not None:
+            assert loaded_stats is not None
+            loaded_metrics = loaded_stats.get("service_to_metrics", {})
+            for key, metric in original_stats.get("service_to_metrics", {}).items():
+                assert key in loaded_metrics
+                assert loaded_metrics[key] == metric
 
 
 def test_conversation_state_event_file_scanning():
