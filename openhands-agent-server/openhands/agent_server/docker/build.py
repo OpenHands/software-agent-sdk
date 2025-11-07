@@ -43,6 +43,63 @@ PlatformType = Literal["linux/amd64", "linux/arm64"]
 # --- helpers ---
 
 
+def _default_sdk_project_root() -> Path:
+    """
+    Resolve top-level OpenHands UV workspace root:
+
+    Order:
+      1) Walk up from CWD
+      2) Walk up from this file location
+
+    Reject anything in site/dist-packages (installed wheels).
+    """
+    site_markers = ("site-packages", "dist-packages")
+
+    def validate(p: Path, src: str) -> Path:
+        if any(s in str(p) for s in site_markers):
+            raise RuntimeError(
+                f"{src}: points inside site-packages; need the source checkout."
+            )
+        root = _climb(p) or p
+        if not _is_workspace_root(root):
+            raise RuntimeError(
+                f"{src}: couldn't find the OpenHands UV workspace root "
+                f"starting at '{p}'.\n\n"
+                "Expected setup (repo root):\n"
+                "  pyproject.toml  # has [tool.uv.workspace] with members\n"
+                "  openhands-sdk/pyproject.toml\n"
+                "  openhands-tools/pyproject.toml\n"
+                "  openhands-workspace/pyproject.toml\n"
+                "  openhands-agent-server/pyproject.toml\n\n"
+                "Fix:\n"
+                "  - Run from anywhere inside the repo."
+            )
+        return root
+
+    if root := _climb(Path.cwd()):
+        return validate(root, "CWD discovery")
+
+    try:
+        here = Path(__file__).resolve()
+        if root := _climb(here):
+            return validate(root, "__file__ discovery")
+    except NameError:
+        pass
+
+    # Final, user-facing guidance
+    raise RuntimeError(
+        "Could not resolve the OpenHands UV workspace root.\n\n"
+        "Expected repo layout:\n"
+        "  pyproject.toml  (with [tool.uv.workspace].members "
+        "including openhands/* subprojects)\n"
+        "  openhands-sdk/pyproject.toml\n"
+        "  openhands-tools/pyproject.toml\n"
+        "  openhands-workspace/pyproject.toml\n"
+        "  openhands-agent-server/pyproject.toml\n\n"
+        "Run this from inside the repo."
+    )
+
+
 def _run(
     cmd: list[str],
     cwd: str | None = None,
@@ -256,63 +313,6 @@ def _climb(start: Path) -> Path | None:
         if cur.parent == cur:
             return None
         cur = cur.parent
-
-
-def _default_sdk_project_root() -> Path:
-    """
-    Resolve top-level OpenHands UV workspace root:
-
-    Order:
-      1) Walk up from CWD
-      2) Walk up from this file location
-
-    Reject anything in site/dist-packages (installed wheels).
-    """
-    site_markers = ("site-packages", "dist-packages")
-
-    def validate(p: Path, src: str) -> Path:
-        if any(s in str(p) for s in site_markers):
-            raise RuntimeError(
-                f"{src}: points inside site-packages; need the source checkout."
-            )
-        root = _climb(p) or p
-        if not _is_workspace_root(root):
-            raise RuntimeError(
-                f"{src}: couldn't find the OpenHands UV workspace root "
-                f"starting at '{p}'.\n\n"
-                "Expected setup (repo root):\n"
-                "  pyproject.toml  # has [tool.uv.workspace] with members\n"
-                "  openhands-sdk/pyproject.toml\n"
-                "  openhands-tools/pyproject.toml\n"
-                "  openhands-workspace/pyproject.toml\n"
-                "  openhands-agent-server/pyproject.toml\n\n"
-                "Fix:\n"
-                "  - Run from anywhere inside the repo."
-            )
-        return root
-
-    if root := _climb(Path.cwd()):
-        return validate(root, "CWD discovery")
-
-    try:
-        here = Path(__file__).resolve()
-        if root := _climb(here):
-            return validate(root, "__file__ discovery")
-    except NameError:
-        pass
-
-    # Final, user-facing guidance
-    raise RuntimeError(
-        "Could not resolve the OpenHands UV workspace root.\n\n"
-        "Expected repo layout:\n"
-        "  pyproject.toml  (with [tool.uv.workspace].members "
-        "including openhands/* subprojects)\n"
-        "  openhands-sdk/pyproject.toml\n"
-        "  openhands-tools/pyproject.toml\n"
-        "  openhands-workspace/pyproject.toml\n"
-        "  openhands-agent-server/pyproject.toml\n\n"
-        "Run this from inside the repo."
-    )
 
 
 class BuildOptions(BaseModel):
