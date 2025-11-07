@@ -349,7 +349,7 @@ def test_llm_completion_non_function_call_mode(mock_completion):
     tools = list(_MockTool.create())
 
     # Verify that tools should be mocked (non-function call path)
-    cc_tools = [t.to_openai_tool() for t in tools]
+    cc_tools = [t.to_openai_tool(add_security_risk_prediction=False) for t in tools]
     assert llm.should_mock_tool_calls(cc_tools)
 
     # Call completion - this should go through the prompt-based tool calling path

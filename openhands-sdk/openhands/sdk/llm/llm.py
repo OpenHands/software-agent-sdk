@@ -433,6 +433,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
         **kwargs,
     ) -> LLMResponse:
         """Generate a completion from the language model.
@@ -466,7 +467,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Convert Tool objects to ChatCompletionToolParam once here
         cc_tools: list[ChatCompletionToolParam] = []
         if tools:
-            cc_tools = [t.to_openai_tool() for t in tools]
+            cc_tools = [
+                t.to_openai_tool(
+                    add_security_risk_prediction=add_security_risk_prediction
+                )
+                for t in tools
+            ]
 
         use_mock_tools = self.should_mock_tool_calls(cc_tools)
         if use_mock_tools:
@@ -566,6 +572,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         include: list[str] | None = None,
         store: bool | None = None,
         _return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
         **kwargs,
     ) -> LLMResponse:
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
@@ -582,7 +589,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         # Convert Tool objects to Responses ToolParam
         # (Responses path always supports function tools)
-        resp_tools = [t.to_responses_tool() for t in tools] if tools else None
+        resp_tools = (
+            [
+                t.to_responses_tool(
+                    add_security_risk_prediction=add_security_risk_prediction
+                )
+                for t in tools
+            ]
+            if tools
+            else None
+        )
 
         # Normalize/override Responses kwargs consistently
         call_kwargs = select_responses_options(

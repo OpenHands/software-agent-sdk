@@ -51,6 +51,7 @@ class RouterLLM(LLM):
         messages: list[Message],
         tools: Sequence[ToolDefinition] | None = None,
         return_metrics: bool = False,
+        add_security_risk_prediction: bool = False,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -68,6 +69,7 @@ class RouterLLM(LLM):
             messages=messages,
             tools=tools,
             _return_metrics=return_metrics,
+            add_security_risk_prediction=add_security_risk_prediction,
             **kwargs,
         )
 
