@@ -28,7 +28,7 @@ jobs:
               uses: lewagon/wait-on-check-action@v1.4.1
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
-                  check-name: Build & Push (python-amd64)
+                  check-name: Consolidate Build Information
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
                   wait-interval: 10
 
