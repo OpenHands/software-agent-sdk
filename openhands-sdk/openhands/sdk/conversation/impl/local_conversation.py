@@ -80,6 +80,9 @@ class LocalConversation(BaseConversation):
                        - None: No visualization
             stuck_detection: Whether to enable stuck detection
         """
+        # Initialize the registry early so profile references resolve during resume.
+        self.llm_registry = LLMRegistry()
+
         self.agent = agent
         if isinstance(workspace, str):
             workspace = LocalWorkspace(working_dir=workspace)
@@ -101,6 +104,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            llm_registry=self.llm_registry,
         )
 
         # Default callback: persist every event to state
@@ -139,10 +143,15 @@ class LocalConversation(BaseConversation):
             self.agent.init_state(self._state, on_event=self._on_event)
 
         # Register existing llms in agent
-        self.llm_registry = LLMRegistry()
         self.llm_registry.subscribe(self._state.stats.register_llm)
         for llm in list(self.agent.get_all_llms()):
             self.llm_registry.add(llm)
+
+        # Eagerly register LLM profiles from disk.
+        try:
+            self.llm_registry.register_profiles()
+        except Exception:
+            logger.debug("No LLM profiles registered")
 
         # Initialize secrets if provided
         if secrets:
@@ -180,12 +189,25 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    def switch_llm(self, profile_id: str) -> None:
+        """Switch the active agent LLM to ``profile_id`` at runtime."""
+
+        with self._state:
+            self._state.switch_agent_llm(profile_id, registry=self.llm_registry)
+            self.agent = self._state.agent
+        logger.info(
+            "Switched conversation %s to profile %s",
+            self._state.id,
+            profile_id,
+        )
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message) -> None:
         """Send a message to the agent.
 
         Args:
             message: Either a string (which will be converted to a user message)
+
                     or a Message object
         """
         # Convert string to Message if needed

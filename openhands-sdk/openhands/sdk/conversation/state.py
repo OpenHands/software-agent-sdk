@@ -2,7 +2,7 @@
 import json
 from collections.abc import Sequence
 from enum import Enum
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import AliasChoices, Field, PrivateAttr
 
@@ -17,6 +17,16 @@ from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObserva
 from openhands.sdk.event.base import Event
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm_registry import LLMRegistry
+
+
+from openhands.sdk.persistence.settings import (
+    INLINE_CONTEXT_KEY,
+    should_inline_conversations,
+)
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -133,7 +143,13 @@ class ConversationState(OpenHandsModel):
         """
         Persist base state snapshot (no events; events are file-backed).
         """
-        payload = self.model_dump_json(exclude_none=True)
+        inline_mode = should_inline_conversations()
+        # Pass the inline preference down so LLM serialization knows whether to
+        # inline credentials or persist a profile reference.
+        payload = self.model_dump_json(
+            exclude_none=True,
+            context={INLINE_CONTEXT_KEY: inline_mode},
+        )
         fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
@@ -146,11 +162,16 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        llm_registry: "LLMRegistry | None" = None,
     ) -> "ConversationState":
         """
         If base_state.json exists: resume (attach EventLog,
             reconcile agent, enforce id).
         Else: create fresh (agent required), persist base, and return.
+
+        Args:
+            llm_registry: Optional registry used to expand profile references when
+                conversations persist profile IDs instead of inline credentials.
         """
         file_store = (
             LocalFileStore(persistence_dir) if persistence_dir else InMemoryFileStore()
@@ -161,9 +182,29 @@ class ConversationState(OpenHandsModel):
         except FileNotFoundError:
             base_text = None
 
+        inline_mode = should_inline_conversations()
+        # Keep validation and serialization in sync when loading previously
+        # persisted state.
+        context = {INLINE_CONTEXT_KEY: inline_mode}
+
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            base_payload = json.loads(base_text)
+            if inline_mode:
+                if _contains_profile_reference(base_payload):
+                    raise ValueError(
+                        "Persisted base state contains LLM profile references but "
+                        "OPENHANDS_INLINE_CONVERSATIONS is enabled."
+                    )
+            else:
+                registry = llm_registry
+                if registry is None:
+                    from openhands.sdk.llm.llm_registry import LLMRegistry
+
+                    registry = LLMRegistry()
+                _expand_profile_references(base_payload, registry)
+
+            state = cls.model_validate(base_payload, context=context)
 
             # Enforce conversation id match
             if state.id != id:
@@ -260,6 +301,32 @@ class ConversationState(OpenHandsModel):
                         f"State change callback failed for field {name}", exc_info=True
                     )
 
+    def switch_agent_llm(self, profile_id: str, *, registry: "LLMRegistry") -> None:
+        """Swap the agent's primary LLM to ``profile_id`` using ``registry``."""
+
+        if should_inline_conversations():
+            raise RuntimeError(
+                "LLM switching requires OPENHANDS_INLINE_CONVERSATIONS to be false."
+            )
+
+        if self.execution_status not in (
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.FINISHED,
+        ):
+            raise RuntimeError("Agent must be idle before switching LLM profiles.")
+
+        usage_id = self.agent.llm.usage_id
+        try:
+            new_llm = registry.switch_profile(usage_id, profile_id)
+        except FileNotFoundError as exc:
+            raise ValueError(str(exc)) from exc
+        except KeyError as exc:
+            raise ValueError(str(exc)) from exc
+
+        self.agent = self.agent._clone_with_llm(new_llm)
+        if self.execution_status == ConversationExecutionStatus.FINISHED:
+            self.execution_status = ConversationExecutionStatus.IDLE
+
     @staticmethod
     def get_unmatched_actions(events: Sequence[Event]) -> list[ActionEvent]:
         """Find actions in the event history that don't have matching observations.
@@ -334,3 +401,36 @@ class ConversationState(OpenHandsModel):
         Return True if the lock is currently held by the calling thread.
         """
         return self._lock.owned()
+
+
+def _contains_profile_reference(node: Any) -> bool:
+    """Return True if ``node`` contains an LLM profile reference payload."""
+
+    if isinstance(node, dict):
+        if "profile_id" in node and "model" not in node:
+            return True
+        return any(_contains_profile_reference(value) for value in node.values())
+
+    if isinstance(node, list):
+        return any(_contains_profile_reference(item) for item in node)
+
+    return False
+
+
+def _expand_profile_references(node: Any, registry: "LLMRegistry") -> None:
+    """Inline LLM payloads for any profile references contained in ``node``."""
+
+    if isinstance(node, dict):
+        if "profile_id" in node and "model" not in node:
+            profile_id = node["profile_id"]
+            llm = registry.load_profile(profile_id)
+            expanded = llm.model_dump(exclude_none=True)
+            expanded["profile_id"] = profile_id
+            node.clear()
+            node.update(expanded)
+            return
+        for value in node.values():
+            _expand_profile_references(value, registry)
+    elif isinstance(node, list):
+        for item in node:
+            _expand_profile_references(item, registry)
