@@ -75,7 +75,7 @@ def get_latest_commit_sha(
 server_image_sha = os.getenv("GITHUB_SHA") or get_latest_commit_sha(
     "OpenHands/software-agent-sdk", "main"
 )
-server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python"
+server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-amd64"
 logger.info(f"Using server image: {server_image}")
 
 with APIRemoteWorkspace(
