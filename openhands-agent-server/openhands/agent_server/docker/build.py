@@ -313,10 +313,6 @@ _DEFAULT_PACKAGE_VERSION = _package_version()
 
 class BuildOptions(BaseModel):
     base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
-    sdk_project_root: Path = Field(
-        default_factory=_default_sdk_project_root,
-        description="Path to OpenHands SDK root. Auto if None.",
-    )
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
@@ -330,6 +326,13 @@ class BuildOptions(BaseModel):
         default=None,
         description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
     )
+    include_base_tag: bool = Field(
+        default=True,
+        description=(
+            "Whether to include the automatically generated base tag "
+            "based on git SHA and base image name in all_tags output."
+        ),
+    )
     include_versioned_tag: bool = Field(
         default=False,
         description=(
@@ -342,6 +345,10 @@ class BuildOptions(BaseModel):
         description="Git commit SHA.We will need it to tag the built image.",
     )
     git_ref: str = Field(default=_DEFAULT_GIT_REF)
+    sdk_project_root: Path = Field(
+        default_factory=_default_sdk_project_root,
+        description="Path to OpenHands SDK root. Auto if None.",
+    )
     sdk_version: str = Field(
         default=_DEFAULT_PACKAGE_VERSION,
         description=(
@@ -402,10 +409,8 @@ class BuildOptions(BaseModel):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
 
-        # Always include base tag as default
-        tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
-
-        # Only include versioned tag if requested (for releases)
+        if self.include_base_tag:
+            tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
         if self.include_versioned_tag:
             tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
 
