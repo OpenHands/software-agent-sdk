@@ -308,8 +308,16 @@ class Agent(AgentBase):
         return False
 
     def _extract_security_risk(
-        self, arguments: dict, tool_name: str
+        self,
+        arguments: dict,
+        tool_name: str,
+        readOnlyHint: bool,
     ) -> risk.SecurityRisk:
+        # Default risk value for action event
+        # Tool is marked as read-only so security risk can be ignored
+        if readOnlyHint:
+            return risk.SecurityRisk.UNKNOWN
+
         requires_sr = isinstance(self.security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
@@ -380,7 +388,11 @@ class Agent(AgentBase):
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
-            security_risk = self._extract_security_risk(arguments, tool.name)
+            security_risk = self._extract_security_risk(
+                arguments,
+                tool.name,
+                tool.annotations.readOnlyHint if tool.annotations else False,
+            )
             assert "security_risk" not in arguments, (
                 "Unexpected 'security_risk' key found in tool arguments"
             )
