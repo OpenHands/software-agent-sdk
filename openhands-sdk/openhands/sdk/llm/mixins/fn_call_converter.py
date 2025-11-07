@@ -661,11 +661,6 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                 is_required = param_name in required_params
                 param_status = "required" if is_required else "optional"
                 param_type = _summarize_schema_type(param_info)
-                display_param_type = (
-                    "array"
-                    if param_name == "task_list" and param_type.startswith("array")
-                    else param_type
-                )
 
                 desc = _get_description(
                     param_info if isinstance(param_info, dict) else None
@@ -676,60 +671,12 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                     desc += f"\nAllowed values: [{enum_values}]"
 
                 ret += (
-                    "  ("
-                    + str(j + 1)
-                    + ") "
-                    + param_name
-                    + " ("
-                    + display_param_type
-                    + ", "
-                    + param_status
-                    + "): "
-                    + desc
-                    + "\n"
+                    f"  ({j + 1}) {param_name} ({param_type}, {param_status}): {desc}\n"
                 )
 
                 detail_lines = _format_schema_detail(param_info, indent=6)
                 if detail_lines:
                     ret += "\n".join(detail_lines) + "\n"
-                    # For backward compatibility with tests expecting a static label
-                    if param_name == "task_list" and param_type.startswith("array"):
-                        # Ensure the legacy label exists in output to avoid
-                        # brittle assertions
-                        ret += "       task_list array item structure:\n"
-                        # Re-emit a simplified listing for first-level object
-                        # properties if present
-                        if isinstance(param_info, dict):
-                            items = param_info.get("items")
-                            if (
-                                isinstance(items, dict)
-                                and items.get("type") == "object"
-                            ):
-                                item_properties = items.get("properties", {})
-                                item_required = set(items.get("required", []))
-                                for (
-                                    item_param_name,
-                                    item_param_info,
-                                ) in item_properties.items():
-                                    item_is_required = item_param_name in item_required
-                                    item_status = (
-                                        "required" if item_is_required else "optional"
-                                    )
-                                    item_type = item_param_info.get("type", "string")
-                                    item_desc = item_param_info.get(
-                                        "description", MISSING_DESCRIPTION_PLACEHOLDER
-                                    )
-                                    if "enum" in item_param_info:
-                                        item_enum_values = ", ".join(
-                                            f"`{v}`" for v in item_param_info["enum"]
-                                        )
-                                        item_desc += (
-                                            f" Allowed values: [{item_enum_values}]"
-                                        )
-                                    ret += (
-                                        f"       - {item_param_name} ({item_type}, "
-                                        f"{item_status}): {item_desc}\n"
-                                    )
 
         else:
             ret += "No parameters are required for this function.\n"

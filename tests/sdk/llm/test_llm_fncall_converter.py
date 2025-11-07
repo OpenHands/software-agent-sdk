@@ -531,24 +531,24 @@ def test_convert_tools_to_description_array_items():
         "Allowed values: [`view`, `plan`]\n"
     )
     assert expected_command_line in description
+    # Top-level parameter line should reflect the summarized array type
     assert (
-        "  (2) task_list (array, optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
+        "  (2) task_list (array[object], optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
         in description
     )
-    assert "       task_list array item structure:\n" in description
+    # Nested structure should be shown via the generic recursive formatter
+    assert "Object properties:" in description
+    assert "- title (string, required): A brief title for the task." in description
     assert (
-        "       - title (string, required): A brief title for the task.\n"
+        "- notes (string, optional): Additional details or notes about the task."
         in description
     )
     assert (
-        "       - notes (string, optional): Additional details or notes about the task.\n"  # noqa: E501
+        "- status (string, optional): The current status of the task. One of 'todo', 'in_progress', or 'done'."  # noqa: E501
         in description
     )
-    expected_status_line = (
-        "       - status (string, optional): The current status of the task. "
-        "One of 'todo', 'in_progress', or 'done'. Allowed values: [`todo`, `in_progress`, `done`]\n"  # noqa: E501
-    )
-    assert expected_status_line in description
+    # Nested enum values are described inline in the field description; no separate
+    # "Allowed values" line is required.
 
 
 @pytest.mark.parametrize(
