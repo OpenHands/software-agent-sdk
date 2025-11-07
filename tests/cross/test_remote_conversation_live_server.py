@@ -147,7 +147,6 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
         messages,
         tools,
         return_metrics=False,
-        add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
         from openhands.sdk.llm.llm_response import LLMResponse
@@ -448,7 +447,6 @@ def test_conversation_stats_with_live_server(
         messages,
         tools,
         return_metrics=False,
-        add_security_risk_prediction=False,
         **kwargs,
     ):  # type: ignore[no-untyped-def]
         from openhands.sdk.llm.llm_response import LLMResponse

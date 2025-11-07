@@ -48,7 +48,7 @@ def test_to_responses_tool_security_gating():
         observation_type=None,
         annotations=ToolAnnotations(readOnlyHint=True),
     )
-    t = readonly.to_responses_tool(add_security_risk_prediction=True)
+    t = readonly.to_responses_tool()
     params = t["parameters"]
     assert isinstance(params, dict)
     props = params.get("properties") or {}
@@ -62,7 +62,7 @@ def test_to_responses_tool_security_gating():
         observation_type=None,
         annotations=ToolAnnotations(readOnlyHint=False),
     )
-    t2 = writable.to_responses_tool(add_security_risk_prediction=True)
+    t2 = writable.to_responses_tool()
     params2 = t2["parameters"]
     assert isinstance(params2, dict)
     props2 = params2.get("properties") or {}
@@ -76,7 +76,7 @@ def test_to_responses_tool_security_gating():
         observation_type=None,
         annotations=None,
     )
-    t3 = noflag.to_responses_tool(add_security_risk_prediction=False)
+    t3 = noflag.to_responses_tool()
     params3 = t3["parameters"]
     assert isinstance(params3, dict)
     props3 = params3.get("properties") or {}

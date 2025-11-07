@@ -242,7 +242,6 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
     def to_openai_tool(
         self,
-        add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> ChatCompletionToolParam:
         """Convert a Tool to an OpenAI tool.
@@ -251,12 +250,6 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         from the MCP tool input schema, and pass it to the parent method.
         It will use the .model_fields from this pydantic model to
         generate the OpenAI-compatible tool schema.
-
-        Args:
-            add_security_risk_prediction: Whether to add a `security_risk` field
-                to the action schema for LLM to predict. This is useful for
-                tools that may have safety risks, so the LLM can reason about
-                the risk level before calling the tool.
         """
         if action_type is not None:
             raise ValueError(
@@ -266,6 +259,5 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         assert self.name == self.mcp_tool.name
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         return super().to_openai_tool(
-            add_security_risk_prediction=add_security_risk_prediction,
             action_type=mcp_action_type,
         )

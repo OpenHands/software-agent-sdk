@@ -66,7 +66,7 @@ def test_mcp_tool_to_openai_with_security_risk():
     tool = tools[0]
 
     # Generate OpenAI tool schema WITH security risk prediction
-    openai_tool = tool.to_openai_tool(add_security_risk_prediction=True)
+    openai_tool = tool.to_openai_tool()
 
     function_params = openai_tool["function"]["parameters"]  # type: ignore[typeddict-item]
     properties = function_params["properties"]

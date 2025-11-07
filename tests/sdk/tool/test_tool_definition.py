@@ -579,9 +579,7 @@ class TestTool:
         )
 
         # Test read-only tool - security_risk should be added when enabled
-        readonly_openai_tool = readonly_tool.to_openai_tool(
-            add_security_risk_prediction=True
-        )
+        readonly_openai_tool = readonly_tool.to_openai_tool()
         readonly_function = readonly_openai_tool["function"]
         assert "parameters" in readonly_function
         readonly_params = readonly_function["parameters"]
@@ -590,35 +588,27 @@ class TestTool:
         )  # Included for read-only tools too
 
         # Test writable tool - security_risk SHOULD be added
-        writable_openai_tool = writable_tool.to_openai_tool(
-            add_security_risk_prediction=True
-        )
+        writable_openai_tool = writable_tool.to_openai_tool()
         writable_function = writable_openai_tool["function"]
         assert "parameters" in writable_function
         writable_params = writable_function["parameters"]
         assert "security_risk" in writable_params["properties"]
 
         # Test tool with no annotations - security_risk SHOULD be added
-        no_annotations_openai_tool = no_annotations_tool.to_openai_tool(
-            add_security_risk_prediction=True
-        )
+        no_annotations_openai_tool = no_annotations_tool.to_openai_tool()
         no_annotations_function = no_annotations_openai_tool["function"]
         assert "parameters" in no_annotations_function
         no_annotations_params = no_annotations_function["parameters"]
         assert "security_risk" in no_annotations_params["properties"]
 
         # Test that when add_security_risk_prediction=False, no security_risk is added
-        readonly_no_risk = readonly_tool.to_openai_tool(
-            add_security_risk_prediction=False
-        )
+        readonly_no_risk = readonly_tool.to_openai_tool()
         readonly_no_risk_function = readonly_no_risk["function"]
         assert "parameters" in readonly_no_risk_function
         readonly_no_risk_params = readonly_no_risk_function["parameters"]
         assert "security_risk" not in readonly_no_risk_params["properties"]
 
-        writable_no_risk = writable_tool.to_openai_tool(
-            add_security_risk_prediction=False
-        )
+        writable_no_risk = writable_tool.to_openai_tool()
         writable_no_risk_function = writable_no_risk["function"]
         assert "parameters" in writable_no_risk_function
         writable_no_risk_params = writable_no_risk_function["parameters"]
@@ -643,7 +633,7 @@ class TestTool:
             observation_type=ToolMockObservation,
         )
 
-        openai_tool = tool.to_openai_tool(add_security_risk_prediction=True)
+        openai_tool = tool.to_openai_tool()
         function_chunk = openai_tool["function"]
         assert "parameters" in function_chunk
         function_params = function_chunk["parameters"]
@@ -667,9 +657,7 @@ class TestTool:
             annotations=writable_annotations,
         )
 
-        writable_openai_tool = writable_tool.to_openai_tool(
-            add_security_risk_prediction=True
-        )
+        writable_openai_tool = writable_tool.to_openai_tool()
         writable_function_chunk = writable_openai_tool["function"]
         assert "parameters" in writable_function_chunk
         writable_function_params = writable_function_chunk["parameters"]

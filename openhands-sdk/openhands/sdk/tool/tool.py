@@ -360,72 +360,42 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
     def _get_tool_schema(
         self,
-        add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
-
-        if add_security_risk_prediction:
-            # Always include security_risk field when prediction is enabled
-            # This ensures consistent tool schemas regardless of tool type
-            # (including read-only tools)
-            action_type_with_risk = _create_action_type_with_risk(action_type)
-            schema = action_type_with_risk.to_mcp_schema()
-        else:
-            schema = action_type.to_mcp_schema()
-
+        action_type_with_risk = _create_action_type_with_risk(action_type)
+        schema = action_type_with_risk.to_mcp_schema()
         return schema
 
     def to_openai_tool(
         self,
-        add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> ChatCompletionToolParam:
-        """Convert a Tool to an OpenAI tool.
-
-        Args:
-            add_security_risk_prediction: Whether to include the `security_risk`
-                field in the tool schema. When enabled, the field is included
-                for all tool types (including read-only tools).
-            action_type: Optionally override the action_type to use for the schema.
-                This is useful for MCPTool to use a dynamically created action type
-                based on the tool's input schema.
-        """
+        """Convert a Tool to an OpenAI tool."""
         return ChatCompletionToolParam(
             type="function",
             function=ChatCompletionToolParamFunctionChunk(
                 name=self.name,
                 description=self.description,
-                parameters=self._get_tool_schema(
-                    add_security_risk_prediction, action_type
-                ),
+                parameters=self._get_tool_schema(action_type),
             ),
         )
 
     def to_responses_tool(
         self,
-        add_security_risk_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> FunctionToolParam:
         """Convert a Tool to a Responses API function tool (LiteLLM typed).
 
         For Responses API, function tools expect top-level keys:
         { "type": "function", "name": ..., "description": ..., "parameters": ... }
-
-        Args:
-            add_security_risk_prediction: Whether to include the `security_risk`
-                field in the tool schema. When enabled, the field is included
-                for all tool types (including read-only tools).
-            action_type: Optionally override the action_type to use for the schema.
         """
 
         return {
             "type": "function",
             "name": self.name,
             "description": self.description,
-            "parameters": self._get_tool_schema(
-                add_security_risk_prediction, action_type
-            ),
+            "parameters": self._get_tool_schema(action_type),
             "strict": False,
         }
 

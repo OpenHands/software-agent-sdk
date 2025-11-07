@@ -99,10 +99,7 @@ class Agent(AgentBase):
                 source="agent",
                 system_prompt=TextContent(text=self.system_message),
                 # Always include security_risk field in tools
-                tools=[
-                    t.to_openai_tool(add_security_risk_prediction=True)
-                    for t in self.tools_map.values()
-                ],
+                tools=[t.to_openai_tool() for t in self.tools_map.values()],
             )
             on_event(event)
 
@@ -178,7 +175,6 @@ class Agent(AgentBase):
                     tools=list(self.tools_map.values()),
                     include=None,
                     store=False,
-                    add_security_risk_prediction=True,
                     extra_body=self.llm.litellm_extra_body,
                 )
             else:
@@ -186,7 +182,6 @@ class Agent(AgentBase):
                     messages=_messages,
                     tools=list(self.tools_map.values()),
                     extra_body=self.llm.litellm_extra_body,
-                    add_security_risk_prediction=True,
                 )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
