@@ -149,6 +149,29 @@ def _base_slug(image: str, max_len: int = 64) -> str:
     return kept + suffix
 
 
+def get_git_short_sha(repo_path: str | Path | None = None) -> str:
+    """
+    Get the short SHA (first 7 chars) of the current git commit.
+
+    Args:
+        repo_path: Path to the git repository. If None, uses current working directory.
+
+    Returns:
+        7-character short SHA, or "unknown" if git info cannot be determined.
+
+    Example:
+        >>> get_git_short_sha("/path/to/repo")
+        'c118297'
+    """
+    cwd = str(repo_path) if repo_path else None
+    try:
+        result = _run(["git", "rev-parse", "--verify", "HEAD"], cwd=cwd)
+        git_sha = result.stdout.strip()
+        return git_sha[:7] if git_sha else "unknown"
+    except subprocess.CalledProcessError:
+        return "unknown"
+
+
 def _git_info() -> tuple[str, str, str]:
     """
     Get git info (ref, sha, short_sha) for the current working directory.
