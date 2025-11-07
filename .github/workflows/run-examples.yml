@@ -28,7 +28,7 @@ jobs:
               uses: lewagon/wait-on-check-action@v1.4.1
               with:
                   ref: ${{ github.ref }}
-                  check-name: Agent Server
+                  check-name: consolidate-build-info
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
                   wait-interval: 10
 
