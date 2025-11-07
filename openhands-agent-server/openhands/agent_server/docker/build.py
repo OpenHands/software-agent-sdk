@@ -149,9 +149,9 @@ def _base_slug(image: str, max_len: int = 64) -> str:
     return kept + suffix
 
 
-def _git_info() -> tuple[str, str, str]:
+def _git_info() -> tuple[str, str]:
     """
-    Get git info (ref, sha, short_sha) for the current working directory.
+    Get git info (ref, sha) for the current working directory.
 
     Priority order for SHA:
     1. SDK_SHA - Explicit override (e.g., for submodule builds)
@@ -169,7 +169,6 @@ def _git_info() -> tuple[str, str, str]:
             git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
         except subprocess.CalledProcessError:
             git_sha = "unknown"
-    short_sha = git_sha[:7] if git_sha != "unknown" else "unknown"
 
     git_ref = os.environ.get("SDK_REF") or os.environ.get("GITHUB_REF")
     if not git_ref:
@@ -179,7 +178,7 @@ def _git_info() -> tuple[str, str, str]:
             ).stdout.strip()
         except subprocess.CalledProcessError:
             git_ref = "unknown"
-    return git_ref, git_sha, short_sha
+    return git_ref, git_sha
 
 
 def _package_version() -> str:
@@ -204,7 +203,7 @@ def _package_version() -> str:
         return "unknown"
 
 
-GIT_REF, GIT_SHA, SHORT_SHA = _git_info()
+GIT_REF, GIT_SHA = _git_info()
 PACKAGE_VERSION = _package_version()
 
 
@@ -337,6 +336,24 @@ class BuildOptions(BaseModel):
             "output. Should only be True for release builds."
         ),
     )
+    git_sha: str = Field(
+        default=GIT_SHA,
+        description="Git commit SHA.We will need it to tag the built image.",
+    )
+    git_ref: str = Field(default=GIT_REF)
+    sdk_version: str = Field(
+        default=PACKAGE_VERSION,
+        description=(
+            "SDK package version. "
+            "We will need it to tag the built image. "
+            "Note this is only used if include_versioned_tag is True "
+            "(e.g., at each release)."
+        ),
+    )
+
+    @property
+    def short_sha(self) -> str:
+        return self.git_sha[:7] if self.git_sha != "unknown" else "unknown"
 
     @field_validator("target")
     @classmethod
@@ -355,11 +372,11 @@ class BuildOptions(BaseModel):
 
     @property
     def versioned_tag(self) -> str:
-        return f"v{PACKAGE_VERSION}_{self.base_image_slug}"
+        return f"v{self.sdk_version}_{self.base_image_slug}"
 
     @property
     def base_tag(self) -> str:
-        return f"{SHORT_SHA}-{self.base_image_slug}"
+        return f"{self.short_sha}-{self.base_image_slug}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
@@ -378,7 +395,7 @@ class BuildOptions(BaseModel):
 
         # Use git commit SHA for commit-based tags
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
+            tags.append(f"{self.image}:{self.short_sha}-{t}{arch_suffix}")
 
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
@@ -772,7 +789,7 @@ def main(argv: list[str]) -> int:
             fh.write("\n".join(tags_list) + "\n")
             fh.write("EOF\n")
 
-    _write_gha_outputs(opts.image, SHORT_SHA, opts.versioned_tag, tags)
+    _write_gha_outputs(opts.image, opts.short_sha, opts.versioned_tag, tags)
     return 0
 
 
