@@ -55,6 +55,37 @@ def _default_sdk_project_root() -> Path:
     """
     site_markers = ("site-packages", "dist-packages")
 
+    def _is_workspace_root(d: Path) -> bool:
+        """Detect if d is the root of the Agent-SDK repo UV workspace."""
+        _EXPECTED = (
+            "openhands-sdk/pyproject.toml",
+            "openhands-tools/pyproject.toml",
+            "openhands-workspace/pyproject.toml",
+            "openhands-agent-server/pyproject.toml",
+        )
+
+        py = d / "pyproject.toml"
+        if not py.exists():
+            return False
+        try:
+            cfg = tomllib.loads(py.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+        members = (
+            cfg.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+            or []
+        )
+        # Accept either explicit UV members or structural presence of all subprojects
+        if members:
+            norm = {str(Path(m)) for m in members}
+            return {
+                "openhands-sdk",
+                "openhands-tools",
+                "openhands-workspace",
+                "openhands-agent-server",
+            }.issubset(norm)
+        return all((d / p).exists() for p in _EXPECTED)
+
     def _climb(start: Path) -> Path | None:
         cur = start.resolve()
         if not cur.is_dir():
@@ -278,40 +309,6 @@ def _package_version() -> str:
 
 _DEFAULT_GIT_REF, _DEFAULT_GIT_SHA = _git_info()
 _DEFAULT_PACKAGE_VERSION = _package_version()
-
-
-# --- options ---
-
-
-def _is_workspace_root(d: Path) -> bool:
-    """Detect if d is the root of the Agent-SDK repo UV workspace."""
-    _EXPECTED = (
-        "openhands-sdk/pyproject.toml",
-        "openhands-tools/pyproject.toml",
-        "openhands-workspace/pyproject.toml",
-        "openhands-agent-server/pyproject.toml",
-    )
-
-    py = d / "pyproject.toml"
-    if not py.exists():
-        return False
-    try:
-        cfg = tomllib.loads(py.read_text(encoding="utf-8"))
-    except Exception:
-        cfg = {}
-    members = (
-        cfg.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", []) or []
-    )
-    # Accept either explicit UV members or structural presence of all subprojects
-    if members:
-        norm = {str(Path(m)) for m in members}
-        return {
-            "openhands-sdk",
-            "openhands-tools",
-            "openhands-workspace",
-            "openhands-agent-server",
-        }.issubset(norm)
-    return all((d / p).exists() for p in _EXPECTED)
 
 
 class BuildOptions(BaseModel):
