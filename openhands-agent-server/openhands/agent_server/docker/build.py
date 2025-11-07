@@ -102,13 +102,51 @@ def _run(
     return result
 
 
-def _base_slug(image: str) -> str:
-    return image.replace("/", "_s_").replace(":", "_tag_")
-
-
 def _sanitize_branch(ref: str) -> str:
     ref = re.sub(r"^refs/heads/", "", ref or "unknown")
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
+
+
+def _base_slug(image: str, max_len: int = 64) -> str:
+    """
+    If the slug is too long, keep the most identifiable parts:
+    - repository name (last path segment)
+    - tag (if present)
+    Then append a short digest for uniqueness.
+    Format preserved with existing separators: '_s_' for '/', '_tag_' for ':'.
+
+    Example:
+      'ghcr.io_s_org_s/very-long-repo_tag_v1.2.3-extra'
+      ->  'very-long-repo_tag_v1.2.3-<digest>'
+    """
+    base_slug = image.replace("/", "_s_").replace(":", "_tag_")
+
+    if len(base_slug) <= max_len:
+        return base_slug
+
+    digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
+    suffix = f"-{digest}"
+
+    # Parse components from the slug form
+    if "_tag_" in base_slug:
+        left, tag = base_slug.split("_tag_", 1)
+    else:
+        left, tag = base_slug, ""
+
+    parts = left.split("_s_") if left else []
+    repo = parts[-1] if parts else left  # last path segment is the repo
+
+    # Reconstruct a compact, identifiable core: "<repo>[_tag_<tag>]"
+    ident = repo + (f"_tag_{tag}" if tag else "")
+
+    # Fit within budget, reserving space for the digest suffix
+    visible_budget = max_len - len(suffix)
+    assert visible_budget > 0, (
+        f"max_len too small to fit digest suffix with length {len(suffix)}"
+    )
+
+    kept = ident[:visible_budget]
+    return kept + suffix
 
 
 def _git_info() -> tuple[str, str, str]:
@@ -317,41 +355,15 @@ class BuildOptions(BaseModel):
 
     @property
     def versioned_tag(self) -> str:
-        return f"v{PACKAGE_VERSION}_{self.base_image_slug}_{self.target}"
+        return f"v{PACKAGE_VERSION}_{self.base_image_slug}"
+
+    @property
+    def base_tag(self) -> str:
+        return f"{SHORT_SHA}-{self.base_image_slug}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        # Docker image tags have a 128-character limit.
-        # If the base slug is too long, hash it to create a shorter unique identifier.
-        MAX_TAG_LENGTH = 128
-        base_slug = self.base_image_slug
-
-        # Reserve space for prefix, branch, and separators
-        prefix = f"buildcache-{self.target}-"
-        branch_suffix = (
-            f"-{_sanitize_branch(GIT_REF)}"
-            if GIT_REF not in ("main", "refs/heads/main", "unknown")
-            else ""
-        )
-        main_suffix = "-main" if GIT_REF in ("main", "refs/heads/main") else ""
-
-        # Calculate available space for base_slug
-        reserved = len(prefix) + max(len(branch_suffix), len(main_suffix))
-        available = MAX_TAG_LENGTH - reserved
-
-        # If base_slug is too long, use a hash
-        if len(base_slug) > available:
-            # Use first 8 chars of SHA256 hash for uniqueness while keeping it short
-            hash_digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
-            base_slug_short = hash_digest
-            logger.debug(
-                f"[build] Base image slug too long ({len(base_slug)} chars), "
-                f"using hash: {base_slug_short}"
-            )
-        else:
-            base_slug_short = base_slug
-
-        base = f"{prefix}{base_slug_short}"
+        base = f"buildcache-{self.target}-{self.base_image_slug}"
         if GIT_REF in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif GIT_REF != "unknown":
@@ -367,9 +379,13 @@ class BuildOptions(BaseModel):
         # Use git commit SHA for commit-based tags
         for t in self.custom_tag_list:
             tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
+
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
+
+        # Always include base tag as default
+        tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
 
         # Only include versioned tag if requested (for releases)
         if self.include_versioned_tag:
