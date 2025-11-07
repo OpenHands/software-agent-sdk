@@ -271,7 +271,6 @@ def test_conversation_persistence_lifecycle(mock_completion):
         # Verify state was restored
         assert new_conversation.id == original_id
         # When loading from persistence, the state should be exactly the same
-        # (no additional SecurityAnalyzerConfigurationEvent should be added)
         assert len(new_conversation.state.events) == original_event_count
         # Test model_dump equality (excluding events which may have different timestamps)  # noqa: E501
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"events"})
