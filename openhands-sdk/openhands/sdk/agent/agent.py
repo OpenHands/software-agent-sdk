@@ -6,6 +6,7 @@ import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
+from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -71,6 +72,22 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
+    @property
+    def system_message(self) -> str:
+        """Override system prompt to always include security analyzer context."""
+        template_kwargs = dict(self.system_prompt_kwargs)
+        template_kwargs["llm_security_analyzer"] = True
+        system_message = render_template(
+            prompt_dir=self.prompt_dir,
+            template_name=self.system_prompt_filename,
+            **template_kwargs,
+        )
+        if self.agent_context:
+            _system_message_suffix = self.agent_context.get_system_message_suffix()
+            if _system_message_suffix:
+                system_message += "\n\n" + _system_message_suffix
+        return system_message
+
     def init_state(
         self,
         state: ConversationState,
@@ -87,9 +104,7 @@ class Agent(AgentBase):
             # Prepare system message
             event = SystemPromptEvent(
                 source="agent",
-                system_prompt=TextContent(
-                    text=self.get_system_message(state.security_analyzer)
-                ),
+                system_prompt=TextContent(text=self.system_message),
                 # Always include security_risk field in tools
                 tools=[
                     t.to_openai_tool(add_security_risk_prediction=True)
