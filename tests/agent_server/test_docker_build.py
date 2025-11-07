@@ -20,10 +20,10 @@ def test_git_info_priority_sdk_sha():
         with patch(
             "openhands.agent_server.docker.build._run"
         ) as mock_run:  # Should not be called
-            git_ref, git_sha, short_sha = _git_info()
+            git_ref, git_sha = _git_info()
 
             assert git_sha == "abc1234567890"
-            assert short_sha == "abc1234"
+            assert git_sha[:7] == "abc1234"
             # git command should not be called when SDK_SHA is set
             mock_run.assert_not_called()
 
@@ -49,10 +49,10 @@ def test_git_info_priority_github_sha():
         with patch(
             "openhands.agent_server.docker.build._run"
         ) as mock_run:  # Should not be called
-            git_ref, git_sha, short_sha = _git_info()
+            git_ref, git_sha = _git_info()
 
             assert git_sha == "def1234567890"
-            assert short_sha == "def1234"
+            assert git_sha[:7] == "def1234"
             mock_run.assert_not_called()
 
 
@@ -69,7 +69,7 @@ def test_git_info_priority_sdk_ref():
         },
         clear=False,
     ):
-        git_ref, git_sha, short_sha = _git_info()
+        git_ref, git_sha = _git_info()
 
         assert git_ref == "refs/heads/my-branch"
 
@@ -92,7 +92,7 @@ def test_git_info_priority_github_ref():
         if "SDK_SHA" in os.environ:
             del os.environ["SDK_SHA"]
 
-        git_ref, git_sha, short_sha = _git_info()
+        git_ref, git_sha = _git_info()
 
         assert git_ref == "refs/heads/other-branch"
 
@@ -113,10 +113,10 @@ def test_git_info_submodule_scenario():
         },
         clear=False,
     ):
-        git_ref, git_sha, short_sha = _git_info()
+        git_ref, git_sha = _git_info()
 
         assert git_sha == "a612c0a1234567890abcdef"
-        assert short_sha == "a612c0a"
+        assert git_sha[:7] == "a612c0a"
         assert git_ref == "refs/heads/detached"
 
 
@@ -134,10 +134,10 @@ def test_git_info_empty_sdk_sha_falls_back():
         clear=False,
     ):
         with patch("openhands.agent_server.docker.build._run") as mock_run:
-            git_ref, git_sha, short_sha = _git_info()
+            git_ref, git_sha = _git_info()
 
             assert git_sha == "github123456"
-            assert short_sha == "github1"
+            assert git_sha[:7] == "github1"
             mock_run.assert_not_called()
 
 
