@@ -2,6 +2,7 @@ import json
 
 from pydantic import ValidationError
 
+import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
@@ -86,7 +87,9 @@ class Agent(AgentBase):
             # Prepare system message
             event = SystemPromptEvent(
                 source="agent",
-                system_prompt=TextContent(text=self.system_message),
+                system_prompt=TextContent(
+                    text=self.get_system_message(state.security_analyzer)
+                ),
                 # Always include security_risk field in tools
                 tools=[
                     t.to_openai_tool(add_security_risk_prediction=True)
@@ -96,7 +99,10 @@ class Agent(AgentBase):
             on_event(event)
 
         # Update the security analyzer configuration history
-        state.update_security_analyzer_configuration(self.security_analyzer)
+        # Note: security_analyzer is now managed by ConversationState
+        # We'll set it to None initially and let it be configured separately
+        if not hasattr(state, "security_analyzer") or state.security_analyzer is None:
+            state.update_security_analyzer_configuration(None)
 
     def _execute_actions(
         self,
@@ -214,6 +220,7 @@ class Agent(AgentBase):
                     tool_call,
                     llm_response_id=llm_response.id,
                     on_event=on_event,
+                    security_analyzer=state.security_analyzer,
                     thought=thought_content
                     if i == 0
                     else [],  # Only first gets thought
@@ -270,10 +277,10 @@ class Agent(AgentBase):
 
         # If a security analyzer is registered, use it to grab the risks of the actions
         # involved. If not, we'll set the risks to UNKNOWN.
-        if self.security_analyzer is not None:
+        if state.security_analyzer is not None:
             risks = [
                 risk
-                for _, risk in self.security_analyzer.analyze_pending_actions(
+                for _, risk in state.security_analyzer.analyze_pending_actions(
                     action_events
                 )
             ]
@@ -294,8 +301,9 @@ class Agent(AgentBase):
         arguments: dict,
         tool_name: str,
         read_only_tool: bool,
+        security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
     ) -> risk.SecurityRisk:
-        requires_sr = isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+        requires_sr = isinstance(security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
         # Default risk value for action event
@@ -325,6 +333,7 @@ class Agent(AgentBase):
         tool_call: MessageToolCall,
         llm_response_id: str,
         on_event: ConversationCallbackType,
+        security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
         thought: list[TextContent] = [],
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [],
@@ -374,6 +383,7 @@ class Agent(AgentBase):
                 arguments,
                 tool.name,
                 tool.annotations.readOnlyHint if tool.annotations else False,
+                security_analyzer,
             )
             assert "security_risk" not in arguments, (
                 "Unexpected 'security_risk' key found in tool arguments"

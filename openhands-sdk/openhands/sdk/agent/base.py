@@ -122,11 +122,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
         examples=[{"cli_mode": True}],
     )
-    security_analyzer: analyzer.SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-        examples=[{"kind": "LLMSecurityAnalyzer"}],
-    )
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -147,6 +143,23 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
 
+    @classmethod
+    def model_validate(cls, obj: dict | object, **kwargs) -> "AgentBase":
+        """Custom validation to handle backwards compatibility.
+
+        Handles the case where old serialized agents have a security_analyzer field
+        that should now be ignored during deserialization.
+        """
+        if isinstance(obj, dict):
+            # Remove security_analyzer field if present for backwards compatibility
+            obj = obj.copy()
+            if "security_analyzer" in obj:
+                # Store it temporarily in case we need it later
+                # For now, we just remove it since it will be set via ConversationState
+                obj.pop("security_analyzer")
+
+        return super().model_validate(obj, **kwargs)
+
     @property
     def prompt_dir(self) -> str:
         """Returns the directory where this class's module file is located."""
@@ -164,11 +177,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @property
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
+        return self.get_system_message()
+
+    def get_system_message(
+        self, security_analyzer: analyzer.SecurityAnalyzerBase | None = None
+    ) -> str:
+        """Compute system message on-demand to maintain statelessness.
+
+        Args:
+            security_analyzer: Optional security analyzer to include in template context
+        """
         # Prepare template kwargs, including cli_mode if available
         template_kwargs = dict(self.system_prompt_kwargs)
-        if self.security_analyzer:
+        if security_analyzer:
             template_kwargs["llm_security_analyzer"] = bool(
-                isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+                isinstance(security_analyzer, LLMSecurityAnalyzer)
             )
 
         system_message = render_template(
@@ -296,10 +319,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
                 updates["condenser"] = new_condenser
 
-        # Allow security_analyzer to differ - use the runtime (self) version
-        # This allows users to add/remove security analyzers mid-conversation
-        # (e.g., when switching to weaker LLMs that can't handle security_risk field)
-        updates["security_analyzer"] = self.security_analyzer
+        # Note: security_analyzer is now handled by ConversationState, not Agent
 
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}

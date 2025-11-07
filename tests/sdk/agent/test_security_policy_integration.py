@@ -91,7 +91,7 @@ def test_security_policy_template_rendering():
 
 def test_llm_security_analyzer_template_kwargs():
     """Test that agent sets template_kwargs appropriately when security analyzer is LLMSecurityAnalyzer."""  # noqa: E501
-    # Create agent with LLMSecurityAnalyzer
+    # Create agent
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -99,11 +99,10 @@ def test_llm_security_analyzer_template_kwargs():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=LLMSecurityAnalyzer(),
     )
 
-    # Access the system_message property to trigger template_kwargs computation
-    system_message = agent.system_message
+    # Get system message with LLMSecurityAnalyzer
+    system_message = agent.get_system_message(LLMSecurityAnalyzer())
 
     # Verify that the security risk assessment section is included in the system prompt
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -118,7 +117,7 @@ def test_llm_security_analyzer_template_kwargs():
 
 def test_llm_security_analyzer_sandbox_mode():
     """Test that agent includes sandbox mode security risk assessment when cli_mode=False."""  # noqa: E501
-    # Create agent with LLMSecurityAnalyzer and cli_mode=False
+    # Create agent with cli_mode=False
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -126,12 +125,11 @@ def test_llm_security_analyzer_sandbox_mode():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=LLMSecurityAnalyzer(),
         system_prompt_kwargs={"cli_mode": False},
     )
 
-    # Access the system_message property to trigger template_kwargs computation
-    system_message = agent.system_message
+    # Get system message with LLMSecurityAnalyzer
+    system_message = agent.get_system_message(LLMSecurityAnalyzer())
 
     # Verify that the security risk assessment section is included with sandbox mode content  # noqa: E501
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -185,11 +183,10 @@ def test_non_llm_security_analyzer_excludes_risk_assessment():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=MockSecurityAnalyzer(),
     )
 
-    # Get the system message
-    system_message = agent.system_message
+    # Get the system message with non-LLM security analyzer
+    system_message = agent.get_system_message(security_analyzer=MockSecurityAnalyzer())
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" not in system_message

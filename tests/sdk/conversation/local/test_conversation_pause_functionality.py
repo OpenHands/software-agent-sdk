@@ -164,9 +164,7 @@ class TestPauseFunctionality:
         assert (
             self.conversation.state.execution_status == ConversationExecutionStatus.IDLE
         )
-        assert (
-            len(self.conversation.state.events) == 2
-        )  # System prompt event + Security analyzer configuration event
+        assert len(self.conversation.state.events) == 1  # System prompt event
 
         # Test pause method
         self.conversation.pause()

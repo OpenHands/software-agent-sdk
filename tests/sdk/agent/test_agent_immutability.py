@@ -63,19 +63,17 @@ class TestAgentImmutability:
         agent1 = Agent(
             llm=self.llm,
             tools=[],
-            security_analyzer=security_analyzer,
             system_prompt_kwargs={"cli_mode": True},
         )
         agent2 = Agent(
             llm=self.llm,
             tools=[],
-            security_analyzer=security_analyzer,
             system_prompt_kwargs={"cli_mode": False},
         )
 
         # System messages should be different due to cli_mode
-        msg1 = agent1.system_message
-        msg2 = agent2.system_message
+        msg1 = agent1.get_system_message(security_analyzer)
+        msg2 = agent2.get_system_message(security_analyzer)
 
         # They should be different (cli_mode affects the template)
         assert msg1 != msg2
@@ -157,7 +155,6 @@ class TestAgentImmutability:
         original_agent = Agent(
             llm=self.llm,
             tools=[],
-            security_analyzer=security_analyzer,
             system_prompt_kwargs={"cli_mode": True},
         )
 
@@ -170,4 +167,6 @@ class TestAgentImmutability:
         assert modified_agent is not original_agent
 
         # Verify that system messages are different due to different configs
-        assert original_agent.system_message != modified_agent.system_message
+        assert original_agent.get_system_message(
+            security_analyzer
+        ) != modified_agent.get_system_message(security_analyzer)

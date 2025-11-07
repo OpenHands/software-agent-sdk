@@ -92,6 +92,10 @@ class ConversationState(OpenHandsModel):
         default=ConversationExecutionStatus.IDLE
     )
     confirmation_policy: ConfirmationPolicyBase = NeverConfirm()
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None,
+        description="Optional security analyzer to evaluate action risks.",
+    )
 
     activated_knowledge_skills: list[str] = Field(
         default_factory=list,
@@ -153,6 +157,9 @@ class ConversationState(OpenHandsModel):
         Args:
             analyzer: The security analyzer instance, or None if not configured
         """
+        # Update the current security analyzer
+        self.security_analyzer = analyzer
+
         # Extract the analyzer type from the analyzer object
         analyzer_type = analyzer.__class__.__name__ if analyzer else None
 
