@@ -73,6 +73,14 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     @property
     def _api_headers(self):
+        """Headers for runtime API requests."
+
+        This is used to manage new container runtimes via Runtime API.
+
+        For actual interaction with the remote agent server, the
+        `client` property is used, which includes the session API key
+        defined by ._headers property.
+        """
         headers = {}
         if self.runtime_api_key:
             headers["X-API-Key"] = self.runtime_api_key
@@ -263,12 +271,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         logger.debug(f"Sending {method} request to {url}")
         logger.debug(f"Request kwargs: {kwargs}")
 
-        # 1. If headers were provided in kwargs (when accessing runtime API to
-        # manage container), use them
-        # 2. otherwise, use the workspace's API headers (this is for
-        # accessing the agent-server API inside container)
-        headers = kwargs.pop("headers", self._headers)
-        response = self.client.request(method, url, headers=headers, **kwargs)
+        response = self.client.request(method, url, **kwargs)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError:

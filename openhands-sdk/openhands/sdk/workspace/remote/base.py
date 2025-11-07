@@ -40,7 +40,9 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             # - write: 10 seconds to send request
             # - pool: 10 seconds to get connection from pool
             timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-            client = httpx.Client(base_url=self.host, timeout=timeout)
+            client = httpx.Client(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
             self._client = client
         return client
 
