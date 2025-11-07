@@ -103,7 +103,7 @@ def test_conversation_state_persistence_save_load():
         state.stats.register_llm(RegistryEvent(llm=llm))
 
         # Manually populate security analyzer history to match what Agent.init_state() would do  # noqa: E501
-        state.update_security_analyzer_configuration(None)
+        state.update_security_analyzer_and_record_transitions(None)
 
         # State auto-saves when events are added
         # Verify files were created
@@ -176,7 +176,7 @@ def test_conversation_state_incremental_save():
         state.stats.register_llm(RegistryEvent(llm=llm))
 
         # Manually populate security analyzer history to match what Agent.init_state() would do  # noqa: E501
-        state.update_security_analyzer_configuration(None)
+        state.update_security_analyzer_and_record_transitions(None)
 
         # Verify event files exist (may have additional events from Agent.init_state)
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))

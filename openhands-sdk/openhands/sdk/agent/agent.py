@@ -113,12 +113,6 @@ class Agent(AgentBase):
             )
             on_event(event)
 
-        # Update the security analyzer configuration history
-        # Note: security_analyzer is now managed by ConversationState
-        # We'll set it to None initially and let it be configured separately
-        if not hasattr(state, "security_analyzer") or state.security_analyzer is None:
-            state.update_security_analyzer_configuration(None)
-
     def _execute_actions(
         self,
         conversation: LocalConversation,

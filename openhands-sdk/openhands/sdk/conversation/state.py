@@ -149,7 +149,7 @@ class ConversationState(OpenHandsModel):
         """
         self._on_state_change = callback
 
-    def update_security_analyzer_configuration(
+    def update_security_analyzer_and_record_transitions(
         self, analyzer: SecurityAnalyzerBase | None
     ) -> None:
         """Update the security analyzer configuration history.
@@ -249,6 +249,8 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
+        # Record existing analyzer configuration in state
+        state.update_security_analyzer_and_record_transitions(state.security_analyzer)
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()

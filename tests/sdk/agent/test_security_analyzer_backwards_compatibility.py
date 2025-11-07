@@ -77,7 +77,7 @@ def test_update_security_analyzer_configuration_sets_state_field(
     analyzer = LLMSecurityAnalyzer()
 
     # Update the configuration
-    state.update_security_analyzer_configuration(analyzer)
+    state.update_security_analyzer_and_record_transitions(analyzer)
 
     # Verify the state field was set
     assert state.security_analyzer is analyzer
@@ -88,7 +88,7 @@ def test_update_security_analyzer_configuration_with_none(mock_conversation_stat
     state = mock_conversation_state
 
     # Set to None
-    state.update_security_analyzer_configuration(None)
+    state.update_security_analyzer_and_record_transitions(None)
 
     # Verify the state field was set to None
     assert state.security_analyzer is None
@@ -100,7 +100,7 @@ def test_json_serialization_roundtrip(mock_conversation_state):
 
     # Create and assign a security analyzer
     analyzer = LLMSecurityAnalyzer()
-    state.update_security_analyzer_configuration(analyzer)
+    state.update_security_analyzer_and_record_transitions(analyzer)
 
     # Serialize to JSON
     json_data = state.model_dump_json()

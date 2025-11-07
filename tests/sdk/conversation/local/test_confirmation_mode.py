@@ -679,7 +679,7 @@ class TestConfirmationMode:
             tools=[Tool(name="test_tool")],
         )
         conversation_with_analyzer = Conversation(agent=agent)
-        conversation_with_analyzer.state.update_security_analyzer_configuration(
+        conversation_with_analyzer.state.update_security_analyzer_and_record_transitions(
             LLMSecurityAnalyzer()
         )
 
