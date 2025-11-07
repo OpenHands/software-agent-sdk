@@ -4,6 +4,10 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.visualizer import (
+    ConversationVisualizerBase,
+    DefaultConversationVisualizer,
+)
 from openhands.sdk.logger import get_logger
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
@@ -46,8 +50,9 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = True,
-        name_for_visualization: str | None = None,
+        visualizer: (
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "LocalConversation": ...
 
@@ -61,8 +66,9 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = True,
-        name_for_visualization: str | None = None,
+        visualizer: (
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> "RemoteConversation": ...
 
@@ -76,8 +82,9 @@ class Conversation:
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = True,
-        name_for_visualization: str | None = None,
+        visualizer: (
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
@@ -98,10 +105,9 @@ class Conversation:
                 callbacks=callbacks,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
-                visualize=visualize,
+                visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
-                name_for_visualization=name_for_visualization,
             )
 
         return LocalConversation(
@@ -110,9 +116,8 @@ class Conversation:
             callbacks=callbacks,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
-            visualize=visualize,
+            visualizer=visualizer,
             workspace=workspace,
             persistence_dir=persistence_dir,
             secrets=secrets,
-            name_for_visualization=name_for_visualization,
         )

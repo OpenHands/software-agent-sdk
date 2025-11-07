@@ -320,7 +320,7 @@ def test_conversation_state_empty_filestore():
             agent=agent,
             persistence_dir=temp_dir,
             workspace=LocalWorkspace(working_dir="/tmp"),
-            visualize=False,
+            visualizer=None,
         )
 
         # Should create new state
@@ -508,7 +508,7 @@ def test_conversation_with_agent_different_llm_config():
             agent=original_agent,
             persistence_dir=temp_dir,
             workspace=LocalWorkspace(working_dir="/tmp"),
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message
@@ -536,10 +536,11 @@ def test_conversation_with_agent_different_llm_config():
             persistence_dir=temp_dir,
             workspace=LocalWorkspace(working_dir="/tmp"),
             conversation_id=conversation_id,  # Use same ID
-            visualize=False,
+            visualizer=None,
         )
 
         assert new_conversation._state.agent.llm.api_key is not None
+        assert isinstance(new_conversation._state.agent.llm.api_key, SecretStr)
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})

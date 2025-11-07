@@ -4,6 +4,7 @@ from pydantic import ValidationError
 
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import (
     ConversationCallbackType,
@@ -66,7 +67,7 @@ class Agent(AgentBase):
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
         >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="BashTool"), Tool(name="FileEditorTool")]
+        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
@@ -350,6 +351,9 @@ class Agent(AgentBase):
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
             arguments = json.loads(tool_call.arguments)
+
+            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
+            arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
 
             # if the tool has a security_risk field (when security analyzer is set),
             # pop it out as it's not part of the tool's action schema

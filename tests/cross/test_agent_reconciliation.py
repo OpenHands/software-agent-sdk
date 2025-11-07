@@ -15,12 +15,12 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.preset.default import get_default_agent
+from openhands.tools.terminal import TerminalTool
 
 
-register_tool("BashTool", BashTool)
+register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
 
 
@@ -50,9 +50,11 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     # Verify the conversation was created successfully
     assert conversation1.id == conversation_id
     assert conversation1.agent.llm.api_key is not None
+    assert isinstance(conversation1.agent.llm.api_key, SecretStr)
     assert conversation1.agent.llm.api_key.get_secret_value() == "llm-api-key"
     assert isinstance(conversation1.agent.condenser, LLMSummarizingCondenser)
     assert conversation1.agent.condenser.llm.api_key is not None
+    assert isinstance(conversation1.agent.condenser.llm.api_key, SecretStr)
     assert conversation1.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
 
     # Attempt to restart the conversation - this should work without errors
@@ -65,9 +67,11 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     # Make sure the conversation gets initialized properly with no errors
     assert conversation2.id == conversation_id
     assert conversation2.agent.llm.api_key is not None
+    assert isinstance(conversation2.agent.llm.api_key, SecretStr)
     assert conversation2.agent.llm.api_key.get_secret_value() == "llm-api-key"
     assert isinstance(conversation2.agent.condenser, LLMSummarizingCondenser)
     assert conversation2.agent.condenser.llm.api_key is not None
+    assert isinstance(conversation2.agent.condenser.llm.api_key, SecretStr)
     assert conversation2.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
 
     # Verify that the agent configuration is properly reconciled
@@ -109,7 +113,7 @@ def test_conversation_with_different_agent_tools_fails():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation with original agent
         original_tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -120,7 +124,7 @@ def test_conversation_with_different_agent_tools_fails():
             agent=original_agent,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message to create some state
@@ -135,7 +139,7 @@ def test_conversation_with_different_agent_tools_fails():
         del conversation
 
         # Try to create new conversation with different tools (only bash tool)
-        different_tools = [Tool(name="BashTool")]  # Missing FileEditorTool
+        different_tools = [Tool(name="TerminalTool")]  # Missing FileEditorTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -150,7 +154,7 @@ def test_conversation_with_different_agent_tools_fails():
                 workspace=temp_dir,
                 persistence_dir=temp_dir,
                 conversation_id=conversation_id,  # Use same ID to avoid ID mismatch
-                visualize=False,
+                visualizer=None,
             )
 
 
@@ -159,7 +163,7 @@ def test_conversation_with_same_agent_succeeds():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -170,7 +174,7 @@ def test_conversation_with_same_agent_succeeds():
             agent=original_agent,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message
@@ -186,7 +190,7 @@ def test_conversation_with_same_agent_succeeds():
 
         # Create new conversation with same agent configuration
         same_tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm2 = LLM(
@@ -200,7 +204,7 @@ def test_conversation_with_same_agent_succeeds():
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,  # Use same ID
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify state was loaded
@@ -220,7 +224,7 @@ def test_conversation_persistence_lifecycle(mock_completion):
 
     with tempfile.TemporaryDirectory() as temp_dir:
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -261,7 +265,7 @@ def test_conversation_persistence_lifecycle(mock_completion):
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=original_id,  # Use same ID to load existing state
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify state was restored
@@ -288,7 +292,7 @@ def test_agent_resolve_diff_from_deserialized():
     """Test agent's resolve_diff_from_deserialized method."""
     with tempfile.TemporaryDirectory():
         # Create original agent
-        tools = [Tool(name="BashTool")]
+        tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -318,7 +322,7 @@ def test_agent_resolve_diff_allows_security_analyzer_change():
 
     with tempfile.TemporaryDirectory():
         # Create original agent WITH security analyzer
-        tools = [Tool(name="BashTool")]
+        tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -355,7 +359,7 @@ def test_agent_resolve_diff_allows_adding_security_analyzer():
 
     with tempfile.TemporaryDirectory():
         # Create original agent WITHOUT security analyzer
-        tools = [Tool(name="BashTool")]
+        tools = [Tool(name="TerminalTool")]
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
@@ -393,7 +397,7 @@ def test_conversation_restart_with_different_security_analyzer():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with security analyzer
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -407,7 +411,7 @@ def test_conversation_restart_with_different_security_analyzer():
             agent=agent_with_security,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message to create some state
@@ -430,7 +434,7 @@ def test_conversation_restart_with_different_security_analyzer():
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify conversation loaded successfully
@@ -446,7 +450,7 @@ def test_conversation_restart_adding_security_analyzer():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation WITHOUT security analyzer
         tools = [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
         llm = LLM(
@@ -458,7 +462,7 @@ def test_conversation_restart_adding_security_analyzer():
             agent=agent_without_security,
             workspace=temp_dir,
             persistence_dir=temp_dir,
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message to create some state
@@ -483,7 +487,7 @@ def test_conversation_restart_adding_security_analyzer():
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,
-            visualize=False,
+            visualizer=None,
         )
 
         # Verify conversation loaded successfully

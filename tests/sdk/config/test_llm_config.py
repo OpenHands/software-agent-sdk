@@ -37,7 +37,7 @@ def test_llm_config_defaults():
     assert config.log_completions is False
     assert config.custom_tokenizer is None
     assert config.native_tool_calling is True
-    assert config.reasoning_effort == "high"  # Default for non-Gemini models
+    assert config.reasoning_effort == "high"
     assert config.seed is None
     assert config.safety_settings is None
 
@@ -84,9 +84,9 @@ def test_llm_config_custom_values():
     )
 
     assert config.model == "gpt-4"
-    assert (
-        config.api_key is not None and config.api_key.get_secret_value() == "test-key"
-    )
+    assert config.api_key is not None
+    assert isinstance(config.api_key, SecretStr)
+    assert config.api_key.get_secret_value() == "test-key"
     assert config.base_url == "https://api.example.com"
     assert config.api_version == "v1"
     assert config.num_retries == 3
@@ -122,9 +122,9 @@ def test_llm_config_custom_values():
 def test_llm_config_secret_str():
     """Test that api_key is properly handled as SecretStr."""
     config = LLM(model="gpt-4", api_key=SecretStr("secret-key"), usage_id="test-llm")
-    assert (
-        config.api_key is not None and config.api_key.get_secret_value() == "secret-key"
-    )
+    assert config.api_key is not None
+    assert isinstance(config.api_key, SecretStr)
+    assert config.api_key.get_secret_value() == "secret-key"
     # Ensure the secret is not exposed in string representation
     assert "secret-key" not in str(config)
 
@@ -138,14 +138,12 @@ def test_llm_config_aws_credentials():
         aws_secret_access_key=SecretStr("test-secret-key"),
         aws_region_name="us-east-1",
     )
-    assert (
-        config.aws_access_key_id is not None
-        and config.aws_access_key_id.get_secret_value() == "test-access-key"
-    )
-    assert (
-        config.aws_secret_access_key is not None
-        and config.aws_secret_access_key.get_secret_value() == "test-secret-key"
-    )
+    assert config.aws_access_key_id is not None
+    assert isinstance(config.aws_access_key_id, SecretStr)
+    assert config.aws_access_key_id.get_secret_value() == "test-access-key"
+    assert config.aws_secret_access_key is not None
+    assert isinstance(config.aws_secret_access_key, SecretStr)
+    assert config.aws_secret_access_key.get_secret_value() == "test-secret-key"
     assert config.aws_region_name == "us-east-1"
 
 
@@ -170,13 +168,17 @@ def test_llm_config_post_init_openrouter_env_vars():
 
 
 def test_llm_config_post_init_reasoning_effort_default():
-    """Test that reasoning_effort is set to 'high' by default for non-Gemini models."""
+    """Test reasoning_effort defaults to high."""
     config = LLM(model="gpt-4", usage_id="test-llm")
     assert config.reasoning_effort == "high"
 
-    # Test that Gemini models don't get default reasoning_effort
+    # Test that Gemini models also default to high
     config = LLM(model="gemini-2.5-pro-experimental", usage_id="test-llm")
-    assert config.reasoning_effort is None
+    assert config.reasoning_effort == "high"
+
+    # Test that explicit reasoning_effort is preserved
+    config = LLM(model="gpt-4", reasoning_effort="low", usage_id="test-llm")
+    assert config.reasoning_effort == "low"
 
 
 def test_llm_config_post_init_azure_api_version():
@@ -363,8 +365,6 @@ def test_llm_config_optional_fields():
     assert config.disable_vision is None
     assert config.disable_stop_word is None
     assert config.custom_tokenizer is None
-    assert (
-        config.reasoning_effort == "high"
-    )  # Even when set to None, post_init sets it to "high" for non-Gemini models
+    assert config.reasoning_effort is None  # Explicitly set to None overrides default
     assert config.seed is None
     assert config.safety_settings is None

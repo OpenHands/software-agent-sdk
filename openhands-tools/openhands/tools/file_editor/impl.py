@@ -43,12 +43,15 @@ class FileEditorExecutor(ToolExecutor):
         if self.allowed_edits_files is not None and action.command != "view":
             action_path = Path(action.path).resolve()
             if action_path not in self.allowed_edits_files:
-                return FileEditorObservation(
+                return FileEditorObservation.from_text(
+                    text=(
+                        f"Operation '{action.command}' is not allowed "
+                        f"on file '{action_path}'. "
+                        f"Only the following files can be edited: "
+                        f"{sorted(str(p) for p in self.allowed_edits_files)}"
+                    ),
                     command=action.command,
-                    error=f"Operation '{action.command}' is not allowed "
-                    f"on file '{action_path}'. "
-                    f"Only the following files can be edited: "
-                    f"{sorted(str(p) for p in self.allowed_edits_files)}",
+                    is_error=True,
                 )
 
         result: FileEditorObservation | None = None
@@ -63,7 +66,9 @@ class FileEditorExecutor(ToolExecutor):
                 insert_line=action.insert_line,
             )
         except ToolError as e:
-            result = FileEditorObservation(command=action.command, error=e.message)
+            result = FileEditorObservation.from_text(
+                text=e.message, command=action.command, is_error=True
+            )
         assert result is not None, "file_editor should always return a result"
         return result
 
@@ -95,6 +100,8 @@ def file_editor(
             insert_line=insert_line,
         )
     except ToolError as e:
-        result = FileEditorObservation(command=command, error=e.message)
+        result = FileEditorObservation.from_text(
+            text=e.message, command=command, is_error=True
+        )
     assert result is not None, "file_editor should always return a result"
     return result

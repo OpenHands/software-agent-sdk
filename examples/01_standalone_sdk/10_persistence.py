@@ -12,8 +12,8 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.tool import Tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -33,7 +33,7 @@ llm = LLM(
 # Tools
 cwd = os.getcwd()
 tools = [
-    Tool(name=BashTool.name),
+    Tool(name=TerminalTool.name),
     Tool(name=FileEditorTool.name),
 ]
 

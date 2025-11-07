@@ -39,7 +39,7 @@ START_CONVERSATION_EXAMPLES = [
                 api_key=SecretStr("your-api-key-here"),
             ),
             tools=[
-                Tool(name="BashTool"),
+                Tool(name="TerminalTool"),
                 Tool(name="FileEditorTool"),
                 Tool(name="TaskTrackerTool"),
             ],

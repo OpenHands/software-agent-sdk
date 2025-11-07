@@ -18,6 +18,7 @@ from openhands.sdk import (
     Tool,
     get_logger,
 )
+from openhands.sdk.conversation import DefaultConversationVisualizer
 from openhands.sdk.tool import register_tool
 from openhands.tools.delegate import DelegateTool
 from openhands.tools.preset.default import get_default_tools
@@ -50,7 +51,7 @@ main_agent = Agent(
 conversation = Conversation(
     agent=main_agent,
     workspace=cwd,
-    name_for_visualization="Delegator",
+    visualizer=DefaultConversationVisualizer(name="Delegator"),
 )
 
 task_message = (
