@@ -21,7 +21,6 @@ from openhands.sdk.event import (
     SystemPromptEvent,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
@@ -80,16 +79,6 @@ class Agent(AgentBase):
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
-        llm_convertible_messages = []
-        security_analyzer_configuration_events = []
-
-        for event in state.events:
-            if isinstance(event, LLMConvertibleEvent):
-                llm_convertible_messages.append(event)
-
-            if isinstance(event, SecurityAnalyzerConfigurationEvent):
-                security_analyzer_configuration_events.append(event)
-
         llm_convertible_messages = [
             event for event in state.events if isinstance(event, LLMConvertibleEvent)
         ]
@@ -106,15 +95,8 @@ class Agent(AgentBase):
             )
             on_event(event)
 
-        security_analyzer_event = SecurityAnalyzerConfigurationEvent.from_analyzer(
-            analyzer=self.security_analyzer
-        )
-
-        if (
-            len(security_analyzer_configuration_events) == 0
-            or security_analyzer_event != security_analyzer_configuration_events[-1]
-        ):
-            on_event(security_analyzer_event)
+        # Update the security analyzer configuration history
+        state.update_security_analyzer_configuration(self.security_analyzer)
 
     def _execute_actions(
         self,

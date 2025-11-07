@@ -1,10 +1,11 @@
-"""Tests for SecurityAnalyzerConfigurationEvent behavior in conversations.
+"""Tests for security analyzer configuration tracking in ConversationState.
 
-This module tests that SecurityAnalyzerConfigurationEvent is properly created
-and managed during conversation initialization and reinitialization.
+This module tests that security analyzer configuration is properly tracked
+in ConversationState fields during conversation initialization and reinitialization.
 """
 
 import tempfile
+from datetime import datetime
 
 import pytest
 from pydantic import SecretStr
@@ -12,7 +13,6 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event.llm_convertible import SystemPromptEvent
-from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
@@ -47,10 +47,10 @@ def agent_without_analyzer(mock_llm):
         ("agent_without_analyzer", None),
     ],
 )
-def test_new_conversation_creates_system_prompt_and_security_analyzer_events(
+def test_new_conversation_sets_security_analyzer_state(
     request, agent_fixture, expected_analyzer_type
 ):
-    """Test that new conversations create SystemPromptEvent and SecurityAnalyzerConfigurationEvent."""  # noqa: E501
+    """Test that new conversations set security analyzer configuration in ConversationState."""  # noqa: E501
     # Get the agent fixture
     agent = request.getfixturevalue(agent_fixture)
 
@@ -68,24 +68,25 @@ def test_new_conversation_creates_system_prompt_and_security_analyzer_events(
             "Should have exactly one SystemPromptEvent"
         )
 
-        # Find SecurityAnalyzerConfigurationEvent
-        security_analyzer_events = [
-            e for e in events if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_analyzer_events) == 1, (
-            "Should have exactly one SecurityAnalyzerConfigurationEvent"
+        # Verify the ConversationState has the correct security analyzer configuration
+        assert len(conversation.state.security_analyzer_history) == 1
+        assert (
+            conversation.state.security_analyzer_history[0].analyzer_type
+            == expected_analyzer_type
+        )
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == expected_analyzer_type
+        )
+        assert isinstance(
+            conversation.state.security_analyzer_history[0].timestamp, datetime
         )
 
-        # Verify the SecurityAnalyzerConfigurationEvent has the correct analyzer_type
-        security_event = security_analyzer_events[0]
-        assert security_event.analyzer_type == expected_analyzer_type
-        assert security_event.source == "agent"
 
-
-def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_event(
+def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_record(
     mock_llm,
 ):
-    """Test that reinitializing with same analyzer type creates new SecurityAnalyzerConfigurationEvent."""  # noqa: E501
+    """Test that reinitializing with same analyzer type does not create new history record."""  # noqa: E501
     agent = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -93,31 +94,30 @@ def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_e
             agent=agent, persistence_dir=tmpdir, workspace=tmpdir
         )
 
-        # Get initial event count
-        initial_security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(initial_security_events) == 1
-        assert initial_security_events[0].analyzer_type == "LLMSecurityAnalyzer"
+        # Get initial history count
+        assert len(conversation.state.security_analyzer_history) == 1
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
 
         # Reinitialize with same security analyzer
         conversation = Conversation(
             agent=agent, persistence_dir=tmpdir, workspace=tmpdir
         )
 
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 1
-        assert security_events[0].analyzer_type == "LLMSecurityAnalyzer"
+        # Should still have only one record since analyzer type didn't change
+        assert len(conversation.state.security_analyzer_history) == 1
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
 
 
-def test_reinitialize_conversation_with_different_analyzer_creates_two_events(mock_llm):
-    """Test that reinitializing with different analyzer creates two SecurityAnalyzerConfigurationEvents."""  # noqa: E501
+def test_reinitialize_conversation_with_different_analyzer_creates_two_records(
+    mock_llm,
+):
+    """Test that reinitializing with different analyzer creates two history records."""  # noqa: E501
     # Start with agent that has LLM analyzer
     agent_with_analyzer = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
 
@@ -127,13 +127,11 @@ def test_reinitialize_conversation_with_different_analyzer_creates_two_events(mo
         )
 
         # Verify initial state
-        initial_security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(initial_security_events) == 1
-        assert initial_security_events[0].analyzer_type == "LLMSecurityAnalyzer"
+        assert len(conversation.state.security_analyzer_history) == 1
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
 
         # Switch to agent without analyzer
         agent_without_analyzer = Agent(llm=mock_llm)
@@ -142,24 +140,23 @@ def test_reinitialize_conversation_with_different_analyzer_creates_two_events(mo
         # Manually trigger init_state to simulate reinitialization
         agent_without_analyzer.init_state(conversation.state, conversation._on_event)
 
-        # Should now have two SecurityAnalyzerConfigurationEvents
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 2, (
-            "Should have two SecurityAnalyzerConfigurationEvents"
+        # Should now have two history records
+        assert len(conversation.state.security_analyzer_history) == 2, (
+            "Should have two security analyzer history records"
         )
 
-        # First event should be LLMSecurityAnalyzer
-        assert security_events[0].analyzer_type == "LLMSecurityAnalyzer"
-        # Second event should be None (no analyzer)
-        assert security_events[1].analyzer_type is None
+        # First record should be LLMSecurityAnalyzer
+        assert (
+            conversation.state.security_analyzer_history[0].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        # Second record should be None (no analyzer)
+        assert conversation.state.security_analyzer_history[1].analyzer_type is None
+        assert conversation.state.security_analyzer_history[-1].analyzer_type is None
 
 
-def test_reinitialize_conversation_from_none_to_analyzer_creates_two_events(mock_llm):
-    """Test that reinitializing from no analyzer to analyzer creates two SecurityAnalyzerConfigurationEvents."""  # noqa: E501
+def test_reinitialize_conversation_from_none_to_analyzer_creates_two_records(mock_llm):
+    """Test that reinitializing from no analyzer to analyzer creates two history records."""  # noqa: E501
     # Start with agent without analyzer
     agent_without_analyzer = Agent(llm=mock_llm)
 
@@ -169,13 +166,8 @@ def test_reinitialize_conversation_from_none_to_analyzer_creates_two_events(mock
         )
 
         # Verify initial state
-        initial_security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(initial_security_events) == 1
-        assert initial_security_events[0].analyzer_type is None
+        assert len(conversation.state.security_analyzer_history) == 1
+        assert conversation.state.security_analyzer_history[-1].analyzer_type is None
 
         # Switch to agent with analyzer
         agent_with_analyzer = Agent(
@@ -186,24 +178,26 @@ def test_reinitialize_conversation_from_none_to_analyzer_creates_two_events(mock
         # Manually trigger init_state to simulate reinitialization
         agent_with_analyzer.init_state(conversation.state, conversation._on_event)
 
-        # Should now have two SecurityAnalyzerConfigurationEvents
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 2, (
-            "Should have two SecurityAnalyzerConfigurationEvents"
+        # Should now have two history records
+        assert len(conversation.state.security_analyzer_history) == 2, (
+            "Should have two security analyzer history records"
         )
 
-        # First event should be None (no analyzer)
-        assert security_events[0].analyzer_type is None
-        # Second event should be LLMSecurityAnalyzer
-        assert security_events[1].analyzer_type == "LLMSecurityAnalyzer"
+        # First record should be None (no analyzer)
+        assert conversation.state.security_analyzer_history[0].analyzer_type is None
+        # Second record should be LLMSecurityAnalyzer
+        assert (
+            conversation.state.security_analyzer_history[1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
 
 
-def test_multiple_reinitializations_create_appropriate_events(mock_llm):
-    """Test that multiple reinitializations create the appropriate number of events."""
+def test_multiple_reinitializations_create_appropriate_records(mock_llm):
+    """Test that multiple reinitializations create the appropriate number of history records."""  # noqa: E501
     # Start with agent without analyzer
     agent_without_analyzer = Agent(llm=mock_llm)
 
@@ -212,14 +206,9 @@ def test_multiple_reinitializations_create_appropriate_events(mock_llm):
             agent=agent_without_analyzer, persistence_dir=tmpdir, workspace=tmpdir
         )
 
-        # Initial: should have 1 event (None)
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 1
-        assert security_events[0].analyzer_type is None
+        # Initial: should have 1 record (None)
+        assert len(conversation.state.security_analyzer_history) == 1
+        assert conversation.state.security_analyzer_history[-1].analyzer_type is None
 
         # Switch to LLM analyzer
         agent_with_analyzer = Agent(
@@ -228,65 +217,101 @@ def test_multiple_reinitializations_create_appropriate_events(mock_llm):
         conversation._state.agent = agent_with_analyzer
         agent_with_analyzer.init_state(conversation.state, conversation._on_event)
 
-        # Should have 2 events: None, LLMSecurityAnalyzer
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 2
-        assert security_events[0].analyzer_type is None
-        assert security_events[1].analyzer_type == "LLMSecurityAnalyzer"
+        # Should have 2 records: None, LLMSecurityAnalyzer
+        assert len(conversation.state.security_analyzer_history) == 2
+        assert conversation.state.security_analyzer_history[0].analyzer_type is None
+        assert (
+            conversation.state.security_analyzer_history[1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
 
         # Switch back to no analyzer
         agent_without_analyzer_2 = Agent(llm=mock_llm)
         conversation._state.agent = agent_without_analyzer_2
         agent_without_analyzer_2.init_state(conversation.state, conversation._on_event)
 
-        # Should have 3 events: None, LLMSecurityAnalyzer, None
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 3
-        assert security_events[0].analyzer_type is None
-        assert security_events[1].analyzer_type == "LLMSecurityAnalyzer"
-        assert security_events[2].analyzer_type is None
+        # Should have 3 records: None, LLMSecurityAnalyzer, None
+        assert len(conversation.state.security_analyzer_history) == 3
+        assert conversation.state.security_analyzer_history[0].analyzer_type is None
+        assert (
+            conversation.state.security_analyzer_history[1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        assert conversation.state.security_analyzer_history[2].analyzer_type is None
+        assert conversation.state.security_analyzer_history[-1].analyzer_type is None
 
-        # Switch to same LLM analyzer again (should not create duplicate)
+        # Switch to same LLM analyzer again (should create new record since type changed)  # noqa: E501
         agent_with_analyzer_2 = Agent(
             llm=mock_llm, security_analyzer=LLMSecurityAnalyzer()
         )
         conversation._state.agent = agent_with_analyzer_2
         agent_with_analyzer_2.init_state(conversation.state, conversation._on_event)
 
-        # Should have 4 events: None, LLMSecurityAnalyzer, None, LLMSecurityAnalyzer
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 4
-        assert security_events[0].analyzer_type is None
-        assert security_events[1].analyzer_type == "LLMSecurityAnalyzer"
-        assert security_events[2].analyzer_type is None
-        assert security_events[3].analyzer_type == "LLMSecurityAnalyzer"
+        # Should have 4 records: None, LLMSecurityAnalyzer, None, LLMSecurityAnalyzer
+        assert len(conversation.state.security_analyzer_history) == 4
+        assert conversation.state.security_analyzer_history[0].analyzer_type is None
+        assert (
+            conversation.state.security_analyzer_history[1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        assert conversation.state.security_analyzer_history[2].analyzer_type is None
+        assert (
+            conversation.state.security_analyzer_history[3].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
 
 
-def test_security_analyzer_event_properties():
-    """Test SecurityAnalyzerConfigurationEvent properties and methods."""
+def test_security_analyzer_history_properties(mock_llm):
+    """Test ConversationState security analyzer history properties and methods."""
     # Test with LLM analyzer
-    llm_analyzer = LLMSecurityAnalyzer()
-    event_with_analyzer = SecurityAnalyzerConfigurationEvent.from_analyzer(llm_analyzer)
+    agent_with_analyzer = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
 
-    assert event_with_analyzer.analyzer_type == "LLMSecurityAnalyzer"
-    assert event_with_analyzer.source == "agent"
-    assert "LLMSecurityAnalyzer configured" in str(event_with_analyzer)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conversation = Conversation(
+            agent=agent_with_analyzer, persistence_dir=tmpdir, workspace=tmpdir
+        )
+
+        # Test current properties
+        assert (
+            conversation.state.security_analyzer_history[-1].analyzer_type
+            == "LLMSecurityAnalyzer"
+        )
+        assert conversation.state.security_analyzer_history[-1].timestamp is not None
+        assert isinstance(
+            conversation.state.security_analyzer_history[-1].timestamp, datetime
+        )
+
+        # Test history
+        assert len(conversation.state.security_analyzer_history) == 1
+        record = conversation.state.security_analyzer_history[0]
+        assert record.analyzer_type == "LLMSecurityAnalyzer"
+        assert isinstance(record.timestamp, datetime)
 
     # Test without analyzer
-    event_without_analyzer = SecurityAnalyzerConfigurationEvent.from_analyzer(None)
+    agent_without_analyzer = Agent(llm=mock_llm)
 
-    assert event_without_analyzer.analyzer_type is None
-    assert event_without_analyzer.source == "agent"
-    assert "No security analyzer configured" in str(event_without_analyzer)
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conversation = Conversation(
+            agent=agent_without_analyzer, persistence_dir=tmpdir, workspace=tmpdir
+        )
+
+        # Test current properties
+        assert conversation.state.security_analyzer_history[-1].analyzer_type is None
+        assert conversation.state.security_analyzer_history[-1].timestamp is not None
+        assert isinstance(
+            conversation.state.security_analyzer_history[-1].timestamp, datetime
+        )
+
+        # Test history
+        assert len(conversation.state.security_analyzer_history) == 1
+        record = conversation.state.security_analyzer_history[0]
+        assert record.analyzer_type is None
+        assert isinstance(record.timestamp, datetime)

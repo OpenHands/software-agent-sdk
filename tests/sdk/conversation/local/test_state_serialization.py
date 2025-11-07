@@ -16,7 +16,6 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
-from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
@@ -99,13 +98,12 @@ def test_conversation_state_persistence_save_load():
             source="user",
             llm_message=Message(role="user", content=[TextContent(text="hello")]),
         )
-        event3 = SecurityAnalyzerConfigurationEvent.from_analyzer(
-            analyzer=agent.security_analyzer
-        )
         state.events.append(event1)
         state.events.append(event2)
-        state.events.append(event3)
         state.stats.register_llm(RegistryEvent(llm=llm))
+
+        # Manually populate security analyzer history to match what Agent.init_state() would do  # noqa: E501
+        state.update_security_analyzer_configuration(None)
 
         # State auto-saves when events are added
         # Verify files were created
@@ -113,7 +111,7 @@ def test_conversation_state_persistence_save_load():
 
         # Events are stored with new naming pattern
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
-        assert len(event_files) == 3
+        assert len(event_files) == 2
 
         # Load state using Conversation (which handles loading)
         conversation = Conversation(
@@ -128,13 +126,24 @@ def test_conversation_state_persistence_save_load():
 
         # Verify loaded state matches original
         assert loaded_state.id == state.id
-        assert len(loaded_state.events) == 3
+        assert len(loaded_state.events) == 2
         assert isinstance(loaded_state.events[0], SystemPromptEvent)
         assert isinstance(loaded_state.events[1], MessageEvent)
         assert loaded_state.agent.llm.model == agent.llm.model
         assert loaded_state.agent.__class__ == agent.__class__
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+        # Test model_dump equality (excluding timestamps which will differ)
+        original_dump = state.model_dump(mode="json")
+        loaded_dump = loaded_state.model_dump(mode="json")
+
+        # Remove timestamps from security_analyzer_history for comparison
+        if "security_analyzer_history" in original_dump:
+            for record in original_dump["security_analyzer_history"]:
+                record.pop("timestamp", None)
+        if "security_analyzer_history" in loaded_dump:
+            for record in loaded_dump["security_analyzer_history"]:
+                record.pop("timestamp", None)
+
+        assert loaded_dump == original_dump
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
@@ -163,27 +172,26 @@ def test_conversation_state_incremental_save():
         event1 = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="system"), tools=[]
         )
-        event2 = SecurityAnalyzerConfigurationEvent.from_analyzer(
-            analyzer=agent.security_analyzer
-        )
         state.events.append(event1)
-        state.events.append(event2)
         state.stats.register_llm(RegistryEvent(llm=llm))
+
+        # Manually populate security analyzer history to match what Agent.init_state() would do  # noqa: E501
+        state.update_security_analyzer_configuration(None)
 
         # Verify event files exist (may have additional events from Agent.init_state)
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
-        assert len(event_files) == 2
+        assert len(event_files) == 1
 
         # Add second event - auto-saves
-        event3 = MessageEvent(
+        event2 = MessageEvent(
             source="user",
             llm_message=Message(role="user", content=[TextContent(text="hello")]),
         )
-        state.events.append(event3)
+        state.events.append(event2)
 
         # Verify additional event file was created
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
-        assert len(event_files) == 3
+        assert len(event_files) == 2
 
         # Load using Conversation and verify events are present
         conversation = Conversation(
@@ -195,9 +203,20 @@ def test_conversation_state_incremental_save():
         assert isinstance(conversation, LocalConversation)
         assert conversation.state.persistence_dir == persist_path_for_state
         loaded_state = conversation._state
-        assert len(loaded_state.events) == 3
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+        assert len(loaded_state.events) == 2
+        # Test model_dump equality (excluding timestamps which will differ)
+        original_dump = state.model_dump(mode="json")
+        loaded_dump = loaded_state.model_dump(mode="json")
+
+        # Remove timestamps from security_analyzer_history for comparison
+        if "security_analyzer_history" in original_dump:
+            for record in original_dump["security_analyzer_history"]:
+                record.pop("timestamp", None)
+        if "security_analyzer_history" in loaded_dump:
+            for record in loaded_dump["security_analyzer_history"]:
+                record.pop("timestamp", None)
+
+        assert loaded_dump == original_dump
 
 
 def test_conversation_state_event_file_scanning():
@@ -238,13 +257,6 @@ def test_conversation_state_event_file_scanning():
             event2.model_dump_json(exclude_none=True)
         )
 
-        event3 = SecurityAnalyzerConfigurationEvent.from_analyzer(
-            analyzer=agent.security_analyzer
-        )
-        (events_dir / "event-00002-abcdef03.json").write_text(
-            event3.model_dump_json(exclude_none=True)
-        )
-
         # Invalid file should be ignored
         (events_dir / "invalid-file.json").write_text('{"type": "test"}')
 
@@ -258,7 +270,7 @@ def test_conversation_state_event_file_scanning():
 
         # Should load valid events in order
         assert (
-            len(conversation._state.events) == 3
+            len(conversation._state.events) == 2
         )  # May have additional events from Agent.init_state
 
         # Find our test events
@@ -341,13 +353,8 @@ def test_conversation_state_empty_filestore():
 
         # Should create new state
         assert conversation._state.id is not None
-        assert (
-            len(conversation._state.events) == 2
-        )  # System prompt event + security analyzer configuration
+        assert len(conversation._state.events) == 1  # System prompt event only
         assert isinstance(conversation._state.events[0], SystemPromptEvent)
-        assert isinstance(
-            conversation._state.events[1], SecurityAnalyzerConfigurationEvent
-        )
 
 
 def test_conversation_state_missing_base_state():
@@ -565,4 +572,13 @@ def test_conversation_with_agent_different_llm_config():
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
+
+        # Remove timestamps from security_analyzer_history for comparison
+        if "security_analyzer_history" in original_state_dump:
+            for record in original_state_dump["security_analyzer_history"]:
+                record.pop("timestamp", None)
+        if "security_analyzer_history" in new_dump:
+            for record in new_dump["security_analyzer_history"]:
+                record.pop("timestamp", None)
+
         assert new_dump == original_state_dump
