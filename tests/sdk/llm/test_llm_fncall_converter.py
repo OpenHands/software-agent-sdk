@@ -1,6 +1,7 @@
 """Test for FunctionCallingConverter."""
 
 import json
+from typing import cast
 
 import pytest
 from litellm import ChatCompletionToolParam
@@ -14,6 +15,7 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_fncall_messages_to_non_fncall_messages,
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
+    convert_tools_to_description,
 )
 
 
@@ -463,6 +465,89 @@ def test_convert_with_finish_tool():
             break
 
     assert has_finish
+
+
+def test_convert_tools_to_description_array_items():
+    """Ensure array parameters with object items are formatted clearly."""
+    tools = cast(
+        list[ChatCompletionToolParam],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_tracker",
+                    "description": "Track task plans for execution.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The command to execute. `view` shows the current task list. `plan` creates or updates the task list based on provided requirements and progress. Always `view` the current list before making changes.",  # noqa: E501
+                                "enum": ["view", "plan"],
+                            },
+                            "task_list": {
+                                "type": "array",
+                                "description": (
+                                    "The full task list. Required parameter of `plan` command."  # noqa: E501
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {
+                                            "type": "string",
+                                            "description": "A brief title for the task.",  # noqa: E501
+                                        },
+                                        "notes": {
+                                            "type": "string",
+                                            "description": "Additional details or notes about the task.",  # noqa: E501
+                                        },
+                                        "status": {
+                                            "type": "string",
+                                            "description": (
+                                                "The current status of the task. One of "  # noqa: E501
+                                                "'todo', 'in_progress', or 'done'."
+                                            ),
+                                            "enum": ["todo", "in_progress", "done"],
+                                        },
+                                    },
+                                    "required": ["title"],
+                                },
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            }
+        ],
+    )
+
+    description = convert_tools_to_description(tools)
+
+    expected_command_line = (
+        "  (1) command (string, optional): The command to execute. `view` shows the current task list. "  # noqa: E501
+        "`plan` creates or updates the task list based on provided requirements and progress. "  # noqa: E501
+        "Always `view` the current list before making changes.\n"
+        "Allowed values: [`view`, `plan`]\n"
+    )
+    assert expected_command_line in description
+    assert (
+        "  (2) task_list (array, optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
+        in description
+    )
+    assert "       task_list array item structure:\n" in description
+    assert (
+        "       - title (string, required): A brief title for the task.\n"
+        in description
+    )
+    assert (
+        "       - notes (string, optional): Additional details or notes about the task.\n"  # noqa: E501
+        in description
+    )
+    expected_status_line = (
+        "       - status (string, optional): The current status of the task. "
+        "One of 'todo', 'in_progress', or 'done'. Allowed values: [`todo`, `in_progress`, `done`]\n"  # noqa: E501
+    )
+    assert expected_status_line in description
 
 
 @pytest.mark.parametrize(
