@@ -55,6 +55,17 @@ def _default_sdk_project_root() -> Path:
     """
     site_markers = ("site-packages", "dist-packages")
 
+    def _climb(start: Path) -> Path | None:
+        cur = start.resolve()
+        if not cur.is_dir():
+            cur = cur.parent
+        while True:
+            if _is_workspace_root(cur):
+                return cur
+            if cur.parent == cur:
+                return None
+            cur = cur.parent
+
     def validate(p: Path, src: str) -> Path:
         if any(s in str(p) for s in site_markers):
             raise RuntimeError(
@@ -301,18 +312,6 @@ def _is_workspace_root(d: Path) -> bool:
             "openhands-agent-server",
         }.issubset(norm)
     return all((d / p).exists() for p in _EXPECTED)
-
-
-def _climb(start: Path) -> Path | None:
-    cur = start.resolve()
-    if not cur.is_dir():
-        cur = cur.parent
-    while True:
-        if _is_workspace_root(cur):
-            return cur
-        if cur.parent == cur:
-            return None
-        cur = cur.parent
 
 
 class BuildOptions(BaseModel):
