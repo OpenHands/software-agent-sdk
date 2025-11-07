@@ -313,13 +313,13 @@ class Agent(AgentBase):
         tool_name: str,
         readOnlyHint: bool,
     ) -> risk.SecurityRisk:
+        requires_sr = isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+        raw = arguments.pop("security_risk", None)
+
         # Default risk value for action event
         # Tool is marked as read-only so security risk can be ignored
         if readOnlyHint:
             return risk.SecurityRisk.UNKNOWN
-
-        requires_sr = isinstance(self.security_analyzer, LLMSecurityAnalyzer)
-        raw = arguments.pop("security_risk", None)
 
         # Raises exception if failed to pass risk field when expected
         # Exception will be sent back to agent as error event

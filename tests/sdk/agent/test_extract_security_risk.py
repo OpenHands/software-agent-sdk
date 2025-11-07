@@ -95,9 +95,9 @@ def test_extract_security_risk(
 
     if should_raise:
         with pytest.raises(ValueError):
-            agent._extract_security_risk(arguments, tool_name)
+            agent._extract_security_risk(arguments, tool_name, False)
     else:
-        result = agent._extract_security_risk(arguments, tool_name)
+        result = agent._extract_security_risk(arguments, tool_name, False)
         assert result == expected_result
 
         # Verify that security_risk was popped from arguments
@@ -115,7 +115,7 @@ def test_extract_security_risk_error_messages(agent_with_llm_analyzer):
     with pytest.raises(
         ValueError, match="Failed to provide security_risk field in tool 'test_tool'"
     ):
-        agent_with_llm_analyzer._extract_security_risk(arguments, tool_name)
+        agent_with_llm_analyzer._extract_security_risk(arguments, tool_name, False)
 
 
 def test_extract_security_risk_arguments_mutation():
@@ -133,7 +133,7 @@ def test_extract_security_risk_arguments_mutation():
     arguments = {"param1": "value1", "security_risk": "LOW", "param2": "value2"}
     original_args = arguments.copy()
 
-    result = agent._extract_security_risk(arguments, "test_tool")
+    result = agent._extract_security_risk(arguments, "test_tool", False)
 
     # Verify result
     assert result == SecurityRisk.LOW
@@ -159,8 +159,31 @@ def test_extract_security_risk_with_empty_arguments():
     )
 
     arguments = {}
-    result = agent._extract_security_risk(arguments, "test_tool")
+    result = agent._extract_security_risk(arguments, "test_tool", False)
 
     # Should return UNKNOWN when no analyzer and no security_risk
     assert result == SecurityRisk.UNKNOWN
     assert arguments == {}  # Should remain empty
+
+
+def test_extract_security_risk_with_readonly_hint():
+    """Test _extract_security_risk with readOnlyHint=True."""
+    agent = Agent(
+        llm=LLM(
+            usage_id="test-llm",
+            model="test-model",
+            api_key=SecretStr("test-key"),
+            base_url="http://test",
+        ),
+        security_analyzer=LLMSecurityAnalyzer(),
+    )
+
+    # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
+    arguments = {"param1": "value1", "security_risk": "HIGH"}
+    result = agent._extract_security_risk(arguments, "test_tool", True)
+
+    # Should return UNKNOWN when readOnlyHint is True
+    assert result == SecurityRisk.UNKNOWN
+    # security_risk should still be popped from arguments
+    assert "security_risk" not in arguments
+    assert arguments["param1"] == "value1"
