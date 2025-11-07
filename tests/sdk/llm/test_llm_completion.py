@@ -1,6 +1,7 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -52,11 +53,11 @@ class _ArgsBasic(Action):
 class _MockTool(ToolDefinition[_ArgsBasic, None]):
     """Mock tool for LLM completion testing."""
 
+    name: ClassVar[str] = "test_tool"
+
     @classmethod
     def create(cls, conv_state=None, **params) -> Sequence["_MockTool"]:
-        return [
-            cls(name="test_tool", description="A test tool", action_type=_ArgsBasic)
-        ]
+        return [cls(description="A test tool", action_type=_ArgsBasic)]
 
 
 @pytest.fixture

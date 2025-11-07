@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.llm.message import content_to_str
-from openhands.sdk.tool.builtins.finish import FinishAction
+from openhands.sdk.tool.builtins.finish import FinishAction, FinishTool
 
 
 def get_agent_final_response(events: Sequence[Event]) -> str:
@@ -27,7 +27,7 @@ def get_agent_final_response(events: Sequence[Event]) -> str:
         if (
             isinstance(event, ActionEvent)
             and event.source == "agent"
-            and event.tool_name == "finish"
+            and event.tool_name == FinishTool.name
         ):
             # Extract message from finish tool call
             if event.action is not None and isinstance(event.action, FinishAction):

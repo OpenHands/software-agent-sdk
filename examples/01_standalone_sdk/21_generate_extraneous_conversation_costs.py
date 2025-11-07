@@ -12,11 +12,8 @@ from openhands.sdk import (
     TextContent,
     get_logger,
 )
-from openhands.sdk.tool.registry import register_tool
 from openhands.sdk.tool.spec import Tool
-from openhands.tools.execute_bash import (
-    BashTool,
-)
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -43,8 +40,6 @@ llm_condenser = LLM(
 )
 
 # Tools
-register_tool("BashTool", BashTool)
-
 condenser = LLMSummarizingCondenser(llm=llm_condenser, max_size=10, keep_first=2)
 
 cwd = os.getcwd()
@@ -52,7 +47,7 @@ agent = Agent(
     llm=llm,
     tools=[
         Tool(
-            name="BashTool",
+            name=TerminalTool.name,
         ),
     ],
     condenser=condenser,
@@ -67,7 +62,6 @@ conversation.send_message(
 )
 conversation.run()
 
-
 # Demonstrate extraneous costs part of the conversation
 second_llm = LLM(
     usage_id="demo-secondary",
@@ -80,7 +74,6 @@ completion_response = second_llm.completion(
     messages=[Message(role="user", content=[TextContent(text="echo 'More spend!'")])]
 )
 
-
 # Access total spend
 spend = conversation.conversation_stats.get_combined_metrics()
 print("\n=== Total Spend for Conversation ===\n")
@@ -90,7 +83,6 @@ if spend.accumulated_token_usage:
     print(f"Completion Tokens: {spend.accumulated_token_usage.completion_tokens}")
     print(f"Cache Read Tokens: {spend.accumulated_token_usage.cache_read_tokens}")
     print(f"Cache Write Tokens: {spend.accumulated_token_usage.cache_write_tokens}")
-
 
 spend_per_usage = conversation.conversation_stats.usage_to_metrics
 print("\n=== Spend Breakdown by Usage ID ===\n")

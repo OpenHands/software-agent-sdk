@@ -19,10 +19,19 @@ def test_is_context_window_exceeded_direct_type():
 
 def test_is_context_window_exceeded_via_text():
     # BadRequest containing context-window-ish text should be detected
-    e = BadRequestError(
+    e1 = BadRequestError(
         "The request exceeds the available context size", MODEL, PROVIDER
     )
-    assert is_context_window_exceeded(e) is True
+    e2 = BadRequestError(
+        (
+            "Your input exceeds the context window of this model. "
+            "Please adjust your input and try again."
+        ),
+        MODEL,
+        PROVIDER,
+    )
+    assert is_context_window_exceeded(e1) is True
+    assert is_context_window_exceeded(e2) is True
 
 
 def test_is_context_window_exceeded_negative():

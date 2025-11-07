@@ -23,7 +23,6 @@ from openhands.tools.preset.default import get_default_agent
 
 logger = get_logger(__name__)
 
-
 api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
 assert api_key, "Set LLM_API_KEY or OPENAI_API_KEY in your environment."
 

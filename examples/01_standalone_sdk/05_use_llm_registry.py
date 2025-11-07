@@ -13,8 +13,8 @@ from openhands.sdk import (
     TextContent,
     get_logger,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -42,8 +42,7 @@ llm = llm_registry.get("agent")
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-tools = [Tool(name="BashTool")]
+tools = [Tool(name=TerminalTool.name)]
 
 # Agent
 agent = Agent(llm=llm, tools=tools)

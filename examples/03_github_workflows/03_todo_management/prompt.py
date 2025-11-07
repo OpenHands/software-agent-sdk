@@ -21,7 +21,6 @@ Your task is to:
     active contributors to the file/location of the changes.
     Assign one of these people as a reviewer.
 
-
 Please make sure to:
 - Create a descriptive branch name related to the TODO
 - Fix the issue with clean code

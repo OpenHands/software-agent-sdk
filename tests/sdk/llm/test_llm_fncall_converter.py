@@ -2,6 +2,7 @@
 
 import json
 import textwrap
+from typing import cast
 
 import pytest
 from litellm import ChatCompletionToolParam
@@ -23,7 +24,7 @@ FNCALL_TOOLS: list[ChatCompletionToolParam] = [
     {
         "type": "function",
         "function": {
-            "name": "execute_bash",
+            "name": "terminal",
             "description": "Execute a bash command in the terminal.",
             "parameters": {
                 "type": "object",
@@ -67,7 +68,7 @@ def test_convert_fncall_to_non_fncall_basic():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -86,14 +87,12 @@ def test_convert_fncall_to_non_fncall_basic():
     # Check that tool calls are converted to text format
     assistant_msg = None
     for msg in non_fncall_messages:
-        if msg.get("role") == "assistant" and "execute_bash" in str(
-            msg.get("content", "")
-        ):
+        if msg.get("role") == "assistant" and "terminal" in str(msg.get("content", "")):
             assistant_msg = msg
             break
 
     assert assistant_msg is not None
-    assert "execute_bash" in assistant_msg["content"]
+    assert "terminal" in assistant_msg["content"]
 
 
 def test_convert_non_fncall_to_fncall_basic():
@@ -104,7 +103,7 @@ def test_convert_non_fncall_to_fncall_basic():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command for you.\n\n<function=execute_bash>\n"
+                "I'll run the ls command for you.\n\n<function=terminal>\n"
                 "<parameter=command>ls</parameter>\n</function>"
             ),
         },
@@ -127,7 +126,7 @@ def test_convert_non_fncall_to_fncall_basic():
     assert assistant_msg is not None
     assert "tool_calls" in assistant_msg
     assert len(assistant_msg["tool_calls"]) == 1
-    assert assistant_msg["tool_calls"][0]["function"]["name"] == "execute_bash"
+    assert assistant_msg["tool_calls"][0]["function"]["name"] == "terminal"
 
 
 def test_convert_fncall_to_non_fncall_with_in_context_learning():
@@ -182,7 +181,7 @@ def test_convert_with_multiple_tool_calls():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 },
@@ -190,7 +189,7 @@ def test_convert_with_multiple_tool_calls():
                     "id": "call_456",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "pwd"}',
                     },
                 },
@@ -217,7 +216,7 @@ def test_convert_with_tool_response():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -264,7 +263,7 @@ def test_convert_roundtrip():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -330,7 +329,7 @@ def test_convert_with_malformed_parameters():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command.\n\n<function=execute_bash>\n"
+                "I'll run the ls command.\n\n<function=terminal>\n"
                 "<parameter=invalid_param>ls</parameter>\n</function>"
             ),
         },
@@ -414,7 +413,7 @@ def test_convert_with_system_message():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -469,6 +468,89 @@ def test_convert_with_finish_tool():
     assert has_finish
 
 
+def test_convert_tools_to_description_array_items():
+    """Ensure array parameters with object items are formatted clearly."""
+    tools = cast(
+        list[ChatCompletionToolParam],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_tracker",
+                    "description": "Track task plans for execution.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The command to execute. `view` shows the current task list. `plan` creates or updates the task list based on provided requirements and progress. Always `view` the current list before making changes.",  # noqa: E501
+                                "enum": ["view", "plan"],
+                            },
+                            "task_list": {
+                                "type": "array",
+                                "description": (
+                                    "The full task list. Required parameter of `plan` command."  # noqa: E501
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {
+                                            "type": "string",
+                                            "description": "A brief title for the task.",  # noqa: E501
+                                        },
+                                        "notes": {
+                                            "type": "string",
+                                            "description": "Additional details or notes about the task.",  # noqa: E501
+                                        },
+                                        "status": {
+                                            "type": "string",
+                                            "description": (
+                                                "The current status of the task. One of "  # noqa: E501
+                                                "'todo', 'in_progress', or 'done'."
+                                            ),
+                                            "enum": ["todo", "in_progress", "done"],
+                                        },
+                                    },
+                                    "required": ["title"],
+                                },
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            }
+        ],
+    )
+
+    description = convert_tools_to_description(tools)
+
+    expected_command_line = (
+        "  (1) command (string, optional): The command to execute. `view` shows the current task list. "  # noqa: E501
+        "`plan` creates or updates the task list based on provided requirements and progress. "  # noqa: E501
+        "Always `view` the current list before making changes.\n"
+        "Allowed values: [`view`, `plan`]\n"
+    )
+    assert expected_command_line in description
+    assert (
+        "  (2) task_list (array, optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
+        in description
+    )
+    assert "       task_list array item structure:\n" in description
+    assert (
+        "       - title (string, required): A brief title for the task.\n"
+        in description
+    )
+    assert (
+        "       - notes (string, optional): Additional details or notes about the task.\n"  # noqa: E501
+        in description
+    )
+    expected_status_line = (
+        "       - status (string, optional): The current status of the task. "
+        "One of 'todo', 'in_progress', or 'done'. Allowed values: [`todo`, `in_progress`, `done`]\n"  # noqa: E501
+    )
+    assert expected_status_line in description
+
+
 @pytest.mark.parametrize(
     "tool_call, expected",
     [
@@ -478,14 +560,11 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "execute_bash",
+                    "name": "terminal",
                     "arguments": '{"command": "ls -la"}',
                 },
             },
-            (
-                "<function=execute_bash>\n<parameter=command>ls -la</parameter>\n"
-                "</function>"
-            ),
+            ("<function=terminal>\n<parameter=command>ls -la</parameter>\n</function>"),
         ),
         # Multiple parameters with different types
         (
@@ -493,7 +572,7 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "str_replace_editor",
+                    "name": "file_editor",
                     "arguments": (
                         '{"command": "view", "path": "/test/file.py", '
                         '"view_range": [1, 10]}'
@@ -501,7 +580,7 @@ def test_convert_with_finish_tool():
                 },
             },
             (
-                "<function=str_replace_editor>\n<parameter=command>view</parameter>\n"
+                "<function=file_editor>\n<parameter=command>view</parameter>\n"
                 "<parameter=path>/test/file.py</parameter>\n"
                 "<parameter=view_range>[1, 10]</parameter>\n</function>"
             ),
@@ -512,7 +591,7 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "str_replace_editor",
+                    "name": "file_editor",
                     "arguments": json.dumps(
                         {
                             "command": "str_replace",
@@ -527,7 +606,7 @@ def test_convert_with_finish_tool():
                 },
             },
             (
-                "<function=str_replace_editor>\n<parameter=command>str_replace</parameter>\n"
+                "<function=file_editor>\n<parameter=command>str_replace</parameter>\n"
                 "<parameter=path>/test/file.py</parameter>\n<parameter=old_str>\n"
                 "def example():\n    pass\n</parameter>\n<parameter=new_str>\n"
                 'def example():\n    # This is indented\n    print("hello")\n'

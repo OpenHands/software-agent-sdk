@@ -50,13 +50,12 @@ class TestTool:
     def test_tool_creation_basic(self):
         """Test basic tool creation."""
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
         )
 
-        assert tool.name == "test_tool"
+        assert tool.name == "mock_test"
         assert tool.description == "A test tool"
         assert tool.action_type == ToolMockAction
         assert tool.observation_type == ToolMockObservation
@@ -70,7 +69,6 @@ class TestTool:
                 return ToolMockObservation(result=f"Executed: {action.command}")
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -93,7 +91,6 @@ class TestTool:
         )
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -109,7 +106,6 @@ class TestTool:
     def test_to_mcp_tool_basic(self):
         """Test conversion to MCP tool format."""
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -117,7 +113,7 @@ class TestTool:
 
         mcp_tool = tool.to_mcp_tool()
 
-        assert mcp_tool["name"] == "test_tool"
+        assert mcp_tool["name"] == "mock_test"
         assert mcp_tool["description"] == "A test tool"
         assert "inputSchema" in mcp_tool
         assert mcp_tool["inputSchema"]["type"] == "object"
@@ -138,7 +134,6 @@ class TestTool:
         )
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -148,7 +143,7 @@ class TestTool:
         mcp_tool = tool.to_mcp_tool()
 
         # Tool should include annotations
-        assert mcp_tool["name"] == "test_tool"
+        assert mcp_tool["name"] == "mock_test"
         assert mcp_tool["description"] == "A test tool"
         assert "annotations" in mcp_tool
         assert mcp_tool["annotations"] == annotations
@@ -156,7 +151,6 @@ class TestTool:
     def test_call_without_executor(self):
         """Test calling tool without executor raises error."""
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -164,7 +158,7 @@ class TestTool:
 
         action = ToolMockAction(command="test")
         with pytest.raises(
-            NotImplementedError, match="Tool 'test_tool' has no executor"
+            NotImplementedError, match="Tool 'mock_test' has no executor"
         ):
             tool(action)
 
@@ -176,7 +170,6 @@ class TestTool:
                 return ToolMockObservation(result=f"Processed: {action.command}")
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -202,7 +195,6 @@ class TestTool:
             )
 
         tool = MockTestTool(
-            name="complex_tool",
             description="Tool with complex types",
             action_type=ComplexAction,
             observation_type=ToolMockObservation,
@@ -226,7 +218,6 @@ class TestTool:
                 return ToolMockObservation(result="success")
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -248,7 +239,6 @@ class TestTool:
                 return ToolMockObservation(result="test", extra_field="extra_data")
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -265,7 +255,6 @@ class TestTool:
     def test_action_validation_with_nested_data(self):
         """Test action validation with nested data structures."""
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -291,7 +280,6 @@ class TestTool:
 
         # Create tool and get its schema
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -307,7 +295,6 @@ class TestTool:
     def test_tool_with_no_observation_type(self):
         """Test tool creation with None observation type."""
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=None,
@@ -317,7 +304,7 @@ class TestTool:
 
         # Should still be able to create MCP tool
         mcp_tool = tool.to_mcp_tool()
-        assert mcp_tool["name"] == "test_tool"
+        assert mcp_tool["name"] == "mock_test"
 
     def test_executor_function_attachment(self):
         """Test creating tool with executor."""
@@ -330,7 +317,6 @@ class TestTool:
         executor = MockExecutor()
 
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -346,23 +332,13 @@ class TestTool:
 
     def test_tool_name_validation(self):
         """Test tool name validation."""
-        # Valid names should work
+        # Name is now automatically generated from class name
         tool = MockTestTool(
-            name="valid_tool_name",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
         )
-        assert tool.name == "valid_tool_name"
-
-        # Empty name should still work (validation might be elsewhere)
-        tool2 = MockTestTool(
-            name="",
-            description="A test tool",
-            action_type=ToolMockAction,
-            observation_type=ToolMockObservation,
-        )
-        assert tool2.name == ""
+        assert tool.name == "mock_test"
 
     def test_complex_executor_return_types(self):
         """Test executor with complex return types."""
@@ -385,7 +361,6 @@ class TestTool:
                 )
 
         tool = MockTestTool(
-            name="complex_tool",
             description="Tool with complex observation",
             action_type=ToolMockAction,
             observation_type=ComplexObservation,
@@ -407,7 +382,6 @@ class TestTool:
                 raise RuntimeError("Executor failed")
 
         tool = MockTestTool(
-            name="failing_tool",
             description="Tool that fails",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -434,7 +408,6 @@ class TestTool:
                 return StrictObservation(message="success", value=42)
 
         tool = MockTestTool(
-            name="strict_tool",
             description="Tool with strict observation",
             action_type=ToolMockAction,
             observation_type=StrictObservation,
@@ -450,14 +423,12 @@ class TestTool:
     def test_tool_equality_and_hashing(self):
         """Test tool equality and hashing behavior."""
         tool1 = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
         )
 
         tool2 = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -478,7 +449,6 @@ class TestTool:
             )
 
         tool = MockTestTool(
-            name="required_tool",
             description="Tool with required fields",
             action_type=RequiredFieldAction,
             observation_type=ToolMockObservation,
@@ -497,7 +467,6 @@ class TestTool:
         meta_data = {"version": "1.0", "author": "test"}
 
         tool = MockTestTool(
-            name="meta_tool",
             description="Tool with metadata",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -534,7 +503,6 @@ class TestTool:
             )
 
         tool = MockTestTool(
-            name="complex_nested_tool",
             description="Tool with complex nested types",
             action_type=ComplexNestedAction,
             observation_type=ToolMockObservation,
@@ -583,7 +551,6 @@ class TestTool:
         )
 
         readonly_tool = MockTestTool(
-            name="readonly_tool",
             description="A read-only tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -597,7 +564,6 @@ class TestTool:
         )
 
         writable_tool = MockTestTool(
-            name="writable_tool",
             description="A writable tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -606,7 +572,6 @@ class TestTool:
 
         # Test with tool that has no annotations (should be treated as writable)
         no_annotations_tool = MockTestTool(
-            name="no_annotations_tool",
             description="A tool with no annotations",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -671,7 +636,6 @@ class TestTool:
 
         # Test via to_openai_tool method
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -695,7 +659,6 @@ class TestTool:
         )
 
         writable_tool = MockTestTool(
-            name="writable_tool",
             description="A writable tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -722,7 +685,6 @@ class TestTool:
 
         executor = MockExecutor()
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -731,7 +693,7 @@ class TestTool:
 
         # Should return ExecutableTool without error
         executable_tool = tool.as_executable()
-        assert executable_tool.name == "test_tool"
+        assert executable_tool.name == "mock_test"
         assert executable_tool.executor is executor
 
         # Should be able to call it
@@ -743,7 +705,6 @@ class TestTool:
     def test_as_executable_without_executor(self):
         """Test as_executable() method with a tool that has no executor."""
         tool = MockTestTool(
-            name="test_tool",
             description="A test tool",
             action_type=ToolMockAction,
             observation_type=ToolMockObservation,
@@ -751,6 +712,6 @@ class TestTool:
 
         # Should raise NotImplementedError
         with pytest.raises(
-            NotImplementedError, match="Tool 'test_tool' has no executor"
+            NotImplementedError, match="Tool 'mock_test' has no executor"
         ):
             tool.as_executable()

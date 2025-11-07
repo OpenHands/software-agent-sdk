@@ -35,7 +35,7 @@
         "id": "toolu_01MgS75uyxLSueHHFj1DXiRZ",
         "type": "function",
         "function": {
-          "name": "execute_bash",
+          "name": "terminal",
           "arguments": "{\"command\": \"pwd && ls -la\", \"security_risk\": \"LOW\"}"
         }
       }
@@ -45,7 +45,7 @@
     "content": "/Users/xingyaow/Projects/OpenHands/openhands-v1-dev/agent-sdk.worktree/telemetry\ntotal 784\ndrwxr-xr-x@ 25 xingyaow  staff     800 Sep  4 15:43 .\ndrwxr-xr-x@  5 xingyaow  staff     160 Sep  4 11:44 ..\n-rw-r--r--@  1 xingyaow  staff   53248 Sep  4 14:48 .coverage\n-rw-r--r--@  1 xingyaow  staff      98 Sep  4 09:52 .git\ndrwxr-xr-x@  4 xingyaow  staff     128 Sep  4 11:48 .github\n-rw-r--r--@  1 xingyaow  staff    4636 Sep  4 09:52 .gitignore\ndrwxr-xr-x@  4 xingyaow  staff     128 Sep  4 09:52 .openhands\n-rw-r--r--@  1 xingyaow  staff     975 Sep  4 09:52 .pre-commit-config.yaml\ndrwxr-xr-x@  6 xingyaow  staff     192 Sep  4 10:44 .pytest_cache\ndrwxr-xr-x@  5 xingyaow  staff     160 Sep  4 10:39 .ruff_cache\ndrwxr-xr-x@  8 xingyaow  staff     256 Sep  4 09:53 .venv\ndrwxr-xr-x@  3 xingyaow  staff      96 Sep  4 09:52 .vscode\n-rw-r--r--@  1 xingyaow  staff    2471 Sep  4 09:52 Makefile\n-rw-r--r--@  1 xingyaow  staff    5834 Sep  4 09:52 README.md\ndrwxr-xr-x@  6 xingyaow  staff     192 Sep  4 14:00 examples\n-rw-r--r--@  1 xingyaow  staff      22 Sep  4 14:16 hello.py\ndrwxr-xr-x@ 21 xingyaow  staff     672 Sep  4 14:06 htmlcov\ndrwxr-xr-x@  4 xingyaow  staff     128 Sep  4 15:43 llm-logs\ndrwxr-xr-x@  3 xingyaow  staff      96 Sep  4 12:54 logs\ndrwxr-xr-x@  7 xingyaow  staff     224 Sep  4 10:43 openhands\ndrwxr-xr-x@  7 xingyaow  staff     224 Sep  4 09:53 openhands_sdk.egg-info\ndrwxr-xr-x@  7 xingyaow  staff     224 Sep  4 09:53 openhands_tools.egg-info\n-rw-r--r--@  1 xingyaow  staff     944 Sep  4 09:52 pyproject.toml\ndrwxr-xr-x@  8 xingyaow  staff     256 Sep  4 12:40 tests\n-rw-r--r--@  1 xingyaow  staff  308314 Sep  4 09:52 uv.lock\n[The command completed with exit code 0.]\n[Current working directory: /Users/xingyaow/Projects/OpenHands/openhands-v1-dev/agent-sdk.worktree/telemetry]\n[Python interpreter: /Users/xingyaow/Projects/OpenHands/openhands-v1-dev/agent-sdk.worktree/telemetry/.venv/bin/python]\n[Command finished with exit code 0]",
     "role": "tool",
     "tool_call_id": "toolu_01MgS75uyxLSueHHFj1DXiRZ",
-    "name": "execute_bash"
+    "name": "terminal"
   },
   {
     "content": "I can see that there's already a `hello.py` file in the current directory. Let me check its contents first:",
@@ -95,7 +95,7 @@
         "id": "toolu_01SCkK9AVLY1qeJBuzhoNPox",
         "type": "function",
         "function": {
-          "name": "execute_bash",
+          "name": "terminal",
           "arguments": "{\"command\": \"python hello.py\", \"security_risk\": \"LOW\"}"
         }
       }
@@ -105,7 +105,7 @@
     "content": "Hello, World!\n[The command completed with exit code 0.]\n[Current working directory: /Users/xingyaow/Projects/OpenHands/openhands-v1-dev/agent-sdk.worktree/telemetry]\n[Python interpreter: /Users/xingyaow/Projects/OpenHands/openhands-v1-dev/agent-sdk.worktree/telemetry/.venv/bin/python]\n[Command finished with exit code 0]",
     "role": "tool",
     "tool_call_id": "toolu_01SCkK9AVLY1qeJBuzhoNPox",
-    "name": "execute_bash"
+    "name": "terminal"
   },
   {
     "content": "Great! The `hello.py` file already exists in your current directory and works perfectly. It contains the single line `print('Hello, World!')` and when executed, it prints \"Hello, World!\" as expected.\n\nThe file is ready to use and is located at `/Users/xingyaow/Projects/OpenHands/openhands-v1-dev/agent-sdk.worktree/telemetry/hello.py`.",

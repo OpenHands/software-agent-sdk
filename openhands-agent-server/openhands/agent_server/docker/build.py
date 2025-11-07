@@ -14,6 +14,7 @@ Single-entry build helper for agent-server images.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -258,6 +259,10 @@ class BuildOptions(BaseModel):
     push: bool | None = Field(
         default=None, description="None=auto (CI push, local load)"
     )
+    arch: str | None = Field(
+        default=None,
+        description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
+    )
 
     @field_validator("target")
     @classmethod
@@ -284,7 +289,37 @@ class BuildOptions(BaseModel):
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        base = f"buildcache-{self.target}-{self.base_image_slug}"
+        # Docker image tags have a 128-character limit.
+        # If the base slug is too long, hash it to create a shorter unique identifier.
+        MAX_TAG_LENGTH = 128
+        base_slug = self.base_image_slug
+
+        # Reserve space for prefix, branch, and separators
+        prefix = f"buildcache-{self.target}-"
+        branch_suffix = (
+            f"-{_sanitize_branch(GIT_REF)}"
+            if GIT_REF not in ("main", "refs/heads/main", "unknown")
+            else ""
+        )
+        main_suffix = "-main" if GIT_REF in ("main", "refs/heads/main") else ""
+
+        # Calculate available space for base_slug
+        reserved = len(prefix) + max(len(branch_suffix), len(main_suffix))
+        available = MAX_TAG_LENGTH - reserved
+
+        # If base_slug is too long, use a hash
+        if len(base_slug) > available:
+            # Use first 8 chars of SHA256 hash for uniqueness while keeping it short
+            hash_digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
+            base_slug_short = hash_digest
+            logger.debug(
+                f"[build] Base image slug too long ({len(base_slug)} chars), "
+                f"using hash: {base_slug_short}"
+            )
+        else:
+            base_slug_short = base_slug
+
+        base = f"{prefix}{base_slug_short}"
         if GIT_REF in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif GIT_REF != "unknown":
@@ -295,12 +330,14 @@ class BuildOptions(BaseModel):
     @property
     def all_tags(self) -> list[str]:
         tags: list[str] = []
+        arch_suffix = f"-{self.arch}" if self.arch else ""
+
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{SHORT_SHA}-{t}")
+            tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
-                tags.append(f"{self.image}:main-{t}")
-        tags.append(f"{self.image}:{self.versioned_tag}")
+                tags.append(f"{self.image}:main-{t}{arch_suffix}")
+        tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
         if self.is_dev:
             tags = [f"{t}-dev" for t in tags]
         return tags
@@ -324,6 +361,7 @@ def _extract_tarball(tarball: Path, dest: Path) -> None:
 
 
 def _make_build_context(sdk_project_root: Path) -> Path:
+    dockerfile_path = _get_dockerfile_path(sdk_project_root)
     tmp_root = Path(tempfile.mkdtemp(prefix="agent-build-", dir=None)).resolve()
     sdist_dir = Path(tempfile.mkdtemp(prefix="agent-sdist-", dir=None)).resolve()
     try:
@@ -349,6 +387,8 @@ def _make_build_context(sdk_project_root: Path) -> Path:
             "Expected single folder in sdist"
         )
         tmp_root = entries[0].resolve()
+        # copy Dockerfile into place
+        shutil.copy2(dockerfile_path, tmp_root / "Dockerfile")
         logger.debug(f"[build] Clean context ready at {tmp_root}")
         return tmp_root
     except Exception:
@@ -379,13 +419,9 @@ def _default_local_cache_dir() -> Path:
     return Path(xdg) / "openhands" / "buildx-cache"
 
 
-# --- single entry point ---
-
-
-def build(opts: BuildOptions) -> list[str]:
-    """Single entry point for building the agent-server image."""
+def _get_dockerfile_path(sdk_project_root: Path) -> Path:
     dockerfile_path = (
-        opts.sdk_project_root
+        sdk_project_root
         / "openhands-agent-server"
         / "openhands"
         / "agent_server"
@@ -394,7 +430,15 @@ def build(opts: BuildOptions) -> list[str]:
     )
     if not dockerfile_path.exists():
         raise FileNotFoundError(f"Dockerfile not found at {dockerfile_path}")
+    return dockerfile_path
 
+
+# --- single entry point ---
+
+
+def build(opts: BuildOptions) -> list[str]:
+    """Single entry point for building the agent-server image."""
+    dockerfile_path = _get_dockerfile_path(opts.sdk_project_root)
     push = opts.push
     if push is None:
         push = IN_CI
@@ -536,6 +580,13 @@ def main(argv: list[str]) -> int:
         default=_env("PLATFORMS", "linux/amd64,linux/arm64"),
         help="Comma-separated platforms (default from $PLATFORMS).",
     )
+    parser.add_argument(
+        "--arch",
+        default=_env("ARCH", ""),
+        help=(
+            "Architecture suffix for tags (e.g., 'amd64', 'arm64', default from $ARCH)."
+        ),
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--push",
@@ -574,7 +625,31 @@ def main(argv: list[str]) -> int:
     if args.build_ctx_only:
         ctx = _make_build_context(sdk_project_root)
         logger.info(f"[build] Clean build context (kept for debugging): {ctx}")
-        # Print path to stdout so other tooling can capture it
+
+        # Create BuildOptions to generate tags
+        opts = BuildOptions(
+            base_image=args.base_image,
+            custom_tags=args.custom_tags,
+            image=args.image,
+            target=args.target,  # type: ignore
+            platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
+            push=None,  # Not relevant for build-ctx-only
+            sdk_project_root=sdk_project_root,
+            arch=args.arch or None,
+        )
+
+        # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a") as fh:
+                fh.write(f"build_context={ctx}\n")
+                fh.write(f"dockerfile={ctx / 'Dockerfile'}\n")
+                fh.write(f"tags_csv={','.join(opts.all_tags)}\n")
+                fh.write(f"versioned_tag={opts.versioned_tag}\n")
+                fh.write(f"base_image_slug={opts.base_image_slug}\n")
+            logger.info("[build] Wrote outputs to $GITHUB_OUTPUT")
+
+        # Also print to stdout for debugging/local use
         print(str(ctx))
         return 0
 
@@ -602,6 +677,7 @@ def main(argv: list[str]) -> int:
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
         sdk_project_root=sdk_project_root,
+        arch=args.arch or None,
     )
     tags = build(opts)
 

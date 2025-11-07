@@ -8,7 +8,7 @@ from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool
 
 
 logger = get_logger(__name__)
@@ -16,22 +16,19 @@ logger = get_logger(__name__)
 
 def register_default_tools(enable_browser: bool = True) -> None:
     """Register the default set of tools."""
-    from openhands.tools.execute_bash import BashTool
+    # Tools are now automatically registered when imported
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.task_tracker import TaskTrackerTool
+    from openhands.tools.terminal import TerminalTool
 
-    register_tool("BashTool", BashTool)
-    logger.debug("Tool: BashTool registered.")
-    register_tool("FileEditorTool", FileEditorTool)
-    logger.debug("Tool: FileEditorTool registered.")
-    register_tool("TaskTrackerTool", TaskTrackerTool)
-    logger.debug("Tool: TaskTrackerTool registered.")
+    logger.debug(f"Tool: {TerminalTool.name} registered.")
+    logger.debug(f"Tool: {FileEditorTool.name} registered.")
+    logger.debug(f"Tool: {TaskTrackerTool.name} registered.")
 
     if enable_browser:
         from openhands.tools.browser_use import BrowserToolSet
 
-        register_tool("BrowserToolSet", BrowserToolSet)
-        logger.debug("Tool: BrowserToolSet registered.")
+        logger.debug(f"Tool: {BrowserToolSet.name} registered.")
 
 
 def get_default_tools(
@@ -44,13 +41,20 @@ def get_default_tools(
     """
     register_default_tools(enable_browser=enable_browser)
 
+    # Import tools to access their name attributes
+    from openhands.tools.file_editor import FileEditorTool
+    from openhands.tools.task_tracker import TaskTrackerTool
+    from openhands.tools.terminal import TerminalTool
+
     tools = [
-        Tool(name="BashTool"),
-        Tool(name="FileEditorTool"),
-        Tool(name="TaskTrackerTool"),
+        Tool(name=TerminalTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
     ]
     if enable_browser:
-        tools.append(Tool(name="BrowserToolSet"))
+        from openhands.tools.browser_use import BrowserToolSet
+
+        tools.append(Tool(name=BrowserToolSet.name))
     return tools
 
 

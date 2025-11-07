@@ -44,7 +44,6 @@ if not runtime_api_key:
     logger.error("RUNTIME_API_KEY required")
     exit(1)
 
-
 with APIRemoteWorkspace(
     runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
     runtime_api_key=runtime_api_key,
@@ -64,7 +63,7 @@ with APIRemoteWorkspace(
     logger.info(f"Command completed: {result.exit_code}, {result.stdout}")
 
     conversation = Conversation(
-        agent=agent, workspace=workspace, callbacks=[event_callback], visualize=True
+        agent=agent, workspace=workspace, callbacks=[event_callback]
     )
     assert isinstance(conversation, RemoteConversation)
 

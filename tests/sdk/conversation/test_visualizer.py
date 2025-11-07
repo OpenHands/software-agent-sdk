@@ -1,13 +1,11 @@
 """Tests for the conversation visualizer and event visualization."""
 
 import json
-from collections.abc import Sequence
 
 from rich.text import Text
 
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
-    create_default_visualizer,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
     ActionEvent,
@@ -19,7 +17,6 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.llm import (
-    ImageContent,
     Message,
     MessageToolCall,
     TextContent,
@@ -125,12 +122,12 @@ def test_system_prompt_event_visualize():
 def test_action_event_visualize():
     """Test ActionEvent visualization."""
     action = VisualizerMockAction(command="ls -la", working_dir="/tmp")
-    tool_call = create_tool_call("call_123", "bash", {"command": "ls -la"})
+    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
     event = ActionEvent(
         thought=[TextContent(text="I need to list files")],
         reasoning_content="Let me check the directory contents",
         action=action,
-        tool_name="bash",
+        tool_name="terminal",
         tool_call_id="call_123",
         tool_call=tool_call,
         llm_response_id="response_456",
@@ -153,19 +150,15 @@ def test_observation_event_visualize():
     from openhands.sdk.tool import Observation
 
     class VisualizerMockObservation(Observation):
-        content: str = "Command output"
-
-        @property
-        def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-            return [TextContent(text=self.content)]
+        pass
 
     observation = VisualizerMockObservation(
-        content="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 ."
+        content=[TextContent(text="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 .")]
     )
     event = ObservationEvent(
         observation=observation,
         action_id="action_123",
-        tool_name="bash",
+        tool_name="terminal",
         tool_call_id="call_123",
     )
 
@@ -173,7 +166,7 @@ def test_observation_event_visualize():
     assert isinstance(result, Text)
 
     text_content = result.plain
-    assert "Tool: bash" in text_content
+    assert "Tool: terminal" in text_content
     assert "Result:" in text_content
     assert "total 4" in text_content
 
@@ -206,7 +199,7 @@ def test_agent_error_event_visualize():
     event = AgentErrorEvent(
         error="Failed to execute command: permission denied",
         tool_call_id="call_err_1",
-        tool_name="execute_bash",
+        tool_name="terminal",
     )
 
     result = event.visualize
@@ -229,22 +222,16 @@ def test_pause_event_visualize():
 
 
 def test_conversation_visualizer_initialization():
-    """Test ConversationVisualizer can be initialized."""
-    visualizer = ConversationVisualizer()
+    """Test DefaultConversationVisualizer can be initialized."""
+    visualizer = DefaultConversationVisualizer()
     assert visualizer is not None
     assert hasattr(visualizer, "on_event")
     assert hasattr(visualizer, "_create_event_panel")
 
 
-def test_create_default_visualizer():
-    """Test create_default_visualizer function."""
-    visualizer = create_default_visualizer()
-    assert isinstance(visualizer, ConversationVisualizer)
-
-
 def test_visualizer_event_panel_creation():
     """Test that visualizer creates panels for different event types."""
-    conv_viz = ConversationVisualizer()
+    conv_viz = DefaultConversationVisualizer()
 
     # Test with a simple action event
     action = VisualizerMockAction(command="test")
@@ -264,7 +251,7 @@ def test_visualizer_event_panel_creation():
 
 def test_visualizer_action_event_with_none_action_panel():
     """ActionEvent with action=None should render as 'Agent Action (Not Executed)'."""
-    visualizer = ConversationVisualizer()
+    visualizer = DefaultConversationVisualizer()
     tc = create_tool_call("call_ne_1", "missing_fn", {})
     action_event = ActionEvent(
         thought=[TextContent(text="...")],
@@ -284,7 +271,7 @@ def test_visualizer_action_event_with_none_action_panel():
 
 def test_visualizer_user_reject_observation_panel():
     """UserRejectObservation should render a dedicated panel."""
-    visualizer = ConversationVisualizer()
+    visualizer = DefaultConversationVisualizer()
     event = UserRejectObservation(
         tool_name="demo_tool",
         tool_call_id="fc_call_1",
@@ -305,6 +292,8 @@ def test_visualizer_user_reject_observation_panel():
 
 def test_metrics_formatting():
     """Test metrics subtitle formatting."""
+    from unittest.mock import MagicMock
+
     from openhands.sdk.conversation.conversation_stats import ConversationStats
     from openhands.sdk.llm.utils.metrics import Metrics
 
@@ -327,17 +316,65 @@ def test_metrics_formatting():
     # Add metrics to conversation stats
     conversation_stats.usage_to_metrics["test_usage"] = metrics
 
-    # Create visualizer with conversation stats
-    visualizer = ConversationVisualizer(conversation_stats=conversation_stats)
+    # Create visualizer and initialize with mock state
+    visualizer = DefaultConversationVisualizer()
+    mock_state = MagicMock()
+    mock_state.stats = conversation_stats
+    visualizer.initialize(mock_state)
 
     # Test the metrics subtitle formatting
     subtitle = visualizer._format_metrics_subtitle()
     assert subtitle is not None
-    assert "1.50K" in subtitle  # Input tokens abbreviated
+    assert "1.5K" in subtitle  # Input tokens abbreviated (trailing zeros removed)
     assert "500" in subtitle  # Output tokens
     assert "20.00%" in subtitle  # Cache hit rate
     assert "200" in subtitle  # Reasoning tokens
     assert "0.0234" in subtitle  # Cost
+
+
+def test_metrics_abbreviation_formatting():
+    """Test number abbreviation with various edge cases."""
+    from unittest.mock import MagicMock
+
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    test_cases = [
+        # (input_tokens, expected_abbr)
+        (999, "999"),  # Below threshold
+        (1000, "1K"),  # Exact K boundary, trailing zeros removed
+        (1500, "1.5K"),  # K with one decimal, trailing zero removed
+        (89080, "89.08K"),  # K with two decimals (regression test for bug)
+        (89000, "89K"),  # K with trailing zeros removed
+        (1000000, "1M"),  # Exact M boundary
+        (1234567, "1.23M"),  # M with decimals
+        (1000000000, "1B"),  # Exact B boundary
+    ]
+
+    for tokens, expected in test_cases:
+        stats = ConversationStats()
+        metrics = Metrics(model_name="test-model")
+        metrics.add_token_usage(
+            prompt_tokens=tokens,
+            completion_tokens=100,
+            cache_read_tokens=0,
+            cache_write_tokens=0,
+            reasoning_tokens=0,
+            context_window=8000,
+            response_id="test",
+        )
+        stats.usage_to_metrics["test"] = metrics
+
+        visualizer = DefaultConversationVisualizer()
+        mock_state = MagicMock()
+        mock_state.stats = stats
+        visualizer.initialize(mock_state)
+        subtitle = visualizer._format_metrics_subtitle()
+
+        assert subtitle is not None, f"Failed for {tokens}"
+        assert expected in subtitle, (
+            f"Expected '{expected}' in subtitle for {tokens}, got: {subtitle}"
+        )
 
 
 def test_event_base_fallback_visualize():

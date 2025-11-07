@@ -4,13 +4,14 @@ from pydantic import ValidationError
 
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.utils import fix_malformed_tool_arguments
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation import (
     ConversationCallbackType,
     ConversationState,
     LocalConversation,
 )
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -33,16 +34,27 @@ from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import (
+    maybe_init_laminar,
+    observe,
+    should_enable_observability,
+)
+from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
     Observation,
 )
-from openhands.sdk.tool.builtins import FinishAction, ThinkAction
+from openhands.sdk.tool.builtins import (
+    FinishAction,
+    FinishTool,
+    ThinkAction,
+)
 
 
 logger = get_logger(__name__)
+maybe_init_laminar()
 
 
 class Agent(AgentBase):
@@ -55,7 +67,7 @@ class Agent(AgentBase):
     Example:
         >>> from openhands.sdk import LLM, Agent, Tool
         >>> llm = LLM(model="claude-sonnet-4-20250514", api_key=SecretStr("key"))
-        >>> tools = [Tool(name="BashTool"), Tool(name="FileEditorTool")]
+        >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
@@ -110,6 +122,7 @@ class Agent(AgentBase):
         for action_event in action_events:
             self._execute_action_event(conversation, action_event, on_event=on_event)
 
+    @observe(name="agent.step", ignore_inputs=["state", "on_event"])
     def step(
         self,
         conversation: LocalConversation,
@@ -163,13 +176,13 @@ class Agent(AgentBase):
                     include=None,
                     store=False,
                     add_security_risk_prediction=self._add_security_risk_prediction,
-                    metadata=self.llm.metadata,
+                    extra_body=self.llm.litellm_extra_body,
                 )
             else:
                 llm_response = self.llm.completion(
                     messages=_messages,
                     tools=list(self.tools_map.values()),
-                    extra_body={"metadata": self.llm.metadata},
+                    extra_body=self.llm.litellm_extra_body,
                     add_security_risk_prediction=self._add_security_risk_prediction,
                 )
         except FunctionCallValidationError as e:
@@ -240,7 +253,7 @@ class Agent(AgentBase):
 
         else:
             logger.info("LLM produced a message response - awaits user input")
-            state.agent_status = AgentExecutionStatus.FINISHED
+            state.execution_status = ConversationExecutionStatus.FINISHED
             msg_event = MessageEvent(
                 source="agent",
                 llm_message=message,
@@ -284,7 +297,9 @@ class Agent(AgentBase):
 
         # Grab the confirmation policy from the state and pass in the risks.
         if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
-            state.agent_status = AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            state.execution_status = (
+                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+            )
             return True
 
         return False
@@ -336,6 +351,9 @@ class Agent(AgentBase):
         security_risk: risk.SecurityRisk = risk.SecurityRisk.UNKNOWN
         try:
             arguments = json.loads(tool_call.arguments)
+
+            # Fix malformed arguments (e.g., JSON strings for list/dict fields)
+            arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
 
             # if the tool has a security_risk field (when security analyzer is set),
             # pop it out as it's not part of the tool's action schema
@@ -396,6 +414,7 @@ class Agent(AgentBase):
         on_event(action_event)
         return action_event
 
+    @observe(ignore_inputs=["state", "on_event"])
     def _execute_action_event(
         self,
         conversation: LocalConversation,
@@ -416,7 +435,13 @@ class Agent(AgentBase):
             )
 
         # Execute actions!
-        observation: Observation = tool(action_event.action, conversation)
+        if should_enable_observability():
+            tool_name = extract_action_name(action_event)
+            observation: Observation = observe(name=tool_name, span_type="TOOL")(tool)(
+                action_event.action, conversation
+            )
+        else:
+            observation = tool(action_event.action, conversation)
         assert isinstance(observation, Observation), (
             f"Tool '{tool.name}' executor must return an Observation"
         )
@@ -430,6 +455,6 @@ class Agent(AgentBase):
         on_event(obs_event)
 
         # Set conversation state
-        if tool.name == "finish":
-            state.agent_status = AgentExecutionStatus.FINISHED
+        if tool.name == FinishTool.name:
+            state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
