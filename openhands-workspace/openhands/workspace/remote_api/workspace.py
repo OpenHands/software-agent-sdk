@@ -269,12 +269,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
     def _send_api_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an API request with error handling."""
         logger.debug(f"Sending {method} request to {url}")
-        # Log only non-sensitive parts of kwargs
-        safe_kwargs = {k: v for k, v in kwargs.items() if k != "headers"}
-        if "headers" in kwargs:
-            # Log only header keys, not values (to avoid exposing API keys)
-            safe_kwargs["headers"] = list(kwargs["headers"].keys())
-        logger.debug(f"Request kwargs: {safe_kwargs}")
+       logger.debug(f"Request kwargs: {safe_kwargs.keys()}")
 
         response = self.client.request(method, url, **kwargs)
         try:
