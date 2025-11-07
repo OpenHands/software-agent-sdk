@@ -269,13 +269,20 @@ class APIRemoteWorkspace(RemoteWorkspace):
     def _send_api_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an API request with error handling."""
         logger.debug(f"Sending {method} request to {url}")
-        logger.debug(f"Request kwargs: {kwargs}")
+        # Log only non-sensitive parts of kwargs
+        safe_kwargs = {k: v for k, v in kwargs.items() if k != "headers"}
+        if "headers" in kwargs:
+            # Log only header keys, not values (to avoid exposing API keys)
+            safe_kwargs["headers"] = list(kwargs["headers"].keys())
+        logger.debug(f"Request kwargs: {safe_kwargs}")
 
         response = self.client.request(method, url, **kwargs)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError:
-            logger.debug(f"Request headers: {response.request.headers}")
+            # Log only header keys, not values (to avoid exposing API keys)
+            header_keys = list(response.request.headers.keys())
+            logger.debug(f"Request header keys: {header_keys}")
             try:
                 error_detail = response.json()
                 logger.info(f"API request failed: {error_detail}")
