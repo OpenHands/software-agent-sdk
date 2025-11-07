@@ -269,6 +269,14 @@ class Message(BaseModel):
         # Assistant function_call(s)
         if self.role == "assistant" and self.tool_calls:
             message_dict["tool_calls"] = [tc.to_chat_dict() for tc in self.tool_calls]
+            if "content" in message_dict:
+                normalized_content = self._normalize_tool_call_content(
+                    message_dict["content"]
+                )
+                if normalized_content is None:
+                    message_dict.pop("content", None)
+                else:
+                    message_dict["content"] = normalized_content
 
         # Tool result (observation) threading
         if self.role == "tool" and self.tool_call_id is not None:
@@ -330,6 +338,35 @@ class Message(BaseModel):
 
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
+
+    def _normalize_tool_call_content(self, content: Any) -> Any | None:
+        """Remove empty text payloads from assistant tool call messages."""
+        if isinstance(content, str):
+            if content.strip() == "":
+                return None
+            return content
+
+        if isinstance(content, list):
+            normalized: list[Any] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    normalized.append(item)
+                    continue
+
+                if item.get("type") == "text":
+                    text_value = item.get("text", "")
+                    if isinstance(text_value, str):
+                        if text_value.strip() == "":
+                            continue
+                    else:
+                        if str(text_value).strip() == "":
+                            continue
+
+                normalized.append(item)
+
+            return normalized if normalized else None
+
+        return content
 
     def to_responses_value(self, *, vision_enabled: bool) -> str | list[dict[str, Any]]:
         """Return serialized form.
