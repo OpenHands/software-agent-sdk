@@ -66,6 +66,7 @@ def get_latest_commit_sha(
     sha = data.get("sha")
     if not sha:
         raise RuntimeError("Could not find commit SHA in GitHub response")
+    print(f"Latest commit on {repo} branch={branch} is {sha}")
     return sha
 
 
@@ -75,6 +76,7 @@ server_image_sha = os.getenv("GITHUB_SHA") or get_latest_commit_sha(
     "OpenHands/software-agent-sdk", "main"
 )
 server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python"
+print(f"Using server image: {server_image}")
 
 with APIRemoteWorkspace(
     runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
