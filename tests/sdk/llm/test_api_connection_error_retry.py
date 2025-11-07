@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 import pytest
-from litellm.exceptions import APIConnectionError
+from litellm.exceptions import APIConnectionError, InternalServerError
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from pydantic import SecretStr
 
@@ -255,3 +255,83 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
         assert isinstance(max_attempts, int)
         assert attempt >= 1
         assert max_attempts == default_config.num_retries
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_retries_internal_server_error(
+    mock_litellm_completion, default_config
+):
+    """Test that InternalServerError is properly retried and mapped to SDK error."""
+    mock_response = create_mock_response("Retry successful after internal error")
+
+    # Mock the litellm_completion to first raise an InternalServerError,
+    # then return a successful response
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message="Internal server error - choices=None",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        mock_response,
+    ]
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+        usage_id="test-service",
+    )
+    response = llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="Hello!")])],
+    )
+
+    # Verify that the retry was successful
+    assert isinstance(response, LLMResponse)
+    assert response.raw_response == mock_response
+    assert mock_litellm_completion.call_count == 2  # Initial call + 1 retry
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_max_retries_internal_server_error(
+    mock_litellm_completion, default_config
+):
+    """Test that InternalServerError respects max retries and maps to SDK error."""
+    # Mock the litellm_completion to raise InternalServerError multiple times
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message="Internal server error 1",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        InternalServerError(
+            message="Internal server error 2",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+    ]
+
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+        usage_id="test-service",
+    )
+
+    # The completion should raise LLMServiceUnavailableError after exhausting retries
+    with pytest.raises(LLMServiceUnavailableError) as excinfo:
+        llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="Hello!")])],
+        )
+
+    # Verify that the correct number of retries were attempted
+    assert mock_litellm_completion.call_count == default_config.num_retries
+
+    # The exception should contain internal server error information
+    assert "Internal server error" in str(excinfo.value)
+
+    # Ensure the original provider exception is preserved as the cause
+    assert isinstance(excinfo.value.__cause__, InternalServerError)
