@@ -269,7 +269,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
     def _send_api_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an API request with error handling."""
         logger.debug(f"Sending {method} request to {url}")
-       logger.debug(f"Request kwargs: {safe_kwargs.keys()}")
+        logger.debug(f"Request kwargs: {kwargs.keys()}")
 
         response = self.client.request(method, url, **kwargs)
         try:
