@@ -163,10 +163,14 @@ def _git_info() -> tuple[str, str]:
     2. GITHUB_REF - GitHub Actions environment
     3. git symbolic-ref HEAD - Local development
     """
+    sdk_root = _default_sdk_project_root()
     git_sha = os.environ.get("SDK_SHA") or os.environ.get("GITHUB_SHA")
     if not git_sha:
         try:
-            git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
+            git_sha = _run(
+                ["git", "rev-parse", "--verify", "HEAD"],
+                cwd=str(sdk_root),
+            ).stdout.strip()
         except subprocess.CalledProcessError:
             git_sha = "unknown"
 
@@ -174,7 +178,8 @@ def _git_info() -> tuple[str, str]:
     if not git_ref:
         try:
             git_ref = _run(
-                ["git", "symbolic-ref", "-q", "--short", "HEAD"]
+                ["git", "symbolic-ref", "-q", "--short", "HEAD"],
+                cwd=str(sdk_root),
             ).stdout.strip()
         except subprocess.CalledProcessError:
             git_ref = "unknown"
