@@ -251,7 +251,7 @@ class EventService:
             ],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
-            visualize=False,
+            visualizer=None,
             secrets=self.stored.secrets,
         )
 

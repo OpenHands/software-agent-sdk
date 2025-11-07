@@ -102,23 +102,68 @@ def _run(
     return result
 
 
-def _base_slug(image: str) -> str:
-    return image.replace("/", "_s_").replace(":", "_tag_")
-
-
 def _sanitize_branch(ref: str) -> str:
     ref = re.sub(r"^refs/heads/", "", ref or "unknown")
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
-def _sdk_version() -> str:
-    from importlib.metadata import version
+def _base_slug(image: str, max_len: int = 64) -> str:
+    """
+    If the slug is too long, keep the most identifiable parts:
+    - repository name (last path segment)
+    - tag (if present)
+    Then append a short digest for uniqueness.
+    Format preserved with existing separators: '_s_' for '/', '_tag_' for ':'.
 
-    return version("openhands-sdk")
+    Example:
+      'ghcr.io_s_org_s/very-long-repo_tag_v1.2.3-extra'
+      ->  'very-long-repo_tag_v1.2.3-<digest>'
+    """
+    base_slug = image.replace("/", "_s_").replace(":", "_tag_")
+
+    if len(base_slug) <= max_len:
+        return base_slug
+
+    digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
+    suffix = f"-{digest}"
+
+    # Parse components from the slug form
+    if "_tag_" in base_slug:
+        left, tag = base_slug.split("_tag_", 1)
+    else:
+        left, tag = base_slug, ""
+
+    parts = left.split("_s_") if left else []
+    repo = parts[-1] if parts else left  # last path segment is the repo
+
+    # Reconstruct a compact, identifiable core: "<repo>[_tag_<tag>]"
+    ident = repo + (f"_tag_{tag}" if tag else "")
+
+    # Fit within budget, reserving space for the digest suffix
+    visible_budget = max_len - len(suffix)
+    assert visible_budget > 0, (
+        f"max_len too small to fit digest suffix with length {len(suffix)}"
+    )
+
+    kept = ident[:visible_budget]
+    return kept + suffix
 
 
 def _git_info() -> tuple[str, str, str]:
-    git_sha = os.environ.get("GITHUB_SHA")
+    """
+    Get git info (ref, sha, short_sha) for the current working directory.
+
+    Priority order for SHA:
+    1. SDK_SHA - Explicit override (e.g., for submodule builds)
+    2. GITHUB_SHA - GitHub Actions environment
+    3. git rev-parse HEAD - Local development
+
+    Priority order for REF:
+    1. SDK_REF - Explicit override (e.g., for submodule builds)
+    2. GITHUB_REF - GitHub Actions environment
+    3. git symbolic-ref HEAD - Local development
+    """
+    git_sha = os.environ.get("SDK_SHA") or os.environ.get("GITHUB_SHA")
     if not git_sha:
         try:
             git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
@@ -126,7 +171,7 @@ def _git_info() -> tuple[str, str, str]:
             git_sha = "unknown"
     short_sha = git_sha[:7] if git_sha != "unknown" else "unknown"
 
-    git_ref = os.environ.get("GITHUB_REF")
+    git_ref = os.environ.get("SDK_REF") or os.environ.get("GITHUB_REF")
     if not git_ref:
         try:
             git_ref = _run(
@@ -137,8 +182,30 @@ def _git_info() -> tuple[str, str, str]:
     return git_ref, git_sha, short_sha
 
 
+def _package_version() -> str:
+    """
+    Get the semantic version from the openhands-sdk package.
+    This is used for versioned tags during releases.
+    """
+    try:
+        from importlib.metadata import version
+
+        return version("openhands-sdk")
+    except Exception:
+        # If package is not installed, try reading from pyproject.toml
+        try:
+            sdk_root = _default_sdk_project_root()
+            pyproject_path = sdk_root / "openhands-sdk" / "pyproject.toml"
+            if pyproject_path.exists():
+                cfg = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+                return cfg.get("project", {}).get("version", "unknown")
+        except Exception:
+            pass
+        return "unknown"
+
+
 GIT_REF, GIT_SHA, SHORT_SHA = _git_info()
-SDK_VERSION = _sdk_version()
+PACKAGE_VERSION = _package_version()
 
 
 # --- options ---
@@ -263,6 +330,13 @@ class BuildOptions(BaseModel):
         default=None,
         description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
     )
+    include_versioned_tag: bool = Field(
+        default=False,
+        description=(
+            "Whether to include the versioned tag (e.g., v1.0.0_...) in all_tags "
+            "output. Should only be True for release builds."
+        ),
+    )
 
     @field_validator("target")
     @classmethod
@@ -280,46 +354,16 @@ class BuildOptions(BaseModel):
         return _base_slug(self.base_image)
 
     @property
-    def is_dev(self) -> bool:
-        return self.target in ("source", "source-minimal")
+    def versioned_tag(self) -> str:
+        return f"v{PACKAGE_VERSION}_{self.base_image_slug}"
 
     @property
-    def versioned_tag(self) -> str:
-        return f"v{SDK_VERSION}_{self.base_image_slug}_{self.target}"
+    def base_tag(self) -> str:
+        return f"{SHORT_SHA}-{self.base_image_slug}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
-        # Docker image tags have a 128-character limit.
-        # If the base slug is too long, hash it to create a shorter unique identifier.
-        MAX_TAG_LENGTH = 128
-        base_slug = self.base_image_slug
-
-        # Reserve space for prefix, branch, and separators
-        prefix = f"buildcache-{self.target}-"
-        branch_suffix = (
-            f"-{_sanitize_branch(GIT_REF)}"
-            if GIT_REF not in ("main", "refs/heads/main", "unknown")
-            else ""
-        )
-        main_suffix = "-main" if GIT_REF in ("main", "refs/heads/main") else ""
-
-        # Calculate available space for base_slug
-        reserved = len(prefix) + max(len(branch_suffix), len(main_suffix))
-        available = MAX_TAG_LENGTH - reserved
-
-        # If base_slug is too long, use a hash
-        if len(base_slug) > available:
-            # Use first 8 chars of SHA256 hash for uniqueness while keeping it short
-            hash_digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
-            base_slug_short = hash_digest
-            logger.debug(
-                f"[build] Base image slug too long ({len(base_slug)} chars), "
-                f"using hash: {base_slug_short}"
-            )
-        else:
-            base_slug_short = base_slug
-
-        base = f"{prefix}{base_slug_short}"
+        base = f"buildcache-{self.target}-{self.base_image_slug}"
         if GIT_REF in ("main", "refs/heads/main"):
             return f"{base}-main", base
         elif GIT_REF != "unknown":
@@ -332,14 +376,24 @@ class BuildOptions(BaseModel):
         tags: list[str] = []
         arch_suffix = f"-{self.arch}" if self.arch else ""
 
+        # Use git commit SHA for commit-based tags
         for t in self.custom_tag_list:
             tags.append(f"{self.image}:{SHORT_SHA}-{t}{arch_suffix}")
+
         if GIT_REF in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
-        tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
-        if self.is_dev:
-            tags = [f"{t}-dev" for t in tags]
+
+        # Always include base tag as default
+        tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
+
+        # Only include versioned tag if requested (for releases)
+        if self.include_versioned_tag:
+            tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
+
+        # Append target suffix for clarity (binary is default, no suffix needed)
+        if self.target != "binary":
+            tags = [f"{t}-{self.target}" for t in tags]
         return tags
 
 
@@ -519,7 +573,10 @@ def build(opts: BuildOptions) -> list[str]:
         f"custom_tags='{opts.custom_tags}' from base='{opts.base_image}' "
         f"for platforms='{opts.platforms if push else 'local-arch'}'"
     )
-    logger.info(f"[build] Git ref='{GIT_REF}' sha='{GIT_SHA}' version='{SDK_VERSION}'")
+    logger.info(
+        f"[build] Git ref='{GIT_REF}' sha='{GIT_SHA}' "
+        f"package_version='{PACKAGE_VERSION}'"
+    )
     logger.info(f"[build] Cache tag: {cache_tag}")
 
     try:
@@ -609,6 +666,14 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Only create the clean build context directory and print its path.",
     )
+    parser.add_argument(
+        "--versioned-tag",
+        action="store_true",
+        help=(
+            "Include versioned tag (e.g., v1.0.0_...) in output. "
+            "Should only be used for release builds."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -636,6 +701,7 @@ def main(argv: list[str]) -> int:
             push=None,  # Not relevant for build-ctx-only
             sdk_project_root=sdk_project_root,
             arch=args.arch or None,
+            include_versioned_tag=args.versioned_tag,
         )
 
         # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
@@ -678,6 +744,7 @@ def main(argv: list[str]) -> int:
         push=push,
         sdk_project_root=sdk_project_root,
         arch=args.arch or None,
+        include_versioned_tag=args.versioned_tag,
     )
     tags = build(opts)
 
