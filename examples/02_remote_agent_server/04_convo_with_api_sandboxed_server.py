@@ -112,5 +112,7 @@ with APIRemoteWorkspace(
 
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         conversation.close()
