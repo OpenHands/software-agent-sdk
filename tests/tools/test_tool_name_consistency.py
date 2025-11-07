@@ -1,18 +1,18 @@
 """Test that tool_name class variables are consistent with automatic naming."""
 
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.glob import GlobTool
 from openhands.tools.grep import GrepTool
 from openhands.tools.planning_file_editor import PlanningFileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
 
 def test_tool_name_attributes_exist():
     """Test that all tool classes have name class variables."""
     tools = [
-        BashTool,
+        TerminalTool,
         FileEditorTool,
         TaskTrackerTool,
         BrowserToolSet,
@@ -32,7 +32,7 @@ def test_tool_name_attributes_exist():
         assert tool_class.name.islower(), (
             f"{tool_class.__name__}.name should be snake_case"
         )
-        # Allow single words without underscores (e.g., "bash", "grep")
+        # Allow single words without underscores (e.g., "terminal", "grep")
         assert "_" in tool_class.name or len(tool_class.name) <= 10, (
             f"{tool_class.__name__}.name should contain underscores for "
             "multi-word names or be a short single word"
@@ -42,7 +42,7 @@ def test_tool_name_attributes_exist():
 def test_tool_name_consistency():
     """Test that name matches the expected snake_case conversion."""
     expected_names = {
-        BashTool: "bash",
+        TerminalTool: "terminal",
         FileEditorTool: "file_editor",
         TaskTrackerTool: "task_tracker",
         BrowserToolSet: "browser_tool_set",
@@ -60,7 +60,7 @@ def test_tool_name_consistency():
 def test_tool_name_accessible_at_class_level():
     """Test that name can be accessed at the class level without instantiation."""
     # This should not raise any errors and should return snake_case names
-    assert BashTool.name == "bash"
+    assert TerminalTool.name == "terminal"
     assert FileEditorTool.name == "file_editor"
     assert TaskTrackerTool.name == "task_tracker"
     assert BrowserToolSet.name == "browser_tool_set"

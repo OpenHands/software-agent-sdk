@@ -69,8 +69,9 @@ PROMPT_CACHE_PATTERNS: list[str] = [
 ]
 
 SUPPORTS_STOP_WORDS_FALSE_PATTERNS: list[str] = [
-    # o1 family doesn't support stop words
+    # o-series families don't support stop words
     "o1",
+    "o3",
     # grok-4 specific model name (basename)
     "grok-4-0709",
     "grok-code-fast-1",

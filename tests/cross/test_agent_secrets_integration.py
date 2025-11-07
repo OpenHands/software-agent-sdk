@@ -12,9 +12,9 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_source import LookupSecret, SecretSource
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
-from openhands.tools.execute_bash.definition import ExecuteBashAction
-from openhands.tools.execute_bash.impl import BashExecutor
+from openhands.tools.terminal import TerminalTool
+from openhands.tools.terminal.definition import ExecuteBashAction
+from openhands.tools.terminal.impl import BashExecutor
 
 
 # -----------------------
@@ -29,8 +29,8 @@ def llm() -> LLM:
 
 @pytest.fixture
 def tools() -> list[Tool]:
-    register_tool("BashTool", BashTool)
-    return [Tool(name="BashTool")]
+    register_tool("TerminalTool", TerminalTool)
+    return [Tool(name="TerminalTool")]
 
 
 @pytest.fixture
@@ -46,7 +46,7 @@ def conversation(agent: Agent, tmp_path) -> LocalConversation:
 @pytest.fixture
 def bash_executor(conversation: LocalConversation) -> BashExecutor:
     tools_map = conversation.agent.tools_map
-    bash_tool = tools_map["bash"]
+    bash_tool = tools_map["terminal"]
     return cast(BashExecutor, bash_tool.executor)
 
 
@@ -73,7 +73,7 @@ def test_agent_configures_bash_tools_env_provider(
     )
 
     # Get the bash tool from agent
-    bash_tool = agent.tools_map["bash"]
+    bash_tool = agent.tools_map["terminal"]
 
     assert bash_tool is not None
     assert bash_tool.executor is not None
@@ -234,13 +234,13 @@ def test_mask_secrets(
     try:
         action = ExecuteBashAction(command="echo $API_KEY")
         result = bash_executor(action, conversation=conversation)
-        assert "test-api-key" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "test-api-key" not in result.text
+        assert "<secret-hidden>" in result.text
 
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "dynamic-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "dynamic-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
     finally:
         bash_executor.close()
@@ -265,13 +265,13 @@ def test_mask_changing_secrets(
     try:
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
     finally:
         bash_executor.close()
@@ -303,13 +303,13 @@ def test_masking_persists(
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         print(result)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
         action = ExecuteBashAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
         assert dynamic_secret.raised_on_second
 
     finally:

@@ -251,7 +251,7 @@ class EventService:
             ],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
-            visualize=False,
+            visualizer=None,
             secrets=self.stored.secrets,
         )
 
@@ -271,6 +271,8 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.run)
+        # Publish state update after run completes to ensure stats are updated
+        await self._publish_state_update()
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
@@ -282,6 +284,8 @@ class EventService:
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.pause)
+            # Publish state update after pause to ensure stats are updated
+            await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""

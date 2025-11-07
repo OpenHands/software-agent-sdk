@@ -40,9 +40,9 @@ def detect_platform():
 #    the Docker container automatically
 with DockerWorkspace(
     # dynamically build agent-server image
-    # base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     # use pre-built image for faster startup
-    server_image="ghcr.io/openhands/agent-server:main-python",
+    # server_image="ghcr.io/openhands/agent-server:main-python",
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:
@@ -74,7 +74,6 @@ with DockerWorkspace(
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 
@@ -102,6 +101,9 @@ with DockerWorkspace(
         logger.info("✅ Second task completed!")
 
         # Report cost (must be before conversation.close())
+        conversation.state._cached_state = (
+            None  # Invalidate cache to fetch latest stats
+        )
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
         print(f"EXAMPLE_COST: {cost}")
     finally:

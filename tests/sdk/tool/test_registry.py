@@ -26,7 +26,7 @@ class _HelloAction(Action):
 
 
 class _HelloObservation(Observation):
-    message: str
+    message: str = ""
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:

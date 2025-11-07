@@ -28,20 +28,24 @@ MAX_BROWSER_OUTPUT_SIZE = 50000
 class BrowserObservation(Observation):
     """Base observation for browser operations."""
 
-    output: str = Field(description="The output message from the browser operation")
-    error: str | None = Field(default=None, description="Error message if any")
     screenshot_data: str | None = Field(
         default=None, description="Base64 screenshot data if available"
     )
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        if self.error:
-            return [TextContent(text=f"Error: {self.error}")]
+        llm_content: list[TextContent | ImageContent] = []
 
-        content: list[TextContent | ImageContent] = [
-            TextContent(text=maybe_truncate(self.output, MAX_BROWSER_OUTPUT_SIZE))
-        ]
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
+
+        # Get text content and truncate if needed
+        content_text = self.text
+        if content_text:
+            llm_content.append(
+                TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
+            )
 
         if self.screenshot_data:
             mime_type = "image/png"
@@ -55,9 +59,9 @@ class BrowserObservation(Observation):
                 mime_type = "image/webp"
             # Convert base64 to data URL format for ImageContent
             data_url = f"data:{mime_type};base64,{self.screenshot_data}"
-            content.append(ImageContent(image_urls=[data_url]))
+            llm_content.append(ImageContent(image_urls=[data_url]))
 
-        return content
+        return llm_content
 
 
 # ============================================
