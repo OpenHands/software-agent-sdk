@@ -82,7 +82,7 @@ def test_new_conversation_creates_system_prompt_and_security_analyzer_events(
         assert security_event.source == "agent"
 
 
-def test_reinitialize_same_conversation_with_same_analyzer_type_creates_new_event(
+def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_event(
     mock_llm,
 ):
     """Test that reinitializing with same analyzer type creates new SecurityAnalyzerConfigurationEvent."""  # noqa: E501
@@ -102,67 +102,18 @@ def test_reinitialize_same_conversation_with_same_analyzer_type_creates_new_even
         assert len(initial_security_events) == 1
         assert initial_security_events[0].analyzer_type == "LLMSecurityAnalyzer"
 
-        # Reinitialize with a new agent instance (same analyzer type)
-        new_agent = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
-        conversation._state.agent = new_agent
-
-        # Manually trigger init_state to simulate reinitialization
-        new_agent.init_state(conversation.state, conversation._on_event)
-
-        # Should now have two SecurityAnalyzerConfigurationEvents (new agent instance)
-        security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(security_events) == 2, (
-            "Should have two SecurityAnalyzerConfigurationEvents"
-        )
-        assert security_events[0].analyzer_type == "LLMSecurityAnalyzer"
-        assert security_events[1].analyzer_type == "LLMSecurityAnalyzer"
-
-        # Events should be different objects (different IDs)
-        assert security_events[0].id != security_events[1].id
-
-
-def test_reinitialize_same_conversation_with_same_agent_instance_creates_new_event(
-    mock_llm,
-):
-    """Test that reinitializing with same agent instance creates new SecurityAnalyzerConfigurationEvent."""  # noqa: E501
-    agent = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
-
-    with tempfile.TemporaryDirectory() as tmpdir:
+        # Reinitialize with same security analyzer
         conversation = Conversation(
             agent=agent, persistence_dir=tmpdir, workspace=tmpdir
         )
 
-        # Get initial event count
-        initial_security_events = [
-            e
-            for e in conversation.state.events
-            if isinstance(e, SecurityAnalyzerConfigurationEvent)
-        ]
-        assert len(initial_security_events) == 1
-        assert initial_security_events[0].analyzer_type == "LLMSecurityAnalyzer"
-
-        # Reinitialize with the exact same agent instance
-        # Manually trigger init_state to simulate reinitialization
-        agent.init_state(conversation.state, conversation._on_event)
-
-        # Should now have two SecurityAnalyzerConfigurationEvents
         security_events = [
             e
             for e in conversation.state.events
             if isinstance(e, SecurityAnalyzerConfigurationEvent)
         ]
-        assert len(security_events) == 2, (
-            "Should have two SecurityAnalyzerConfigurationEvents"
-        )
+        assert len(security_events) == 1
         assert security_events[0].analyzer_type == "LLMSecurityAnalyzer"
-        assert security_events[1].analyzer_type == "LLMSecurityAnalyzer"
-
-        # Events should be different objects (different IDs and timestamps)
-        assert security_events[0].id != security_events[1].id
 
 
 def test_reinitialize_conversation_with_different_analyzer_creates_two_events(mock_llm):

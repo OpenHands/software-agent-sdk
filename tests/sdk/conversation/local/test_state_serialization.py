@@ -16,6 +16,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
+from openhands.sdk.event.security_analyzer import SecurityAnalyzerConfigurationEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
@@ -98,8 +99,12 @@ def test_conversation_state_persistence_save_load():
             source="user",
             llm_message=Message(role="user", content=[TextContent(text="hello")]),
         )
+        event3 = SecurityAnalyzerConfigurationEvent.from_analyzer(
+            analyzer=agent.security_analyzer
+        )
         state.events.append(event1)
         state.events.append(event2)
+        state.events.append(event3)
         state.stats.register_llm(RegistryEvent(llm=llm))
 
         # State auto-saves when events are added
@@ -108,7 +113,7 @@ def test_conversation_state_persistence_save_load():
 
         # Events are stored with new naming pattern
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
-        assert len(event_files) == 2
+        assert len(event_files) == 3
 
         # Load state using Conversation (which handles loading)
         conversation = Conversation(
@@ -123,7 +128,7 @@ def test_conversation_state_persistence_save_load():
 
         # Verify loaded state matches original
         assert loaded_state.id == state.id
-        assert len(loaded_state.events) == 2
+        assert len(loaded_state.events) == 3
         assert isinstance(loaded_state.events[0], SystemPromptEvent)
         assert isinstance(loaded_state.events[1], MessageEvent)
         assert loaded_state.agent.llm.model == agent.llm.model
@@ -158,23 +163,27 @@ def test_conversation_state_incremental_save():
         event1 = SystemPromptEvent(
             source="agent", system_prompt=TextContent(text="system"), tools=[]
         )
+        event2 = SecurityAnalyzerConfigurationEvent.from_analyzer(
+            analyzer=agent.security_analyzer
+        )
         state.events.append(event1)
+        state.events.append(event2)
         state.stats.register_llm(RegistryEvent(llm=llm))
 
         # Verify event files exist (may have additional events from Agent.init_state)
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
-        assert len(event_files) == 1
+        assert len(event_files) == 2
 
         # Add second event - auto-saves
-        event2 = MessageEvent(
+        event3 = MessageEvent(
             source="user",
             llm_message=Message(role="user", content=[TextContent(text="hello")]),
         )
-        state.events.append(event2)
+        state.events.append(event3)
 
         # Verify additional event file was created
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
-        assert len(event_files) == 2
+        assert len(event_files) == 3
 
         # Load using Conversation and verify events are present
         conversation = Conversation(
@@ -186,7 +195,7 @@ def test_conversation_state_incremental_save():
         assert isinstance(conversation, LocalConversation)
         assert conversation.state.persistence_dir == persist_path_for_state
         loaded_state = conversation._state
-        assert len(loaded_state.events) == 2
+        assert len(loaded_state.events) == 3
         # Test model_dump equality
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
@@ -229,6 +238,13 @@ def test_conversation_state_event_file_scanning():
             event2.model_dump_json(exclude_none=True)
         )
 
+        event3 = SecurityAnalyzerConfigurationEvent.from_analyzer(
+            analyzer=agent.security_analyzer
+        )
+        (events_dir / "event-00002-abcdef03.json").write_text(
+            event3.model_dump_json(exclude_none=True)
+        )
+
         # Invalid file should be ignored
         (events_dir / "invalid-file.json").write_text('{"type": "test"}')
 
@@ -242,7 +258,7 @@ def test_conversation_state_event_file_scanning():
 
         # Should load valid events in order
         assert (
-            len(conversation._state.events) == 2
+            len(conversation._state.events) == 3
         )  # May have additional events from Agent.init_state
 
         # Find our test events
@@ -325,8 +341,13 @@ def test_conversation_state_empty_filestore():
 
         # Should create new state
         assert conversation._state.id is not None
-        assert len(conversation._state.events) == 1  # System prompt event
+        assert (
+            len(conversation._state.events) == 2
+        )  # System prompt event + security analyzer configuration
         assert isinstance(conversation._state.events[0], SystemPromptEvent)
+        assert isinstance(
+            conversation._state.events[1], SecurityAnalyzerConfigurationEvent
+        )
 
 
 def test_conversation_state_missing_base_state():
