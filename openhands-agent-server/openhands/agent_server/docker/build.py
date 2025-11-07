@@ -203,8 +203,8 @@ def _package_version() -> str:
         return "unknown"
 
 
-GIT_REF, GIT_SHA = _git_info()
-PACKAGE_VERSION = _package_version()
+_DEFAULT_GIT_REF, _DEFAULT_GIT_SHA = _git_info()
+_DEFAULT_PACKAGE_VERSION = _package_version()
 
 
 # --- options ---
@@ -337,12 +337,12 @@ class BuildOptions(BaseModel):
         ),
     )
     git_sha: str = Field(
-        default=GIT_SHA,
+        default=_DEFAULT_GIT_SHA,
         description="Git commit SHA.We will need it to tag the built image.",
     )
-    git_ref: str = Field(default=GIT_REF)
+    git_ref: str = Field(default=_DEFAULT_GIT_REF)
     sdk_version: str = Field(
-        default=PACKAGE_VERSION,
+        default=_DEFAULT_PACKAGE_VERSION,
         description=(
             "SDK package version. "
             "We will need it to tag the built image. "
@@ -381,10 +381,10 @@ class BuildOptions(BaseModel):
     @property
     def cache_tags(self) -> tuple[str, str]:
         base = f"buildcache-{self.target}-{self.base_image_slug}"
-        if GIT_REF in ("main", "refs/heads/main"):
+        if self.git_ref in ("main", "refs/heads/main"):
             return f"{base}-main", base
-        elif GIT_REF != "unknown":
-            return f"{base}-{_sanitize_branch(GIT_REF)}", base
+        elif self.git_ref != "unknown":
+            return f"{base}-{_sanitize_branch(self.git_ref)}", base
         else:
             return base, base
 
@@ -397,7 +397,7 @@ class BuildOptions(BaseModel):
         for t in self.custom_tag_list:
             tags.append(f"{self.image}:{self.short_sha}-{t}{arch_suffix}")
 
-        if GIT_REF in ("main", "refs/heads/main"):
+        if self.git_ref in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
                 tags.append(f"{self.image}:main-{t}{arch_suffix}")
 
@@ -591,8 +591,8 @@ def build(opts: BuildOptions) -> list[str]:
         f"for platforms='{opts.platforms if push else 'local-arch'}'"
     )
     logger.info(
-        f"[build] Git ref='{GIT_REF}' sha='{GIT_SHA}' "
-        f"package_version='{PACKAGE_VERSION}'"
+        f"[build] Git ref='{opts.git_ref}' sha='{opts.git_sha}' "
+        f"package_version='{opts.sdk_version}'"
     )
     logger.info(f"[build] Cache tag: {cache_tag}")
 
