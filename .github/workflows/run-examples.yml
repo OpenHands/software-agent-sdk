@@ -24,6 +24,14 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 60
         steps:
+            - name: Wait for agent server to finish build
+              uses: lewagon/wait-on-check-action@v1.4.1
+              with:
+                  ref: ${{ github.event.pull_request.head.ref }}
+                  check-name: consolidate-build-info
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+                  wait-interval: 10
+
             - name: Checkout
               uses: actions/checkout@v5
 
@@ -50,7 +58,7 @@ jobs:
                   PR_NUMBER: ${{ github.event.pull_request.number }}
                   REPO_OWNER: ${{ github.repository_owner }}
                   REPO_NAME: ${{ github.event.repository.name }}
-                  GITHUB_SHA: ${{ github.sha }}
+                  GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
               run: |
                   # List of examples to test
                   # Excluded examples:
