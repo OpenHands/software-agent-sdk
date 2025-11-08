@@ -604,7 +604,7 @@ class OpenHandsWebChat {
                     api_key: "secret"
                 },
                 tools: [
-                    { name: "BashTool", params: { } },
+                    { name: "TerminalTool", params: { } },
                     { name: "FileEditorTool", params: { } },
                     { name: "TaskTrackerTool", params: { } }
                 ]

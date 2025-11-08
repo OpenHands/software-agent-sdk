@@ -25,8 +25,8 @@ from openhands.sdk.event.llm_convertible import (
     ObservationEvent,
 )
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 class TestHelloWorld:
@@ -165,10 +165,10 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("bash", BashTool)
+        register_tool("terminal", TerminalTool)
         register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="bash"),
+            Tool(name="terminal"),
             Tool(name="file_editor"),
         ]
 
@@ -285,10 +285,10 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("bash", BashTool)
+        register_tool("terminal", TerminalTool)
         register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="bash"),
+            Tool(name="terminal"),
             Tool(name="file_editor"),
         ]
 

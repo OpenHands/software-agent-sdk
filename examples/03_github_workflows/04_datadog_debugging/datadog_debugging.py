@@ -45,9 +45,9 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -81,12 +81,13 @@ def fetch_datadog_errors(
     query: str, working_dir: Path, query_type: str = "log-query", limit: int = 5
 ) -> Path:
     """
-    Fetch error examples from Datadog Error Tracking and save to a JSON file.
+    Fetch error examples from Datadog and save to a JSON file.
 
     Args:
         query: Datadog query string (search query or error tracking ID)
         working_dir: Directory to save the error examples
-        query_type: Type of query - "log-query" or "log-error-id"
+        query_type: Type of query - "log-query" (uses Logs API) or
+            "log-error-id" (uses Error Tracking API)
         limit: Maximum number of error examples to fetch (default: 5)
 
     Returns:
@@ -154,32 +155,27 @@ def fetch_datadog_errors(
         error_examples.append(error_example)
 
     else:  # log-query
-        # Use Error Tracking Search API
-        api_url = f"https://api.{dd_site}/api/v2/error-tracking/issues/search"
+        api_url = f"https://api.{dd_site}/api/v2/logs/events/search"
 
         # Calculate timestamps (30 days back)
-        now = int(datetime.now().timestamp() * 1000)
-        thirty_days_ago = int((datetime.now() - timedelta(days=30)).timestamp() * 1000)
+        now = datetime.now()
+        thirty_days_ago = now - timedelta(days=30)
 
-        # Build the request body for Error Tracking API
+        # Build the request body for Logs API
         request_body = {
-            "data": {
-                "attributes": {
-                    "query": query,
-                    "from": thirty_days_ago,
-                    "to": now,
-                    "track": "logs",  # Track errors from logs
-                },
-                "type": "search_request",
-            }
+            "filter": {
+                "query": query,
+                "from": thirty_days_ago.isoformat() + "Z",
+                "to": now.isoformat() + "Z",
+            },
+            "page": {"limit": limit},
+            "sort": "-timestamp",
         }
 
-        print(f"📡 Fetching up to {limit} error tracking issues from Datadog...")
+        print(f"📡 Fetching up to {limit} log entries from Datadog...")
         print(f"   Query: {query}")
         print(f"   API: {api_url}")
 
-        # Add include parameter to get full issue details
-        params = {"include": "issue"}
         headers = {
             "Content-Type": "application/json",
             "DD-API-KEY": dd_api_key,
@@ -188,7 +184,7 @@ def fetch_datadog_errors(
 
         try:
             response = requests.post(
-                api_url, params=params, headers=headers, json=request_body, timeout=30
+                api_url, headers=headers, json=request_body, timeout=30
             )
             response.raise_for_status()
         except requests.exceptions.Timeout:
@@ -210,37 +206,25 @@ def fetch_datadog_errors(
             print(f"❌ Datadog API error: {response_data['errors']}")
             sys.exit(1)
 
-        # Extract and format error tracking issues from search results
-        search_results = response_data.get("data", [])
-        included_details = {
-            item["id"]: item for item in response_data.get("included", [])
-        }
+        # Extract and format log entries
+        log_entries = response_data.get("data", [])
 
-        if search_results:
-            for idx, search_result in enumerate(search_results[:limit], 1):
-                issue_id = search_result.get("id")
-                search_attrs = search_result.get("attributes", {})
+        if log_entries:
+            for idx, log_entry in enumerate(log_entries[:limit], 1):
+                log_id = log_entry.get("id", "")
+                log_attrs = log_entry.get("attributes", {})
 
-                # Get detailed issue info from included section
-                issue_details = included_details.get(issue_id, {})
-                issue_attrs = issue_details.get("attributes", {})
-
+                # Extract relevant fields from log entry
                 error_example = {
                     "example_number": idx,
-                    "issue_id": issue_id,
-                    "total_count": search_attrs.get("total_count"),
-                    "impacted_users": search_attrs.get("impacted_users"),
-                    "impacted_sessions": search_attrs.get("impacted_sessions"),
-                    "service": issue_attrs.get("service"),
-                    "error_type": issue_attrs.get("error_type"),
-                    "error_message": issue_attrs.get("error_message", ""),
-                    "file_path": issue_attrs.get("file_path"),
-                    "function_name": issue_attrs.get("function_name"),
-                    "first_seen": issue_attrs.get("first_seen"),
-                    "last_seen": issue_attrs.get("last_seen"),
-                    "state": issue_attrs.get("state"),
-                    "platform": issue_attrs.get("platform"),
-                    "languages": issue_attrs.get("languages", []),
+                    "log_id": log_id,
+                    "service": log_attrs.get("service"),
+                    "host": log_attrs.get("host"),
+                    "message": log_attrs.get("message", ""),
+                    "status": log_attrs.get("status"),
+                    "timestamp": log_attrs.get("timestamp"),
+                    "tags": log_attrs.get("tags", []),
+                    "attributes": log_attrs.get("attributes", {}),
                 }
                 error_examples.append(error_example)
 
@@ -678,12 +662,12 @@ def run_debugging_session(
 ):
     """Run the debugging session with the given configuration."""
     # Register and set up tools
-    register_tool("BashTool", BashTool)
+    register_tool("TerminalTool", TerminalTool)
     register_tool("FileEditorTool", FileEditorTool)
     register_tool("TaskTrackerTool", TaskTrackerTool)
 
     tools = [
-        Tool(name="BashTool"),
+        Tool(name="TerminalTool"),
         Tool(name="FileEditorTool"),
         Tool(name="TaskTrackerTool"),
     ]

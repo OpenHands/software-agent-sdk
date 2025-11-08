@@ -9,9 +9,7 @@ from jinja2 import Environment, FileSystemBytecodeCache, FileSystemLoader, Templ
 
 def refine(text: str) -> str:
     if sys.platform == "win32":
-        text = re.sub(
-            r"\bexecute_bash\b", "execute_powershell", text, flags=re.IGNORECASE
-        )
+        text = re.sub(r"\bterminal\b", "execute_powershell", text, flags=re.IGNORECASE)
         text = re.sub(
             r"(?<!execute_)(?<!_)\bbash\b", "powershell", text, flags=re.IGNORECASE
         )
