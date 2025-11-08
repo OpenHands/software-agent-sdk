@@ -134,30 +134,46 @@ def main() -> None:
     conv_dir = Path(conversation.state.persistence_dir)
     events_dir = conv_dir / "events"
 
-    # Collect telemetry records written after t0
+    # Collect telemetry records written after t0 and map by response id
     telemetry_files = sorted(Path(completions_dir).glob("*.json"))
-    telemetry_records: list[dict[str, Any]] = []
+    telemetry_by_id: dict[str, dict[str, Any]] = {}
     for tf in telemetry_files:
         try:
             data = read_json(tf)
         except Exception:
             continue
         ts = float(data.get("timestamp", 0.0))
-        if ts >= t0:
-            telemetry_records.append({"path": str(tf), "data": data})
+        if ts < t0:
+            continue
+        resp = data.get("response", {})
+        rid = resp.get("id")
+        if isinstance(rid, str) and rid:
+            telemetry_by_id[rid] = {"path": str(tf), "data": data}
 
-    # Collect assistant MessageEvents
-    assistant_events: list[dict[str, Any]] = []
+    # Collect LLM-convertible events grouped by llm_response_id
+    events_by_id: dict[str, dict[str, list[dict[str, Any]]]] = {}
     if events_dir.is_dir():
         for ef in sorted(events_dir.glob("*.json")):
             try:
                 ev = read_json(ef)
             except Exception:
                 continue
-            if ev.get("kind") == "MessageEvent":
-                lm = ev.get("llm_message") or {}
-                if lm.get("role") == "assistant":
-                    assistant_events.append({"path": str(ef), "data": ev})
+            kind = ev.get("kind")
+            # MessageEvent (assistant) – use llm_response_id when present
+            if kind == "MessageEvent":
+                if ev.get("source") == "agent":
+                    rid = ev.get("llm_response_id")
+                    if isinstance(rid, str) and rid:
+                        events_by_id.setdefault(rid, {"message": [], "action": []})
+                        events_by_id[rid]["message"].append(
+                            {"path": str(ef), "data": ev}
+                        )
+            # ActionEvent – always has llm_response_id
+            elif kind == "ActionEvent":
+                rid = ev.get("llm_response_id")
+                if isinstance(rid, str) and rid:
+                    events_by_id.setdefault(rid, {"message": [], "action": []})
+                    events_by_id[rid]["action"].append({"path": str(ef), "data": ev})
 
     # Prepare markdown report
     out_path = Path(comparisons_dir) / (f"content_vs_telemetry_{int(time.time())}.md")
@@ -191,47 +207,71 @@ def main() -> None:
             return out_text.strip()
         return ""
 
-    # Helper to check emptiness for event message content
-    def event_content_text(ev: dict[str, Any]) -> str:
-        lm = ev["data"].get("llm_message", {})
+    # Helpers to extract event-side content
+    def message_event_text(ev: dict[str, Any]) -> str:
+        lm = ev.get("llm_message", {})
         return content_text_from_event_llm_message_content(lm.get("content")).strip()
 
-    # Pair up by order for display purposes
-    max_len = max(len(telemetry_records), len(assistant_events))
+    def action_event_text(ev: dict[str, Any]) -> str:
+        # ActionEvent stores assistant "content" as 'thought' (list of TextContent)
+        thought = ev.get("thought") or []
+        if isinstance(thought, list):
+            texts: list[str] = []
+            for item in thought:
+                if isinstance(item, dict):
+                    t = item.get("text")
+                    if isinstance(t, str):
+                        texts.append(t)
+            return "\n".join(texts).strip()
+        return ""
 
     lines.append("## Cases with empty content in telemetry or events\n")
 
-    for i in range(max_len):
-        tele = telemetry_records[i] if i < len(telemetry_records) else None
-        evt = assistant_events[i] if i < len(assistant_events) else None
+    # Iterate telemetry entries and compare with events by response id
+    for rid, tele in telemetry_by_id.items():
+        tele_txt = telemetry_content_text(tele)
+        tele_empty = len(tele_txt) == 0
 
-        tele_txt = telemetry_content_text(tele) if tele else ""
-        evt_txt = event_content_text(evt) if evt else ""
+        ev_bucket = events_by_id.get(rid, {"message": [], "action": []})
+        msg_texts = [
+            message_event_text(e["data"]) for e in ev_bucket.get("message", [])
+        ]
+        act_texts = [action_event_text(e["data"]) for e in ev_bucket.get("action", [])]
 
-        tele_empty = (tele is not None) and (len(tele_txt) == 0)
-        evt_empty = (evt is not None) and (len(evt_txt) == 0)
+        # Event-side emptiness: True if relevant events exist and all are empty
+        has_ev = bool(ev_bucket.get("message") or ev_bucket.get("action"))
+        ev_empty = has_ev and all(len(t) == 0 for t in (msg_texts + act_texts))
 
-        if not (tele_empty or evt_empty):
+        if not (tele_empty or ev_empty):
             continue
 
-        lines.append(f"### Pair #{i + 1}\n")
-        if tele is not None:
-            lines.append(f"- Telemetry file: `{tele['path']}`\n")
-            lines.append(f"- Telemetry content empty: **{tele_empty}**\n")
-            lines.append("- Telemetry response JSON:\n")
-            lines.append("```json")
-            lines.append(dump_json(tele["data"].get("response", {})))
-            lines.append("```")
-        else:
-            lines.append("- Telemetry: none\n")
+        lines.append(f"### Response `{rid}`\n")
+        # Telemetry block
+        lines.append(f"- Telemetry file: `{tele['path']}`\n")
+        lines.append(f"- Telemetry content empty: **{tele_empty}**\n")
+        lines.append("- Telemetry response JSON:\n")
+        lines.append("```json")
+        lines.append(dump_json(tele["data"].get("response", {})))
+        lines.append("```")
 
-        if evt is not None:
-            lines.append(f"- Event file: `{evt['path']}`\n")
-            lines.append(f"- Event content empty: **{evt_empty}**\n")
-            lines.append("- Event JSON:\n")
-            lines.append("```json")
-            lines.append(dump_json(evt["data"]))
-            lines.append("```")
+        # Event blocks
+        if has_ev:
+            for e in ev_bucket.get("message", []):
+                etxt = message_event_text(e["data"]) or ""
+                lines.append(f"- Event (MessageEvent) file: `{e['path']}`\n")
+                lines.append(f"  - Event content empty: **{len(etxt) == 0}**\n")
+                lines.append("  - Event JSON:\n")
+                lines.append("```json")
+                lines.append(dump_json(e["data"]))
+                lines.append("```")
+            for e in ev_bucket.get("action", []):
+                atxt = action_event_text(e["data"]) or ""
+                lines.append(f"- Event (ActionEvent) file: `{e['path']}`\n")
+                lines.append(f"  - Event thought empty: **{len(atxt) == 0}**\n")
+                lines.append("  - Event JSON:\n")
+                lines.append("```json")
+                lines.append(dump_json(e["data"]))
+                lines.append("```")
         else:
             lines.append("- Event: none\n")
 
