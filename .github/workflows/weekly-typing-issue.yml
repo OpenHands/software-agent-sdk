@@ -13,7 +13,7 @@ permissions:
 
 jobs:
     issue:
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -23,7 +23,7 @@ jobs:
               run: echo "today=$(date -u +%F)" >> "$GITHUB_OUTPUT"
 
             - name: Create weekly issue
-              uses: peter-evans/create-issue-from-file@v5
+              uses: peter-evans/create-issue-from-file@v6
               with:
                   title: Weekly typing improvements – ${{ steps.date.outputs.today }}
                   content-filepath: .github/ISSUE_BODY/typing.md

@@ -1,0 +1,42 @@
+[project]
+name = "openhands-agent-server"
+version = "1.0.0"
+description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
+
+requires-python = ">=3.12"
+dependencies = [
+  "aiosqlite>=0.19",
+  "alembic>=1.13",
+  "docker>=7.1,<8",
+  "fastapi>=0.104",
+  "pydantic>=2",
+  "sqlalchemy>=2",
+  "uvicorn>=0.31.1",
+  "websockets>=12",
+  "wsproto>=1.2.0",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+include = ["openhands.agent_server*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
+# Include Docker-related files and VSCode extensions
+"openhands.agent_server" = [
+  "docker/Dockerfile",
+  "docker/wallpaper.svg",
+  "vscode_extensions/**/*.json",
+  "vscode_extensions/**/*.js",
+]
+
+[project.scripts]
+agent-server = "openhands.agent_server.__main__:main"

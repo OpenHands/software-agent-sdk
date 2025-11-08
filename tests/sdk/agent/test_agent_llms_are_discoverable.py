@@ -2,18 +2,18 @@ from openhands.sdk import LLM, Agent, LLMSummarizingCondenser
 from openhands.sdk.llm.router import MultimodalRouter
 
 
-def check_service_id_exists(service_id: str, llms: list[LLM]):
-    service_ids = [llm.service_id for llm in llms]
-    return service_id in service_ids
+def check_usage_id_exists(usage_id: str, llms: list[LLM]):
+    usage_ids = [llm.usage_id for llm in llms]
+    return usage_id in usage_ids
 
 
 def test_automatic_llm_discovery():
     llm_service_id = "main-agent"
-    agent = Agent(llm=LLM(model="test-model", service_id=llm_service_id))
+    agent = Agent(llm=LLM(model="test-model", usage_id=llm_service_id))
 
     llms = list(agent.get_all_llms())
     assert len(llms) == 1
-    assert check_service_id_exists(llm_service_id, llms)
+    assert check_usage_id_exists(llm_service_id, llms)
 
 
 def test_automatic_llm_discovery_for_multiple_llms():
@@ -21,17 +21,17 @@ def test_automatic_llm_discovery_for_multiple_llms():
     condenser_service_id = "condenser"
 
     condenser = LLMSummarizingCondenser(
-        llm=LLM(model="test-model", service_id=condenser_service_id)
+        llm=LLM(model="test-model", usage_id=condenser_service_id)
     )
 
     agent = Agent(
-        llm=LLM(model="test-model", service_id=llm_service_id), condenser=condenser
+        llm=LLM(model="test-model", usage_id=llm_service_id), condenser=condenser
     )
 
     llms = list(agent.get_all_llms())
     assert len(llms) == 2
-    assert check_service_id_exists(llm_service_id, llms)
-    assert check_service_id_exists(condenser_service_id, llms)
+    assert check_usage_id_exists(llm_service_id, llms)
+    assert check_usage_id_exists(condenser_service_id, llms)
 
 
 def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
@@ -44,12 +44,12 @@ def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
     condenser_service_id = "condenser"
 
     condenser = LLMSummarizingCondenser(
-        llm=LLM(model="test-model", service_id=condenser_service_id)
+        llm=LLM(model="test-model", usage_id=condenser_service_id)
     )
 
-    agent_llm = LLM(model="test-model", service_id=llm_service_id)
-    router_llm = LLM(model="test-model", service_id=router_service_id)
-    router_llm_2 = LLM(model="test-model", service_id=router_service_id_2)
+    agent_llm = LLM(model="test-model", usage_id=llm_service_id)
+    router_llm = LLM(model="test-model", usage_id=router_service_id)
+    router_llm_2 = LLM(model="test-model", usage_id=router_service_id_2)
 
     agent = CustomAgent(
         llm=agent_llm,
@@ -59,10 +59,10 @@ def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
 
     llms = list(agent.get_all_llms())
     assert len(llms) == 4
-    assert check_service_id_exists(llm_service_id, llms)
-    assert check_service_id_exists(router_service_id, llms)
-    assert check_service_id_exists(router_service_id_2, llms)
-    assert check_service_id_exists(condenser_service_id, llms)
+    assert check_usage_id_exists(llm_service_id, llms)
+    assert check_usage_id_exists(router_service_id, llms)
+    assert check_usage_id_exists(router_service_id_2, llms)
+    assert check_usage_id_exists(condenser_service_id, llms)
 
 
 def test_automatic_llm_discovery_with_multimodal_router():
@@ -71,12 +71,12 @@ def test_automatic_llm_discovery_with_multimodal_router():
     secondary_service_id = "secondary-llm"
 
     # Create LLMs for the router
-    primary_llm = LLM(model="test-primary-model", service_id=primary_service_id)
-    secondary_llm = LLM(model="test-secondary-model", service_id=secondary_service_id)
+    primary_llm = LLM(model="test-primary-model", usage_id=primary_service_id)
+    secondary_llm = LLM(model="test-secondary-model", usage_id=secondary_service_id)
 
     # Create MultimodalRouter with the LLMs
     multimodal_router = MultimodalRouter(
-        service_id="multimodal-router",
+        usage_id="multimodal-router",
         llms_for_routing={"primary": primary_llm, "secondary": secondary_llm},
     )
 
@@ -88,8 +88,8 @@ def test_automatic_llm_discovery_with_multimodal_router():
 
     # Only the raw LLMs inside the router should be found (not the router itself)
     assert len(llms) == 2
-    assert check_service_id_exists(primary_service_id, llms)
-    assert check_service_id_exists(secondary_service_id, llms)
+    assert check_usage_id_exists(primary_service_id, llms)
+    assert check_usage_id_exists(secondary_service_id, llms)
 
 
 def test_automatic_llm_discovery_with_llm_as_base_class():
@@ -98,13 +98,13 @@ def test_automatic_llm_discovery_with_llm_as_base_class():
         dict_llms: dict[str, LLM] = {}
         raw_llm: LLM | None = None
 
-    list_llm = LLM(model="list-model", service_id="list-model")
-    dict_llm = LLM(model="dict-model", service_id="dict-model")
-    raw_llm = LLM(model="raw_llm", service_id="raw_llm")
+    list_llm = LLM(model="list-model", usage_id="list-model")
+    dict_llm = LLM(model="dict-model", usage_id="dict-model")
+    raw_llm = LLM(model="raw_llm", usage_id="raw_llm")
 
     new_llm = NewLLM(
         model="new-llm-type",
-        service_id="new-llm-test",
+        usage_id="new-llm-test",
         list_llms=[list_llm],
         dict_llms={"key": dict_llm},
         raw_llm=raw_llm,

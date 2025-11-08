@@ -22,14 +22,20 @@ tests/integration/
 
 ## Running Integration Tests
 
-The main test runner script provides flexible options for running integration tests:
+### From github
+
+The easiest way to run the integration tests if from github by tagging the label `integration-test` to your pull request.
+A pull request comment will notify you as soon as the tests have been executed.
+The results of the tests (and all of the logs) will be downloadable using a link added in the comment.
+
+### Locally
 
 ```bash
-# Run all tests with default settings
-python tests/integration/run_infer.py
+# Run all tests
+uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}'
 
-# Or using uv
-uv run python tests/integration/run_infer.py
+# Run a specific test
+uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' --eval-ids t01_fix_simple_typo
 ```
 
 ## Automated Testing with GitHub Actions

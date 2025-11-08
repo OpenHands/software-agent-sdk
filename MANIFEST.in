@@ -1,0 +1,47 @@
+# This MANIFEST.in file tells setuptools which files to include 
+# in the sdist package distribution used for building docker image
+
+# ==============================================================================
+# Root-level workspace files
+# ==============================================================================
+include pyproject.toml
+include uv.lock
+
+# ==============================================================================
+# openhands-sdk
+# ==============================================================================
+include openhands-sdk/pyproject.toml
+recursive-include openhands-sdk *.py
+recursive-include openhands-sdk *.j2
+recursive-include openhands-sdk py.typed
+
+# ==============================================================================
+# openhands-tools
+# ==============================================================================
+include openhands-tools/pyproject.toml
+recursive-include openhands-tools *.py
+recursive-include openhands-tools py.typed
+
+# ==============================================================================
+# openhands-workspace
+# ==============================================================================
+include openhands-workspace/pyproject.toml
+recursive-include openhands-workspace *.py
+recursive-include openhands-workspace py.typed
+
+# ==============================================================================
+# openhands-agent-server
+# ==============================================================================
+include openhands-agent-server/pyproject.toml
+recursive-include openhands-agent-server *.py
+recursive-include openhands-agent-server py.typed
+
+# Docker build files
+include openhands-agent-server/openhands/agent_server/docker/Dockerfile
+include openhands-agent-server/openhands/agent_server/docker/wallpaper.svg
+
+# PyInstaller spec
+include openhands-agent-server/openhands/agent_server/agent-server.spec
+
+# VSCode extensions
+recursive-include openhands-agent-server/openhands/agent_server/vscode_extensions *

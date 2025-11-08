@@ -31,24 +31,25 @@ def mock_event_service():
     """Create a mock EventService for testing."""
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
-        service = EventService(
-            stored=StoredConversation(
-                id=uuid4(),
-                agent=Agent(
-                    llm=LLM(
-                        service_id="test-llm",
-                        model="litellm_proxy/anthropic/claude-sonnet-4-20250514",
-                        base_url="https://llm-proxy.staging.all-hands.dev",
-                        api_key=SecretStr("fake-secret"),
+        # Mock httpx.get to prevent HTTP calls to staging server during LLM init
+        with patch("openhands.sdk.llm.llm.httpx.get") as mock_get:
+            mock_get.return_value = MagicMock(json=lambda: {"data": []})
+            service = EventService(
+                stored=StoredConversation(
+                    id=uuid4(),
+                    agent=Agent(
+                        llm=LLM(
+                            usage_id="test-llm",
+                            model="test-model",
+                            api_key=SecretStr("test-key"),
+                        ),
+                        tools=[],
                     ),
-                    tools=[],
+                    workspace=LocalWorkspace(working_dir="workspace/project"),
                 ),
-                workspace=LocalWorkspace(working_dir="workspace/project"),
-            ),
-            file_store_path=temp_path / "file_store",
-            working_dir=temp_path / "working_dir",
-        )
-        yield service
+                conversations_dir=temp_path / "conversations_dir",
+            )
+            yield service
 
 
 @pytest.fixture
@@ -991,7 +992,7 @@ class TestConversationWebhookSubscriber:
             ConversationWebhookSubscriber,
         )
         from openhands.agent_server.models import ConversationInfo
-        from openhands.sdk.conversation.state import AgentExecutionStatus
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
 
         # Setup mock client
         mock_client = AsyncMock()
@@ -1011,7 +1012,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=AgentExecutionStatus.RUNNING,
+            execution_status=ConversationExecutionStatus.RUNNING,
         )
 
         await subscriber.post_conversation_info(conversation_info)
@@ -1038,7 +1039,7 @@ class TestConversationWebhookSubscriber:
             ConversationWebhookSubscriber,
         )
         from openhands.agent_server.models import ConversationInfo
-        from openhands.sdk.conversation.state import AgentExecutionStatus
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
 
         # Setup mock client
         mock_client = AsyncMock()
@@ -1059,7 +1060,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=AgentExecutionStatus.PAUSED,
+            execution_status=ConversationExecutionStatus.PAUSED,
         )
 
         await subscriber.post_conversation_info(conversation_info)
@@ -1087,7 +1088,7 @@ class TestConversationWebhookSubscriber:
             ConversationWebhookSubscriber,
         )
         from openhands.agent_server.models import ConversationInfo
-        from openhands.sdk.conversation.state import AgentExecutionStatus
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
 
         subscriber = ConversationWebhookSubscriber(
             spec=webhook_spec,
@@ -1100,7 +1101,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=AgentExecutionStatus.FINISHED,
+            execution_status=ConversationExecutionStatus.FINISHED,
         )
 
         # Track retry attempts

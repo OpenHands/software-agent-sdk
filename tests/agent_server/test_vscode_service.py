@@ -163,6 +163,31 @@ def test_get_vscode_url_no_token(vscode_service):
     assert url is None
 
 
+def test_get_vscode_url_with_token(vscode_service):
+    """Test getting VSCode URL with token."""
+    vscode_service.connection_token = "test-token-123"
+
+    # Test with default base_url (should use configured port)
+    url = vscode_service.get_vscode_url()
+    expected_url = (
+        f"http://localhost:{vscode_service.port}/?tkn=test-token-123&folder=workspace"
+    )
+    assert url == expected_url
+
+    # Test with custom base_url
+    custom_url = vscode_service.get_vscode_url(base_url="http://example.com:9000")
+    assert custom_url == "http://example.com:9000/?tkn=test-token-123&folder=workspace"
+
+
+def test_get_vscode_url_with_custom_port():
+    """Test getting VSCode URL with custom port."""
+    service = VSCodeService(port=9001)
+    service.connection_token = "test-token-456"
+
+    url = service.get_vscode_url()
+    assert url == "http://localhost:9001/?tkn=test-token-456&folder=workspace"
+
+
 def test_is_running_false(vscode_service):
     """Test is_running when no process."""
     assert not vscode_service.is_running()
@@ -256,6 +281,7 @@ def test_get_vscode_service_enabled(tmp_path):
         patch("openhands.agent_server.vscode_service._vscode_service", None),
     ):
         mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 8001
 
         service = get_vscode_service()
 
@@ -282,9 +308,50 @@ def test_get_vscode_service_singleton():
         patch("openhands.agent_server.vscode_service._vscode_service", None),
     ):
         mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 8001
 
         service1 = get_vscode_service()
         service2 = get_vscode_service()
 
         assert service1 is service2
         assert isinstance(service1, VSCodeService)
+
+
+def test_get_vscode_service_with_custom_port():
+    """Test get_vscode_service uses the configured port."""
+    with (
+        patch("openhands.agent_server.config.get_default_config") as mock_config,
+        patch("openhands.agent_server.vscode_service._vscode_service", None),
+    ):
+        mock_config.return_value.enable_vscode = True
+        mock_config.return_value.vscode_port = 9001
+
+        service = get_vscode_service()
+
+        assert isinstance(service, VSCodeService)
+        assert service.port == 9001
+
+
+def test_vscode_service_with_different_ports():
+    """Test VSCode service initialization with different ports."""
+    service1 = VSCodeService(port=8001)
+    service2 = VSCodeService(port=9001)
+
+    assert service1.port == 8001
+    assert service2.port == 9001
+
+
+def test_vscode_port_configuration():
+    """Test that vscode_port configuration is properly used."""
+    import os
+
+    from openhands.agent_server.config import Config, from_env
+
+    # Test default value
+    config = Config()
+    assert config.vscode_port == 8001
+
+    # Test environment variable override
+    with patch.dict(os.environ, {"OH_VSCODE_PORT": "9999"}):
+        config = from_env(Config, "OH")
+        assert config.vscode_port == 9999

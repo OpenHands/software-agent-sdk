@@ -1,0 +1,16 @@
+{% if repo_skills %}
+<REPO_CONTEXT>
+The following information has been included based on several files defined in user's repository.
+Please follow them while working.
+
+{% for agent_info in repo_skills %}
+[BEGIN context from [{{ agent_info.name }}]]
+{{ agent_info.content }}
+[END Context]
+{% endfor %}
+</REPO_CONTEXT>
+{% endif %}
+{% if system_message_suffix %}
+
+{{ system_message_suffix }}
+{% endif %}

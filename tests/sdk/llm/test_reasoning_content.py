@@ -11,20 +11,13 @@ def create_mock_response(content: str = "Test response", response_id: str = "tes
             Choices(
                 finish_reason="stop",
                 index=0,
-                message=LiteLLMMessage(
-                    content=content,
-                    role="assistant",
-                ),
+                message=LiteLLMMessage(content=content, role="assistant"),
             )
         ],
         created=1234567890,
         model="claude-sonnet-4-20250514",
         object="chat.completion",
-        usage=Usage(
-            prompt_tokens=10,
-            completion_tokens=5,
-            total_tokens=15,
-        ),
+        usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
 
 
@@ -50,8 +43,8 @@ def test_message_without_reasoning_content():
     assert message.reasoning_content is None
 
 
-def test_message_from_litellm_message_with_reasoning():
-    """Test Message.from_litellm_message with reasoning content."""
+def test_message_from_llm_chat_message_with_reasoning():
+    """Test Message.from_llm_chat_message with reasoning content."""
     from openhands.sdk.llm.message import Message
 
     # Create a mock LiteLLM message with reasoning content
@@ -59,7 +52,7 @@ def test_message_from_litellm_message_with_reasoning():
     # Add reasoning content as attributes
     litellm_message.reasoning_content = "Let me think about this..."
 
-    message = Message.from_litellm_message(litellm_message)
+    message = Message.from_llm_chat_message(litellm_message)
 
     assert message.role == "assistant"
     assert len(message.content) == 1
@@ -70,13 +63,13 @@ def test_message_from_litellm_message_with_reasoning():
     assert message.reasoning_content == "Let me think about this..."
 
 
-def test_message_from_litellm_message_without_reasoning():
-    """Test Message.from_litellm_message without reasoning content."""
+def test_message_from_llm_chat_message_without_reasoning():
+    """Test Message.from_llm_chat_message without reasoning content."""
     from openhands.sdk.llm.message import Message
 
     litellm_message = LiteLLMMessage(role="assistant", content="The answer is 42.")
 
-    message = Message.from_litellm_message(litellm_message)
+    message = Message.from_llm_chat_message(litellm_message)
 
     assert message.role == "assistant"
     assert len(message.content) == 1
@@ -115,11 +108,11 @@ def test_message_serialization_without_reasoning():
 
 def test_action_event_with_reasoning_content():
     """Test ActionEvent with reasoning content fields."""
-    from litellm import ChatCompletionMessageToolCall
-    from litellm.types.utils import Function
-
     from openhands.sdk.event.llm_convertible import ActionEvent
-    from openhands.sdk.llm.message import TextContent
+    from openhands.sdk.llm.message import (
+        MessageToolCall,
+        TextContent,
+    )
     from openhands.sdk.tool import Action
 
     # Create a simple action for testing
@@ -127,10 +120,11 @@ def test_action_event_with_reasoning_content():
         action: str = "test"
 
     # Create a tool call
-    tool_call = ChatCompletionMessageToolCall(
+    tool_call = MessageToolCall(
         id="test-id",
-        function=Function(name="test_tool", arguments='{"arg": "value"}'),
-        type="function",
+        name="test_tool",
+        arguments='{"arg": "value"}',
+        origin="completion",
     )
 
     action_event = ActionEvent(

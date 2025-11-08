@@ -244,3 +244,18 @@ cache
 
 .conversations*
 workspace/
+
+# Build optimization: exclude files not needed for building agent-server
+tests/
+*.log
+.github/
+scripts/
+examples/
+.ruff_cache/
+.uv-cache/
+Makefile
+docs/
+*.md
+!README.md
+.pre-commit-config.yaml
+.python-version

@@ -1,10 +1,7 @@
 """Tests for the SecurityAnalyzer class."""
 
-from litellm import ChatCompletionMessageToolCall
-from litellm.types.utils import Function
-
 from openhands.sdk.event import ActionEvent, PauseEvent
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.tool import Action
@@ -48,10 +45,11 @@ def create_mock_action_event(action: Action) -> ActionEvent:
         action=action,
         tool_name="test_tool",
         tool_call_id="test_call_id",
-        tool_call=ChatCompletionMessageToolCall(
+        tool_call=MessageToolCall(
             id="test_call_id",
-            function=Function(name="test_tool", arguments='{"command": "test"}'),
-            type="function",
+            name="test_tool",
+            arguments='{"command": "test"}',
+            origin="completion",
         ),
         llm_response_id="test_response_id",
     )

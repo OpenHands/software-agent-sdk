@@ -1,0 +1,44 @@
+---
+name: Publish all OpenHands packages (uv)
+
+on:
+  # Run manually
+    workflow_dispatch:
+
+jobs:
+    publish:
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+
+            - name: Build and publish all packages
+              env:
+                  UV_PUBLISH_TOKEN: ${{ secrets.PYPI_TOKEN_OPENHANDS }}
+              run: |
+                  set -euo pipefail
+
+                  if [ -z "${UV_PUBLISH_TOKEN:-}" ]; then
+                    echo "❌ Missing secret PYPI_TOKEN_OPENHANDS"
+                    exit 1
+                  fi
+
+                  PACKAGES=(
+                    openhands-sdk
+                    openhands-tools
+                    openhands-workspace
+                    openhands-agent-server
+                  )
+
+                  echo "🚀 Building and publishing all packages..."
+                  for PKG in "${PACKAGES[@]}"; do
+                    echo "===== $PKG ====="
+                    uv build --package "$PKG"
+                    done
+                  uv publish --token "$UV_PUBLISH_TOKEN"
+                  echo "✅ All packages built and published successfully!"

@@ -7,7 +7,7 @@
 
     function connect(){
         const conversationId = document.getElementById('conversationId').value;
-        socket = new WebSocket(`ws://localhost:8000/api/conversations/${conversationId}/events/socket`);
+        socket = new WebSocket(`ws://localhost:8000/sockets/events/${conversationId}`);
         
         socket.addEventListener('open', (event) => {
             console.log('WebSocket connection opened:', event);

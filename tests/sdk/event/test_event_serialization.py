@@ -1,10 +1,6 @@
 """Comprehensive tests for event serialization and deserialization."""
 
-from collections.abc import Sequence
-
 import pytest
-from litellm import ChatCompletionMessageToolCall
-from litellm.types.utils import Function
 from pydantic import ValidationError
 
 from openhands.sdk.event import (
@@ -17,7 +13,11 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
 )
-from openhands.sdk.llm import ImageContent, Message, TextContent
+from openhands.sdk.llm import (
+    Message,
+    MessageToolCall,
+    TextContent,
+)
 from openhands.sdk.tool import Action, Observation
 
 
@@ -29,17 +29,15 @@ class EventsSerializationMockAction(Action):
     """Mock action for testing."""
 
     def execute(self) -> "EventsSerializationMockObservation":
-        return EventsSerializationMockObservation(content="mock result")
+        return EventsSerializationMockObservation(
+            content=[TextContent(text="mock result")]
+        )
 
 
 class EventsSerializationMockObservation(Observation):
     """Mock observation for testing."""
 
-    content: str
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        return [TextContent(text=self.content)]
+    pass
 
 
 def test_event_base_serialization() -> None:
@@ -65,10 +63,11 @@ def test_system_prompt_event_serialization() -> None:
 def test_action_event_serialization() -> None:
     """Test ActionEvent serialization/deserialization."""
     action = EventsSerializationMockAction()
-    tool_call = ChatCompletionMessageToolCall(
+    tool_call = MessageToolCall(
         id="call_123",
-        function=Function(name="mock_tool", arguments="{}"),
-        type="function",
+        name="mock_tool",
+        arguments="{}",
+        origin="completion",
     )
     event = ActionEvent(
         thought=[TextContent(text="I need to do something")],
@@ -96,7 +95,9 @@ def test_action_event_serialization() -> None:
 
 def test_observation_event_serialization() -> None:
     """Test ObservationEvent serialization/deserialization."""
-    observation = EventsSerializationMockObservation(content="test result")
+    observation = EventsSerializationMockObservation(
+        content=[TextContent(text="test result")]
+    )
     event = ObservationEvent(
         observation=observation,
         action_id="action_123",
@@ -147,6 +148,7 @@ def test_condensation_serialization() -> None:
     event = Condensation(
         summary="This is a summary",
         forgotten_event_ids=["event1", "event2", "event3", "event4", "event5"],
+        llm_response_id="condensation_response_1",
     )
 
     # Serialize
@@ -193,7 +195,7 @@ def test_event_deserialize():
             function_calling_enabled=False,
             force_string_serializer=False,
         ),
-        activated_microagents=[],
+        activated_skills=[],
         extended_content=[],
     )
     dumped = original.model_dump_json()

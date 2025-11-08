@@ -1,0 +1,30 @@
+[project]
+name = "openhands-tools"
+version = "1.0.0"
+description = "OpenHands Tools - Runtime tools for AI agents"
+
+requires-python = ">=3.12"
+dependencies = [
+    "openhands-sdk",
+    "bashlex>=0.18",
+    "binaryornot>=0.4.4",
+    "cachetools",
+    "libtmux>=0.46.2",
+    "pydantic>=2.11.7",
+    "browser-use>=0.8.0",
+    "func-timeout>=4.3.5",
+]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.package-dir]
+"" = "."
+
+[tool.setuptools.packages.find]
+include = ["openhands.tools*"]
+namespaces = true
+
+[tool.setuptools.package-data]
+"*" = ["py.typed"]

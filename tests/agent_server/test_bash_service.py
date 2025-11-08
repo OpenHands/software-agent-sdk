@@ -3,6 +3,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,9 +26,9 @@ class EventCollector(Subscriber):
     """Test subscriber that collects all events."""
 
     def __init__(self):
-        self.events = []
-        self.commands = []
-        self.outputs = []
+        self.events: list[Any] = []
+        self.commands: list[Any] = []
+        self.outputs: list[Any] = []
 
     async def __call__(self, event):
         self.events.append(event)
@@ -410,3 +411,80 @@ async def test_clear_all_events_partial_failure(bash_service):
     # Verify events are gone
     page = await bash_service.search_bash_events()
     assert len(page.items) == 0
+
+
+@pytest.mark.asyncio
+async def test_search_with_filtering(bash_service):
+    """Test searching bash events with kind and command_id filtering."""
+    # Execute two commands
+    request1 = ExecuteBashRequest(command='echo "first"', cwd="/tmp")
+    request2 = ExecuteBashRequest(command='echo "second"', cwd="/tmp")
+
+    command1, task1 = await bash_service.start_bash_command(request1)
+    command2, task2 = await bash_service.start_bash_command(request2)
+
+    # Wait for both to complete
+    await asyncio.gather(task1, task2)
+
+    # Search for all events - should get 4: 2 commands + 2 outputs
+    all_events = await bash_service.search_bash_events()
+    assert len(all_events.items) >= 4
+
+    # Filter by kind="BashCommand" - should get only 2 command events
+    command_events = await bash_service.search_bash_events(kind__eq="BashCommand")
+    assert len(command_events.items) == 2
+    for event in command_events.items:
+        assert isinstance(event, BashCommand)
+
+    # Filter by kind="BashOutput" - should get only 2 output events
+    output_events = await bash_service.search_bash_events(kind__eq="BashOutput")
+    assert len(output_events.items) == 2
+    for event in output_events.items:
+        assert isinstance(event, BashOutput)
+
+    # Filter by command_id - should get only outputs for command1
+    command1_outputs = await bash_service.search_bash_events(command_id__eq=command1.id)
+    # Should get at least 1 output (could be chunked into multiple)
+    assert len(command1_outputs.items) >= 1
+    for event in command1_outputs.items:
+        if isinstance(event, BashOutput):
+            assert event.command_id == command1.id
+
+    # Combine filters: kind="BashOutput" AND command_id=command1.id
+    command1_only_outputs = await bash_service.search_bash_events(
+        kind__eq="BashOutput", command_id__eq=command1.id
+    )
+    assert len(command1_only_outputs.items) >= 1
+    for event in command1_only_outputs.items:
+        assert isinstance(event, BashOutput)
+        assert event.command_id == command1.id
+
+
+@pytest.mark.asyncio
+async def test_search_pagination(bash_service):
+    """Test pagination in bash event search."""
+    # Execute multiple commands to generate enough events
+    requests = [
+        ExecuteBashRequest(command=f'echo "command{i}"', cwd="/tmp") for i in range(5)
+    ]
+
+    results = await asyncio.gather(
+        *[bash_service.start_bash_command(req) for req in requests]
+    )
+
+    # Wait for all to complete
+    await asyncio.gather(*[task for _, task in results])
+
+    # Search with small limit to test pagination
+    page1 = await bash_service.search_bash_events(limit=3)
+    assert len(page1.items) == 3
+    assert page1.next_page_id is not None
+
+    # Get next page
+    page2 = await bash_service.search_bash_events(limit=3, page_id=page1.next_page_id)
+    assert len(page2.items) > 0
+
+    # Verify items are different between pages
+    page1_ids = {event.id for event in page1.items}
+    page2_ids = {event.id for event in page2.items}
+    assert len(page1_ids.intersection(page2_ids)) == 0  # No overlap

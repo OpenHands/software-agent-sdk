@@ -1,7 +1,7 @@
 """Tests for MCP tool functionality with new simplified implementation."""
 
 from typing import cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, Mock
 
 import mcp.types
 import pytest
@@ -23,10 +23,10 @@ class TestMCPToolImmutability:
 
     def setup_method(self):
         """Set up test environment."""
-        self.mock_client = MockMCPClient()
+        self.mock_client: MockMCPClient = MockMCPClient()
 
         # Create a mock MCP tool
-        self.mock_mcp_tool = MagicMock(spec=mcp.types.Tool)
+        self.mock_mcp_tool: Mock = MagicMock(spec=mcp.types.Tool)
         self.mock_mcp_tool.name = "test_tool"
         self.mock_mcp_tool.description = "Test tool description"
         self.mock_mcp_tool.inputSchema = {
@@ -39,17 +39,19 @@ class TestMCPToolImmutability:
         tools = MCPToolDefinition.create(
             mcp_tool=self.mock_mcp_tool, mcp_client=self.mock_client
         )
-        self.tool = tools[0]  # Extract single tool from sequence
+        self.tool: MCPToolDefinition = tools[0]  # Extract single tool from sequence
 
     def test_mcp_tool_is_frozen(self):
         """Test that MCPTool instances are frozen and cannot be modified."""
-        import pytest
-
         # Test that direct field assignment raises ValidationError
         with pytest.raises(
             Exception
         ):  # Pydantic raises ValidationError for frozen models
-            self.tool.name = "modified_name"
+            self.tool.mcp_tool = mcp.types.Tool(
+                name="modified_name",
+                description="modified description",
+                inputSchema={"type": "object", "properties": {}},
+            )
 
         with pytest.raises(Exception):
             self.tool.description = "modified_description"
@@ -68,9 +70,21 @@ class TestMCPToolImmutability:
 
     def test_mcp_tool_model_copy_creates_modified_instance(self):
         """Test that model_copy can create modified versions of MCPTool instances."""
+        # Create a modified MCP tool with a different name
+        from mcp.types import Tool as MCPTool
+
+        modified_mcp_tool = MCPTool(
+            name="modified_tool",
+            description="Modified MCP tool description",
+            inputSchema=self.tool.mcp_tool.inputSchema,
+        )
+
         # Create a copy with modified fields
         modified_tool = self.tool.model_copy(
-            update={"name": "modified_tool", "description": "Modified description"}
+            update={
+                "mcp_tool": modified_mcp_tool,
+                "description": "Modified description",
+            }
         )
 
         # Verify that a new instance was created with modifications
@@ -120,7 +134,11 @@ class TestMCPToolImmutability:
 
         # Verify it's immutable
         with pytest.raises(Exception):
-            tool2.name = "modified_name"
+            tool2.mcp_tool = mcp.types.Tool(
+                name="modified_name",
+                description="modified description",
+                inputSchema={"type": "object", "properties": {}},
+            )
 
         # Verify it has the correct properties
         assert tool2.name == "another_tool"

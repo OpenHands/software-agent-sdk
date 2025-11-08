@@ -1,7 +1,6 @@
 """Tests for SystemPromptEvent.visualize method."""
 
 import copy
-from typing import Any, cast
 
 from litellm import ChatCompletionToolParam
 
@@ -12,18 +11,18 @@ from openhands.sdk.llm import TextContent
 def test_visualize_no_data_mutation():
     """Test that visualize does not mutate the original event data."""
     # Create tool with long type field (edge case)
-    original_tool: dict[str, Any] = {
-        "type": "function_with_very_long_type_name_exceeding_thirty_characters",
-        "function": {
+    original_tool = ChatCompletionToolParam(
+        type="function_with_very_long_type_name_exceeding_thirty_characters",
+        function={
             "name": "test_tool",
             "description": "Test description",
             "parameters": {"type": "object", "properties": {}},
         },
-    }
+    )
 
     event = SystemPromptEvent(
         system_prompt=TextContent(text="Test system prompt"),
-        tools=[cast(ChatCompletionToolParam, original_tool)],
+        tools=[original_tool],
     )
 
     # Store initial state
@@ -53,18 +52,18 @@ def test_visualize_parameter_truncation():
         "required": [f"param_{i}" for i in range(25)],
     }
 
-    tool: dict[str, Any] = {
-        "type": "function",
-        "function": {
+    tool = ChatCompletionToolParam(
+        type="function",
+        function={
             "name": "test_tool",
             "description": "Test tool",
             "parameters": long_params,
         },
-    }
+    )
 
     event = SystemPromptEvent(
         system_prompt=TextContent(text="Test system prompt"),
-        tools=[cast(ChatCompletionToolParam, tool)],
+        tools=[tool],
     )
 
     # Get visualization
@@ -87,18 +86,18 @@ def test_visualize_parameter_truncation():
 def test_visualize_string_truncation_logic():
     """Test the string truncation logic for tool fields."""
     # Create tool with long string fields that would be truncated
-    tool: dict[str, Any] = {
-        "type": "function_with_very_long_type_name_that_exceeds_thirty_characters",
-        "function": {
+    tool = ChatCompletionToolParam(
+        type="function_with_very_long_type_name_that_exceeds_thirty_characters",
+        function={
             "name": "test_tool_with_very_long_name_exceeding_limit",
             "description": "This is a very long description that should be truncated",
             "parameters": {"type": "object", "properties": {}},
         },
-    }
+    )
 
     event = SystemPromptEvent(
         system_prompt=TextContent(text="Test system prompt"),
-        tools=[cast(ChatCompletionToolParam, tool)],
+        tools=[tool],
     )
 
     # Store original lengths

@@ -208,49 +208,20 @@ class TestEnsureChromiumAvailable:
             result = _ensure_chromium_available()
             assert result == "/usr/bin/chromium"
 
-    def test_ensure_chromium_available_install_success(self):
-        """Test successful installation when Chromium not initially available."""
-        with (
-            patch(
-                "openhands.tools.browser_use.impl._check_chromium_available",
-                side_effect=[None, "/usr/bin/chromium"],
-            ),
-            patch(
-                "openhands.tools.browser_use.impl._install_chromium", return_value=True
-            ),
-        ):
-            result = _ensure_chromium_available()
-            assert result == "/usr/bin/chromium"
-
-    def test_ensure_chromium_available_install_failure(self):
-        """Test when Chromium installation fails."""
-        with (
-            patch(
-                "openhands.tools.browser_use.impl._check_chromium_available",
-                return_value=None,
-            ),
-            patch(
-                "openhands.tools.browser_use.impl._install_chromium", return_value=False
-            ),
+    def test_ensure_chromium_available_not_found_raises_error(self):
+        """Test that clear error is raised when Chromium is not available."""
+        with patch(
+            "openhands.tools.browser_use.impl._check_chromium_available",
+            return_value=None,
         ):
             with pytest.raises(Exception) as exc_info:
                 _ensure_chromium_available()
 
-            assert "Chromium is required for browser operations" in str(exc_info.value)
-            assert "uvx playwright install chromium" in str(exc_info.value)
-
-    def test_ensure_chromium_available_install_success_but_not_found(self):
-        """Test when installation succeeds but Chromium still not found."""
-        with (
-            patch(
-                "openhands.tools.browser_use.impl._check_chromium_available",
-                return_value=None,
-            ),
-            patch(
-                "openhands.tools.browser_use.impl._install_chromium", return_value=True
-            ),
-        ):
-            with pytest.raises(Exception) as exc_info:
-                _ensure_chromium_available()
-
-            assert "Chromium is required for browser operations" in str(exc_info.value)
+            error_message = str(exc_info.value)
+            assert "Chromium is required for browser operations" in error_message
+            assert "uvx playwright install chromium" in error_message
+            assert "pip install playwright" in error_message
+            assert "sudo apt install chromium-browser" in error_message
+            assert "brew install chromium" in error_message
+            assert "winget install Chromium.Chromium" in error_message
+            assert "restart your application" in error_message

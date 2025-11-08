@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
 """
 Integration test runner for agent-sdk.
-Adapted from OpenHands evaluation/integration_tests/run_infer.py
 """
 
 import argparse
 import importlib.util
 import json
 import os
+import shutil
 import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.logger import get_logger
 from tests.integration.base import BaseIntegrationTest, TestResult
@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 class TestInstance(BaseModel):
     """Represents a single test instance."""
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     instance_id: str
     file_path: str
@@ -43,6 +43,7 @@ class EvalOutput(BaseModel):
     llm_model: str
     cost: float = 0.0
     error_message: str | None = None
+    log_file_path: str | None = None
 
 
 def load_integration_tests() -> list[TestInstance]:
@@ -112,15 +113,11 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
 
-        # Get the required parameters from the module
-        instruction = getattr(module, "INSTRUCTION", "Default test instruction")
-
-        # Instantiate the test class with required parameters
-        # Note: tools are now provided via the abstract tools property
         test_instance = test_class_type(
-            instruction=instruction,
+            instruction=module.INSTRUCTION,
             llm_config=llm_config,  # Use the provided config
-            cwd=temp_dir,  # Pass the CWD (either from module or temp dir)
+            workspace=temp_dir,  # Pass the workspace directory
+            instance_id=instance.instance_id,  # Pass the instance ID for logging
         )
 
         # Run the test
@@ -139,11 +136,39 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             format_cost(llm_cost),
         )
 
+        # Copy log file to a location that will be preserved
+        log_file_path = None
+        if hasattr(test_instance, "log_file_path") and os.path.exists(
+            test_instance.log_file_path
+        ):
+            # Copy the log file to a permanent location before temp_dir is cleaned up
+
+            # Create a permanent logs directory in the current working directory
+            permanent_logs_dir = os.path.join(os.getcwd(), "integration_test_logs")
+            os.makedirs(permanent_logs_dir, exist_ok=True)
+
+            # Create a unique filename to avoid conflicts
+            permanent_log_filename = f"{instance.instance_id}_agent_logs.txt"
+            permanent_log_path = os.path.join(
+                permanent_logs_dir, permanent_log_filename
+            )
+
+            # Copy the log file
+            shutil.copy2(test_instance.log_file_path, permanent_log_path)
+            log_file_path = permanent_log_path
+
+            logger.info(
+                "Preserved log file for %s at %s",
+                instance.instance_id,
+                permanent_log_path,
+            )
+
         return EvalOutput(
             instance_id=instance.instance_id,
             test_result=test_result,
             llm_model=llm_config.get("model", "unknown"),
             cost=llm_cost,
+            log_file_path=log_file_path,
         )
 
     except Exception as e:
@@ -159,8 +184,6 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
     finally:
         # Clean up temporary directory if we created one
         if temp_dir and os.path.exists(temp_dir):
-            import shutil
-
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 
@@ -220,6 +243,34 @@ def generate_structured_results(
     with open(results_file, "w") as f:
         f.write(structured_results.model_dump_json(indent=2))
 
+    # Copy log files to output directory
+    logs_dir = os.path.join(output_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+
+    logger.info("Attempting to copy log files to %s", logs_dir)
+    for eval_output in eval_outputs:
+        logger.info(
+            "Checking log file for %s: path=%s, exists=%s",
+            eval_output.instance_id,
+            eval_output.log_file_path,
+            os.path.exists(eval_output.log_file_path)
+            if eval_output.log_file_path
+            else False,
+        )
+        if eval_output.log_file_path and os.path.exists(eval_output.log_file_path):
+            log_filename = f"{eval_output.instance_id}_agent_logs.txt"
+            dest_path = os.path.join(logs_dir, log_filename)
+            shutil.copy2(eval_output.log_file_path, dest_path)
+            logger.info(
+                "Copied log file for %s to %s", eval_output.instance_id, dest_path
+            )
+        else:
+            logger.warning(
+                "Log file not found for %s: %s",
+                eval_output.instance_id,
+                eval_output.log_file_path,
+            )
+
     # Print summary for console output
     success_rate = structured_results.success_rate
     successful = structured_results.successful_tests
@@ -232,6 +283,13 @@ def generate_structured_results(
         logger.info("%s: %s - %s", instance.instance_id, status, reason)
     logger.info("Total cost: %s", format_cost(structured_results.total_cost))
     logger.info("Structured results saved to %s", results_file)
+
+    # Clean up temporary logs directory
+    permanent_logs_dir = os.path.join(os.getcwd(), "integration_test_logs")
+    if os.path.exists(permanent_logs_dir):
+        shutil.rmtree(permanent_logs_dir, ignore_errors=True)
+        logger.info("Cleaned up temporary logs directory: %s", permanent_logs_dir)
+
     return results_file
 
 

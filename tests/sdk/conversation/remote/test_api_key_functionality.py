@@ -14,26 +14,13 @@ from openhands.sdk.conversation.impl.remote_conversation import (
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import RemoteWorkspace
 
+from ..conftest import create_mock_http_client
+
 
 def create_test_agent() -> Agent:
     """Create a test agent."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     return Agent(llm=llm, tools=[])
-
-
-def create_mock_http_responses():
-    """Create mock HTTP responses for RemoteConversation."""
-    # Mock the POST response for conversation creation
-    mock_post_response = Mock()
-    mock_post_response.raise_for_status.return_value = None
-    mock_post_response.json.return_value = {"id": str(uuid.uuid4())}
-
-    # Mock the GET response for events sync
-    mock_get_response = Mock()
-    mock_get_response.raise_for_status.return_value = None
-    mock_get_response.json.return_value = {"items": []}
-
-    return mock_post_response, mock_get_response
 
 
 def test_conversation_factory_passes_api_key_to_remote():
@@ -65,60 +52,19 @@ def test_conversation_factory_passes_api_key_to_remote():
         assert call_args.kwargs["workspace"] == workspace
 
 
-@patch("httpx.Client")
-def test_remote_conversation_configures_httpx_client_with_api_key(mock_httpx_client):
-    """Test that RemoteConversation configures httpx client with API key header."""
-    agent = create_test_agent()
-    test_api_key = "test-api-key-123"
-
-    # Mock httpx client and its responses
-    mock_client_instance = Mock()
-    mock_httpx_client.return_value = mock_client_instance
-
-    mock_post_response, mock_get_response = create_mock_http_responses()
-    mock_client_instance.post.return_value = mock_post_response
-    mock_client_instance.get.return_value = mock_get_response
-
-    with patch(
-        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
-    ):
-        # Create RemoteWorkspace with API key
-        workspace = RemoteWorkspace(
-            working_dir="/tmp",
-            host="http://localhost:3000",
-            api_key=test_api_key,
-        )
-        # Create RemoteConversation with workspace
-        RemoteConversation(
-            agent=agent,
-            workspace=workspace,
-        )
-
-    # Verify httpx.Client was called with correct headers
-    mock_httpx_client.assert_called_once()
-    call_args = mock_httpx_client.call_args
-
-    # Check that headers were passed with the API key
-    assert "headers" in call_args.kwargs
-    headers = call_args.kwargs["headers"]
-    assert headers["X-Session-API-Key"] == test_api_key
-
-
-@patch("httpx.Client")
-def test_remote_conversation_no_api_key_no_headers(mock_httpx_client):
+def test_remote_conversation_no_api_key_no_headers():
     """Test that RemoteConversation doesn't add headers when no API key is provided."""
     agent = create_test_agent()
 
-    # Mock httpx client and its responses
-    mock_client_instance = Mock()
-    mock_httpx_client.return_value = mock_client_instance
+    # Mock httpx client
+    mock_client_instance = create_mock_http_client()
 
-    mock_post_response, mock_get_response = create_mock_http_responses()
-    mock_client_instance.post.return_value = mock_post_response
-    mock_client_instance.get.return_value = mock_get_response
-
-    with patch(
-        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    with (
+        patch("httpx.Client", return_value=mock_client_instance) as mock_httpx_client,
+        patch(
+            "openhands.sdk.conversation.impl.remote_conversation"
+            ".WebSocketCallbackClient"
+        ),
     ):
         # Create RemoteWorkspace without API key
         workspace = RemoteWorkspace(
@@ -132,13 +78,13 @@ def test_remote_conversation_no_api_key_no_headers(mock_httpx_client):
             workspace=workspace,
         )
 
-    # Verify httpx.Client was called without API key headers
-    mock_httpx_client.assert_called_once()
-    call_args = mock_httpx_client.call_args
+        # Verify httpx.Client was called without API key headers
+        mock_httpx_client.assert_called_once()
+        call_args = mock_httpx_client.call_args
 
-    # Check that headers were empty or don't contain API key
-    headers = call_args.kwargs.get("headers", {})
-    assert "X-Session-API-Key" not in headers
+        # Check that headers were empty or don't contain API key
+        headers = call_args.kwargs.get("headers", {})
+        assert "X-Session-API-Key" not in headers
 
 
 def test_websocket_client_includes_api_key_in_url():
@@ -180,23 +126,21 @@ def test_websocket_client_no_api_key():
     assert ws_client.conversation_id == conversation_id
 
 
-@patch("httpx.Client")
-def test_remote_conversation_passes_api_key_to_websocket_client(mock_httpx_client):
+def test_remote_conversation_passes_api_key_to_websocket_client():
     """Test that RemoteConversation passes API key to WebSocketCallbackClient."""
     agent = create_test_agent()
     test_api_key = "test-api-key-123"
 
-    # Mock httpx client and its responses
-    mock_client_instance = Mock()
-    mock_httpx_client.return_value = mock_client_instance
+    # Mock httpx client
+    mock_client_instance = create_mock_http_client()
 
-    mock_post_response, mock_get_response = create_mock_http_responses()
-    mock_client_instance.post.return_value = mock_post_response
-    mock_client_instance.get.return_value = mock_get_response
-
-    with patch(
-        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
-    ) as mock_ws_client:
+    with (
+        patch("httpx.Client", return_value=mock_client_instance),
+        patch(
+            "openhands.sdk.conversation.impl.remote_conversation"
+            ".WebSocketCallbackClient"
+        ) as mock_ws_client,
+    ):
         mock_ws_instance = Mock()
         mock_ws_client.return_value = mock_ws_instance
 

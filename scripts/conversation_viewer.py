@@ -18,10 +18,13 @@ summarise events in a table and show their full payload when expanded.
 
 from __future__ import annotations
 
+import io
 import json
 import os
+import zipfile
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -93,9 +96,65 @@ def load_conversation(path_str: str) -> Conversation:
     )
 
 
+@st.cache_data(show_spinner=False)
+def get_last_event_timestamp(conversation_path_str: str) -> str:
+    """Get the timestamp of the most recent event in a conversation directory.
+
+    Returns empty string if no events found or if timestamps can't be parsed.
+    """
+    conversation_path = Path(conversation_path_str)
+    events_dir = conversation_path / "events"
+
+    if not events_dir.exists():
+        return ""
+
+    latest_timestamp = ""
+    latest_datetime = None
+
+    for event_file in events_dir.glob("*.json"):
+        try:
+            event_data = load_json(event_file)
+            timestamp = event_data.get("timestamp", "")
+            if timestamp:
+                # Try to parse the timestamp to compare properly
+                try:
+                    # Handle various timestamp formats
+                    if "T" in timestamp:
+                        # ISO format with T separator
+                        dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    else:
+                        # Try other common formats
+                        dt = datetime.fromisoformat(timestamp)
+
+                    if latest_datetime is None or dt > latest_datetime:
+                        latest_datetime = dt
+                        latest_timestamp = timestamp
+                except (ValueError, TypeError):
+                    # If we can't parse the timestamp, fall back to string comparison
+                    if timestamp > latest_timestamp:
+                        latest_timestamp = timestamp
+        except (json.JSONDecodeError, OSError):
+            # Skip files that can't be read or parsed
+            continue
+
+    return latest_timestamp
+
+
 def conversation_dirs(root: Path) -> list[Path]:
-    """Return sorted conversation sub-directories under ``root``."""
-    return sorted((p for p in root.iterdir() if p.is_dir()), key=lambda item: item.name)
+    """Return conversation sub-directories under ``root``.
+
+    Sorted by last event timestamp (most recent first).
+    """
+    dirs = [p for p in root.iterdir() if p.is_dir()]
+
+    # Sort by last event timestamp (most recent first), fall back to directory name
+    def sort_key(path: Path) -> tuple[str, str]:
+        timestamp = get_last_event_timestamp(str(path))
+        # Reverse timestamp for descending order (most recent first)
+        # Use empty string as fallback which will sort last
+        return (timestamp or "", path.name)
+
+    return sorted(dirs, key=sort_key, reverse=True)
 
 
 def extract_text_blocks(blocks: Iterable[Any] | None) -> str:
@@ -188,6 +247,34 @@ def draw_base_state(base_state: dict[str, Any]) -> None:
         st.json(base_state)
 
 
+def create_conversation_zip(conversation_path: Path) -> bytes:
+    """Create a zip file containing all files from the conversation directory.
+
+    Args:
+        conversation_path: Path to the conversation directory
+
+    Returns:
+        Bytes of the zip file
+    """
+    buffer = io.BytesIO()
+
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        # Add base_state.json if it exists
+        base_state_path = conversation_path / "base_state.json"
+        if base_state_path.exists():
+            zip_file.write(base_state_path, "base_state.json")
+
+        # Add all event files from the events directory
+        events_dir = conversation_path / "events"
+        if events_dir.exists():
+            for event_file in sorted(events_dir.glob("*.json")):
+                arcname = f"events/{event_file.name}"
+                zip_file.write(event_file, arcname)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def draw_event_detail(event: dict[str, Any]) -> None:
     meta_cols = st.columns(4)
     meta_cols[0].markdown(f"**File**\n{event.get('_filename', '—')}")
@@ -215,30 +302,45 @@ def draw_event_detail(event: dict[str, Any]) -> None:
 def main() -> None:
     st.title("OpenHands Conversation Viewer")
 
-    params = st.query_params
-    default_root = DEFAULT_CONVERSATIONS_ROOT
-    initial_root = params.get("root", [str(default_root)])[0]
+    # Initialize root directory in session state if not present
+    if "root_directory" not in st.session_state:
+        params = st.query_params
+        default_root = DEFAULT_CONVERSATIONS_ROOT
+        # Handle both old (list) and new (string) query param formats
+        root_from_params = params.get("root", str(default_root))
+        if isinstance(root_from_params, list):
+            root_from_params = (
+                root_from_params[0] if root_from_params else str(default_root)
+            )
+        st.session_state["root_directory"] = root_from_params
 
     root_input = st.sidebar.text_input(
         "Conversations directory",
-        value=initial_root,
+        value=st.session_state["root_directory"],
         help="Root folder containing OpenHands conversation dumps",
     )
-    root_path = Path(root_input).expanduser()
 
-    if root_input != params.get("root", [None])[0] and not st.session_state.get(
-        "_suppress_query_update", False
-    ):
-        try:
-            st.session_state["_suppress_query_update"] = True
-            st.query_params["root"] = root_input
-        finally:
-            st.session_state["_suppress_query_update"] = False
+    # Ensure root_input is not None (should not happen with default value)
+    if not root_input:
+        root_input = st.session_state["root_directory"]
+
+    # Update session state if root input changed
+    if root_input != st.session_state["root_directory"]:
+        st.session_state["root_directory"] = root_input
+        if not st.session_state.get("_suppress_query_update", False):
+            try:
+                st.session_state["_suppress_query_update"] = True
+                st.query_params["root"] = root_input
+            finally:
+                st.session_state["_suppress_query_update"] = False
+
+    root_path = Path(root_input).expanduser()
 
     if st.sidebar.button(
         "Reload conversations", help="Clear cached data and reload from disk"
     ):
         load_conversation.clear()
+        get_last_event_timestamp.clear()
         rerun = getattr(st, "experimental_rerun", None)
         if callable(rerun):
             rerun()
@@ -254,7 +356,28 @@ def main() -> None:
         st.warning("No conversation folders found in the selected directory.")
         return
 
-    options = [directory.name for directory in directories]
+    # Create options with timestamps for better UX
+    options_with_timestamps = []
+    options = []
+    for directory in directories:
+        timestamp = get_last_event_timestamp(str(directory))
+        if timestamp:
+            # Format timestamp for display
+            try:
+                if "T" in timestamp:
+                    dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                    formatted_time = dt.strftime("%Y-%m-%d %H:%M")
+                else:
+                    formatted_time = timestamp[:16]  # Truncate if too long
+                display_name = f"{directory.name} ({formatted_time})"
+            except (ValueError, TypeError):
+                display_name = f"{directory.name} ({timestamp[:16]})"
+        else:
+            display_name = f"{directory.name} (no events)"
+
+        options_with_timestamps.append(display_name)
+        options.append(directory.name)
+
     selected_idx = 0
     if "conversation" in st.session_state:
         try:
@@ -262,10 +385,27 @@ def main() -> None:
         except ValueError:
             selected_idx = 0
 
-    selected = st.sidebar.selectbox("Conversation", options, index=selected_idx)
+    selected_display = st.sidebar.selectbox(
+        "Conversation (sorted by last event)",
+        options_with_timestamps,
+        index=selected_idx,
+        help="Conversations are sorted by their most recent event timestamp",
+    )
+    selected = options[options_with_timestamps.index(selected_display)]
     st.session_state["conversation"] = selected
 
     conversation = load_conversation(str(root_path / selected))
+
+    # Add download button for the conversation
+    st.sidebar.divider()
+    zip_data = create_conversation_zip(conversation.path)
+    st.sidebar.download_button(
+        label="📥 Download Conversation as ZIP",
+        data=zip_data,
+        file_name=f"{selected}.zip",
+        mime="application/zip",
+        help="Download all conversation files as a ZIP archive",
+    )
 
     st.caption(f"Loaded from {conversation.path}")
     draw_base_state(conversation.base_state)

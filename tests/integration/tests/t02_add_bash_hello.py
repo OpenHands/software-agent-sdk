@@ -3,13 +3,13 @@
 import os
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import ToolSpec, register_tool
-from openhands.tools.execute_bash import BashTool
-from openhands.tools.str_replace_editor import FileEditorTool
+from openhands.sdk.tool import Tool, register_tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
-INSTRUCTION = "Write a shell script '/workspace/hello.sh' that prints 'hello'."
+INSTRUCTION = "Write a shell script 'shell/hello.sh' that prints 'hello'."
 
 
 logger = get_logger(__name__)
@@ -18,49 +18,38 @@ logger = get_logger(__name__)
 class BashHelloTest(BaseIntegrationTest):
     """Test that an agent can write a shell script that prints 'hello'."""
 
-    INSTRUCTION = INSTRUCTION
+    INSTRUCTION: str = INSTRUCTION
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.script_path: str = os.path.join(self.workspace, "shell", "hello.sh")
 
     @property
-    def tools(self) -> list[ToolSpec]:
+    def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
-        if self.cwd is None:
-            raise ValueError("CWD must be set before accessing tools")
-        register_tool("BashTool", BashTool)
+        register_tool("TerminalTool", TerminalTool)
         register_tool("FileEditorTool", FileEditorTool)
         return [
-            ToolSpec(name="BashTool", params={"working_dir": self.cwd}),
-            ToolSpec(name="FileEditorTool", params={"workspace_root": self.cwd}),
+            Tool(name="TerminalTool"),
+            Tool(name="FileEditorTool"),
         ]
 
     def setup(self) -> None:
-        """Create workspace directory for the test."""
-        if self.cwd is None:
-            raise ValueError("CWD must be set before setup")
-
-        # Create workspace directory
-        workspace_dir = os.path.join(self.cwd, "workspace")
-        os.makedirs(workspace_dir, exist_ok=True)
-
-        logger.info(f"Created workspace directory at: {workspace_dir}")
+        """Setup is not needed - agent will create directories as needed."""
 
     def verify_result(self) -> TestResult:
         """Verify that the agent successfully created the shell script."""
-        if self.cwd is None:
-            return TestResult(success=False, reason="CWD not set")
-
-        script_path = os.path.join(self.cwd, "workspace", "hello.sh")
-
-        if not os.path.exists(script_path):
+        if not os.path.exists(self.script_path):
             return TestResult(
-                success=False, reason="Shell script '/workspace/hello.sh' not found"
+                success=False, reason="Shell script 'shell/hello.sh' not found"
             )
 
         # Check if the script is executable
-        if not os.access(script_path, os.X_OK):
+        if not os.access(self.script_path, os.X_OK):
             return TestResult(success=False, reason="Shell script is not executable")
 
         # Read the script content
-        with open(script_path) as f:
+        with open(self.script_path) as f:
             script_content = f.read()
 
         # Check if the script contains the expected output
@@ -75,10 +64,10 @@ class BashHelloTest(BaseIntegrationTest):
             import subprocess
 
             result = subprocess.run(
-                ["bash", script_path],
+                ["bash", self.script_path],
                 capture_output=True,
                 text=True,
-                cwd=self.cwd,
+                cwd=self.workspace,
             )
             if result.returncode != 0:
                 return TestResult(
@@ -102,9 +91,3 @@ class BashHelloTest(BaseIntegrationTest):
             return TestResult(
                 success=False, reason=f"Failed to execute script: {str(e)}"
             )
-
-    def teardown(self):
-        """Clean up test resources."""
-        # Note: In this implementation, cwd is managed externally
-        # so we don't need to clean it up here
-        pass

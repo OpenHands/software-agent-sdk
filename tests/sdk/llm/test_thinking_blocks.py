@@ -89,8 +89,8 @@ def test_message_without_thinking_blocks():
     assert message.thinking_blocks == []
 
 
-def test_message_from_litellm_message_with_thinking():
-    """Test Message.from_litellm_message with thinking blocks."""
+def test_message_from_llm_chat_message_with_thinking():
+    """Test Message.from_llm_chat_message with thinking blocks."""
     # Create a mock LiteLLM message with thinking blocks
     thinking_block = ChatCompletionThinkingBlock(
         type="thinking",
@@ -104,7 +104,7 @@ def test_message_from_litellm_message_with_thinking():
         thinking_blocks=[thinking_block],
     )
 
-    message = Message.from_litellm_message(litellm_message)
+    message = Message.from_llm_chat_message(litellm_message)
 
     assert message.role == "assistant"
     assert len(message.content) == 1
@@ -118,11 +118,11 @@ def test_message_from_litellm_message_with_thinking():
     assert message.thinking_blocks[0].signature == "hash_456"
 
 
-def test_message_from_litellm_message_without_thinking():
-    """Test Message.from_litellm_message without thinking blocks."""
+def test_message_from_llm_chat_message_without_thinking():
+    """Test Message.from_llm_chat_message without thinking blocks."""
     litellm_message = LiteLLMMessage(role="assistant", content="The answer is 42.")
 
-    message = Message.from_litellm_message(litellm_message)
+    message = Message.from_llm_chat_message(litellm_message)
 
     assert message.role == "assistant"
     assert len(message.content) == 1
@@ -263,7 +263,7 @@ def test_llm_preserves_existing_thinking_blocks():
     """Test that LLM preserves existing thinking blocks and doesn't add duplicates."""
     # Create LLM with Anthropic model and reasoning effort
     llm = LLM(
-        service_id="test",
+        usage_id="test",
         model="anthropic/claude-sonnet-4-5",
         reasoning_effort="high",
         api_key=SecretStr("test-key"),

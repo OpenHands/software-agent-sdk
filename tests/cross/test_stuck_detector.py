@@ -1,7 +1,5 @@
 import uuid
 
-from litellm import ChatCompletionMessageToolCall
-
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.conversation.stuck_detector import StuckDetector
@@ -11,9 +9,14 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
 )
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import (
+    LLM,
+    Message,
+    MessageToolCall,
+    TextContent,
+)
 from openhands.sdk.workspace import LocalWorkspace
-from openhands.tools.execute_bash.definition import (
+from openhands.tools.terminal.definition import (
     ExecuteBashAction,
     ExecuteBashObservation,
 )
@@ -22,7 +25,7 @@ from openhands.tools.execute_bash.definition import (
 def test_history_too_short():
     """Test that stuck detector returns False when there are too few events."""
     # Create a minimal agent for testing
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -41,12 +44,13 @@ def test_history_too_short():
         source="agent",
         thought=[TextContent(text="I need to run ls command")],
         action=ExecuteBashAction(command="ls"),
-        tool_name="execute_bash",
+        tool_name="terminal",
         tool_call_id="call_1",
-        tool_call=ChatCompletionMessageToolCall(
+        tool_call=MessageToolCall(
             id="call_1",
-            function={"name": "execute_bash", "arguments": '{"command": "ls"}'},
-            type="function",
+            name="terminal",
+            arguments='{"command": "ls"}',
+            origin="completion",
         ),
         llm_response_id="response_1",
     )
@@ -54,11 +58,13 @@ def test_history_too_short():
 
     observation = ObservationEvent(
         source="environment",
-        observation=ExecuteBashObservation(
-            output="file1.txt\nfile2.txt", command="ls", exit_code=0
+        observation=ExecuteBashObservation.from_text(
+            text="file1.txt\nfile2.txt",
+            command="ls",
+            exit_code=0,
         ),
         action_id=action.id,
-        tool_name="execute_bash",
+        tool_name="terminal",
         tool_call_id="call_1",
     )
     state.events.append(observation)
@@ -69,7 +75,7 @@ def test_history_too_short():
 
 def test_repeating_action_observation_not_stuck_less_than_4_repeats():
     """Test detection of repeating action-observation cycles."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -89,12 +95,13 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
             action=ExecuteBashAction(command="ls"),
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
-            tool_call=ChatCompletionMessageToolCall(
+            tool_call=MessageToolCall(
                 id=f"call_{i}",
-                function={"name": "execute_bash", "arguments": '{"command": "ls"}'},
-                type="function",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
             ),
             llm_response_id=f"response_{i}",
         )
@@ -102,11 +109,13 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                output="file1.txt\nfile2.txt", command="ls", exit_code=0
+            observation=ExecuteBashObservation.from_text(
+                text="file1.txt\nfile2.txt",
+                command="ls",
+                exit_code=0,
             ),
             action_id=action.id,
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
         )
         state.events.append(observation)
@@ -117,7 +126,7 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
 
 def test_repeating_action_observation_stuck():
     """Test detection of repeating action-observation cycles."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -137,12 +146,13 @@ def test_repeating_action_observation_stuck():
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
             action=ExecuteBashAction(command="ls"),
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
-            tool_call=ChatCompletionMessageToolCall(
+            tool_call=MessageToolCall(
                 id=f"call_{i}",
-                function={"name": "execute_bash", "arguments": '{"command": "ls"}'},
-                type="function",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
             ),
             llm_response_id=f"response_{i}",
         )
@@ -150,11 +160,13 @@ def test_repeating_action_observation_stuck():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                output="file1.txt\nfile2.txt", command="ls", exit_code=0
+            observation=ExecuteBashObservation.from_text(
+                text="file1.txt\nfile2.txt",
+                command="ls",
+                exit_code=0,
             ),
             action_id=action.id,
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
         )
         state.events.append(observation)
@@ -165,7 +177,7 @@ def test_repeating_action_observation_stuck():
 
 def test_repeating_action_error_stuck():
     """Test detection of repeating action-error cycles."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -186,15 +198,13 @@ def test_repeating_action_error_stuck():
             source="agent",
             thought=[TextContent(text="I need to run invalid_command")],
             action=ExecuteBashAction(command="invalid_command"),
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
-            tool_call=ChatCompletionMessageToolCall(
+            tool_call=MessageToolCall(
                 id=f"call_{i}",
-                function={
-                    "name": "execute_bash",
-                    "arguments": '{"command": "invalid_command"}',
-                },
-                type="function",
+                name="terminal",
+                arguments='{"command": "invalid_command"}',
+                origin="completion",
             ),
             llm_response_id=f"response_{i}",
         )
@@ -226,7 +236,7 @@ def test_repeating_action_error_stuck():
 
 def test_agent_monologue_stuck():
     """Test detection of agent monologue (repeated messages without user input)."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -256,7 +266,7 @@ def test_agent_monologue_stuck():
 
 def test_not_stuck_with_different_actions():
     """Test that different actions don't trigger stuck detection."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -279,15 +289,13 @@ def test_not_stuck_with_different_actions():
             source="agent",
             thought=[TextContent(text=f"I need to run {cmd} command")],
             action=ExecuteBashAction(command=cmd),
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
-            tool_call=ChatCompletionMessageToolCall(
+            tool_call=MessageToolCall(
                 id=f"call_{i}",
-                function={
-                    "name": "execute_bash",
-                    "arguments": f'{{"command": "{cmd}"}}',
-                },
-                type="function",
+                name="terminal",
+                arguments=f'{{"command": "{cmd}"}}',
+                origin="completion",
             ),
             llm_response_id=f"response_{i}",
         )
@@ -295,11 +303,13 @@ def test_not_stuck_with_different_actions():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                output=f"output from {cmd}", command=cmd, exit_code=0
+            observation=ExecuteBashObservation.from_text(
+                text=f"output from {cmd}",
+                command=cmd,
+                exit_code=0,
             ),
             action_id=action.id,
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
         )
         state.events.append(observation)
@@ -310,7 +320,7 @@ def test_not_stuck_with_different_actions():
 
 def test_reset_after_user_message():
     """Test that stuck detection resets after a new user message."""
-    llm = LLM(model="gpt-4o-mini", service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
     agent = Agent(llm=llm)
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
@@ -330,12 +340,13 @@ def test_reset_after_user_message():
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
             action=ExecuteBashAction(command="ls"),
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
-            tool_call=ChatCompletionMessageToolCall(
+            tool_call=MessageToolCall(
                 id=f"call_{i}",
-                function={"name": "execute_bash", "arguments": '{"command": "ls"}'},
-                type="function",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
             ),
             llm_response_id=f"response_{i}",
         )
@@ -343,11 +354,13 @@ def test_reset_after_user_message():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
-                output="file1.txt\nfile2.txt", command="ls", exit_code=0
+            observation=ExecuteBashObservation.from_text(
+                text="file1.txt\nfile2.txt",
+                command="ls",
+                exit_code=0,
             ),
             action_id=action.id,
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id=f"call_{i}",
         )
         state.events.append(observation)
@@ -372,12 +385,13 @@ def test_reset_after_user_message():
         source="agent",
         thought=[TextContent(text="I'll try pwd command")],
         action=ExecuteBashAction(command="pwd"),
-        tool_name="execute_bash",
+        tool_name="terminal",
         tool_call_id="call_new",
-        tool_call=ChatCompletionMessageToolCall(
+        tool_call=MessageToolCall(
             id="call_new",
-            function={"name": "execute_bash", "arguments": '{"command": "pwd"}'},
-            type="function",
+            name="terminal",
+            arguments='{"command": "pwd"}',
+            origin="completion",
         ),
         llm_response_id="response_new",
     )
@@ -385,11 +399,11 @@ def test_reset_after_user_message():
 
     observation = ObservationEvent(
         source="environment",
-        observation=ExecuteBashObservation(
-            output="/home/user", command="pwd", exit_code=0
+        observation=ExecuteBashObservation.from_text(
+            text="/home/user", command="pwd", exit_code=0
         ),
         action_id=action.id,
-        tool_name="execute_bash",
+        tool_name="terminal",
         tool_call_id="call_new",
     )
     state.events.append(observation)

@@ -18,7 +18,7 @@ from openhands.sdk.workspace import LocalWorkspace
 @pytest.fixture
 def mock_agent():
     """Create a real agent for testing."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     return agent
 
@@ -96,7 +96,7 @@ def test_conversation_factory_with_directories(mock_agent):
 
         assert conversation.state.workspace.working_dir == working_dir
         # persistence_dir should include conversation ID subdirectory
-        expected_dir = os.path.join(persistence_dir, str(conversation.state.id))
+        expected_dir = os.path.join(persistence_dir, conversation.state.id.hex)
         assert conversation.state.persistence_dir == expected_dir
 
 
@@ -138,5 +138,5 @@ def test_conversation_factory_persistence_dir_only(mock_agent):
         # Should use default "workspace/project" as working directory
         assert conversation.state.workspace.working_dir == "workspace/project"
         # persistence_dir should include conversation ID subdirectory
-        expected_dir = os.path.join(persistence_dir, str(conversation.state.id))
+        expected_dir = os.path.join(persistence_dir, conversation.state.id.hex)
         assert conversation.state.persistence_dir == expected_dir

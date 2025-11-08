@@ -1,0 +1,12 @@
+{
+  "name": "openhands-settings",
+  "displayName": "OpenHands Settings",
+  "description": "Auto-configure VSCode settings for OpenHands",
+  "version": "1.0.0",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": ["Other"],
+  "activationEvents": ["*"],
+  "main": "./extension.js"
+}

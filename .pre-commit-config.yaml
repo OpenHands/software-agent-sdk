@@ -31,7 +31,7 @@ repos:
             pass_filenames: true
             always_run: false
           - id: pyright
-            name: Type check with Pyright (strict)
+            name: Type check with pyright
             entry: uv
             args: [run, pyright]
             language: system

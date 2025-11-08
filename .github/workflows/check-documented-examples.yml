@@ -1,0 +1,46 @@
+---
+name: Check Documented Examples
+
+on:
+    pull_request:
+        branches:
+            - '**'
+        paths:
+            - examples/**/*.py
+            - '!examples/03_github_workflows/**'
+            - .github/workflows/check-documented-examples.yml
+            - .github/scripts/check_documented_examples.py
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pull-requests: read
+
+jobs:
+    check-examples:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout agent-sdk repository
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+
+            - name: Checkout docs repository
+              uses: actions/checkout@v5
+              with:
+                  repository: OpenHands/docs
+                  path: docs
+                  fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: '3.12'
+
+            - name: Check documented examples
+              env:
+                  DOCS_PATH: ${{ github.workspace }}/docs
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  python .github/scripts/check_documented_examples.py
