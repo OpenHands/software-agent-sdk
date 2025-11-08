@@ -529,8 +529,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self._telemetry.on_response(resp, raw_resp=raw_resp)
 
             # Ensure at least one choice.
-            # Note: This runs inside the retry boundary; raising LLMNoResponseError here
-            # is retryable.
+            # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
+            # inside the retry boundary so it is retried.
             if not resp.get("choices") or len(resp["choices"]) < 1:
                 raise LLMNoResponseError(
                     "Response choices is less than 1. Response: " + str(resp)
