@@ -567,7 +567,7 @@ class OpenHandsWebChat {
                         api_key: "placeholder" // This should be set via environment variable
                     },
                     tools: [
-                        { name: "BashTool", params: { working_dir: "/workspace" } },
+                        { name: "TerminalTool", params: { working_dir: "/workspace" } },
                         { name: "FileEditor" },
                         { name: "TaskTracker" }
                     ]

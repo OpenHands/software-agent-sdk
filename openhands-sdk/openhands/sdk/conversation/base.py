@@ -72,6 +72,11 @@ class ConversationStateProtocol(Protocol):
         """The agent running in the conversation."""
         ...
 
+    @property
+    def stats(self) -> ConversationStats:
+        """The conversation statistics."""
+        ...
+
 
 class BaseConversation(ABC):
     """Abstract base class for conversation implementations.

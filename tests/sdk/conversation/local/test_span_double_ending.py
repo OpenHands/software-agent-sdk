@@ -30,7 +30,7 @@ def test_no_double_span_ending_warning(caplog):
         conversation = LocalConversation(
             agent=agent,
             workspace=temp_dir,
-            visualize=False,  # Disable visualization to simplify test
+            visualizer=None,  # Disable visualization to simplify test
         )
 
         # Capture logs at WARNING level

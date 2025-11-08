@@ -14,6 +14,7 @@ Requirements:
 import os
 import time
 
+import requests
 from pydantic import SecretStr
 
 from openhands.sdk import (
@@ -44,10 +45,43 @@ if not runtime_api_key:
     logger.error("RUNTIME_API_KEY required")
     exit(1)
 
+
+def get_latest_commit_sha(
+    repo: str = "OpenHands/software-agent-sdk", branch: str = "main"
+) -> str:
+    """
+    Return the full SHA of the latest commit on `branch` for the given GitHub repo.
+    Respects an optional GITHUB_TOKEN to avoid rate limits.
+    """
+    url = f"https://api.github.com/repos/{repo}/commits/{branch}"
+    headers = {}
+    token = os.getenv("GITHUB_TOKEN") or os.getenv("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    resp = requests.get(url, headers=headers, timeout=20)
+    if resp.status_code != 200:
+        raise RuntimeError(f"GitHub API error {resp.status_code}: {resp.text}")
+    data = resp.json()
+    sha = data.get("sha")
+    if not sha:
+        raise RuntimeError("Could not find commit SHA in GitHub response")
+    logger.info(f"Latest commit on {repo} branch={branch} is {sha}")
+    return sha
+
+
+# If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
+# Otherwise, get the latest commit SHA from main branch (images are built on main)
+server_image_sha = os.getenv("GITHUB_SHA") or get_latest_commit_sha(
+    "OpenHands/software-agent-sdk", "main"
+)
+server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-amd64"
+logger.info(f"Using server image: {server_image}")
+
 with APIRemoteWorkspace(
     runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
     runtime_api_key=runtime_api_key,
-    server_image="ghcr.io/openhands/agent-server:main-python",
+    server_image=server_image,
 ) as workspace:
     agent = get_default_agent(llm=llm, cli_mode=True)
     received_events: list = []
@@ -63,7 +97,7 @@ with APIRemoteWorkspace(
     logger.info(f"Command completed: {result.exit_code}, {result.stdout}")
 
     conversation = Conversation(
-        agent=agent, workspace=workspace, callbacks=[event_callback], visualize=True
+        agent=agent, workspace=workspace, callbacks=[event_callback]
     )
     assert isinstance(conversation, RemoteConversation)
 
@@ -78,5 +112,7 @@ with APIRemoteWorkspace(
 
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         conversation.close()

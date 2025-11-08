@@ -15,14 +15,15 @@ from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
-    create_default_visualizer,
+    ConversationVisualizerBase,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
     MessageEvent,
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -40,7 +41,7 @@ class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
     _state: ConversationState
-    _visualizer: ConversationVisualizer | None
+    _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
@@ -56,8 +57,9 @@ class LocalConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = True,
-        name_for_visualization: str | None = None,
+        visualizer: (
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
     ):
@@ -72,13 +74,18 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             max_iteration_per_run: Maximum number of iterations per run
-            visualize: Whether to enable default visualization. If True, adds
-                      a default visualizer callback. If False, relies on
-                      application to provide visualization through callbacks.
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
+            visualizer: Visualization configuration. Can be:
+                       - ConversationVisualizerBase subclass: Class to instantiate
+                         (default: ConversationVisualizer)
+                       - ConversationVisualizerBase instance: Use custom visualizer
+                       - None: No visualization
             stuck_detection: Whether to enable stuck detection
         """
+        super().__init__()  # Initialize with span tracking
+        # Mark cleanup as initiated as early as possible to avoid races or partially
+        # initialized instances during interpreter shutdown.
+        self._cleanup_initiated = False
+
         self.agent = agent
         if isinstance(workspace, str):
             workspace = LocalWorkspace(working_dir=workspace)
@@ -107,15 +114,25 @@ class LocalConversation(BaseConversation):
             self._state.events.append(e)
 
         composed_list = (callbacks if callbacks else []) + [_default_callback]
-        # Add default visualizer if requested
-        if visualize:
-            self._visualizer = create_default_visualizer(
-                conversation_stats=self._state.stats,
-                name_for_visualization=name_for_visualization,
-            )
+        # Handle visualization configuration
+        if isinstance(visualizer, ConversationVisualizerBase):
+            # Use custom visualizer instance
+            self._visualizer = visualizer
+            # Initialize the visualizer with conversation state
+            self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
-            # visualize should happen first for visibility
+            # visualizer should happen first for visibility
+        elif isinstance(visualizer, type) and issubclass(
+            visualizer, ConversationVisualizerBase
+        ):
+            # Instantiate the visualizer class with appropriate parameters
+            self._visualizer = visualizer()
+            # Initialize with state
+            self._visualizer.initialize(self._state)
+            composed_list = [self._visualizer.on_event] + composed_list
+            # visualizer should happen first for visibility
         else:
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
@@ -139,8 +156,6 @@ class LocalConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        super().__init__()  # Initialize base class with span tracking
-        self._cleanup_initiated = False
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
 
@@ -298,6 +313,16 @@ class LocalConversation(BaseConversation):
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
+
+            # Add an error event
+            self._on_event(
+                ConversationErrorEvent(
+                    source="environment",
+                    code=e.__class__.__name__,
+                    detail=str(e),
+                )
+            )
+
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
         finally:
@@ -384,7 +409,11 @@ class LocalConversation(BaseConversation):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
-        self._end_observability_span()
+        try:
+            self._end_observability_span()
+        except AttributeError:
+            # Object may be partially constructed; span fields may be missing.
+            pass
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()

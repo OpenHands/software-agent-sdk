@@ -24,8 +24,19 @@ jobs:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 60
         steps:
+            - name: Wait for agent server to finish build
+              uses: lewagon/wait-on-check-action@v1.4.1
+              with:
+                  ref: ${{ github.event.pull_request.head.ref }}
+                  check-name: Build & Push (python-amd64)
+                  repo-token: ${{ secrets.GITHUB_TOKEN }}
+                  wait-interval: 10
+
             - name: Checkout
               uses: actions/checkout@v5
+              with:
+                  ref: ${{ github.event.pull_request.head.ref }}
+                  repository: ${{ github.event.pull_request.head.repo.full_name }}
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -45,10 +56,12 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_MODEL: openhands/claude-haiku-4-5-20251001
                   LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+                  RUNTIME_API_KEY: ${{ secrets.RUNTIME_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PR_NUMBER: ${{ github.event.pull_request.number }}
                   REPO_OWNER: ${{ github.repository_owner }}
                   REPO_NAME: ${{ github.event.repository.name }}
+                  GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
               run: |
                   # List of examples to test
                   # Excluded examples:
@@ -80,9 +93,12 @@ jobs:
                       "examples/01_standalone_sdk/22_anthropic_thinking.py"
                       "examples/01_standalone_sdk/23_responses_reasoning.py"
                       "examples/01_standalone_sdk/24_planning_agent_workflow.py"
+                      "examples/01_standalone_sdk/25_agent_delegation.py"
+                      "examples/01_standalone_sdk/26_custom_visualizer.py"
                       "examples/02_remote_agent_server/01_convo_with_local_agent_server.py"
                       "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py"
                       "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py"
+                      "examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py"
                   )
 
                   # GitHub API setup (only for PR events)
