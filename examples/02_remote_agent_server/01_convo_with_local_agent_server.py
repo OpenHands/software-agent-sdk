@@ -31,12 +31,12 @@ class ManagedAPIServer:
     """Context manager for subprocess-managed OpenHands API server."""
 
     def __init__(self, port: int = 8000, host: str = "127.0.0.1"):
-        self.port = port
-        self.host = host
-        self.process = None
-        self.base_url = f"http://{host}:{port}"
-        self.stdout_thread = None
-        self.stderr_thread = None
+        self.port: int = port
+        self.host: str = host
+        self.process: subprocess.Popen[str] | None = None
+        self.base_url: str = f"http://{host}:{port}"
+        self.stdout_thread: threading.Thread | None = None
+        self.stderr_thread: threading.Thread | None = None
 
     def __enter__(self):
         """Start the API server subprocess."""
@@ -60,6 +60,9 @@ class ManagedAPIServer:
         )
 
         # Start threads to stream stdout and stderr
+        assert self.process is not None
+        assert self.process.stdout is not None
+        assert self.process.stderr is not None
         self.stdout_thread = threading.Thread(
             target=_stream_output,
             args=(self.process.stdout, "SERVER", sys.stdout),
@@ -87,6 +90,7 @@ class ManagedAPIServer:
             except Exception:
                 pass
 
+            assert self.process is not None
             if self.process.poll() is not None:
                 # Process has terminated
                 raise RuntimeError(
@@ -121,15 +125,15 @@ api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
-    service_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    usage_id="agent",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 title_gen_llm = LLM(
-    service_id="title-gen-llm",
-    model="litellm_proxy/openai/gpt-5-mini",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    usage_id="title-gen-llm",
+    model=os.getenv("LLM_MODEL", "openhands/gpt-5-mini-2025-08-07"),
+    base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 
@@ -165,7 +169,6 @@ with ManagedAPIServer(port=8001) as server:
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 
@@ -186,7 +189,7 @@ with ManagedAPIServer(port=8001) as server:
         conversation.run()
 
         logger.info("✅ First task completed!")
-        logger.info(f"Agent status: {conversation.state.agent_status}")
+        logger.info(f"Agent status: {conversation.state.execution_status}")
 
         # Wait for events to stop coming (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
@@ -232,6 +235,13 @@ with ManagedAPIServer(port=8001) as server:
         for event in conversation.state.events:
             if isinstance(event, ConversationStateUpdateEvent):
                 logger.info(f"  - {event}")
+
+        # Report cost (must be before conversation.close())
+        conversation.state._cached_state = (
+            None  # Invalidate cache to fetch latest stats
+        )
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
 
     finally:
         # Clean up

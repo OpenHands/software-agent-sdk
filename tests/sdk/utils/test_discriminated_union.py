@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import Annotated
+from typing import Annotated, ClassVar
 
 import pytest
 from litellm import BaseModel
@@ -51,7 +51,7 @@ class Wolf(Canine):
         data.pop("genus", None)
         return data
 
-    model_config = ConfigDict(extra="forbid")
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
 
 class AnimalPack(BaseModel):
@@ -76,7 +76,7 @@ class AnimalPack(BaseModel):
         data.pop("alpha", None)
         return data
 
-    model_config = ConfigDict(extra="forbid")
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
 
 def test_serializable_type_expected() -> None:

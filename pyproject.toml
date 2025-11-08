@@ -1,6 +1,6 @@
 # UV workspace configuration
 [tool.uv.workspace]
-members = ["openhands/sdk", "openhands/tools", "openhands/workspace", "openhands/agent_server"]
+members = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands-agent-server"]
 
 # Workspace sources for intra-repo dependencies
 [tool.uv.sources]
@@ -36,7 +36,17 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes (includes F841: unused-variable)
+    "I",    # isort
+    "UP",   # pyupgrade
+    "ARG",  # flake8-unused-arguments
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Test files often have unused arguments (fixtures, mocks, interface implementations)
+"tests/**/*.py" = ["ARG"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["openhands"]
@@ -55,3 +65,32 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
 
+# Pyright configuration for PEP 420 namespace packages
+# This is needed for VSCode to properly resolve imports across multiple packages in the monorepo
+[tool.pyright]
+include = [
+    "openhands-sdk",
+    "openhands-tools",
+    "openhands-workspace",
+    "openhands-agent-server",
+    "examples",
+    "tests",
+    "scripts"
+]
+extraPaths = [
+    "openhands-sdk",
+    "openhands-tools",
+    "openhands-workspace",
+    "openhands-agent-server"
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+useLibraryCodeForTypes = true
+typeCheckingMode = "standard"
+
+[[tool.uv.index]]
+name = "testpypi"
+url = "https://test.pypi.org/simple/"
+publish-url = "https://test.pypi.org/legacy/"
+explicit = true

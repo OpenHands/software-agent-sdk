@@ -19,7 +19,7 @@ from ..conftest import create_mock_http_client
 
 def create_test_agent() -> Agent:
     """Create a test agent."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     return Agent(llm=llm, tools=[])
 
 
@@ -50,43 +50,6 @@ def test_conversation_factory_passes_api_key_to_remote():
         mock_remote.assert_called_once()
         call_args = mock_remote.call_args
         assert call_args.kwargs["workspace"] == workspace
-
-
-def test_remote_conversation_configures_httpx_client_with_api_key():
-    """Test that RemoteConversation configures httpx client with API key header."""
-    agent = create_test_agent()
-    test_api_key = "test-api-key-123"
-
-    # Mock httpx client
-    mock_client_instance = create_mock_http_client()
-
-    with (
-        patch("httpx.Client", return_value=mock_client_instance) as mock_httpx_client,
-        patch(
-            "openhands.sdk.conversation.impl.remote_conversation"
-            ".WebSocketCallbackClient"
-        ),
-    ):
-        # Create RemoteWorkspace with API key
-        workspace = RemoteWorkspace(
-            working_dir="/tmp",
-            host="http://localhost:3000",
-            api_key=test_api_key,
-        )
-        # Create RemoteConversation with workspace
-        RemoteConversation(
-            agent=agent,
-            workspace=workspace,
-        )
-
-        # Verify httpx.Client was called with correct headers
-        mock_httpx_client.assert_called_once()
-        call_args = mock_httpx_client.call_args
-
-        # Check that headers were passed with the API key
-        assert "headers" in call_args.kwargs
-        headers = call_args.kwargs["headers"]
-        assert headers["X-Session-API-Key"] == test_api_key
 
 
 def test_remote_conversation_no_api_key_no_headers():

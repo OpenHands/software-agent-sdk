@@ -3,8 +3,8 @@ class OpenHandsWebChat {
         // In Docker setup, API calls go through nginx proxy
         this.apiBaseUrl = window.location.origin + '/api';
         this.wsBaseUrl = window.location.protocol === 'https:' 
-            ? `wss://${window.location.host}/sockets/events`
-            : `ws://${window.location.host}/sockets/events`;
+            ? `wss://${window.location.host}`
+            : `ws://${window.location.host}`;
         
         this.currentConversationId = null;
         this.websocket = null;
@@ -198,7 +198,7 @@ class OpenHandsWebChat {
             <div class="conversation-title">${title}</div>
             <div class="conversation-meta">
                 <span>${createdAt}</span>
-                <span class="conversation-status ${conversation.agent_status.toLowerCase()}">${conversation.agent_status}</span>
+                <span class="conversation-status ${conversation.execution_status.toLowerCase()}">${conversation.execution_status}</span>
             </div>
         `;
         
@@ -243,7 +243,7 @@ class OpenHandsWebChat {
         const conversation = this.conversations.get(conversationId);
         if (conversation) {
             this.conversationTitle.textContent = this.getConversationTitle(conversation);
-            this.updateConversationStatus(conversation.agent_status);
+            this.updateConversationStatus(conversation.execution_status);
             this.enableChatControls();
         }
         
@@ -275,7 +275,7 @@ class OpenHandsWebChat {
     }
 
     connectWebSocket(conversationId) {
-        const wsUrl = `${this.wsBaseUrl}/${conversationId}`;
+        const wsUrl = `${this.wsBaseUrl}/sockets/events/${conversationId}`;
         
         this.updateConnectionStatus('connecting');
         this.websocket = new WebSocket(wsUrl);
@@ -604,7 +604,7 @@ class OpenHandsWebChat {
                     api_key: "secret"
                 },
                 tools: [
-                    { name: "BashTool", params: { } },
+                    { name: "TerminalTool", params: { } },
                     { name: "FileEditorTool", params: { } },
                     { name: "TaskTrackerTool", params: { } }
                 ]

@@ -6,6 +6,7 @@ from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelRespons
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -30,7 +31,7 @@ def create_mock_response(content: str = "Test response", response_id: str = "tes
 @pytest.fixture
 def default_config():
     return LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -64,7 +65,7 @@ def test_completion_retries_api_connection_error(
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
-        service_id="test-service",
+        usage_id="test-service",
     )
     response = llm.completion(
         messages=[Message(role="user", content=[TextContent(text="Hello!")])],
@@ -80,7 +81,7 @@ def test_completion_retries_api_connection_error(
 def test_completion_max_retries_api_connection_error(
     mock_litellm_completion, default_config
 ):
-    """Test that APIConnectionError respects max retries."""
+    """Test that APIConnectionError respects max retries and is mapped to SDK error."""
     # Mock the litellm_completion to raise APIConnectionError multiple times
     mock_litellm_completion.side_effect = [
         APIConnectionError(
@@ -107,11 +108,12 @@ def test_completion_max_retries_api_connection_error(
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
-        service_id="test-service",
+        usage_id="test-service",
     )
 
-    # The completion should raise an APIConnectionError after exhausting all retries
-    with pytest.raises(APIConnectionError) as excinfo:
+    # The completion should raise an SDK typed error after exhausting all retries
+
+    with pytest.raises(LLMServiceUnavailableError) as excinfo:
         llm.completion(
             messages=[Message(role="user", content=[TextContent(text="Hello!")])],
         )
@@ -122,6 +124,9 @@ def test_completion_max_retries_api_connection_error(
 
     # The exception should contain connection error information
     assert "API connection error" in str(excinfo.value)
+
+    # Ensure the original provider exception is preserved as the cause
+    assert isinstance(excinfo.value.__cause__, APIConnectionError)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -137,7 +142,7 @@ def test_completion_no_retry_on_success(mock_litellm_completion, default_config)
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
-        service_id="test-service",
+        usage_id="test-service",
     )
     response = llm.completion(
         messages=[Message(role="user", content=[TextContent(text="Hello!")])],
@@ -164,7 +169,7 @@ def test_completion_no_retry_on_non_retryable_error(
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
-        service_id="test-service",
+        usage_id="test-service",
     )
 
     # The completion should raise the ValueError immediately without retries
@@ -185,13 +190,13 @@ def test_retry_configuration_validation():
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=0,
-        service_id="test-llm",
+        usage_id="test-llm",
     )
     assert llm_no_retry.num_retries == 0
 
     # Test with custom retry settings
     llm_custom = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=5,
@@ -226,7 +231,7 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
 
     # Create an LLM instance with retry listener
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,

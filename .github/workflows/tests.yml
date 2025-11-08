@@ -24,7 +24,7 @@ jobs:
               uses: tj-actions/changed-files@v47
               with:
                   files: |
-                      openhands/sdk/**
+                      openhands-sdk/**
                       tests/sdk/**
                       pyproject.toml
                       uv.lock
@@ -59,7 +59,7 @@ jobs:
                   rm -f .coverage
                   CI=true uv run python -m pytest -vvs \
                     --forked \
-                    --cov=openhands/sdk \
+                    --cov=openhands-sdk \
                     --cov-report=term-missing \
                     --cov-fail-under=0 \
                     --cov-config=pyproject.toml \
@@ -72,7 +72,7 @@ jobs:
 
             - name: Upload sdk coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-sdk
                   path: coverage-sdk.dat
@@ -90,7 +90,7 @@ jobs:
               uses: tj-actions/changed-files@v47
               with:
                   files: |
-                      openhands/tools/**
+                      openhands-tools/**
                       tests/tools/**
                       pyproject.toml
                       uv.lock
@@ -113,7 +113,7 @@ jobs:
                   rm -f .coverage
                   CI=true uv run python -m pytest -vvs \
                     --forked \
-                    --cov=openhands/tools \
+                    --cov=openhands-tools \
                     --cov-report=term-missing \
                     --cov-fail-under=0 \
                     --cov-config=pyproject.toml \
@@ -126,7 +126,7 @@ jobs:
 
             - name: Upload tools coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-tools
                   path: coverage-tools.dat
@@ -144,7 +144,7 @@ jobs:
               uses: tj-actions/changed-files@v47
               with:
                   files: |
-                      openhands/agent_server/**
+                      openhands-agent-server/**
                       tests/agent_server/**
                       pyproject.toml
                       uv.lock
@@ -167,7 +167,7 @@ jobs:
                   rm -f .coverage
                   CI=true uv run python -m pytest -vvs \
                     --forked \
-                    --cov=openhands/agent_server \
+                    --cov=openhands-agent-server \
                     --cov-report=term-missing \
                     --cov-fail-under=0 \
                     --cov-config=pyproject.toml \
@@ -180,7 +180,7 @@ jobs:
 
             - name: Upload Agent Server coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-agent-server
                   path: coverage-agent-server.dat
@@ -236,7 +236,7 @@ jobs:
 
             - name: Upload cross coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-cross
                   path: coverage-cross.dat
@@ -259,7 +259,7 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Download coverage artifacts
-              uses: actions/download-artifact@v5
+              uses: actions/download-artifact@v6
               with:
                   path: ./cov
               continue-on-error: true

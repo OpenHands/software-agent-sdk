@@ -5,7 +5,8 @@ Tests the core behavior: pause action execution for user confirmation.
 """
 
 from collections.abc import Sequence
-from unittest.mock import MagicMock, patch
+from typing import ClassVar
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from litellm import ChatCompletionMessageToolCall
@@ -18,8 +19,11 @@ from litellm.types.utils import (
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
-from openhands.sdk.conversation import Conversation
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation import Conversation, LocalConversation
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import UserRejectObservation
@@ -58,6 +62,43 @@ class MockConfirmationModeObservation(Observation):
         return [TextContent(text=self.result)]
 
 
+class TestExecutor(
+    ToolExecutor[MockConfirmationModeAction, MockConfirmationModeObservation]
+):
+    """Test executor for confirmation mode testing."""
+
+    def __call__(
+        self,
+        action: MockConfirmationModeAction,
+        conversation=None,  # noqa: ARG002
+    ) -> MockConfirmationModeObservation:
+        return MockConfirmationModeObservation(result=f"Executed: {action.command}")
+
+
+class ConfirmationTestTool(
+    ToolDefinition[MockConfirmationModeAction, MockConfirmationModeObservation]
+):
+    """Concrete tool for confirmation mode testing."""
+
+    name: ClassVar[str] = "test_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["ConfirmationTestTool"]:
+        return [
+            cls(
+                description="A test tool",
+                action_type=MockConfirmationModeAction,
+                observation_type=MockConfirmationModeObservation,
+                executor=TestExecutor(),
+            )
+        ]
+
+
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+    """Factory function for creating test tools."""
+    return ConfirmationTestTool.create(conv_state, **params)
+
+
 class TestConfirmationMode:
     """Test suite for confirmation mode functionality."""
 
@@ -65,12 +106,12 @@ class TestConfirmationMode:
         """Set up test fixtures."""
 
         # Create a real LLM instance for Agent validation
-        self.llm = LLM(
-            model="gpt-4", api_key=SecretStr("test-key"), service_id="test-llm"
+        self.llm: LLM = LLM(
+            model="gpt-4", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
 
         # Create a MagicMock to override the completion method
-        self.mock_llm = MagicMock()
+        self.mock_llm: Mock = MagicMock()
 
         # Create a proper MetricsSnapshot mock for the LLM
         mock_token_usage = TokenUsage(
@@ -91,34 +132,13 @@ class TestConfirmationMode:
         )
         self.mock_llm.metrics.get_snapshot.return_value = mock_metrics_snapshot
 
-        class TestExecutor(
-            ToolExecutor[MockConfirmationModeAction, MockConfirmationModeObservation]
-        ):
-            def __call__(
-                self, action: MockConfirmationModeAction
-            ) -> MockConfirmationModeObservation:
-                return MockConfirmationModeObservation(
-                    result=f"Executed: {action.command}"
-                )
-
-        def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test tool",
-                    action_type=MockConfirmationModeAction,
-                    observation_type=MockConfirmationModeObservation,
-                    executor=TestExecutor(),
-                )
-            ]
-
         register_tool("test_tool", _make_tool)
 
-        self.agent = Agent(
+        self.agent: Agent = Agent(
             llm=self.llm,
             tools=[Tool(name="test_tool")],
         )
-        self.conversation = Conversation(agent=self.agent)
+        self.conversation: LocalConversation = Conversation(agent=self.agent)
 
     def _mock_message_only(self, text: str = "Hello, how can I help you?") -> MagicMock:
         """Configure LLM to return a plain assistant message (no tool calls)."""
@@ -148,8 +168,8 @@ class TestConfirmationMode:
             self.conversation.run()
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
 
     def _mock_action_once(
@@ -201,6 +221,35 @@ class TestConfirmationMode:
                         message=LiteLLMMessage(
                             role="assistant",
                             content=f"I'll finish with: {message}",
+                            tool_calls=[tool_call],
+                        )
+                    )
+                ],
+                created=0,
+                model="test-model",
+                object="chat.completion",
+            )
+        )
+
+    def _mock_think_action(self, thought: str = "Let me think about this") -> MagicMock:
+        """Configure LLM to return a ThinkAction tool call."""
+        tool_call = ChatCompletionMessageToolCall(
+            id="think_call_1",
+            type="function",
+            function=Function(
+                name="think",
+                arguments=f'{{"thought": "{thought}"}}',
+            ),
+        )
+
+        return MagicMock(
+            return_value=ModelResponse(
+                id="response_think",
+                choices=[
+                    Choices(
+                        message=LiteLLMMessage(
+                            role="assistant",
+                            content=f"I'll think: {thought}",
                             tool_calls=[tool_call],
                         )
                     )
@@ -303,7 +352,9 @@ class TestConfirmationMode:
         """Test basic confirmation mode operations."""
         # Test initial state
         assert self.conversation.state.confirmation_policy == NeverConfirm()
-        assert self.conversation.state.agent_status == AgentExecutionStatus.IDLE
+        assert (
+            self.conversation.state.execution_status == ConversationExecutionStatus.IDLE
+        )
         assert (
             ConversationState.get_unmatched_actions(self.conversation.state.events)
             == []
@@ -391,7 +442,10 @@ class TestConfirmationMode:
             )
             self.conversation.run()
 
-        assert self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
+        )
 
         msg_events = [
             e
@@ -435,7 +489,10 @@ class TestConfirmationMode:
                 if isinstance(e, UserRejectObservation)
             ]
             assert len(rejection_events) == 0
-            assert self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+            assert (
+                self.conversation.state.execution_status
+                == ConversationExecutionStatus.FINISHED
+            )
         else:
             self.conversation.reject_pending_actions("Not safe to run")
 
@@ -480,7 +537,8 @@ class TestConfirmationMode:
             self.conversation.state.confirmation_policy == AlwaysConfirm()
         )  # Still in confirmation mode
         assert (
-            self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
         )  # Agent should be finished
 
         # Should have no pending actions (FinishAction was executed immediately)
@@ -494,52 +552,56 @@ class TestConfirmationMode:
             e for e in self.conversation.state.events if isinstance(e, ObservationEvent)
         ]
         assert len(obs_events) == 1
-        assert obs_events[0].observation.message == "Task completed successfully!"  # type: ignore[attr-defined]
+        # FinishObservation should contain the finish message in content
+        assert obs_events[0].observation.text == "Task completed successfully!"
 
-    def test_multiple_actions_with_finish_still_require_confirmation(self):
-        """Test that multiple actions (including FinishAction) still require confirmation."""  # noqa: E501
+    def test_think_and_finish_action_skips_confirmation_entirely(self):
+        """First step: ThinkAction (skips confirmation). Second step: FinishAction."""
         # Enable confirmation mode
         self.conversation.set_confirmation_policy(AlwaysConfirm())
 
-        # Mock LLM to return both a regular action and a FinishAction
-        mock_completion = self._mock_multiple_actions_with_finish()
+        # 1st model call -> ThinkAction; 2nd model call -> FinishAction
+        mock_think = self._mock_think_action("Let me analyze this problem")
+        mock_finish = self._mock_finish_action("Analysis complete")
 
-        # Send a message that should trigger both actions
         with patch(
             "openhands.sdk.llm.llm.litellm_completion",
-            return_value=mock_completion.return_value,
+            side_effect=[mock_think.return_value, mock_finish.return_value],
         ):
+            # Kick things off (LLM returns ThinkAction; should execute immediately)
             self.conversation.send_message(
                 Message(
-                    role="user",
-                    content=[TextContent(text="Execute command then finish")],
+                    role="user", content=[TextContent(text="Please think about this")]
                 )
             )
-
-            # Run the conversation
             self.conversation.run()
 
-        # Multiple actions should all wait for confirmation (including FinishAction)
+        # Still in confirmation mode overall, but both actions should have executed
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
         )
 
-        # Should have pending actions (both actions)
+        # No pending actions
         pending_actions = ConversationState.get_unmatched_actions(
             self.conversation.state.events
         )
-        assert len(pending_actions) == 2
-        action_tools = [action.tool_name for action in pending_actions]
-        assert "test_tool" in action_tools
-        assert "finish" in action_tools
+        assert len(pending_actions) == 0
 
-        # Should have no observation events (no actions executed yet)
+        # We should have two observations: one for ThinkAction, one for FinishAction
         obs_events = [
             e for e in self.conversation.state.events if isinstance(e, ObservationEvent)
         ]
-        assert len(obs_events) == 0
+        assert len(obs_events) == 2
+
+        # 1) ThinkAction observation - should contain the standard message
+        assert hasattr(obs_events[0].observation, "content")
+        assert obs_events[0].observation.text == "Your thought has been logged."
+
+        # 2) FinishAction observation - should contain the finish message
+        assert hasattr(obs_events[1].observation, "content")
+        assert obs_events[1].observation.text == "Analysis complete"
 
     def test_pause_during_confirmation_preserves_waiting_status(self):
         """Test that pausing during WAITING_FOR_CONFIRMATION preserves the status.
@@ -553,8 +615,8 @@ class TestConfirmationMode:
 
         # Verify we're in the expected state
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
 
@@ -564,26 +626,34 @@ class TestConfirmationMode:
         # Status should remain WAITING_FOR_CONFIRMATION, not change to PAUSED
         # This is the key fix: waiting for confirmation is a special type of pause
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
 
         # Test that pause works correctly for other states
         # Reset to IDLE state
         with self.conversation._state:
-            self.conversation._state.agent_status = AgentExecutionStatus.IDLE
+            self.conversation._state.execution_status = ConversationExecutionStatus.IDLE
 
         # Pause from IDLE should change status to PAUSED
         self.conversation.pause()
-        assert self.conversation._state.agent_status == AgentExecutionStatus.PAUSED
+        assert (
+            self.conversation._state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
 
         # Reset to RUNNING state
         with self.conversation._state:
-            self.conversation._state.agent_status = AgentExecutionStatus.RUNNING
+            self.conversation._state.execution_status = (
+                ConversationExecutionStatus.RUNNING
+            )
 
         # Pause from RUNNING should change status to PAUSED
         self.conversation.pause()
-        assert self.conversation._state.agent_status == AgentExecutionStatus.PAUSED
+        assert (
+            self.conversation._state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
 
     def test_is_confirmation_mode_active_property(self):
         """Test the is_confirmation_mode_active property behavior."""

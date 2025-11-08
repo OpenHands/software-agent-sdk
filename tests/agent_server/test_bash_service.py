@@ -3,6 +3,7 @@
 import asyncio
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,9 +26,9 @@ class EventCollector(Subscriber):
     """Test subscriber that collects all events."""
 
     def __init__(self):
-        self.events = []
-        self.commands = []
-        self.outputs = []
+        self.events: list[Any] = []
+        self.commands: list[Any] = []
+        self.outputs: list[Any] = []
 
     async def __call__(self, event):
         self.events.append(event)

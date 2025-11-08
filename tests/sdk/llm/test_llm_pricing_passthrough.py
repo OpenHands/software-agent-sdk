@@ -21,7 +21,7 @@ def test_llm_pricing_passthrough_custom_rates():
         mock_cost.return_value = 0.123
 
         llm = LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="gpt-4o",
             api_key=SecretStr("test_key"),
             input_cost_per_token=0.001,

@@ -36,14 +36,15 @@ workspace_dir = Path(tempfile.mkdtemp())
 print(f"Working in: {workspace_dir}")
 
 # Configure LLM
-api_key = os.getenv("LITELLM_API_KEY")
-assert api_key is not None, "LITELLM_API_KEY environment variable is not set."
+api_key = os.getenv("LLM_API_KEY")
+assert api_key is not None, "LLM_API_KEY environment variable is not set."
+model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    model=model,
+    base_url=base_url,
     api_key=SecretStr(api_key),
-    service_id="agent",
-    drop_params=True,
+    usage_id="agent",
 )
 
 # Task description
@@ -53,6 +54,8 @@ Create a Python web scraper with the following requirements:
 - Handle HTTP errors gracefully with retry logic
 - Save results to a JSON file with timestamp
 - Use requests and BeautifulSoup for scraping
+
+Do NOT ask for any clarifying questions. Directly create your implementation plan.
 """
 
 print("=" * 80)
@@ -128,3 +131,7 @@ print("\nCreated files:")
 for file_path in workspace_dir.rglob("*"):
     if file_path.is_file():
         print(f"  - {file_path.relative_to(workspace_dir)}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

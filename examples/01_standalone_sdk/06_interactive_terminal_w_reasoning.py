@@ -10,8 +10,8 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     get_logger,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -19,20 +19,20 @@ logger = get_logger(__name__)
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
+model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    service_id="agent",
-    # model="litellm_proxy/gemini/gemini-2.5-pro",
-    model="litellm_proxy/deepseek/deepseek-reasoner",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    usage_id="agent",
+    model=model,
+    base_url=base_url,
     api_key=SecretStr(api_key),
 )
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=TerminalTool.name,
         params={"no_change_timeout_seconds": 3},
     )
 ]

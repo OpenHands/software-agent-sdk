@@ -263,7 +263,7 @@ def test_llm_preserves_existing_thinking_blocks():
     """Test that LLM preserves existing thinking blocks and doesn't add duplicates."""
     # Create LLM with Anthropic model and reasoning effort
     llm = LLM(
-        service_id="test",
+        usage_id="test",
         model="anthropic/claude-sonnet-4-5",
         reasoning_effort="high",
         api_key=SecretStr("test-key"),

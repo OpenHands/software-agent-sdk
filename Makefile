@@ -70,7 +70,7 @@ help:
 
 build-server: check-uv-version
 	@$(ECHO) "$(CYAN)Building agent-server executable...$(RESET)"
-	@uv run pyinstaller openhands/agent_server/agent-server.spec
+	@uv run pyinstaller openhands-agent-server/openhands/agent_server/agent-server.spec
 	@$(ECHO) "$(GREEN)Build complete! Executable is in dist/agent-server/$(RESET)"
 
 test-server-schema: check-uv-version

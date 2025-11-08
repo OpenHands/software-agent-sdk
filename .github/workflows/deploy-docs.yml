@@ -3,22 +3,21 @@ name: Dispatch to docs repo
 
 on:
     push:
-        branches: [main]
+        branches:
+            - main
         paths:
-            - docs/**
+            - openhands-agent-server/**
     workflow_dispatch:
-
 jobs:
     dispatch:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
-        strategy:
-            matrix:
-                repo: [All-Hands-AI/docs]
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        permissions:
+            contents: write
         steps:
-            - name: Push to docs repo
+            - name: Trigger docs repo sync
               uses: peter-evans/repository-dispatch@v4
               with:
                   token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  repository: ${{ matrix.repo }}
+                  repository: OpenHands/docs
                   event-type: update
-                  client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}", "module": "agent-sdk", "branch": "main"}'
+                  client-payload: '{"ref": "${{ github.ref }}", "sha": "${{ github.sha }}"}'

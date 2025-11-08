@@ -57,7 +57,7 @@ def test_relative_workspace_root_do_not_raises_error(tmp_path, monkeypatch):
 
     # Initialize editor with a relative workspace_root should not raise ValueError
     editor = FileEditor(workspace_root="workspace")
-    assert editor._cwd == current_dir / "workspace"
+    assert editor._cwd == str(current_dir / "workspace")
 
 
 def test_suggestion_when_no_workspace_root(tmp_path, monkeypatch):

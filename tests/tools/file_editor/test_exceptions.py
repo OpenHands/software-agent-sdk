@@ -34,9 +34,9 @@ def test_editor_tool_parameter_invalid_error_with_hint():
     value = -10
     hint = "Must be a positive integer."
     with pytest.raises(EditorToolParameterInvalidError) as exc_info:
-        raise EditorToolParameterInvalidError(parameter, value, hint)
+        raise EditorToolParameterInvalidError(parameter, str(value), hint)
     assert exc_info.value.parameter == parameter
-    assert exc_info.value.value == value
+    assert exc_info.value.value == str(value)
     assert exc_info.value.message == f"Invalid `{parameter}` parameter: {value}. {hint}"
 
 
@@ -45,7 +45,7 @@ def test_editor_tool_parameter_invalid_error_without_hint():
     parameter = "timeout"
     value = -10
     with pytest.raises(EditorToolParameterInvalidError) as exc_info:
-        raise EditorToolParameterInvalidError(parameter, value)
+        raise EditorToolParameterInvalidError(parameter, str(value))
     assert exc_info.value.parameter == parameter
-    assert exc_info.value.value == value
+    assert exc_info.value.value == str(value)
     assert exc_info.value.message == f"Invalid `{parameter}` parameter: {value}."

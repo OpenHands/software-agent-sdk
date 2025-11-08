@@ -18,7 +18,7 @@ from openhands.sdk.workspace import LocalWorkspace
 @pytest.fixture
 def mock_agent():
     """Create a real agent for testing."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[])
     return agent
 

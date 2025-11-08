@@ -14,8 +14,8 @@ You are a world-class documentation writer tasked with keeping the OpenHands Age
 ### 1. Codebase Analysis
 
 - Scan `examples/` for available examples
-- Scan `openhands/tools/` for all available runtime tools
-- Check `openhands/sdk/tool/builtins/` for built-in tools
+- Scan `openhands-tools/` for all available runtime tools
+- Check `openhands-sdk/openhands/tool/builtins/` for built-in tools
 - Identify any new tools or removed tools since last update
 
 ### 2. Documentation Review
@@ -36,7 +36,7 @@ Review these key files for accuracy:
 
 - Keep mermaid diagrams SIMPLE and READABLE across all docs/architecture/ files
 - Focus on core components and relationships, not every possible class
-- Include all current runtime tools: BashTool, FileEditorTool, TaskTrackerTool, etc.
+- Include all current runtime tools: TerminalTool, FileEditorTool, TaskTrackerTool, etc.
 - Verify component interactions and inheritance reflect actual codebase structure
 
 #### Tool Documentation
@@ -56,7 +56,7 @@ Verify documentation across docs/architecture/ files for:
 - `LLM`, message types, provider support (docs/architecture/llm.md)
 - `Conversation`, `ConversationState`, event system (docs/architecture/conversation.md)
 - All built-in tools: `FinishTool`, `ThinkTool`
-- All runtime tools: `BashTool`, `FileEditorTool`, `TaskTrackerTool`
+- All runtime tools: `TerminalTool`, `FileEditorTool`, `TaskTrackerTool`
 
 ### 4. Verification Steps
 

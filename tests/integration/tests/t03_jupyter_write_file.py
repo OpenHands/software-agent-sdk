@@ -4,8 +4,8 @@ import os
 
 from openhands.sdk import get_logger
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -21,19 +21,19 @@ logger = get_logger(__name__)
 class JupyterWriteFileTest(BaseIntegrationTest):
     """Test that an agent can use Jupyter IPython to write a text file."""
 
-    INSTRUCTION = INSTRUCTION
+    INSTRUCTION: str = INSTRUCTION
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.file_path = os.path.join(self.workspace, "test.txt")
+        self.file_path: str = os.path.join(self.workspace, "test.txt")
 
     @property
     def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
-        register_tool("BashTool", BashTool)
+        register_tool("TerminalTool", TerminalTool)
         register_tool("FileEditorTool", FileEditorTool)
         return [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
 

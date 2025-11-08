@@ -12,9 +12,9 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.logger import get_logger
 from tests.integration.base import BaseIntegrationTest, TestResult
@@ -28,7 +28,7 @@ logger = get_logger(__name__)
 class TestInstance(BaseModel):
     """Represents a single test instance."""
 
-    model_config = {"arbitrary_types_allowed": True}
+    model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     instance_id: str
     file_path: str

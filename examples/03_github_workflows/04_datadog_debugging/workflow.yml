@@ -1,0 +1,110 @@
+---
+name: Datadog Error Debugging
+
+on:
+    workflow_dispatch:
+        inputs:
+            query_type:
+                description: 'Query type: log-query (search) or log-error-id (specific ID)'
+                required: true
+                type: choice
+                options:
+                    - log-query
+                    - log-error-id
+                default: log-query
+            datadog_query:
+                description: >-
+                    Datadog query (search query for log-query mode,
+                    or error tracking ID for log-error-id mode)
+                required: true
+                default: service:deploy ClientDisconnect
+            repo_list:
+                description: Comma-separated list of repositories to clone (owner/repo)
+                required: true
+                default: OpenHands/OpenHands,All-Hands-AI/infra
+            issue_repo:
+                description: Repository to create/update issues in (owner/repo)
+                required: true
+                default: All-Hands-AI/infra
+            issue_parent:
+                description: Parent GitHub issue URL for tracking
+                required: false
+                default: https://github.com/All-Hands-AI/infra/issues/672
+            issue_prefix:
+                description: Prefix for issue titles
+                required: false
+                default: 'DataDog Error: '
+
+permissions:
+    contents: read
+    issues: write
+
+jobs:
+    debug-datadog-errors:
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+        env:
+            # URLs to download script and template from the SDK repository
+            SCRIPT_URL: 
+                https://raw.githubusercontent.com/OpenHands/software-agent-sdk/main/examples/03_github_workflows/04_datadog_debugging/datadog_debugging.py
+            TEMPLATE_URL: 
+                https://raw.githubusercontent.com/OpenHands/software-agent-sdk/main/examples/03_github_workflows/04_datadog_debugging/debug_prompt.jinja
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install OpenHands dependencies
+              run: |
+                  # Install OpenHands SDK and tools from git repository
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-tools"
+                  # Install additional dependencies for the datadog script
+                  uv pip install --system requests jinja2
+
+            - name: Download debugging script and template
+              run: |
+                  mkdir -p /tmp/datadog-debug-script
+                  echo "Downloading script from: $SCRIPT_URL"
+                  curl -sSL "$SCRIPT_URL" -o /tmp/datadog-debug-script/datadog_debugging.py
+                  echo "Downloading template from: $TEMPLATE_URL"
+                  curl -sSL "$TEMPLATE_URL" -o /tmp/datadog-debug-script/debug_prompt.jinja
+
+            - name: Run Datadog Debugging Script
+              env:
+                  DD_API_KEY: ${{ secrets.DD_API_KEY }}
+                  DD_APP_KEY: ${{ secrets.DD_APP_KEY }}
+                  DD_SITE: ${{ secrets.DD_SITE }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+                  LLM_MODEL: <YOUR_LLM_MODEL>
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  PYTHONPATH: ''
+              run: |
+                  mkdir -p /tmp/datadog-debug
+                  cd /tmp/datadog-debug-script
+                  python datadog_debugging.py \
+                    --query-type "${{ inputs.query_type }}" \
+                    --query "${{ inputs.datadog_query }}" \
+                    --repos "${{ inputs.repo_list }}" \
+                    --working-dir "/tmp/datadog-debug" \
+                    --issue-repo "${{ inputs.issue_repo }}" \
+                    --issue-parent "${{ inputs.issue_parent }}" \
+                    --issue-prefix "${{ inputs.issue_prefix }}"
+
+            - name: Upload debugging artifacts
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: datadog-debugging-artifacts
+                  path: /tmp/datadog-debug/
+                  retention-days: 7

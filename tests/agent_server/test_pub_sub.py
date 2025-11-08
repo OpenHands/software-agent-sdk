@@ -8,6 +8,7 @@ without dependencies on the openhands.sdk module.
 import asyncio
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
@@ -18,8 +19,8 @@ class MockEvent:
     """Mock Event class for testing purposes."""
 
     def __init__(self, event_type="test_event", data="test_data"):
-        self.type = event_type
-        self.data = data
+        self.type: str = event_type
+        self.data: str = data
 
     def model_dump(self):
         return {"type": self.type, "data": self.data}
@@ -30,9 +31,9 @@ class MockLogger:
     """Mock logger for testing purposes."""
 
     def __init__(self):
-        self.debug_calls = []
-        self.warning_calls = []
-        self.error_calls = []
+        self.debug_calls: list[Any] = []
+        self.warning_calls: list[Any] = []
+        self.error_calls: list[Any] = []
 
     def debug(self, message):
         self.debug_calls.append(message)
@@ -104,12 +105,12 @@ class MockSubscriber(SubscriberForTesting):
     """Mock Subscriber for testing purposes."""
 
     def __init__(self, name="test_subscriber"):
-        self.name = name
-        self.call_count = 0
-        self.received_events = []
-        self.close_called = False
-        self.should_raise_error = False
-        self.error_to_raise = None
+        self.name: str = name
+        self.call_count: int = 0
+        self.received_events: list[Any] = []
+        self.close_called: bool = False
+        self.should_raise_error: bool = False
+        self.error_to_raise: Exception | None = None
 
     async def __call__(self, event):
         """Invoke this subscriber"""
@@ -121,7 +122,7 @@ class MockSubscriber(SubscriberForTesting):
 
     async def close(self):
         """Clean up this subscriber"""
-        self.close_called = True
+        self.close_called: bool = True
 
 
 @pytest.fixture

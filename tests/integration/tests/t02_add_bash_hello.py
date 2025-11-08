@@ -4,8 +4,8 @@ import os
 
 from openhands.sdk import get_logger
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -18,19 +18,19 @@ logger = get_logger(__name__)
 class BashHelloTest(BaseIntegrationTest):
     """Test that an agent can write a shell script that prints 'hello'."""
 
-    INSTRUCTION = INSTRUCTION
+    INSTRUCTION: str = INSTRUCTION
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.script_path = os.path.join(self.workspace, "shell", "hello.sh")
+        self.script_path: str = os.path.join(self.workspace, "shell", "hello.sh")
 
     @property
     def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
-        register_tool("BashTool", BashTool)
+        register_tool("TerminalTool", TerminalTool)
         register_tool("FileEditorTool", FileEditorTool)
         return [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
 

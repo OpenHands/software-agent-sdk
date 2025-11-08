@@ -1,5 +1,7 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
+from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +21,7 @@ from openhands.sdk.llm import (
     TextContent,
 )
 from openhands.sdk.tool.schema import Action
-from openhands.sdk.tool.tool import ToolBase, ToolDefinition
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -41,12 +43,29 @@ def create_mock_response(content: str = "Test response", response_id: str = "tes
     )
 
 
+# Helper tool classes for testing
+class _ArgsBasic(Action):
+    """Basic action for testing."""
+
+    param: str
+
+
+class _MockTool(ToolDefinition[_ArgsBasic, None]):
+    """Mock tool for LLM completion testing."""
+
+    name: ClassVar[str] = "test_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_MockTool"]:
+        return [cls(description="A test tool", action_type=_ArgsBasic)]
+
+
 @pytest.fixture
 def default_config():
     return LLM(
         model="gpt-4o",
         api_key=SecretStr("test_key"),
-        service_id="test-llm",
+        usage_id="test-llm",
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
@@ -61,7 +80,7 @@ def test_llm_completion_basic(mock_completion):
     # Create LLM after the patch is applied
 
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -116,7 +135,7 @@ def test_llm_completion_with_tools(mock_completion):
 
     # Create LLM after the patch is applied
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -127,13 +146,7 @@ def test_llm_completion_with_tools(mock_completion):
     # Test completion with tools
     messages = [Message(role="user", content=[TextContent(text="Use the test tool")])]
 
-    class _ArgsBasic(Action):
-        param: str
-
-    tool: ToolBase = ToolDefinition(
-        name="test_tool", description="A test tool", action_type=_ArgsBasic
-    )
-    tools_list: list[ToolBase] = [tool]
+    tools_list = list(_MockTool.create())
 
     response = llm.completion(messages=messages, tools=tools_list)
 
@@ -157,7 +170,7 @@ def test_llm_completion_error_handling(mock_completion):
 
     # Create LLM after the patch is applied
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -205,7 +218,7 @@ def test_llm_feature_detection(default_config):
 
     # All feature detection methods should return booleans
     assert isinstance(llm.vision_is_active(), bool)
-    assert isinstance(llm.is_function_calling_active(), bool)
+    assert isinstance(llm.native_tool_calling, bool)
     assert isinstance(llm.is_caching_prompt_active(), bool)
 
 
@@ -267,7 +280,7 @@ def test_llm_completion_with_custom_params(mock_completion, default_config):
 
     # Create config with custom parameters
     custom_config = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         temperature=0.8,
@@ -312,17 +325,18 @@ def test_llm_completion_non_function_call_mode(mock_completion):
     # Create LLM with native_tool_calling explicitly set to False
     # This forces the LLM to use prompt-based tool calling instead of native FC
     llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
-        native_tool_calling=False,  # This is the key setting for non-function call mode
+        # This is the key setting for non-function call mode
+        native_tool_calling=False,
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
     )
 
     # Verify that function calling is not active
-    assert not llm.is_function_calling_active()
+    assert not llm.native_tool_calling
 
     # Test completion with tools - this should trigger the non-function call path
     messages = [
@@ -332,16 +346,7 @@ def test_llm_completion_non_function_call_mode(mock_completion):
         )
     ]
 
-    class TestNonFCArgs(Action):
-        param: str
-
-    tools: list[ToolBase] = [
-        ToolDefinition(
-            name="test_tool",
-            description="A test tool for non-function call mode",
-            action_type=TestNonFCArgs,
-        )
-    ]
+    tools = list(_MockTool.create())
 
     # Verify that tools should be mocked (non-function call path)
     cc_tools = [t.to_openai_tool(add_security_risk_prediction=False) for t in tools]
@@ -389,19 +394,12 @@ def test_llm_completion_function_call_vs_non_function_call_mode(mock_completion)
     mock_response = create_mock_response("Test response")
     mock_completion.return_value = mock_response
 
-    class TestFCArgs(Action):
-        param: str | None = None
-
-    tools: list[ToolBase] = [
-        ToolDefinition(
-            name="test_tool", description="A test tool", action_type=TestFCArgs
-        )
-    ]
+    tools = list(_MockTool.create())
     messages = [Message(role="user", content=[TextContent(text="Use the test tool")])]
 
     # Test with native function calling enabled (default behavior for gpt-4o)
     llm_native = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         native_tool_calling=True,  # Explicitly enable native function calling
@@ -411,12 +409,12 @@ def test_llm_completion_function_call_vs_non_function_call_mode(mock_completion)
     )
 
     # Verify function calling is active
-    assert llm_native.is_function_calling_active()
+    assert llm_native.native_tool_calling
     # Should not mock tools when native function calling is active
 
     # Test with native function calling disabled
     llm_non_native = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         native_tool_calling=False,  # Explicitly disable native function calling
@@ -426,7 +424,7 @@ def test_llm_completion_function_call_vs_non_function_call_mode(mock_completion)
     )
 
     # Verify function calling is not active
-    assert not llm_non_native.is_function_calling_active()
+    assert not llm_non_native.native_tool_calling
 
     # Call both and verify different behavior
     mock_completion.reset_mock()

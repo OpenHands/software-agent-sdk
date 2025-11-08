@@ -22,8 +22,8 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -53,15 +53,15 @@ def create_llm(
     }
     if log_completions_folder:
         llm_kwargs["log_completions_folder"] = log_completions_folder
-    return LLM(**llm_kwargs, service_id="test-llm")
+    return LLM(**llm_kwargs, usage_id="test-llm")
 
 
 def create_tools(working_dir: str | None = None) -> list[Tool]:
     """Create standard tool specifications for testing."""
-    register_tool("BashTool", BashTool)
+    register_tool("TerminalTool", TerminalTool)
     register_tool("FileEditorTool", FileEditorTool)
     return [
-        Tool(name="BashTool"),
+        Tool(name="TerminalTool"),
         Tool(name="FileEditorTool"),
     ]
 

@@ -28,6 +28,9 @@ final step are detected and processed after the agent finishes, preventing messa
 
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime
+from typing import Any, ClassVar
 
 
 # Ensure repo root on sys.path when running this file as a script
@@ -84,12 +87,15 @@ class SleepObservation(Observation):
 
 
 class SleepExecutor(ToolExecutor):
-    test_start_time: float
-    test_instance: "TestMessageWhileFinishing"
+    test_start_time: float | None = None
+    test_instance: "TestMessageWhileFinishing | None" = None
 
-    def __call__(self, action: SleepAction) -> SleepObservation:
+    def __call__(self, action: SleepAction, conversation=None) -> SleepObservation:  # noqa: ARG002
         start_time = time.time()
-        elapsed = start_time - getattr(self, "test_start_time", start_time)
+        test_start_time = getattr(self, "test_start_time", None)
+        if test_start_time is None:
+            test_start_time = start_time
+        elapsed = start_time - test_start_time
         print(
             f"[+{elapsed:.3f}s] Sleep action STARTED: "
             f"{action.duration}s - '{action.message}'"
@@ -98,14 +104,17 @@ class SleepExecutor(ToolExecutor):
         # Track final step timing if this is the final sleep
         if "Final sleep" in action.message:
             print(f"[+{elapsed:.3f}s] FINAL STEP STARTED")
-            if hasattr(self, "test_instance"):
+            if hasattr(self, "test_instance") and self.test_instance is not None:
                 self.test_instance.timestamps.append(("final_step_start", start_time))
 
         time.sleep(action.duration)
 
         end_time = time.time()
         actual_duration = end_time - start_time
-        end_elapsed = end_time - getattr(self, "test_start_time", start_time)
+        test_start_time_end = getattr(self, "test_start_time", None)
+        if test_start_time_end is None:
+            test_start_time_end = start_time
+        end_elapsed = end_time - test_start_time_end
         print(
             f"[+{end_elapsed:.3f}s] Sleep action COMPLETED: "
             f"{actual_duration:.3f}s actual - '{action.message}'"
@@ -114,23 +123,32 @@ class SleepExecutor(ToolExecutor):
         # Track final step end timing
         if "Final sleep" in action.message:
             print(f"[+{end_elapsed:.3f}s] FINAL STEP ENDED")
-            if hasattr(self, "test_instance"):
+            if hasattr(self, "test_instance") and self.test_instance is not None:
                 self.test_instance.timestamps.append(("final_step_end", end_time))
 
         return SleepObservation(message=action.message)
 
 
+class SleepTool(ToolDefinition[SleepAction, SleepObservation]):
+    """Sleep tool for testing message processing during finish."""
+
+    name: ClassVar[str] = "sleep"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["SleepTool"]:
+        return [
+            cls(
+                action_type=SleepAction,
+                observation_type=SleepObservation,
+                description="Sleep for specified duration and return a message",
+                executor=SleepExecutor(),
+            )
+        ]
+
+
 def _make_sleep_tool(conv_state=None, **kwargs) -> Sequence[ToolDefinition]:
     """Create sleep tool for testing."""
-    return [
-        ToolDefinition(
-            name="sleep_tool",
-            action_type=SleepAction,
-            observation_type=SleepObservation,
-            description="Sleep for specified duration and return a message",
-            executor=SleepExecutor(),
-        )
-    ]
+    return SleepTool.create(conv_state, **kwargs)
 
 
 # Register the tool
@@ -143,12 +161,14 @@ class TestMessageWhileFinishing:
     def setup_method(self):
         """Set up test fixtures."""
         # Use gpt-4o which supports native function calling and multiple tool calls
-        self.llm = LLM(model="gpt-4o", native_tool_calling=True, service_id="test-llm")
-        self.llm_completion_calls = []
-        self.agent = Agent(llm=self.llm, tools=[Tool(name="SleepTool")])
-        self.step_count = 0
-        self.final_step_started = False
-        self.timestamps = []  # Track key timing events
+        self.llm: LLM = LLM(model="gpt-4o", usage_id="test-llm")
+        self.llm_completion_calls: list[Any] = []
+        self.agent: Agent = Agent(llm=self.llm, tools=[Tool(name="SleepTool")])
+        self.step_count: int = 0
+        self.final_step_started: bool = False
+        self.timestamps: list[tuple[str, float]] = []  # Track key timing events
+        self.conversation: Any = None
+        self.test_start_time: float = 0.0
 
     def _mock_llm_response(self, messages, **kwargs):
         """
@@ -169,7 +189,7 @@ class TestMessageWhileFinishing:
                 id="sleep_call_1",
                 type="function",
                 function=Function(
-                    name="sleep_tool",
+                    name="sleep",
                     arguments='{"duration": 2.0, "message": "First sleep completed"}',
                 ),
             )
@@ -212,7 +232,7 @@ class TestMessageWhileFinishing:
                 id="sleep_call_2",
                 type="function",
                 function=Function(
-                    name="sleep_tool",
+                    name="sleep",
                     arguments=f'{{"duration": 3.0, "message": "{sleep_message}"}}',
                 ),
             )
@@ -295,7 +315,7 @@ class TestMessageWhileFinishing:
 
         # Set the test start time reference for the sleep executor
         # Access the actual tool instances from the agent's _tools dict
-        sleep_tool = self.agent._tools.get("sleep_tool")
+        sleep_tool = self.agent._tools.get("sleep")
         if sleep_tool and sleep_tool.executor is not None:
             setattr(sleep_tool.executor, "test_start_time", self.test_start_time)
             setattr(sleep_tool.executor, "test_instance", self)
@@ -437,7 +457,7 @@ class TestMessageWhileFinishing:
         print("\nTIMING ANALYSIS:")
 
         # Extract timestamps
-        timestamp_dict = dict(self.timestamps)
+        timestamp_dict: dict[str, float] = dict(self.timestamps)
         if (
             "final_step_start" in timestamp_dict
             and "butterfly_sent" in timestamp_dict
@@ -496,8 +516,6 @@ def _run_parallel_main():  # pragma: no cover - helper for manual stress testing
     import shutil
     import subprocess
     import sys
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    from datetime import datetime
 
     repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../"))
     test_rel = os.path.relpath(__file__, repo_root)

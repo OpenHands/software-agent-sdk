@@ -30,6 +30,6 @@ End-to-end tests that cover large parts of the code base and are generally slowe
 Component-specific tests that prevent regressions in core functionality.
 
 **CI Execution:** The CI runs these tests intelligently based on code changes:
-- **SDK Tests** (`sdk/`): Run when changes are detected in `openhands/sdk/**` or `tests/sdk/**`
-- **Tools Tests** (`tools/`): Run when changes are detected in `openhands/tools/**` or `tests/tools/**`
+- **SDK Tests** (`sdk/`): Run when changes are detected in `openhands-sdk/**` or `tests/sdk/**`
+- **Tools Tests** (`tools/`): Run when changes are detected in `openhands-tools/**` or `tests/tools/**`
 - **Cross Tests** (`cross/`): Run when changes are detected in any source code or test files

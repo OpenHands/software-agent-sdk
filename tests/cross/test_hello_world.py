@@ -1,5 +1,6 @@
 """Test based on hello_world.py example with mocked LLM responses."""
 
+import logging
 import os
 import tempfile
 from typing import Any
@@ -24,8 +25,8 @@ from openhands.sdk.event.llm_convertible import (
     ObservationEvent,
 )
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 class TestHelloWorld:
@@ -33,8 +34,8 @@ class TestHelloWorld:
 
     def setup_method(self):
         """Set up test environment."""
-        self.temp_dir = tempfile.mkdtemp()
-        self.logger = get_logger(__name__)
+        self.temp_dir: str = tempfile.mkdtemp()
+        self.logger: logging.Logger = get_logger(__name__)
         self.collected_events: list[Event] = []
         self.llm_messages: list[dict[str, Any]] = []
 
@@ -110,7 +111,7 @@ class TestHelloWorld:
                                 "id": "call_1",
                                 "type": "function",
                                 "function": {
-                                    "name": "str_replace_editor",
+                                    "name": "file_editor",
                                     "arguments": f'{{"command": "create", '
                                     f'"path": "{hello_path}", '
                                     f'"file_text": "print(\\"Hello, World!\\")"}}',
@@ -158,17 +159,17 @@ class TestHelloWorld:
 
         # Configure LLM (no real API key needed)
         llm = LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="claude-sonnet-4",
             api_key=SecretStr("mock-api-key"),
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("BashTool", BashTool)
-        register_tool("FileEditorTool", FileEditorTool)
+        register_tool("terminal", TerminalTool)
+        register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="BashTool"),
-            Tool(name="FileEditorTool"),
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
         ]
 
         # Agent setup
@@ -278,17 +279,17 @@ class TestHelloWorld:
 
         # Configure LLM with logging enabled
         llm = LLM(
-            service_id="test-llm",
+            usage_id="test-llm",
             model="claude-sonnet-4",
             api_key=SecretStr("mock-api-key"),
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("BashTool", BashTool)
-        register_tool("FileEditorTool", FileEditorTool)
+        register_tool("terminal", TerminalTool)
+        register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="BashTool"),
-            Tool(name="FileEditorTool"),
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
         ]
 
         # Create agent and conversation
@@ -392,9 +393,6 @@ class TestHelloWorld:
             ModelResponse,
         )
 
-        from openhands.sdk.llm import LLM
-        from openhands.sdk.llm.message import Message, TextContent
-
         # Create a mock response without function calls (pure text response)
         mock_response = ModelResponse(
             id="test-non-func-call",
@@ -431,7 +429,7 @@ class TestHelloWorld:
             return mock_response
 
         # Create agent with mocked LLM
-        llm = LLM(model="claude-sonnet-4", service_id="test-llm")
+        llm = LLM(model="claude-sonnet-4", usage_id="test-llm")
         agent = Agent(llm=llm, tools=[])
 
         # Mock the completion method
@@ -450,7 +448,7 @@ class TestHelloWorld:
             )
 
             # Run one step to get the non-function call response
-            agent.step(conversation._state, on_event=conversation._on_event)
+            agent.step(conversation, on_event=conversation._on_event)
 
         # Validate that we captured the completion data
         assert len(captured_completions) == 1, (
@@ -525,7 +523,7 @@ class TestHelloWorld:
             return mock_response
 
         # Create agent with mocked LLM
-        agent = Agent(llm=LLM(model="claude-sonnet-4", service_id="test-llm"), tools=[])
+        agent = Agent(llm=LLM(model="claude-sonnet-4", usage_id="test-llm"), tools=[])
 
         # Mock the completion method
         with patch(
@@ -543,7 +541,7 @@ class TestHelloWorld:
             )
 
             # Run one step to get the non-function call response
-            agent.step(conversation._state, on_event=conversation._on_event)
+            agent.step(conversation, on_event=conversation._on_event)
 
         # Validate that we captured the completion data
         assert len(captured_completions) == 1, (

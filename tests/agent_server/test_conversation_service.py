@@ -18,7 +18,10 @@ from openhands.agent_server.models import (
 )
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.secret_source import SecretSource, StaticSecret
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -35,7 +38,7 @@ def sample_stored_conversation():
     """Create a sample StoredConversation for testing."""
     return StoredConversation(
         id=uuid4(),
-        agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+        agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         confirmation_policy=NeverConfirm(),
         initial_message=None,
@@ -89,7 +92,7 @@ class TestConversationServiceSearchConversations:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -101,7 +104,7 @@ class TestConversationServiceSearchConversations:
 
         assert len(result.items) == 1
         assert result.items[0].id == conversation_id
-        assert result.items[0].agent_status == AgentExecutionStatus.IDLE
+        assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
@@ -111,14 +114,14 @@ class TestConversationServiceSearchConversations:
         conversations = []
         for i, status in enumerate(
             [
-                AgentExecutionStatus.IDLE,
-                AgentExecutionStatus.RUNNING,
-                AgentExecutionStatus.FINISHED,
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.FINISHED,
             ]
         ):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -133,7 +136,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=status,
+                execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -143,21 +146,21 @@ class TestConversationServiceSearchConversations:
 
         # Test filtering by IDLE status
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.IDLE
+            execution_status=ConversationExecutionStatus.IDLE
         )
         assert len(result.items) == 1
-        assert result.items[0].agent_status == AgentExecutionStatus.IDLE
+        assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
 
         # Test filtering by RUNNING status
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.RUNNING
+            execution_status=ConversationExecutionStatus.RUNNING
         )
         assert len(result.items) == 1
-        assert result.items[0].agent_status == AgentExecutionStatus.RUNNING
+        assert result.items[0].execution_status == ConversationExecutionStatus.RUNNING
 
         # Test filtering by non-existent status
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.ERROR
+            execution_status=ConversationExecutionStatus.ERROR
         )
         assert len(result.items) == 0
 
@@ -170,7 +173,7 @@ class TestConversationServiceSearchConversations:
         for i in range(3):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -187,7 +190,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=AgentExecutionStatus.IDLE,
+                execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -247,7 +250,7 @@ class TestConversationServiceSearchConversations:
         for i in range(5):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -262,7 +265,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=AgentExecutionStatus.IDLE,
+                execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -297,19 +300,19 @@ class TestConversationServiceSearchConversations:
         # Create conversations with mixed statuses and timestamps
         conversations_data = [
             (
-                AgentExecutionStatus.IDLE,
+                ConversationExecutionStatus.IDLE,
                 datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
             ),
             (
-                AgentExecutionStatus.RUNNING,
+                ConversationExecutionStatus.RUNNING,
                 datetime(2025, 1, 2, 12, 0, 0, tzinfo=UTC),
             ),
             (
-                AgentExecutionStatus.IDLE,
+                ConversationExecutionStatus.IDLE,
                 datetime(2025, 1, 3, 12, 0, 0, tzinfo=UTC),
             ),
             (
-                AgentExecutionStatus.FINISHED,
+                ConversationExecutionStatus.FINISHED,
                 datetime(2025, 1, 4, 12, 0, 0, tzinfo=UTC),
             ),
         ]
@@ -317,7 +320,7 @@ class TestConversationServiceSearchConversations:
         for status, created_at in conversations_data:
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -332,7 +335,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=status,
+                execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -341,7 +344,7 @@ class TestConversationServiceSearchConversations:
 
         # Filter by IDLE status and sort by CREATED_AT_DESC
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             sort_order=ConversationSortOrder.CREATED_AT_DESC,
         )
 
@@ -360,7 +363,7 @@ class TestConversationServiceSearchConversations:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -409,7 +412,7 @@ class TestConversationServiceCountConversations:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -425,16 +428,16 @@ class TestConversationServiceCountConversations:
         """Test counting conversations with status filter."""
         # Create multiple conversations with different statuses
         statuses = [
-            AgentExecutionStatus.IDLE,
-            AgentExecutionStatus.RUNNING,
-            AgentExecutionStatus.FINISHED,
-            AgentExecutionStatus.IDLE,  # Another IDLE one
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.IDLE,  # Another IDLE one
         ]
 
         for i, status in enumerate(statuses):
             stored_conv = StoredConversation(
                 id=uuid4(),
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir="workspace/project"),
                 confirmation_policy=NeverConfirm(),
                 initial_message=None,
@@ -449,7 +452,7 @@ class TestConversationServiceCountConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=status,
+                execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -462,19 +465,19 @@ class TestConversationServiceCountConversations:
 
         # Test counting by IDLE status (should be 2)
         result = await conversation_service.count_conversations(
-            agent_status=AgentExecutionStatus.IDLE
+            execution_status=ConversationExecutionStatus.IDLE
         )
         assert result == 2
 
         # Test counting by RUNNING status (should be 1)
         result = await conversation_service.count_conversations(
-            agent_status=AgentExecutionStatus.RUNNING
+            execution_status=ConversationExecutionStatus.RUNNING
         )
         assert result == 1
 
         # Test counting by non-existent status (should be 0)
         result = await conversation_service.count_conversations(
-            agent_status=AgentExecutionStatus.ERROR
+            execution_status=ConversationExecutionStatus.ERROR
         )
         assert result == 0
 
@@ -496,7 +499,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request with secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
                 secrets=test_secrets,
@@ -514,7 +517,7 @@ class TestConversationServiceStartConversation:
                     id=uuid4(),
                     agent=request.agent,
                     workspace=request.workspace,
-                    agent_status=AgentExecutionStatus.IDLE,
+                    execution_status=ConversationExecutionStatus.IDLE,
                     confirmation_policy=request.confirmation_policy,
                 )
                 mock_event_service.get_state.return_value = mock_state
@@ -526,7 +529,7 @@ class TestConversationServiceStartConversation:
                 )
 
                 # Start the conversation
-                result = await conversation_service.start_conversation(request)
+                result, _ = await conversation_service.start_conversation(request)
 
                 # Verify EventService was created with the correct parameters
                 mock_event_service_class.assert_called_once()
@@ -551,7 +554,7 @@ class TestConversationServiceStartConversation:
 
                 # Verify the result
                 assert result.id == mock_state.id
-                assert result.agent_status == AgentExecutionStatus.IDLE
+                assert result.execution_status == ConversationExecutionStatus.IDLE
 
     @pytest.mark.asyncio
     async def test_start_conversation_without_secrets(self, conversation_service):
@@ -559,7 +562,7 @@ class TestConversationServiceStartConversation:
         # Create a start conversation request without secrets
         with tempfile.TemporaryDirectory() as temp_dir:
             request = StartConversationRequest(
-                agent=Agent(llm=LLM(model="gpt-4", service_id="test-llm"), tools=[]),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
                 workspace=LocalWorkspace(working_dir=temp_dir),
                 confirmation_policy=NeverConfirm(),
             )
@@ -576,7 +579,7 @@ class TestConversationServiceStartConversation:
                     id=uuid4(),
                     agent=request.agent,
                     workspace=request.workspace,
-                    agent_status=AgentExecutionStatus.IDLE,
+                    execution_status=ConversationExecutionStatus.IDLE,
                     confirmation_policy=request.confirmation_policy,
                 )
                 mock_event_service.get_state.return_value = mock_state
@@ -588,7 +591,7 @@ class TestConversationServiceStartConversation:
                 )
 
                 # Start the conversation
-                result = await conversation_service.start_conversation(request)
+                result, _ = await conversation_service.start_conversation(request)
 
                 # Verify EventService was created with the correct parameters
                 mock_event_service_class.assert_called_once()
@@ -603,7 +606,56 @@ class TestConversationServiceStartConversation:
 
                 # Verify the result
                 assert result.id == mock_state.id
-                assert result.agent_status == AgentExecutionStatus.IDLE
+                assert result.execution_status == ConversationExecutionStatus.IDLE
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_with_custom_id(self, conversation_service):
+        """Test that conversations can be started with a custom conversation_id."""
+        custom_id = uuid4()
+
+        # Create a start conversation request with custom conversation_id
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            result, is_new = await conversation_service.start_conversation(request)
+            assert result.id == custom_id
+            assert is_new
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_with_duplicate_id(self, conversation_service):
+        """Test duplicate conversation ids are detected."""
+        custom_id = uuid4()
+
+        # Create a start conversation request with custom conversation_id
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            result, is_new = await conversation_service.start_conversation(request)
+            assert result.id == custom_id
+            assert is_new
+
+            duplicate_request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            result, is_new = await conversation_service.start_conversation(
+                duplicate_request
+            )
+            assert result.id == custom_id
+            assert not is_new
 
 
 class TestConversationServiceUpdateConversation:
@@ -621,7 +673,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -652,7 +704,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -704,7 +756,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -741,7 +793,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -773,7 +825,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
