@@ -528,7 +528,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # 6) telemetry
             self._telemetry.on_response(resp, raw_resp=raw_resp)
 
-            # Ensure at least one choice
+            # Ensure at least one choice.
+            # Note: This runs inside the retry boundary; raising LLMNoResponseError here
+            # is retryable.
             if not resp.get("choices") or len(resp["choices"]) < 1:
                 raise LLMNoResponseError(
                     "Response choices is less than 1. Response: " + str(resp)
