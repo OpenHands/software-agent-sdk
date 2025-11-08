@@ -309,9 +309,9 @@ class Agent(AgentBase):
         tool_call: MessageToolCall,
         llm_response_id: str,
         on_event: ConversationCallbackType,
-        thought: list[TextContent] = [],
+        thought: list[TextContent] | None = None,
         reasoning_content: str | None = None,
-        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [],
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
     ) -> ActionEvent | None:
         """Converts a tool call into an ActionEvent, validating arguments.
@@ -328,9 +328,9 @@ class Agent(AgentBase):
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
                 source="agent",
-                thought=thought,
+                thought=thought or [],
                 reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks,
+                thinking_blocks=thinking_blocks or [],
                 responses_reasoning_item=responses_reasoning_item,
                 tool_call=tool_call,
                 tool_name=tool_call.name,
@@ -380,9 +380,9 @@ class Agent(AgentBase):
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
                 source="agent",
-                thought=thought,
+                thought=thought or [],
                 reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks,
+                thinking_blocks=thinking_blocks or [],
                 responses_reasoning_item=responses_reasoning_item,
                 tool_call=tool_call,
                 tool_name=tool_call.name,
@@ -401,9 +401,9 @@ class Agent(AgentBase):
 
         action_event = ActionEvent(
             action=action,
-            thought=thought,
+            thought=thought or [],
             reasoning_content=reasoning_content,
-            thinking_blocks=thinking_blocks,
+            thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
             tool_call_id=tool_call.id,
