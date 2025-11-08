@@ -9,9 +9,7 @@ from jinja2 import Environment, FileSystemBytecodeCache, FileSystemLoader, Templ
 
 def refine(text: str) -> str:
     if sys.platform == "win32":
-        text = re.sub(
-            r"\bexecute_bash\b", "execute_powershell", text, flags=re.IGNORECASE
-        )
+        text = re.sub(r"\bterminal\b", "execute_powershell", text, flags=re.IGNORECASE)
         text = re.sub(
             r"(?<!execute_)(?<!_)\bbash\b", "powershell", text, flags=re.IGNORECASE
         )
@@ -48,5 +46,29 @@ def _get_template(prompt_dir: str, template_name: str) -> Template:
 
 
 def render_template(prompt_dir: str, template_name: str, **ctx) -> str:
-    tpl = _get_template(prompt_dir, template_name)
+    """Render a Jinja2 template.
+
+    Args:
+        prompt_dir: The base directory for relative template paths.
+        template_name: The template filename. Can be either:
+            - A relative filename (e.g., "system_prompt.j2") loaded from prompt_dir
+            - An absolute path (e.g., "/path/to/custom_prompt.j2")
+        **ctx: Template context variables.
+
+    Returns:
+        Rendered template string.
+
+    Raises:
+        FileNotFoundError: If the template file cannot be found.
+    """
+    # If template_name is an absolute path, extract directory and filename
+    if os.path.isabs(template_name):
+        # Check if the file exists before trying to load it
+        if not os.path.isfile(template_name):
+            raise FileNotFoundError(f"Prompt file {template_name} not found")
+        actual_dir = os.path.dirname(template_name)
+        actual_filename = os.path.basename(template_name)
+        tpl = _get_template(actual_dir, actual_filename)
+    else:
+        tpl = _get_template(prompt_dir, template_name)
     return refine(tpl.render(**ctx).strip())

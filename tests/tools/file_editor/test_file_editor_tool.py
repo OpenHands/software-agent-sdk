@@ -36,7 +36,7 @@ def test_file_editor_tool_initialization():
         tool = tools[0]
 
         # Check that the tool has the correct name and properties
-        assert tool.name == "str_replace_editor"
+        assert tool.name == "file_editor"
         assert tool.executor is not None
         assert issubclass(tool.action_type, FileEditorAction)
 
@@ -63,7 +63,7 @@ def test_file_editor_tool_create_file():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
+        assert not result.is_error
         assert os.path.exists(test_file)
 
         # Check file contents
@@ -94,10 +94,10 @@ def test_file_editor_tool_view_file():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
-        assert "Line 1" in result.output
-        assert "Line 2" in result.output
-        assert "Line 3" in result.output
+        assert not result.is_error
+        assert "Line 1" in result.text
+        assert "Line 2" in result.text
+        assert "Line 3" in result.text
 
 
 def test_file_editor_tool_str_replace():
@@ -127,7 +127,7 @@ def test_file_editor_tool_str_replace():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
+        assert not result.is_error
 
         # Check file contents
         with open(test_file) as f:
@@ -147,7 +147,7 @@ def test_file_editor_tool_to_openai_tool():
 
         # Check the format
         assert openai_tool["type"] == "function"
-        assert openai_tool["function"]["name"] == "str_replace_editor"
+        assert openai_tool["function"]["name"] == "file_editor"
         assert "description" in openai_tool["function"]
         assert "parameters" in openai_tool["function"]
 
@@ -177,9 +177,9 @@ def test_file_editor_tool_view_directory():
         # Check the result
         assert result is not None
         assert isinstance(result, FileEditorObservation)
-        assert not result.error
-        assert "file1.txt" in result.output
-        assert "file2.txt" in result.output
+        assert not result.is_error
+        assert "file1.txt" in result.text
+        assert "file2.txt" in result.text
 
 
 def test_file_editor_tool_includes_working_directory_in_description():

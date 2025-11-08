@@ -6,7 +6,11 @@ import os
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
@@ -117,6 +121,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _config: dict[str, Any]
     _initialized: bool
     _async_executor: AsyncExecutor
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -165,8 +170,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
         self._initialized = False
         self._async_executor = AsyncExecutor()
+        self._cleanup_initiated = False
 
-    def __call__(self, action):
+    def __call__(
+        self,
+        action: BrowserAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ):
         """Submit an action to run in the background loop and wait for result."""
         return self._async_executor.run_async(
             self._execute_action, action, timeout=300.0
@@ -215,13 +225,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.close_tab(action.tab_id)
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
-                return BrowserObservation(output="", error=error_msg)
+                return BrowserObservation.from_text(text=error_msg, is_error=True)
 
-            return BrowserObservation(output=result)
+            return BrowserObservation.from_text(text=result)
         except Exception as e:
             error_msg = f"Browser operation failed: {str(e)}"
             logger.error(error_msg, exc_info=True)
-            return BrowserObservation(output="", error=error_msg)
+            return BrowserObservation.from_text(text=error_msg, is_error=True)
 
     async def _ensure_initialized(self):
         """Ensure browser session is initialized."""
@@ -271,14 +281,15 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
                 # Return clean JSON + separate screenshot data
                 clean_json = json.dumps(result_data, indent=2)
-                return BrowserObservation(
-                    output=clean_json, screenshot_data=screenshot_data
+                return BrowserObservation.from_text(
+                    text=clean_json,
+                    screenshot_data=screenshot_data,
                 )
             except json.JSONDecodeError:
                 # If JSON parsing fails, return as-is
                 pass
 
-        return BrowserObservation(output=result_json)
+        return BrowserObservation.from_text(text=result_json)
 
     # Tab Management
     async def list_tabs(self) -> str:
@@ -323,6 +334,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def close(self):
         """Close the browser executor and cleanup resources."""
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
         try:
             # Run cleanup in the async executor with a shorter timeout
             self._async_executor.run_async(self.cleanup, timeout=30.0)

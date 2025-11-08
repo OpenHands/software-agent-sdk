@@ -43,7 +43,7 @@ def main():
         host=args.host,
         port=args.port,
         reload=args.reload,
-        reload_excludes=["workspace"],
+        reload_includes=["openhands-agent-server", "openhands-sdk", "openhands-tools"],
         log_level=log_level,
         log_config=LOGGING_CONFIG,
         ws="wsproto",  # Use wsproto instead of deprecated websockets implementation

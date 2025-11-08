@@ -50,9 +50,9 @@ from openhands.sdk import (
     Agent,
     Conversation,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 # Configure LLM
@@ -69,13 +69,11 @@ llm = LLM(
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=TerminalTool.name,
     ),
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
 ]
 
 # Agent
@@ -140,3 +138,7 @@ if os.path.exists(document_path):
     os.remove(document_path)
 else:
     print("WARNING: Document.txt was not created")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

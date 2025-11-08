@@ -2,16 +2,20 @@
 
 import re
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation import LocalConversation
 
 import mcp.types
 from litellm import ChatCompletionToolParam
 from pydantic import Field, ValidationError
 
-from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+from openhands.sdk.observability.laminar import observe
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -20,6 +24,7 @@ from openhands.sdk.tool import (
     ToolExecutor,
 )
 from openhands.sdk.tool.schema import Schema
+from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 logger = get_logger(__name__)
@@ -45,6 +50,7 @@ class MCPToolExecutor(ToolExecutor):
         self.tool_name = tool_name
         self.client = client
 
+    @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
         async with self.client:
             assert self.client.is_connected(), "MCP client is not connected."
@@ -62,13 +68,17 @@ class MCPToolExecutor(ToolExecutor):
             except Exception as e:
                 error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
-                return MCPToolObservation(
-                    content=[TextContent(text=error_msg)],
+                return MCPToolObservation.from_text(
+                    text=error_msg,
                     is_error=True,
                     tool_name=self.tool_name,
                 )
 
-    def __call__(self, action: MCPToolAction) -> MCPToolObservation:
+    def __call__(
+        self,
+        action: MCPToolAction,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> MCPToolObservation:
         """Execute an MCP tool call."""
         return self.client.call_async_from_sync(
             self.call_tool, action=action, timeout=300
@@ -110,7 +120,16 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
 
-    def __call__(self, action: Action) -> Observation:
+    @property
+    def name(self) -> str:  # type: ignore[override]
+        """Return the MCP tool name instead of the class name."""
+        return self.mcp_tool.name
+
+    def __call__(
+        self,
+        action: Action,
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+    ) -> Observation:
         """Execute the tool action using the MCP client.
 
         We dynamically create a new MCPToolAction class with
@@ -134,13 +153,13 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             # Surface validation errors as an observation instead of crashing
             error_msg = f"Validation error for MCP tool '{self.name}' args: {e}"
             logger.error(error_msg, exc_info=True)
-            return MCPToolObservation(
-                content=[TextContent(text=error_msg)],
+            return MCPToolObservation.from_text(
+                text=error_msg,
                 is_error=True,
                 tool_name=self.name,
             )
 
-        return super().__call__(action)
+        return super().__call__(action, conversation)
 
     def action_from_arguments(self, arguments: dict[str, Any]) -> MCPToolAction:
         """Create an MCPToolAction from parsed arguments with early validation.
@@ -166,7 +185,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
         # Use exclude_none to avoid injecting nulls back to the call
-        sanitized = validated.model_dump(exclude_none=True)
+        # Exclude DiscriminatedUnionMixin fields (e.g., 'kind') as they're
+        # internal to OpenHands and not part of the MCP tool schema
+        exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys())
+        sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
         return MCPToolAction(data=sanitized)
 
     @classmethod
@@ -184,21 +206,17 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 else None
             )
 
-            return [
-                cls(
-                    name=mcp_tool.name,
-                    description=mcp_tool.description or "No description provided",
-                    action_type=MCPToolAction,
-                    observation_type=MCPToolObservation,
-                    annotations=annotations,
-                    meta=mcp_tool.meta,
-                    executor=MCPToolExecutor(
-                        tool_name=mcp_tool.name, client=mcp_client
-                    ),
-                    # pass-through fields (enabled by **extra in Tool.create)
-                    mcp_tool=mcp_tool,
-                )
-            ]
+            tool_instance = cls(
+                description=mcp_tool.description or "No description provided",
+                action_type=MCPToolAction,
+                observation_type=MCPToolObservation,
+                annotations=annotations,
+                meta=mcp_tool.meta,
+                executor=MCPToolExecutor(tool_name=mcp_tool.name, client=mcp_client),
+                # pass-through fields (enabled by **extra in Tool.create)
+                mcp_tool=mcp_tool,
+            )
+            return [tool_instance]
         except ValidationError as e:
             logger.error(
                 f"Validation error creating MCPTool for {mcp_tool.name}: "

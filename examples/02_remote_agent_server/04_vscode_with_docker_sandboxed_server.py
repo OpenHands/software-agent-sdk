@@ -12,27 +12,36 @@ from openhands.workspace import DockerWorkspace
 
 logger = get_logger(__name__)
 
-
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 
 # Create a Docker-based remote workspace with extra ports for VSCode access
+
+
+def detect_platform():
+    """Detects the correct Docker platform string."""
+    import platform
+
+    machine = platform.machine().lower()
+    if "arm" in machine or "aarch64" in machine:
+        return "linux/arm64"
+    return "linux/amd64"
+
+
 with DockerWorkspace(
     base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     host_port=18010,
-    # TODO: Change this to your platform if not linux/arm64
-    platform="linux/arm64",
+    platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
-    forward_env=["LLM_API_KEY"],  # Forward API key to container
 ) as workspace:
-    """Extra ports allows you to access VSCode at localhost:8011"""
+    """Extra ports allows you to access VSCode at localhost:18011"""
 
     # Create agent
     agent = get_default_agent(
@@ -55,7 +64,6 @@ with DockerWorkspace(
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 

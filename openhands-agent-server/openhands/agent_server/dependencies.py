@@ -1,7 +1,11 @@
+from uuid import UUID
+
 from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import APIKeyHeader
 
 from openhands.agent_server.config import Config
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.event_service import EventService
 
 
 _SESSION_API_KEY_HEADER = APIKeyHeader(name="X-Session-API-Key", auto_error=False)
@@ -53,3 +57,16 @@ def get_conversation_service(request: Request):
             detail="Conversation service is not available",
         )
     return service
+
+
+async def get_event_service(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> EventService:
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Conversation not found: {conversation_id}",
+        )
+    return event_service

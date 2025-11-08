@@ -10,9 +10,9 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     get_logger,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -30,11 +30,9 @@ llm = LLM(
 )
 
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
-    Tool(name="BashTool"),
-    Tool(name="FileEditorTool"),
+    Tool(name=TerminalTool.name),
+    Tool(name=FileEditorTool.name),
 ]
 
 # Add MCP Tools
@@ -77,3 +75,7 @@ assert llm.metrics is not None
 print(
     f"Conversation finished. Final LLM metrics with details: {llm.metrics.model_dump()}"
 )
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

@@ -14,6 +14,7 @@ Single-entry build helper for agent-server images.
 """
 
 import argparse
+import hashlib
 import os
 import re
 import shutil
@@ -40,6 +41,105 @@ PlatformType = Literal["linux/amd64", "linux/arm64"]
 
 
 # --- helpers ---
+
+
+def _default_sdk_project_root() -> Path:
+    """
+    Resolve top-level OpenHands UV workspace root:
+
+    Order:
+      1) Walk up from CWD
+      2) Walk up from this file location
+
+    Reject anything in site/dist-packages (installed wheels).
+    """
+    site_markers = ("site-packages", "dist-packages")
+
+    def _is_workspace_root(d: Path) -> bool:
+        """Detect if d is the root of the Agent-SDK repo UV workspace."""
+        _EXPECTED = (
+            "openhands-sdk/pyproject.toml",
+            "openhands-tools/pyproject.toml",
+            "openhands-workspace/pyproject.toml",
+            "openhands-agent-server/pyproject.toml",
+        )
+
+        py = d / "pyproject.toml"
+        if not py.exists():
+            return False
+        try:
+            cfg = tomllib.loads(py.read_text(encoding="utf-8"))
+        except Exception:
+            cfg = {}
+        members = (
+            cfg.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+            or []
+        )
+        # Accept either explicit UV members or structural presence of all subprojects
+        if members:
+            norm = {str(Path(m)) for m in members}
+            return {
+                "openhands-sdk",
+                "openhands-tools",
+                "openhands-workspace",
+                "openhands-agent-server",
+            }.issubset(norm)
+        return all((d / p).exists() for p in _EXPECTED)
+
+    def _climb(start: Path) -> Path | None:
+        cur = start.resolve()
+        if not cur.is_dir():
+            cur = cur.parent
+        while True:
+            if _is_workspace_root(cur):
+                return cur
+            if cur.parent == cur:
+                return None
+            cur = cur.parent
+
+    def validate(p: Path, src: str) -> Path:
+        if any(s in str(p) for s in site_markers):
+            raise RuntimeError(
+                f"{src}: points inside site-packages; need the source checkout."
+            )
+        root = _climb(p) or p
+        if not _is_workspace_root(root):
+            raise RuntimeError(
+                f"{src}: couldn't find the OpenHands UV workspace root "
+                f"starting at '{p}'.\n\n"
+                "Expected setup (repo root):\n"
+                "  pyproject.toml  # has [tool.uv.workspace] with members\n"
+                "  openhands-sdk/pyproject.toml\n"
+                "  openhands-tools/pyproject.toml\n"
+                "  openhands-workspace/pyproject.toml\n"
+                "  openhands-agent-server/pyproject.toml\n\n"
+                "Fix:\n"
+                "  - Run from anywhere inside the repo."
+            )
+        return root
+
+    if root := _climb(Path.cwd()):
+        return validate(root, "CWD discovery")
+
+    try:
+        here = Path(__file__).resolve()
+        if root := _climb(here):
+            return validate(root, "__file__ discovery")
+    except NameError:
+        pass
+
+    # Final, user-facing guidance
+    raise RuntimeError(
+        "Could not resolve the OpenHands UV workspace root.\n\n"
+        "Expected repo layout:\n"
+        "  pyproject.toml  (with [tool.uv.workspace].members "
+        "including openhands/* subprojects)\n"
+        "  openhands-sdk/pyproject.toml\n"
+        "  openhands-tools/pyproject.toml\n"
+        "  openhands-workspace/pyproject.toml\n"
+        "  openhands-agent-server/pyproject.toml\n\n"
+        "Run this from inside the repo."
+    )
 
 
 def _run(
@@ -101,154 +201,118 @@ def _run(
     return result
 
 
-def _base_slug(image: str) -> str:
-    return image.replace("/", "_s_").replace(":", "_tag_")
-
-
 def _sanitize_branch(ref: str) -> str:
     ref = re.sub(r"^refs/heads/", "", ref or "unknown")
     return re.sub(r"[^a-zA-Z0-9.-]+", "-", ref).lower()
 
 
-def _sdk_version() -> str:
-    from importlib.metadata import version
+def _base_slug(image: str, max_len: int = 64) -> str:
+    """
+    If the slug is too long, keep the most identifiable parts:
+    - repository name (last path segment)
+    - tag (if present)
+    Then append a short digest for uniqueness.
+    Format preserved with existing separators: '_s_' for '/', '_tag_' for ':'.
 
-    return version("openhands-sdk")
+    Example:
+      'ghcr.io_s_org_s/very-long-repo_tag_v1.2.3-extra'
+      ->  'very-long-repo_tag_v1.2.3-<digest>'
+    """
+    base_slug = image.replace("/", "_s_").replace(":", "_tag_")
+
+    if len(base_slug) <= max_len:
+        return base_slug
+
+    digest = hashlib.sha256(base_slug.encode()).hexdigest()[:12]
+    suffix = f"-{digest}"
+
+    # Parse components from the slug form
+    if "_tag_" in base_slug:
+        left, tag = base_slug.split("_tag_", 1)
+    else:
+        left, tag = base_slug, ""
+
+    parts = left.split("_s_") if left else []
+    repo = parts[-1] if parts else left  # last path segment is the repo
+
+    # Reconstruct a compact, identifiable core: "<repo>[_tag_<tag>]"
+    ident = repo + (f"_tag_{tag}" if tag else "")
+
+    # Fit within budget, reserving space for the digest suffix
+    visible_budget = max_len - len(suffix)
+    assert visible_budget > 0, (
+        f"max_len too small to fit digest suffix with length {len(suffix)}"
+    )
+
+    kept = ident[:visible_budget]
+    return kept + suffix
 
 
-def _git_info() -> tuple[str, str, str]:
-    git_sha = os.environ.get("GITHUB_SHA")
+def _git_info() -> tuple[str, str]:
+    """
+    Get git info (ref, sha) for the current working directory.
+
+    Priority order for SHA:
+    1. SDK_SHA - Explicit override (e.g., for submodule builds)
+    2. GITHUB_SHA - GitHub Actions environment
+    3. git rev-parse HEAD - Local development
+
+    Priority order for REF:
+    1. SDK_REF - Explicit override (e.g., for submodule builds)
+    2. GITHUB_REF - GitHub Actions environment
+    3. git symbolic-ref HEAD - Local development
+    """
+    sdk_root = _default_sdk_project_root()
+    git_sha = os.environ.get("SDK_SHA") or os.environ.get("GITHUB_SHA")
     if not git_sha:
         try:
-            git_sha = _run(["git", "rev-parse", "--verify", "HEAD"]).stdout.strip()
+            git_sha = _run(
+                ["git", "rev-parse", "--verify", "HEAD"],
+                cwd=str(sdk_root),
+            ).stdout.strip()
         except subprocess.CalledProcessError:
             git_sha = "unknown"
-    short_sha = git_sha[:7] if git_sha != "unknown" else "unknown"
 
-    git_ref = os.environ.get("GITHUB_REF")
+    git_ref = os.environ.get("SDK_REF") or os.environ.get("GITHUB_REF")
     if not git_ref:
         try:
             git_ref = _run(
-                ["git", "symbolic-ref", "-q", "--short", "HEAD"]
+                ["git", "symbolic-ref", "-q", "--short", "HEAD"],
+                cwd=str(sdk_root),
             ).stdout.strip()
         except subprocess.CalledProcessError:
             git_ref = "unknown"
-    return git_ref, git_sha, short_sha
+    return git_ref, git_sha
 
 
-GIT_REF, GIT_SHA, SHORT_SHA = _git_info()
-SDK_VERSION = _sdk_version()
-
-
-# --- options ---
-
-
-def _is_workspace_root(d: Path) -> bool:
-    """Detect if d is the root of the Agent-SDK repo UV workspace."""
-    _EXPECTED = (
-        "openhands-sdk/pyproject.toml",
-        "openhands-tools/pyproject.toml",
-        "openhands-workspace/pyproject.toml",
-        "openhands-agent-server/pyproject.toml",
-    )
-
-    py = d / "pyproject.toml"
-    if not py.exists():
-        return False
+def _package_version() -> str:
+    """
+    Get the semantic version from the openhands-sdk package.
+    This is used for versioned tags during releases.
+    """
     try:
-        cfg = tomllib.loads(py.read_text(encoding="utf-8"))
+        from importlib.metadata import version
+
+        return version("openhands-sdk")
     except Exception:
-        cfg = {}
-    members = (
-        cfg.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", []) or []
-    )
-    # Accept either explicit UV members or structural presence of all subprojects
-    if members:
-        norm = {str(Path(m)) for m in members}
-        return {
-            "openhands-sdk",
-            "openhands-tools",
-            "openhands-workspace",
-            "openhands-agent-server",
-        }.issubset(norm)
-    return all((d / p).exists() for p in _EXPECTED)
+        # If package is not installed, try reading from pyproject.toml
+        try:
+            sdk_root = _default_sdk_project_root()
+            pyproject_path = sdk_root / "openhands-sdk" / "pyproject.toml"
+            if pyproject_path.exists():
+                cfg = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+                return cfg.get("project", {}).get("version", "unknown")
+        except Exception:
+            pass
+        return "unknown"
 
 
-def _climb(start: Path) -> Path | None:
-    cur = start.resolve()
-    if not cur.is_dir():
-        cur = cur.parent
-    while True:
-        if _is_workspace_root(cur):
-            return cur
-        if cur.parent == cur:
-            return None
-        cur = cur.parent
-
-
-def _default_sdk_project_root() -> Path:
-    """
-    Resolve top-level OpenHands UV workspace root:
-
-    Order:
-      1) Walk up from CWD
-      2) Walk up from this file location
-
-    Reject anything in site/dist-packages (installed wheels).
-    """
-    site_markers = ("site-packages", "dist-packages")
-
-    def validate(p: Path, src: str) -> Path:
-        if any(s in str(p) for s in site_markers):
-            raise RuntimeError(
-                f"{src}: points inside site-packages; need the source checkout."
-            )
-        root = _climb(p) or p
-        if not _is_workspace_root(root):
-            raise RuntimeError(
-                f"{src}: couldn't find the OpenHands UV workspace root "
-                f"starting at '{p}'.\n\n"
-                "Expected setup (repo root):\n"
-                "  pyproject.toml  # has [tool.uv.workspace] with members\n"
-                "  openhands-sdk/pyproject.toml\n"
-                "  openhands-tools/pyproject.toml\n"
-                "  openhands-workspace/pyproject.toml\n"
-                "  openhands-agent-server/pyproject.toml\n\n"
-                "Fix:\n"
-                "  - Run from anywhere inside the repo."
-            )
-        return root
-
-    if root := _climb(Path.cwd()):
-        return validate(root, "CWD discovery")
-
-    try:
-        here = Path(__file__).resolve()
-        if root := _climb(here):
-            return validate(root, "__file__ discovery")
-    except NameError:
-        pass
-
-    # Final, user-facing guidance
-    raise RuntimeError(
-        "Could not resolve the OpenHands UV workspace root.\n\n"
-        "Expected repo layout:\n"
-        "  pyproject.toml  (with [tool.uv.workspace].members "
-        "including openhands/* subprojects)\n"
-        "  openhands-sdk/pyproject.toml\n"
-        "  openhands-tools/pyproject.toml\n"
-        "  openhands-workspace/pyproject.toml\n"
-        "  openhands-agent-server/pyproject.toml\n\n"
-        "Run this from inside the repo."
-    )
+_DEFAULT_GIT_REF, _DEFAULT_GIT_SHA = _git_info()
+_DEFAULT_PACKAGE_VERSION = _package_version()
 
 
 class BuildOptions(BaseModel):
     base_image: str = Field(default="nikolaik/python-nodejs:python3.12-nodejs22")
-    sdk_project_root: Path = Field(
-        default_factory=_default_sdk_project_root,
-        description="Path to OpenHands SDK root. Auto if None.",
-    )
     custom_tags: str = Field(
         default="", description="Comma-separated list of custom tags."
     )
@@ -258,6 +322,46 @@ class BuildOptions(BaseModel):
     push: bool | None = Field(
         default=None, description="None=auto (CI push, local load)"
     )
+    arch: str | None = Field(
+        default=None,
+        description="Architecture suffix (e.g., 'amd64', 'arm64') to append to tags",
+    )
+    include_base_tag: bool = Field(
+        default=True,
+        description=(
+            "Whether to include the automatically generated base tag "
+            "based on git SHA and base image name in all_tags output."
+        ),
+    )
+    include_versioned_tag: bool = Field(
+        default=False,
+        description=(
+            "Whether to include the versioned tag (e.g., v1.0.0_...) in all_tags "
+            "output. Should only be True for release builds."
+        ),
+    )
+    git_sha: str = Field(
+        default=_DEFAULT_GIT_SHA,
+        description="Git commit SHA.We will need it to tag the built image.",
+    )
+    git_ref: str = Field(default=_DEFAULT_GIT_REF)
+    sdk_project_root: Path = Field(
+        default_factory=_default_sdk_project_root,
+        description="Path to OpenHands SDK root. Auto if None.",
+    )
+    sdk_version: str = Field(
+        default=_DEFAULT_PACKAGE_VERSION,
+        description=(
+            "SDK package version. "
+            "We will need it to tag the built image. "
+            "Note this is only used if include_versioned_tag is True "
+            "(e.g., at each release)."
+        ),
+    )
+
+    @property
+    def short_sha(self) -> str:
+        return self.git_sha[:7] if self.git_sha != "unknown" else "unknown"
 
     @field_validator("target")
     @classmethod
@@ -275,34 +379,44 @@ class BuildOptions(BaseModel):
         return _base_slug(self.base_image)
 
     @property
-    def is_dev(self) -> bool:
-        return self.target in ("source", "source-minimal")
+    def versioned_tag(self) -> str:
+        return f"v{self.sdk_version}_{self.base_image_slug}"
 
     @property
-    def versioned_tag(self) -> str:
-        return f"v{SDK_VERSION}_{self.base_image_slug}_{self.target}"
+    def base_tag(self) -> str:
+        return f"{self.short_sha}-{self.base_image_slug}"
 
     @property
     def cache_tags(self) -> tuple[str, str]:
         base = f"buildcache-{self.target}-{self.base_image_slug}"
-        if GIT_REF in ("main", "refs/heads/main"):
+        if self.git_ref in ("main", "refs/heads/main"):
             return f"{base}-main", base
-        elif GIT_REF != "unknown":
-            return f"{base}-{_sanitize_branch(GIT_REF)}", base
+        elif self.git_ref != "unknown":
+            return f"{base}-{_sanitize_branch(self.git_ref)}", base
         else:
             return base, base
 
     @property
     def all_tags(self) -> list[str]:
         tags: list[str] = []
+        arch_suffix = f"-{self.arch}" if self.arch else ""
+
+        # Use git commit SHA for commit-based tags
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{SHORT_SHA}-{t}")
-        if GIT_REF in ("main", "refs/heads/main"):
+            tags.append(f"{self.image}:{self.short_sha}-{t}{arch_suffix}")
+
+        if self.git_ref in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
-                tags.append(f"{self.image}:main-{t}")
-        tags.append(f"{self.image}:{self.versioned_tag}")
-        if self.is_dev:
-            tags = [f"{t}-dev" for t in tags]
+                tags.append(f"{self.image}:main-{t}{arch_suffix}")
+
+        if self.include_base_tag:
+            tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
+        if self.include_versioned_tag:
+            tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
+
+        # Append target suffix for clarity (binary is default, no suffix needed)
+        if self.target != "binary":
+            tags = [f"{t}-{self.target}" for t in tags]
         return tags
 
 
@@ -324,6 +438,7 @@ def _extract_tarball(tarball: Path, dest: Path) -> None:
 
 
 def _make_build_context(sdk_project_root: Path) -> Path:
+    dockerfile_path = _get_dockerfile_path(sdk_project_root)
     tmp_root = Path(tempfile.mkdtemp(prefix="agent-build-", dir=None)).resolve()
     sdist_dir = Path(tempfile.mkdtemp(prefix="agent-sdist-", dir=None)).resolve()
     try:
@@ -349,6 +464,8 @@ def _make_build_context(sdk_project_root: Path) -> Path:
             "Expected single folder in sdist"
         )
         tmp_root = entries[0].resolve()
+        # copy Dockerfile into place
+        shutil.copy2(dockerfile_path, tmp_root / "Dockerfile")
         logger.debug(f"[build] Clean context ready at {tmp_root}")
         return tmp_root
     except Exception:
@@ -379,13 +496,9 @@ def _default_local_cache_dir() -> Path:
     return Path(xdg) / "openhands" / "buildx-cache"
 
 
-# --- single entry point ---
-
-
-def build(opts: BuildOptions) -> list[str]:
-    """Single entry point for building the agent-server image."""
+def _get_dockerfile_path(sdk_project_root: Path) -> Path:
     dockerfile_path = (
-        opts.sdk_project_root
+        sdk_project_root
         / "openhands-agent-server"
         / "openhands"
         / "agent_server"
@@ -394,7 +507,15 @@ def build(opts: BuildOptions) -> list[str]:
     )
     if not dockerfile_path.exists():
         raise FileNotFoundError(f"Dockerfile not found at {dockerfile_path}")
+    return dockerfile_path
 
+
+# --- single entry point ---
+
+
+def build(opts: BuildOptions) -> list[str]:
+    """Single entry point for building the agent-server image."""
+    dockerfile_path = _get_dockerfile_path(opts.sdk_project_root)
     push = opts.push
     if push is None:
         push = IN_CI
@@ -475,7 +596,10 @@ def build(opts: BuildOptions) -> list[str]:
         f"custom_tags='{opts.custom_tags}' from base='{opts.base_image}' "
         f"for platforms='{opts.platforms if push else 'local-arch'}'"
     )
-    logger.info(f"[build] Git ref='{GIT_REF}' sha='{GIT_SHA}' version='{SDK_VERSION}'")
+    logger.info(
+        f"[build] Git ref='{opts.git_ref}' sha='{opts.git_sha}' "
+        f"package_version='{opts.sdk_version}'"
+    )
     logger.info(f"[build] Cache tag: {cache_tag}")
 
     try:
@@ -536,6 +660,13 @@ def main(argv: list[str]) -> int:
         default=_env("PLATFORMS", "linux/amd64,linux/arm64"),
         help="Comma-separated platforms (default from $PLATFORMS).",
     )
+    parser.add_argument(
+        "--arch",
+        default=_env("ARCH", ""),
+        help=(
+            "Architecture suffix for tags (e.g., 'amd64', 'arm64', default from $ARCH)."
+        ),
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
         "--push",
@@ -558,6 +689,14 @@ def main(argv: list[str]) -> int:
         action="store_true",
         help="Only create the clean build context directory and print its path.",
     )
+    parser.add_argument(
+        "--versioned-tag",
+        action="store_true",
+        help=(
+            "Include versioned tag (e.g., v1.0.0_...) in output. "
+            "Should only be used for release builds."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
@@ -574,7 +713,32 @@ def main(argv: list[str]) -> int:
     if args.build_ctx_only:
         ctx = _make_build_context(sdk_project_root)
         logger.info(f"[build] Clean build context (kept for debugging): {ctx}")
-        # Print path to stdout so other tooling can capture it
+
+        # Create BuildOptions to generate tags
+        opts = BuildOptions(
+            base_image=args.base_image,
+            custom_tags=args.custom_tags,
+            image=args.image,
+            target=args.target,  # type: ignore
+            platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
+            push=None,  # Not relevant for build-ctx-only
+            sdk_project_root=sdk_project_root,
+            arch=args.arch or None,
+            include_versioned_tag=args.versioned_tag,
+        )
+
+        # If running in GitHub Actions, write outputs directly to GITHUB_OUTPUT
+        github_output = os.environ.get("GITHUB_OUTPUT")
+        if github_output:
+            with open(github_output, "a") as fh:
+                fh.write(f"build_context={ctx}\n")
+                fh.write(f"dockerfile={ctx / 'Dockerfile'}\n")
+                fh.write(f"tags_csv={','.join(opts.all_tags)}\n")
+                fh.write(f"versioned_tag={opts.versioned_tag}\n")
+                fh.write(f"base_image_slug={opts.base_image_slug}\n")
+            logger.info("[build] Wrote outputs to $GITHUB_OUTPUT")
+
+        # Also print to stdout for debugging/local use
         print(str(ctx))
         return 0
 
@@ -602,6 +766,8 @@ def main(argv: list[str]) -> int:
         platforms=[p.strip() for p in args.platforms.split(",") if p.strip()],  # type: ignore
         push=push,
         sdk_project_root=sdk_project_root,
+        arch=args.arch or None,
+        include_versioned_tag=args.versioned_tag,
     )
     tags = build(opts)
 
@@ -629,7 +795,7 @@ def main(argv: list[str]) -> int:
             fh.write("\n".join(tags_list) + "\n")
             fh.write("EOF\n")
 
-    _write_gha_outputs(opts.image, SHORT_SHA, opts.versioned_tag, tags)
+    _write_gha_outputs(opts.image, opts.short_sha, opts.versioned_tag, tags)
     return 0
 
 

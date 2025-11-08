@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 
 import httpx
-from pydantic import Field, SecretStr, field_serializer
+from pydantic import Field, SecretStr, field_serializer, field_validator
 
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 class SecretSource(DiscriminatedUnionMixin, ABC):
@@ -27,18 +28,14 @@ class StaticSecret(SecretSource):
     def get_value(self):
         return self.value.get_secret_value()
 
+    @field_validator("value")
+    @classmethod
+    def _validate_secrets(cls, v: SecretStr | None, info):
+        return validate_secret(v, info)
+
     @field_serializer("value", when_used="always")
     def _serialize_secrets(self, v: SecretStr | None, info):
-        """Serialize secret fields, exposing actual values when expose_secrets context is True."""  # noqa: E501
-        if v is None:
-            return None
-
-        # Check if the 'expose_secrets' flag is in the serialization context
-        if info.context and info.context.get("expose_secrets"):
-            return v.get_secret_value()
-
-        # Let Pydantic handle the default masking
-        return v
+        return serialize_secret(v, info)
 
 
 class LookupSecret(SecretSource):
@@ -51,3 +48,39 @@ class LookupSecret(SecretSource):
         response = httpx.get(self.url, headers=self.headers)
         response.raise_for_status()
         return response.text
+
+    @field_validator("headers")
+    @classmethod
+    def _validate_secrets(cls, headers: dict[str, str], info):
+        result = {}
+        for key, value in headers.items():
+            if _is_secret_header(key):
+                secret_value = validate_secret(SecretStr(value), info)
+                assert secret_value is not None
+                result[key] = secret_value.get_secret_value()
+            else:
+                result[key] = value
+        return result
+
+    @field_serializer("headers", when_used="always")
+    def _serialize_secrets(self, headers: dict[str, str], info):
+        result = {}
+        for key, value in headers.items():
+            if _is_secret_header(key):
+                secret_value = serialize_secret(SecretStr(value), info)
+                assert secret_value is not None
+                result[key] = secret_value
+            else:
+                result[key] = value
+        return result
+
+
+_SECRET_HEADERS = ["AUTHORIZATION", "KEY", "SECRET"]
+
+
+def _is_secret_header(key: str):
+    key = key.upper()
+    for secret in _SECRET_HEADERS:
+        if secret in key:
+            return True
+    return False

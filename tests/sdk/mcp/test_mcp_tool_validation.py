@@ -33,9 +33,10 @@ def test_mcp_action_from_arguments_validates_and_sanitizes():
     # includes a None that should be dropped
     args = {"url": "https://example.com", "timeout": None}
     action = tool.action_from_arguments(args)
-    # Note: action.data includes 'kind' field from DiscriminatedUnionMixin
-    # which is part of the internal representation
-    assert action.data == {"kind": "FetchAction", "url": "https://example.com"}
+    # Note: 'kind' field from DiscriminatedUnionMixin should NOT be in action.data
+    # because it's not part of the MCP tool schema and would cause validation errors
+    # when sent to the MCP server
+    assert action.data == {"url": "https://example.com"}
 
 
 def test_mcp_action_from_arguments_raises_on_invalid():

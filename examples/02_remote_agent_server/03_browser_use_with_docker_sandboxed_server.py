@@ -12,14 +12,13 @@ from openhands.workspace import DockerWorkspace
 
 logger = get_logger(__name__)
 
-
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-    base_url="https://llm-proxy.eval.all-hands.dev",
+    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 
@@ -35,11 +34,9 @@ def detect_platform():
 # Create a Docker-based remote workspace with extra ports for browser access
 with DockerWorkspace(
     base_image="nikolaik/python-nodejs:python3.12-nodejs22",
-    host_port=8010,
-    # TODO: Change this to your platform if not linux/arm64
+    host_port=8011,
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
-    forward_env=["LLM_API_KEY"],  # Forward API key to container
 ) as workspace:
     """Extra ports allows you to check localhost:8012 for VNC"""
 
@@ -64,26 +61,34 @@ with DockerWorkspace(
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 
     logger.info(f"\n📋 Conversation ID: {conversation.state.id}")
     logger.info("📝 Sending first message...")
     conversation.send_message(
-        "Could you go to https://all-hands.dev/ blog page and summarize main "
+        "Could you go to https://openhands.dev/ blog page and summarize main "
         "points of the latest blog?"
     )
     conversation.run()
 
-    # Wait for user confirm to exit
-    y = None
-    while y != "y":
-        y = input(
-            "Because you've enabled extra_ports=True in DockerWorkspace, "
-            "you can open a browser tab to see the *actual* browser OpenHands "
-            "is interacting with via VNC.\n\n"
-            "Link: http://localhost:8012/vnc.html?autoconnect=1&resize=remote\n\n"
-            "Press 'y' and Enter to exit and terminate the workspace.\n"
-            ">> "
+    conversation.state._cached_state = None  # Invalidate cache to fetch latest stats
+    cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+    print(f"EXAMPLE_COST: {cost}")
+
+    if os.getenv("CI"):
+        logger.info(
+            "CI environment detected; skipping interactive prompt and closing workspace."  # noqa: E501
         )
+    else:
+        # Wait for user confirm to exit when running locally
+        y = None
+        while y != "y":
+            y = input(
+                "Because you've enabled extra_ports=True in DockerWorkspace, "
+                "you can open a browser tab to see the *actual* browser OpenHands "
+                "is interacting with via VNC.\n\n"
+                "Link: http://localhost:8012/vnc.html?autoconnect=1&resize=remote\n\n"
+                "Press 'y' and Enter to exit and terminate the workspace.\n"
+                ">> "
+            )

@@ -31,9 +31,7 @@ from typing import Any
 import streamlit as st
 
 
-ENV_ROOT = os.getenv(
-    "OPENHANDS_CONVERSATIONS_ROOT", "/home/xingyaow/.openhands/conversation"
-)
+ENV_ROOT = os.getenv("OPENHANDS_CONVERSATIONS_ROOT")
 DEFAULT_CONVERSATIONS_ROOT = (
     Path(ENV_ROOT).expanduser()
     if ENV_ROOT

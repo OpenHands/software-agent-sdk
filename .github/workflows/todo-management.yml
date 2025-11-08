@@ -44,7 +44,7 @@ permissions:
 
 jobs:
     scan-todos:
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
     # Only run if triggered manually or if 'automatic-todo' label was added
         if: >
             github.event_name == 'workflow_dispatch' ||
@@ -120,7 +120,7 @@ jobs:
     process-todos:
         needs: scan-todos
         if: needs.scan-todos.outputs.todo-count > 0
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         strategy:
             matrix:
                 todo: ${{ fromJson(needs.scan-todos.outputs.todos) }}
@@ -168,7 +168,7 @@ jobs:
             - name: Process TODO
               env:
                   LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
@@ -297,7 +297,7 @@ jobs:
     summary:
         needs: [scan-todos, process-todos]
         if: always()
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
             - name: Generate Summary
               run: |

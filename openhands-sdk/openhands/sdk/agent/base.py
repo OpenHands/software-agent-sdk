@@ -21,18 +21,21 @@ from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.conversation import ConversationState, LocalConversation
     from openhands.sdk.conversation.types import ConversationCallbackType
 
 logger = get_logger(__name__)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
-    """Abstract base class for agents.
+    """Abstract base class for OpenHands agents.
+
     Agents are stateless and should be fully defined by their configuration.
+    This base class provides the common interface and functionality that all
+    agent implementations must follow.
     """
 
-    model_config: ConfigDict = ConfigDict(
+    model_config = ConfigDict(
         frozen=True,
         arbitrary_types_allowed=True,
     )
@@ -52,7 +55,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default_factory=list,
         description="List of tools to initialize for the agent.",
         examples=[
-            {"name": "BashTool", "params": {}},
+            {"name": "TerminalTool", "params": {}},
             {"name": "FileEditorTool", "params": {}},
             {
                 "name": "TaskTrackerTool",
@@ -80,7 +83,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         "the agent with specific context.",
         examples=[
             {
-                "microagents": [
+                "skills": [
                     {
                         "name": "repo.md",
                         "content": "When you see this message, you should reply like "
@@ -105,7 +108,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             }
         ],
     )
-    system_prompt_filename: str = Field(default="system_prompt.j2")
+    system_prompt_filename: str = Field(
+        default="system_prompt.j2",
+        description=(
+            "System prompt template filename. Can be either:\n"
+            "- A relative filename (e.g., 'system_prompt.j2') loaded from the "
+            "agent's prompts directory\n"
+            "- An absolute path (e.g., '/path/to/custom_prompt.j2')"
+        ),
+    )
     system_prompt_kwargs: dict[str, object] = Field(
         default_factory=dict,
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
@@ -212,7 +223,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
 
         # Always include built-in tools; not subject to filtering
-        tools.extend(BUILT_IN_TOOLS)
+        # Instantiate built-in tools using their .create() method
+        for tool_class in BUILT_IN_TOOLS:
+            tools.extend(tool_class.create(state))
 
         # Check tool types
         for tool in tools:
@@ -234,7 +247,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @abstractmethod
     def step(
         self,
-        state: "ConversationState",
+        conversation: "LocalConversation",
         on_event: "ConversationCallbackType",
     ) -> None:
         """Taking a step in the conversation.
@@ -244,7 +257,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         2. Executing the tool
         3. Updating the conversation state with
             LLM calls (role="assistant") and tool results (role="tool")
-        4.1 If conversation is finished, set state.agent_status to FINISHED
+        4.1 If conversation is finished, set state.execution_status to FINISHED
         4.2 Otherwise, just return, Conversation will kick off the next step
 
         NOTE: state will be mutated in-place.

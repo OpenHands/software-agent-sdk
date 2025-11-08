@@ -24,7 +24,9 @@ def test_multiple_commands_use_different_command_ids():
     each one uses its own command_id for filtering events, preventing
     output contamination from previous commands.
     """
-    mixin = _RemoteWorkspaceMixinForTest(host="http://localhost:8000")
+    mixin = _RemoteWorkspaceMixinForTest(
+        host="http://localhost:8000", working_dir="/workspace"
+    )
 
     # ==== First command ====
     start_response_1 = Mock()
@@ -83,7 +85,9 @@ def test_command_id_filter_params_structure():
     with separate keys for command_id filtering and sort_order,
     ensuring proper event filtering by command ID.
     """
-    mixin = _RemoteWorkspaceMixinForTest(host="http://localhost:8000")
+    mixin = _RemoteWorkspaceMixinForTest(
+        host="http://localhost:8000", working_dir="/workspace"
+    )
 
     start_response = Mock()
     start_response.raise_for_status = Mock()

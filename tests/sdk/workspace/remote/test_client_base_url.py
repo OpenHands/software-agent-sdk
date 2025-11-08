@@ -24,7 +24,9 @@ def test_remote_workspace_client_has_base_url():
 
 def test_async_remote_workspace_client_has_base_url():
     """Test that AsyncRemoteWorkspace creates client with base_url set."""
-    workspace = AsyncRemoteWorkspace(host="http://localhost:8000")
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="/workspace"
+    )
     client = workspace.client
 
     assert isinstance(client, httpx.AsyncClient)

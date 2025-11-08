@@ -172,6 +172,7 @@ class DockerWorkspace(RemoteWorkspace):
                 base_image=self.base_image,
                 target=self.target,
                 platforms=[self.platform],
+                push=False,
             )
             tags = build(opts=build_opts)
             assert tags and len(tags) > 0, "Build failed, no image tags returned"
