@@ -23,6 +23,7 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -312,6 +313,16 @@ class LocalConversation(BaseConversation):
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
+
+            # Add an error event
+            self._on_event(
+                ConversationErrorEvent(
+                    source="environment",
+                    code=e.__class__.__name__,
+                    detail=str(e),
+                )
+            )
+
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
         finally:
