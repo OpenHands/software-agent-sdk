@@ -54,6 +54,14 @@ extend-select = ["B006", "B008", "B039", "RUF012"]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)
 "tests/**/*.py" = ["ARG"]
 
+
+# Allowlist safe default calls for flake8-bugbear rules (e.g., FastAPI Depends)
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+]
+
 [tool.ruff.lint.isort]
 known-first-party = ["openhands"]
 combine-as-imports = true
