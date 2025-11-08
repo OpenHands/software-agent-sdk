@@ -910,7 +910,9 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock the directory removal to avoid actual filesystem operations
-        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
             mock_rmtree.return_value = True
 
             result = await conversation_service.delete_conversation(conversation_id)
@@ -954,7 +956,9 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock the directory removal
-        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
             mock_rmtree.return_value = True
 
             result = await conversation_service.delete_conversation(conversation_id)
@@ -1003,7 +1007,9 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock the directory removal
-        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
             mock_rmtree.return_value = True
 
             result = await conversation_service.delete_conversation(conversation_id)
@@ -1048,7 +1054,9 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock directory removal to fail (simulating permission errors)
-        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
             mock_rmtree.return_value = False  # Simulate removal failure
 
             result = await conversation_service.delete_conversation(conversation_id)
