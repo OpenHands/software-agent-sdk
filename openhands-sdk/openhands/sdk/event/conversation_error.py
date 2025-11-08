@@ -13,7 +13,7 @@ class ConversationErrorEvent(Event):
     state, and for orchestration to react. It is not an observation and it is
     not LLM-convertible.
 
-    Diff from AgentErrorEvent (essential):
+    Differences from AgentErrorEvent:
     - Not tied to any tool_name/tool_call_id (AgentErrorEvent is a tool
       observation).
     - Typically source='environment' and the run loop moves to an ERROR state,
