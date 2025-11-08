@@ -252,6 +252,11 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 border_style=_SYSTEM_COLOR,
                 expand=True,
             )
+            # OpenHands-GPT-5: Handle CondensationRequest explicitly so it renders
+            # as a system-styled (magenta) panel rather than falling back to the
+            # UNKNOWN event branch. This matches the styling used for
+            # SystemPromptEvent and Condensation and keeps changes minimal.
+
         elif isinstance(event, CondensationRequest):
             title = f"[bold {_SYSTEM_COLOR}]"
             if self._name:
