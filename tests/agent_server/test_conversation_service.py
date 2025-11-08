@@ -903,7 +903,7 @@ class TestConversationServiceDeleteConversation:
             id=conversation_id,
             agent=mock_service.stored.agent,
             workspace=mock_service.stored.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -926,13 +926,10 @@ class TestConversationServiceDeleteConversation:
             mock_service.close.assert_called_once()
 
             # Verify directories were removed
-            assert mock_rmtree.call_count == 2
+            assert mock_rmtree.call_count == 1
             mock_rmtree.assert_any_call(
                 "/tmp/test_conversation",
                 "conversation directory for " + str(conversation_id),
-            )
-            mock_rmtree.assert_any_call(
-                "/tmp/test_workspace", "workspace directory for " + str(conversation_id)
             )
 
     @pytest.mark.asyncio
@@ -976,7 +973,7 @@ class TestConversationServiceDeleteConversation:
             mock_service.close.assert_called_once()
 
             # Verify directories were still removed
-            assert mock_rmtree.call_count == 2
+            assert mock_rmtree.call_count == 1
 
     @pytest.mark.asyncio
     async def test_delete_conversation_close_failure(self, conversation_service):
@@ -1000,7 +997,7 @@ class TestConversationServiceDeleteConversation:
             id=conversation_id,
             agent=mock_service.stored.agent,
             workspace=mock_service.stored.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -1024,7 +1021,7 @@ class TestConversationServiceDeleteConversation:
             assert conversation_id not in conversation_service._event_services
 
             # Verify directories were still removed
-            assert mock_rmtree.call_count == 2
+            assert mock_rmtree.call_count == 1
 
     @pytest.mark.asyncio
     async def test_delete_conversation_directory_removal_failure(
@@ -1050,7 +1047,7 @@ class TestConversationServiceDeleteConversation:
             id=conversation_id,
             agent=mock_service.stored.agent,
             workspace=mock_service.stored.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=mock_service.stored.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -1074,7 +1071,7 @@ class TestConversationServiceDeleteConversation:
             mock_service.close.assert_called_once()
 
             # Verify removal was attempted
-            assert mock_rmtree.call_count == 2
+            assert mock_rmtree.call_count == 1
 
 
 class TestSafeRmtree:
