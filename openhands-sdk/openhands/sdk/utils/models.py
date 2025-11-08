@@ -47,9 +47,22 @@ def rebuild_all():
 
 
 def kind_of(obj) -> str:
-    """Get the string value for the kind tag"""
+    """Get the string value for the kind tag.
+
+    For payloads that omit the discriminator but are unambiguous, fall back to a
+    sensible default to preserve backward compatibility with existing clients.
+    Currently, we default AgentBase payloads (which contain 'llm' and 'tools')
+    to kind='Agent'.
+    """
     if isinstance(obj, dict):
-        return obj["kind"]
+        k = obj.get("kind")
+        if k is not None:
+            return k
+        # Heuristic: Agent specs commonly omit 'kind'. Detect by keys.
+        if "llm" in obj and "tools" in obj:
+            return "Agent"
+        # If discriminator missing and we cannot infer, fall through to error
+        raise KeyError("kind")
     if not hasattr(obj, "__name__"):
         obj = obj.__class__
     return obj.__name__
@@ -241,7 +254,15 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
     @classmethod
     def model_validate(cls, obj: Any, **kwargs) -> Self:
         if _is_abstract(cls):
-            resolved = cls.resolve_kind(kind_of(obj))
+            # Special-case AgentBase to default to Agent when 'kind' is omitted.
+            if (
+                isinstance(obj, dict)
+                and "kind" not in obj
+                and cls.__name__ == "AgentBase"
+            ):
+                resolved = cls.resolve_kind("Agent")
+            else:
+                resolved = cls.resolve_kind(kind_of(obj))
         else:
             resolved = super()
         result = resolved.model_validate(obj, **kwargs)
