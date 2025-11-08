@@ -7,10 +7,7 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import (
-    ConversationService,
-    _safe_rmtree,
-)
+from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationPage,
@@ -19,6 +16,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.secret_source import SecretSource, StaticSecret
 from openhands.sdk.conversation.state import (
@@ -912,9 +910,7 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock the directory removal to avoid actual filesystem operations
-        with patch(
-            "openhands.agent_server.conversation_service._safe_rmtree"
-        ) as mock_rmtree:
+        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
             mock_rmtree.return_value = True
 
             result = await conversation_service.delete_conversation(conversation_id)
@@ -958,9 +954,7 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock the directory removal
-        with patch(
-            "openhands.agent_server.conversation_service._safe_rmtree"
-        ) as mock_rmtree:
+        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
             mock_rmtree.return_value = True
 
             result = await conversation_service.delete_conversation(conversation_id)
@@ -1009,9 +1003,7 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock the directory removal
-        with patch(
-            "openhands.agent_server.conversation_service._safe_rmtree"
-        ) as mock_rmtree:
+        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
             mock_rmtree.return_value = True
 
             result = await conversation_service.delete_conversation(conversation_id)
@@ -1056,9 +1048,7 @@ class TestConversationServiceDeleteConversation:
         conversation_service._event_services[conversation_id] = mock_service
 
         # Mock directory removal to fail (simulating permission errors)
-        with patch(
-            "openhands.agent_server.conversation_service._safe_rmtree"
-        ) as mock_rmtree:
+        with patch("openhands.agent_server.utils.safe_rmtree") as mock_rmtree:
             mock_rmtree.return_value = False  # Simulate removal failure
 
             result = await conversation_service.delete_conversation(conversation_id)

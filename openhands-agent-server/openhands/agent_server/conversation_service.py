@@ -1,8 +1,5 @@
 import asyncio
 import logging
-import os
-import shutil
-import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -21,7 +18,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.utils import utc_now
+from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -30,43 +27,6 @@ from openhands.sdk.conversation.state import (
 
 
 logger = logging.getLogger(__name__)
-
-
-def _safe_rmtree(path: str | Path | None, description: str = "directory") -> bool:
-    """Safely remove a directory tree, handling permission errors gracefully.
-
-    Args:
-        path: Path to the directory to remove
-        description: Description of what's being removed (for logging)
-
-    Returns:
-        bool: True if removal was successful, False if it failed
-    """
-    if not path or not os.path.exists(path):
-        return True
-
-    def handle_remove_readonly(func, path, _exc):
-        """Error handler for removing read-only files."""
-        if os.path.exists(path):
-            try:
-                os.chmod(path, stat.S_IWRITE)
-                func(path)
-            except (OSError, PermissionError) as e:
-                logger.warning(f"Failed to remove read-only file {path}: {e}")
-
-    try:
-        shutil.rmtree(path, onerror=handle_remove_readonly)
-        logger.debug(f"Successfully removed {description}: {path}")
-        return True
-    except (OSError, PermissionError) as e:
-        logger.warning(
-            f"Failed to remove {description} at {path}: {e}. "
-            f"This may leave temporary files on disk but won't affect functionality."
-        )
-        return False
-    except Exception as e:
-        logger.error(f"Unexpected error removing {description} at {path}: {e}")
-        return False
 
 
 def _compose_conversation_info(
@@ -294,7 +254,7 @@ class ConversationService:
             # Safely remove only the conversation directory (workspace is preserved).
             # This operation may fail due to permission issues, but we don't want that
             # to prevent the conversation from being marked as deleted.
-            _safe_rmtree(
+            safe_rmtree(
                 event_service.conversation_dir,
                 f"conversation directory for {conversation_id}",
             )
