@@ -6,12 +6,9 @@ from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
 
 
-api_key = os.getenv("LLM_API_KEY")
-assert api_key is not None, "LLM_API_KEY environment variable is not set."
-
 llm = LLM(
     model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
-    api_key=api_key,
+    api_key=os.getenv("LLM_API_KEY"),
 )
 
 agent = Agent(
