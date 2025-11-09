@@ -23,6 +23,7 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.condenser import CondensationRequest
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -227,6 +228,15 @@ class LocalConversation(BaseConversation):
                     )
                     extended_content.append(content)
                     self._state.activated_knowledge_skills.extend(activated_skill_names)
+
+            # Special command via skill: if a 'condense' task skill is activated or
+            # the user explicitly types '/condense', emit a CondensationRequest.
+            if "condense" in activated_skill_names or any(
+                isinstance(c, TextContent) and "/condense" in c.text.lower()
+                for c in message.content
+            ):
+                self._on_event(CondensationRequest())
+                return
 
             user_msg_event = MessageEvent(
                 source="user",
