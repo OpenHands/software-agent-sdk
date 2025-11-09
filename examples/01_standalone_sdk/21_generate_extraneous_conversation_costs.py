@@ -65,7 +65,7 @@ conversation.run()
 # Demonstrate extraneous costs part of the conversation
 second_llm = LLM(
     usage_id="demo-secondary",
-    model="anthropic/claude-sonnet-4-5-20250929",
+    model=model,
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
