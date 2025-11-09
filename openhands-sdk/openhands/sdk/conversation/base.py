@@ -187,9 +187,18 @@ class BaseConversation(ABC):
 
     @staticmethod
     def get_persistence_dir(
-        persistence_base_dir: str, conversation_id: ConversationID
+        persistence_base_dir: str | Path, conversation_id: ConversationID
     ) -> str:
-        """Get the persistence directory for the conversation."""
+        """Get the persistence directory for the conversation.
+
+        Args:
+            persistence_base_dir: Base directory for persistence. Can be a string
+                path or Path object.
+            conversation_id: Unique conversation ID.
+
+        Returns:
+            String path to the conversation-specific persistence directory.
+        """
         return str(Path(persistence_base_dir) / conversation_id.hex)
 
     @staticmethod

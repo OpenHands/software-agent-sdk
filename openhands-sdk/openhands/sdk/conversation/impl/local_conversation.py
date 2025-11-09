@@ -51,8 +51,8 @@ class LocalConversation(BaseConversation):
     def __init__(
         self,
         agent: AgentBase,
-        workspace: str | LocalWorkspace,
-        persistence_dir: str | None = None,
+        workspace: str | Path | LocalWorkspace,
+        persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
@@ -67,8 +67,10 @@ class LocalConversation(BaseConversation):
 
         Args:
             agent: The agent to use for the conversation
-            workspace: Working directory for agent operations and tool execution
-            persistence_dir: Directory for persisting conversation state and events
+            workspace: Working directory for agent operations and tool execution.
+                Can be a string path, Path object, or LocalWorkspace instance.
+            persistence_dir: Directory for persisting conversation state and events.
+                Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
@@ -87,8 +89,10 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
 
         self.agent = agent
-        if isinstance(workspace, str):
-            workspace = LocalWorkspace(working_dir=workspace)
+        if isinstance(workspace, (str, Path)):
+            # Convert to string explicitly to satisfy type checker
+            workspace_str = str(workspace)
+            workspace = LocalWorkspace(working_dir=workspace_str)
         assert isinstance(workspace, LocalWorkspace), (
             "workspace must be a LocalWorkspace instance"
         )
