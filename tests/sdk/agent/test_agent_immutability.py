@@ -5,7 +5,6 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.agent.agent import Agent
 from openhands.sdk.llm import LLM
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
 
 class TestAgentImmutability:
@@ -57,9 +56,8 @@ class TestAgentImmutability:
 
     def test_agent_with_different_configs_are_different(self):
         """Test that agents with different configs produce different system messages."""
-        # Use LLMSecurityAnalyzer so that the security risk assessment section is
-        # included and cli_mode differences will be visible in the system message
-        security_analyzer = LLMSecurityAnalyzer()
+        # Security analyzer context is automatically included in system messages
+        # and cli_mode differences will be visible in the system message
         agent1 = Agent(
             llm=self.llm,
             tools=[],
@@ -72,8 +70,8 @@ class TestAgentImmutability:
         )
 
         # System messages should be different due to cli_mode
-        msg1 = agent1.get_system_message(security_analyzer)
-        msg2 = agent2.get_system_message(security_analyzer)
+        msg1 = agent1.system_message
+        msg2 = agent2.system_message
 
         # They should be different (cli_mode affects the template)
         assert msg1 != msg2
@@ -149,9 +147,8 @@ class TestAgentImmutability:
 
     def test_agent_model_copy_creates_new_instance(self):
         """Test that model_copy creates a new Agent instance with modified fields."""
-        # Use LLMSecurityAnalyzer so that the security risk assessment section is
-        # included and cli_mode differences will be visible in the system message
-        security_analyzer = LLMSecurityAnalyzer()
+        # Security analyzer context is automatically included in system messages
+        # and cli_mode differences will be visible in the system message
         original_agent = Agent(
             llm=self.llm,
             tools=[],
@@ -167,6 +164,4 @@ class TestAgentImmutability:
         assert modified_agent is not original_agent
 
         # Verify that system messages are different due to different configs
-        assert original_agent.get_system_message(
-            security_analyzer
-        ) != modified_agent.get_system_message(security_analyzer)
+        assert original_agent.system_message != modified_agent.system_message

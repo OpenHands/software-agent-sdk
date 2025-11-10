@@ -15,7 +15,6 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event import ActionEvent, AgentErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
 
 def test_security_policy_in_system_message():
@@ -101,8 +100,8 @@ def test_llm_security_analyzer_template_kwargs():
         ),
     )
 
-    # Get system message with LLMSecurityAnalyzer
-    system_message = agent.get_system_message(LLMSecurityAnalyzer())
+    # Get system message (security analyzer context is automatically included)
+    system_message = agent.system_message
 
     # Verify that the security risk assessment section is included in the system prompt
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -128,8 +127,8 @@ def test_llm_security_analyzer_sandbox_mode():
         system_prompt_kwargs={"cli_mode": False},
     )
 
-    # Get system message with LLMSecurityAnalyzer
-    system_message = agent.get_system_message(LLMSecurityAnalyzer())
+    # Get system message (security analyzer context is automatically included)
+    system_message = agent.system_message
 
     # Verify that the security risk assessment section is included with sandbox mode content  # noqa: E501
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -154,8 +153,8 @@ def test_no_security_analyzer_excludes_risk_assessment():
         )
     )
 
-    # Get the system message
-    system_message = agent.system_message
+    # Get the system message with no security analyzer
+    system_message = agent.get_system_message(None)
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" not in system_message
@@ -186,7 +185,7 @@ def test_non_llm_security_analyzer_excludes_risk_assessment():
     )
 
     # Get the system message with non-LLM security analyzer
-    system_message = agent.get_system_message(security_analyzer=MockSecurityAnalyzer())
+    system_message = agent.get_system_message(MockSecurityAnalyzer())
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" not in system_message
