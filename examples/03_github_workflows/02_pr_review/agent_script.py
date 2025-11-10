@@ -54,7 +54,7 @@ def post_review_comment(review_content: str) -> None:
     """
     # Sanitize @OpenHands mentions to prevent self-mention loops
     review_content = sanitize_openhands_mentions(review_content)
-    
+
     logger.info("Posting review comment to GitHub...")
     pr_number = os.getenv("PR_NUMBER")
     repo_name = os.getenv("REPO_NAME")
