@@ -21,7 +21,7 @@ env:
 
 jobs:
     post-initial-comment:
-        if: github.event_name == 'pull_request_target' && github.event.label.name == 'integration-test'
+        if: github.event_name == 'pull_request' && github.event.label.name == 'integration-test'
         runs-on: ubuntu-latest
         permissions:
             pull-requests: write
