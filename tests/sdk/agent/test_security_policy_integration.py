@@ -90,7 +90,6 @@ def test_security_policy_template_rendering():
 
 def test_llm_security_analyzer_template_kwargs():
     """Test that agent sets template_kwargs appropriately when security analyzer is LLMSecurityAnalyzer."""  # noqa: E501
-    # Create agent
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -141,7 +140,7 @@ def test_llm_security_analyzer_sandbox_mode():
     assert "**Global Rules**" in system_message
 
 
-def test_no_security_analyzer_excludes_risk_assessment():
+def test_no_security_analyzer_still_includes_risk_assessment():
     """Test that security risk assessment section is excluded when no security analyzer is set."""  # noqa: E501
     # Create agent without security analyzer
     agent = Agent(
@@ -154,15 +153,12 @@ def test_no_security_analyzer_excludes_risk_assessment():
     )
 
     # Get the system message with no security analyzer
-    system_message = agent.get_system_message(None)
+    system_message = agent.system_message
 
     # Verify that the security risk assessment section is NOT included
-    assert "<SECURITY_RISK_ASSESSMENT>" not in system_message
-    assert "# Security Risk Policy" not in system_message
-    assert (
-        "When using tools that support the security_risk parameter"
-        not in system_message
-    )
+    assert "<SECURITY_RISK_ASSESSMENT>" in system_message
+    assert "# Security Risk Policy" in system_message
+    assert "When using tools that support the security_risk parameter" in system_message
 
 
 def test_non_llm_security_analyzer_excludes_risk_assessment():
