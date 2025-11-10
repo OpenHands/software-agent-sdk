@@ -666,10 +666,9 @@ class RemoteConversation(BaseConversation):
 
         self._end_observability_span()
 
-        try:
-            self._client.close()
-        except Exception:
-            pass
+        # NOTE: We don't close self._client here because it's shared with the workspace.
+        # The workspace owns the client and will close it during its own cleanup.
+        # Closing it here would prevent the workspace from making cleanup API calls.
 
     def __del__(self) -> None:
         try:
