@@ -1,6 +1,7 @@
 """Test for FunctionCallingConverter."""
 
 import json
+import textwrap
 from typing import cast
 
 import pytest
@@ -530,24 +531,24 @@ def test_convert_tools_to_description_array_items():
         "Allowed values: [`view`, `plan`]\n"
     )
     assert expected_command_line in description
+    # Top-level parameter line should reflect the summarized array type
     assert (
-        "  (2) task_list (array, optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
+        "  (2) task_list (array[object], optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
         in description
     )
-    assert "       task_list array item structure:\n" in description
+    # Nested structure should be shown via the generic recursive formatter
+    assert "Object properties:" in description
+    assert "- title (string, required): A brief title for the task." in description
     assert (
-        "       - title (string, required): A brief title for the task.\n"
+        "- notes (string, optional): Additional details or notes about the task."
         in description
     )
     assert (
-        "       - notes (string, optional): Additional details or notes about the task.\n"  # noqa: E501
+        "- status (string, optional): The current status of the task. One of 'todo', 'in_progress', or 'done'."  # noqa: E501
         in description
     )
-    expected_status_line = (
-        "       - status (string, optional): The current status of the task. "
-        "One of 'todo', 'in_progress', or 'done'. Allowed values: [`todo`, `in_progress`, `done`]\n"  # noqa: E501
-    )
-    assert expected_status_line in description
+    # Nested enum values are described inline in the field description; no separate
+    # "Allowed values" line is required.
 
 
 @pytest.mark.parametrize(
@@ -769,3 +770,152 @@ def test_convert_fncall_messages_with_image_url():
         image_content["image_url"]["url"]
         == "data:image/gif;base64,R0lGODlhAQABAAAAACw="
     )
+
+
+def test_convert_tools_to_description_nested_array():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "nested_array",
+                "description": "Handle nested arrays",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "description": "List of entries",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {
+                                        "type": "integer",
+                                        "description": "The numeric value",
+                                    }
+                                },
+                                "required": ["value"],
+                            },
+                        }
+                    },
+                    "required": ["items"],
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: nested_array ----
+        Description: Handle nested arrays
+        Parameters:
+          (1) items (array[object], required): List of entries
+              Array items:
+                Type: object
+                  Object properties:
+                    - value (integer, required): The numeric value
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
+
+
+def test_convert_tools_to_description_union_options():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "union_tool",
+                "description": "Test union parameter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filters": {
+                            "description": "Supported filters",
+                            "anyOf": [
+                                {"type": "string", "description": "match by name"},
+                                {"type": "integer", "description": "match by id"},
+                            ],
+                        }
+                    },
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: union_tool ----
+        Description: Test union parameter
+        Parameters:
+          (1) filters (string or integer, optional): Supported filters
+              anyOf options:
+                - string: match by name
+                - integer: match by id
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
+
+
+def test_convert_tools_to_description_object_details():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "object_tool",
+                "description": "Test object parameter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config": {
+                            "type": "object",
+                            "description": "Configuration payload",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Friendly name",
+                                },
+                                "thresholds": {
+                                    "type": "array",
+                                    "description": "Threshold list",
+                                    "items": {"type": "number"},
+                                },
+                            },
+                            "required": ["name"],
+                            "additionalProperties": {
+                                "type": "string",
+                                "description": "Extra properties",
+                            },
+                        }
+                    },
+                    "required": ["config"],
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: object_tool ----
+        Description: Test object parameter
+        Parameters:
+          (1) config (object, required): Configuration payload
+              Object properties:
+                - name (string, required): Friendly name
+                - thresholds (array[number], optional): Threshold list
+                  Array items:
+                    Type: number
+              Additional properties allowed: string
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
