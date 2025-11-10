@@ -227,10 +227,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             )
 
         elif isinstance(event, CondensationRequest):
-            title = f"[bold {_SYSTEM_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"Condensation Request[/bold {_SYSTEM_COLOR}]"
+            title = f"[bold {_SYSTEM_COLOR}]Condensation Request[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
                 title=title,
