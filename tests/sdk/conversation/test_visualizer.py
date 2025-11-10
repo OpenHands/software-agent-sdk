@@ -2,6 +2,7 @@
 
 import json
 
+from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.conversation.visualizer import (
@@ -10,6 +11,7 @@ from openhands.sdk.conversation.visualizer import (
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    CondensationRequest,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -34,7 +36,7 @@ class VisualizerMockAction(Action):
 class VisualizerCustomAction(Action):
     """Custom action with overridden visualize method."""
 
-    task_list: list[dict] = []
+    task_list: list[dict] = Field(default_factory=list)
 
     @property
     def visualize(self) -> Text:
@@ -288,6 +290,24 @@ def test_visualizer_user_reject_observation_panel():
     renderable = panel.renderable
     assert isinstance(renderable, Text)
     assert "User rejected the proposed action." in renderable.plain
+
+
+def test_visualizer_condensation_request_panel():
+    """CondensationRequest should render a system-styled panel with friendly text."""
+    visualizer = DefaultConversationVisualizer()
+    event = CondensationRequest()
+    panel = visualizer._create_event_panel(event)
+    assert panel is not None
+    # Should not fall back to UNKNOWN
+    assert "UNKNOWN Event" not in str(panel.title)
+    # Title should indicate condensation request (case-insensitive check on substring)
+    assert "Condensation Request" in str(panel.title)
+    # Body should be the friendly visualize text
+    renderable = panel.renderable
+    assert isinstance(renderable, Text)
+    body = renderable.plain
+    assert "Conversation Condensation Requested" in body
+    assert "condensation of the conversation history" in body
 
 
 def test_metrics_formatting():
