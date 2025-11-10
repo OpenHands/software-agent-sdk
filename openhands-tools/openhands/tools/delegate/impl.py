@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
-from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
@@ -112,29 +111,20 @@ class DelegateExecutor(ToolExecutor):
                     ),
                 )
 
-                # Format the agent ID for display
-                # (e.g., "lodging_expert" -> "Lodging Expert")
-                formatted_name = DelegationVisualizer._format_agent_name(agent_id)
-
-                # Use DelegationVisualizer for sub-agents
-                # to show proper sender/receiver info
-                if isinstance(parent_visualizer, DelegationVisualizer):
-                    sub_visualizer = DelegationVisualizer(
-                        name=formatted_name,
-                        highlight_regex=parent_visualizer._highlight_patterns,
-                        skip_user_messages=parent_visualizer._skip_user_messages,
+                # Delegation requires DelegationVisualizer
+                # Pass raw agent_id - visualizer handles formatting
+                if not isinstance(parent_visualizer, DelegationVisualizer):
+                    raise ValueError(
+                        "Delegation tool requires DelegationVisualizer. "
+                        "Please use DelegationVisualizer when creating "
+                        "the parent conversation."
                     )
-                elif isinstance(parent_visualizer, ConversationVisualizerBase):
-                    # If parent uses a different visualizer, use DelegationVisualizer
-                    # for sub-agents to ensure proper delegation visualization
-                    sub_visualizer = DelegationVisualizer(name=formatted_name)
-                elif isinstance(parent_visualizer, type) and issubclass(
-                    parent_visualizer, ConversationVisualizerBase
-                ):
-                    # Parent is a class, instantiate DelegationVisualizer
-                    sub_visualizer = DelegationVisualizer(name=formatted_name)
-                else:
-                    sub_visualizer = None
+
+                sub_visualizer = DelegationVisualizer(
+                    name=agent_id,
+                    highlight_regex=parent_visualizer._highlight_patterns,
+                    skip_user_messages=parent_visualizer._skip_user_messages,
+                )
 
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
@@ -213,13 +203,8 @@ class DelegateExecutor(ToolExecutor):
                 """Run a single task on a sub-agent."""
                 try:
                     logger.info(f"Sub-agent {agent_id} starting task: {task[:100]}...")
-                    # Format the parent agent name for display
-                    formatted_parent_name = (
-                        DelegationVisualizer._format_agent_name(parent_name)
-                        if parent_name
-                        else None
-                    )
-                    conversation.send_message(task, sender=formatted_parent_name)
+                    # Pass raw parent_name - visualizer handles formatting
+                    conversation.send_message(task, sender=parent_name)
                     conversation.run()
 
                     # Extract the final response using get_agent_final_response
