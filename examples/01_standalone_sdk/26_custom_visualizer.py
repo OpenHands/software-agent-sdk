@@ -26,14 +26,10 @@ from openhands.tools.preset.default import get_default_agent
 class MinimalVisualizer(ConversationVisualizerBase):
     """A minimal visualizer that print the raw events as they occur."""
 
-    def __init__(self, name: str | None = None):
-        """Initialize the minimal progress visualizer.
-
-        Args:
-            name: Optional name to identify the agent/conversation.
-        """
+    def __init__(self):
+        """Initialize the minimal progress visualizer."""
         # Initialize parent - state will be set later via initialize()
-        super().__init__(name=name)
+        super().__init__()
 
     def on_event(self, event: Event) -> None:
         """Handle events for minimal progress visualization."""

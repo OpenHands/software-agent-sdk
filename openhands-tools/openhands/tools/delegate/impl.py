@@ -9,6 +9,7 @@ from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
+from openhands.tools.delegate.visualizer import DelegationVisualizer
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -127,12 +128,23 @@ class DelegateExecutor(ToolExecutor):
                 # (e.g., "lodging_expert" -> "Lodging Expert")
                 formatted_name = _format_agent_name(agent_id)
 
-                if isinstance(parent_visualizer, ConversationVisualizerBase):
-                    sub_visualizer = parent_visualizer.__class__(name=formatted_name)
+                # Use DelegationVisualizer for sub-agents
+                # to show proper sender/receiver info
+                if isinstance(parent_visualizer, DelegationVisualizer):
+                    sub_visualizer = DelegationVisualizer(
+                        name=formatted_name,
+                        highlight_regex=parent_visualizer._highlight_patterns,
+                        skip_user_messages=parent_visualizer._skip_user_messages,
+                    )
+                elif isinstance(parent_visualizer, ConversationVisualizerBase):
+                    # If parent uses a different visualizer, use DelegationVisualizer
+                    # for sub-agents to ensure proper delegation visualization
+                    sub_visualizer = DelegationVisualizer(name=formatted_name)
                 elif isinstance(parent_visualizer, type) and issubclass(
                     parent_visualizer, ConversationVisualizerBase
                 ):
-                    sub_visualizer = parent_visualizer(name=formatted_name)
+                    # Parent is a class, instantiate DelegationVisualizer
+                    sub_visualizer = DelegationVisualizer(name=formatted_name)
                 else:
                     sub_visualizer = None
 
@@ -201,7 +213,7 @@ class DelegateExecutor(ToolExecutor):
             parent_name = None
             if hasattr(parent_conversation, "_visualizer"):
                 visualizer = parent_conversation._visualizer
-                if isinstance(visualizer, ConversationVisualizerBase):
+                if isinstance(visualizer, DelegationVisualizer):
                     parent_name = visualizer._name
 
             def run_task(
