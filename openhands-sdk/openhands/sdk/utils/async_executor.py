@@ -28,7 +28,9 @@ class AsyncExecutor:
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
 
-    def _safe_execute_on_loop(self, callback: Callable[[asyncio.AbstractEventLoop], Any]) -> Any:
+    def _safe_execute_on_loop(
+            self, callback: Callable[[asyncio.AbstractEventLoop], Any]
+        ) -> Any:
         """Ensure the background event loop is running."""
         with self._lock:
             if self._shutdown.is_set():
@@ -38,8 +40,10 @@ class AsyncExecutor:
                 if self._loop.is_running():
                     return callback(self._loop)
 
-                logger.warning("The loop is not empty, but it is not in a running state. "
-                "Under normal circumstances, this should not happen.")
+                logger.warning(
+                    "The loop is not empty, but it is not in a running state. "
+                "Under normal circumstances, this should not happen."
+                )
                 try:
                     self._loop.close()
                 except RuntimeError as e:
@@ -68,9 +72,10 @@ class AsyncExecutor:
             logger.info("AsyncExecutor has been shutdown")
             return
 
-        self._shutdown.set()
-
         with self._lock:
+            if self._shutdown.is_set():
+                return
+            self._shutdown.set()
             loop, t = self._loop, self._thread
             self._loop = None
             self._thread = None
@@ -87,6 +92,12 @@ class AsyncExecutor:
 
         if loop and not loop.is_closed():
             try:
+                if loop.is_running():
+                    tasks = asyncio.all_tasks(loop)
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+
                 loop.close()
             except RuntimeError as e:
                 logger.warning(f"Failed to close event loop: {e}")
@@ -122,7 +133,9 @@ class AsyncExecutor:
             coro = awaitable_or_fn(*args, **kwargs)
         else:
             raise TypeError("run_async expects a coroutine or async function")
-        def submit_task(loop: asyncio.AbstractEventLoop) -> concurrent.futures.Future[Any]:
+        def submit_task(
+                loop: asyncio.AbstractEventLoop
+        ) -> concurrent.futures.Future[Any]:
             return asyncio.run_coroutine_threadsafe(coro, loop)
 
         fut = self._safe_execute_on_loop(submit_task)
