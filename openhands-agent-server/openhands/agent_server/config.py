@@ -1,15 +1,18 @@
+import logging
 import os
 from pathlib import Path
 from typing import ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, SecretStr
 
 from openhands.agent_server.env_parser import from_env
+from openhands.sdk.utils.cipher import Cipher
 
 
 # Environment variable constants
 SESSION_API_KEY_ENV = "SESSION_API_KEY"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
+_logger = logging.getLogger(__name__)
 
 
 def _default_session_api_keys():
@@ -19,6 +22,13 @@ def _default_session_api_keys():
     if session_api_key:
         result.append(session_api_key)
     return result
+
+
+def _default_secret_key() -> SecretStr | None:
+    session_api_key = os.getenv(SESSION_API_KEY_ENV)
+    if session_api_key:
+        return SecretStr(session_api_key)
+    return None
 
 
 class WebhookSpec(BaseModel):
@@ -116,7 +126,30 @@ class Config(BaseModel):
         default=False,
         description="Whether to enable VNC desktop functionality",
     )
+    secret_key: SecretStr | None = Field(
+        default_factory=_default_secret_key,
+        description=(
+            "Secret key used for encrypting sensitive values in all serialized data. "
+            "If missing, any sensitive data is redacted, meaning full state cannot"
+            "be restored between restarts."
+        ),
+    )
     model_config: ClassVar[ConfigDict] = {"frozen": True}
+
+    @property
+    def cipher(self) -> Cipher | None:
+        cipher = getattr(self, "_cipher", None)
+        if cipher is None:
+            if self.secret_key is None:
+                _logger.warning(
+                    "⚠️ OH_SECRET_KEY was not defined. Secrets will not "
+                    "be persisted between restarts."
+                )
+                cipher = None
+            else:
+                cipher = Cipher(self.secret_key.get_secret_value())
+            setattr(self, "_cipher", cipher)
+        return cipher
 
 
 _default_config: Config | None = None

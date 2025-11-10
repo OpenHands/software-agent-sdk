@@ -131,3 +131,7 @@ print("\nCreated files:")
 for file_path in workspace_dir.rglob("*"):
     if file_path.is_file():
         print(f"  - {file_path.relative_to(workspace_dir)}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

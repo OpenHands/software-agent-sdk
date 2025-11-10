@@ -152,8 +152,8 @@ jobs:
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands-sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands-tools"
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-tools"
 
             - name: Copy agent files
               run: |
@@ -169,8 +169,8 @@ jobs:
 
             - name: Process TODO
               env:
-                  LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-                  LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+                  LLM_MODEL: <YOUR_LLM_MODEL>
+                  LLM_BASE_URL: <YOUR_LLM_BASE_URL>
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   GITHUB_REPOSITORY: ${{ github.repository }}

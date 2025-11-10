@@ -5,6 +5,7 @@ with OpenHands-native types, eliminating the need for consumers to work directly
 with LiteLLM types.
 """
 
+import warnings
 from typing import ClassVar
 
 from litellm import ResponsesAPIResponse
@@ -13,6 +14,12 @@ from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.llm.message import Message
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+
+# Suppress Pydantic serializer warnings from litellm
+# These warnings occur when Pydantic serializes litellm's ModelResponse objects
+# that have mismatched field counts, which is expected behavior in litellm
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings")
 
 
 __all__ = ["LLMResponse"]

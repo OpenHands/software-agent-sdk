@@ -114,8 +114,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets of matching files for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -143,8 +143,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -172,8 +172,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -205,8 +205,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed with identical empty results
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -229,8 +229,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -258,8 +258,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -287,8 +287,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -316,8 +316,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -345,8 +345,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -374,8 +374,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)
@@ -409,8 +409,8 @@ class TestGrepConsistency:
             )
 
             # Both should succeed
-            assert not ripgrep_result.error
-            assert not fallback_result.error
+            assert not ripgrep_result.is_error
+            assert not fallback_result.is_error
 
             # Convert to sets for exact comparison
             ripgrep_matches = set(ripgrep_result.matches)
@@ -439,8 +439,8 @@ class TestGrepConsistency:
         )
 
         # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        assert not ripgrep_result.is_error
+        assert not fallback_result.is_error
 
         # Convert to sets for exact comparison
         ripgrep_matches = set(ripgrep_result.matches)

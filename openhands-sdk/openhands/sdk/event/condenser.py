@@ -25,6 +25,11 @@ class Condensation(Event):
         description="An optional offset to the start of the resulting view"
         " indicating where the summary should be inserted.",
     )
+    llm_response_id: EventID = Field(
+        description=(
+            "Completion or Response ID of the LLM response that generated this event"
+        ),
+    )
 
     source: SourceType = "environment"
 
@@ -49,6 +54,17 @@ class CondensationRequest(Event):
     """
 
     source: SourceType = "environment"
+
+    @property
+    def visualize(self) -> Text:
+        text = Text()
+        text.append("Conversation Condensation Requested\n", style="bold")
+        message = (
+            "A condensation of the conversation history has been requested to "
+            "manage context window usage.\n"
+        )
+        text.append(message)
+        return text
 
 
 class CondensationSummaryEvent(LLMConvertibleEvent):

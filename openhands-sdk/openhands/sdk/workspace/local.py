@@ -1,6 +1,9 @@
 import shutil
 from pathlib import Path
 
+from openhands.sdk.git.git_changes import get_git_changes
+from openhands.sdk.git.git_diff import get_git_diff
+from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
 from openhands.sdk.workspace.base import BaseWorkspace
@@ -11,7 +14,18 @@ logger = get_logger(__name__)
 
 
 class LocalWorkspace(BaseWorkspace):
-    """Mixin providing local workspace operations."""
+    """Local workspace implementation that operates on the host filesystem.
+
+    LocalWorkspace provides direct access to the local filesystem and command execution
+    environment. It's suitable for development and testing scenarios where the agent
+    should operate directly on the host system.
+
+    Example:
+        >>> workspace = LocalWorkspace(working_dir="/path/to/project")
+        >>> with workspace:
+        ...     result = workspace.execute_command("ls -la")
+        ...     content = workspace.read_file("README.md")
+    """
 
     def execute_command(
         self,
@@ -137,3 +151,33 @@ class LocalWorkspace(BaseWorkspace):
                 destination_path=str(destination),
                 error=str(e),
             )
+
+    def git_changes(self, path: str | Path) -> list[GitChange]:
+        """Get the git changes for the repository at the path given.
+
+        Args:
+            path: Path to the git repository
+
+        Returns:
+            list[GitChange]: List of changes
+
+        Raises:
+            Exception: If path is not a git repository or getting changes failed
+        """
+        path = Path(self.working_dir) / path
+        return get_git_changes(path)
+
+    def git_diff(self, path: str | Path) -> GitDiff:
+        """Get the git diff for the file at the path given.
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            GitDiff: Git diff
+
+        Raises:
+            Exception: If path is not a git repository or getting diff failed
+        """
+        path = Path(self.working_dir) / path
+        return get_git_diff(path)

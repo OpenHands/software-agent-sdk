@@ -39,7 +39,7 @@ def test_filter_unmatched_tool_calls_with_user_reject_observation() -> None:
     # Create a UserRejectObservation that responds to the action
     user_reject_obs = UserRejectObservation(
         action_id="action_1",
-        tool_name="BashTool",
+        tool_name="TerminalTool",
         tool_call_id="call_1",
         rejection_reason="User rejected the action",
     )
@@ -80,7 +80,7 @@ def test_filter_unmatched_tool_calls_with_agent_error_event() -> None:
     # After the fix, AgentErrorEvent should have tool_name and tool_call_id fields
     agent_error = AgentErrorEvent(
         error="Tool execution failed",
-        tool_name="BashTool",
+        tool_name="TerminalTool",
         tool_call_id="call_1",
     )
 
@@ -132,7 +132,7 @@ def test_filter_unmatched_tool_calls_mixed_observation_types() -> None:
     action_event_2.id = "action_2"
     user_reject_obs = UserRejectObservation(
         action_id="action_2",
-        tool_name="BashTool",
+        tool_name="TerminalTool",
         tool_call_id="call_2",
         rejection_reason="User rejected the action",
     )
@@ -140,7 +140,7 @@ def test_filter_unmatched_tool_calls_mixed_observation_types() -> None:
     # Agent error - should work after fix (but not before)
     agent_error = AgentErrorEvent(
         error="Tool execution failed",
-        tool_name="BashTool",
+        tool_name="TerminalTool",
         tool_call_id="call_3",
     )
 

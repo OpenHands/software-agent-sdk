@@ -181,7 +181,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server/openhands/agent_serv
 
 USER ${USERNAME}
 WORKDIR /
-ENV OH_ENABLE_VNC=true
+ENV OH_ENABLE_VNC=false
 ENV LOG_JSON=true
 EXPOSE ${PORT} ${NOVNC_PORT}
 

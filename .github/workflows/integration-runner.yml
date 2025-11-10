@@ -2,10 +2,11 @@
 name: Run Integration Tests
 
 on:
-    pull_request:
+    # Use pull_request_target to access secrets even on fork PRs
+    # This is safe because we only run when the 'integration-test' label is added by a maintainer
+    pull_request_target:
         types:
             - labeled
-            - synchronize
     workflow_dispatch:
         inputs:
             reason:
@@ -19,8 +20,30 @@ env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
 
 jobs:
+    post-initial-comment:
+        if: github.event_name == 'pull_request_target' && github.event.label.name == 'integration-test'
+        runs-on: ubuntu-latest
+        permissions:
+            pull-requests: write
+        steps:
+            - name: Comment on PR
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  unique: false
+                  comment: |
+                      Hi! I started running the integration tests on your PR. You will receive a comment with the results shortly.
+
     run-integration-tests:
-        if: github.event.label.name == 'integration-test' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        # Security: Only run when 'integration-test' label is present, via workflow_dispatch, or on schedule
+        # This prevents automatic execution on fork PRs without maintainer approval
+        # Note: uses always() to run even when post-initial-comment is skipped (e.g., for workflow_dispatch)
+        if: |
+            always() && (
+                github.event.label.name == 'integration-test' ||
+                github.event_name == 'workflow_dispatch' ||
+                github.event_name == 'schedule'
+            )
+        needs: [post-initial-comment]
         runs-on: blacksmith-4vcpu-ubuntu-2204
         permissions:
             contents: read
@@ -34,33 +57,36 @@ jobs:
                     - name: Claude Sonnet 4.5
                       run-suffix: sonnet_run
                       llm-config:
-                          model: litellm_proxy/anthropic/claude-sonnet-4-5-20250929
-                    - name: GPT-5 Mini
+                          model: litellm_proxy/claude-sonnet-4-5-20250929
+                    - name: GPT-5 Mini 2025-08-07
                       run-suffix: gpt5_mini_run
                       llm-config:
-                          model: litellm_proxy/openai/gpt-5-mini
+                          model: litellm_proxy/gpt-5-mini-2025-08-07
                           temperature: 1.0
-                    - name: DeepSeek Chat
+                    - name: Deepseek Chat
                       run-suffix: deepseek_run
                       llm-config:
                           model: litellm_proxy/deepseek/deepseek-chat
+                    - name: Kimi K2 Thinking
+                      run-suffix: kimi_k2_run
+                      llm-config:
+                          model: litellm_proxy/moonshot/kimi-k2-thinking
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
+              with:
+                  # For pull_request_target: checkout fork PR code (requires explicit repository)
+                  # For other events: fallback to current repository and ref
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  # Security: Don't persist credentials to prevent untrusted PR code from using them
+                  persist-credentials: false
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
                   python-version: ${{ matrix.python-version }}
-
-            - name: Comment on PR if 'integration-test' label is present
-              if: github.event_name == 'pull_request' && github.event.label.name == 'integration-test'
-              uses: KeisukeYamashita/create-comment@v1
-              with:
-                  unique: false
-                  comment: |
-                      Hi! I started running the integration tests on your PR. You will receive a comment with the results shortly.
 
             - name: Install Python dependencies using uv
               run: |
@@ -72,7 +98,7 @@ jobs:
               env:
                   LLM_CONFIG: ${{ toJson(matrix.job-config.llm-config) }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
               run: |
                   set -eo pipefail
 
@@ -107,7 +133,7 @@ jobs:
                   tar -czvf ../../../integration_tests_${{ matrix.job-config.run-suffix }}_${TIMESTAMP}.tar.gz *${{ matrix.job-config.run-suffix }}* # Include result directories for this model
 
             - name: Upload evaluation results as artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               id: upload_results_artifact
               with:
                   name: integration-test-outputs-${{ matrix.job-config.run-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -128,7 +154,7 @@ jobs:
                   fi
 
             - name: Upload test results summary
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: test-results-${{ matrix.job-config.run-suffix }}
                   path: test_results_summary/${{ matrix.job-config.run-suffix }}_results.json
@@ -144,6 +170,10 @@ jobs:
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
+              with:
+                  # When using pull_request_target, explicitly checkout the PR branch
+                  # This ensures we use the scripts from the actual PR code
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -156,14 +186,14 @@ jobs:
                   uv sync --dev
 
             - name: Download all test results
-              uses: actions/download-artifact@v5
+              uses: actions/download-artifact@v6
               with:
                   pattern: test-results-*
                   merge-multiple: true
                   path: all_results
 
             - name: Download all integration test artifacts
-              uses: actions/download-artifact@v5
+              uses: actions/download-artifact@v6
               with:
                   pattern: integration-test-outputs-*
                   path: artifacts
@@ -191,17 +221,39 @@ jobs:
                     --output-file consolidated_report.md
 
             - name: Upload consolidated report
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: consolidated-report
                   path: consolidated_report.md
 
             - name: Create consolidated PR comment
-              if: github.event_name == 'pull_request'
+              if: github.event_name == 'pull_request_target'
               run: |
                   COMMENT_BODY=$(cat consolidated_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
                   echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
               env:
                   GH_TOKEN: ${{ github.token }}
+
+            - name: Read consolidated report for tracker issue
+              if: github.event_name == 'schedule'
+              id: read_report
+              run: |
+                  # Read the report and set as output
+                  REPORT_CONTENT=$(cat consolidated_report.md)
+                  echo "report<<EOF" >> $GITHUB_OUTPUT
+                  echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
+                  echo "EOF" >> $GITHUB_OUTPUT
+
+            - name: Comment with results on tracker issue
+              if: github.event_name == 'schedule'
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  number: 939
+                  unique: false
+                  comment: |
+                      **Trigger:** Nightly Scheduled Run
+                      **Commit:** ${{ github.sha }}
+
+                      ${{ steps.read_report.outputs.report }}
 

@@ -1,6 +1,8 @@
 """Test for FunctionCallingConverter."""
 
 import json
+import textwrap
+from typing import cast
 
 import pytest
 from litellm import ChatCompletionToolParam
@@ -14,6 +16,7 @@ from openhands.sdk.llm.mixins.fn_call_converter import (
     convert_fncall_messages_to_non_fncall_messages,
     convert_non_fncall_messages_to_fncall_messages,
     convert_tool_call_to_string,
+    convert_tools_to_description,
 )
 
 
@@ -21,7 +24,7 @@ FNCALL_TOOLS: list[ChatCompletionToolParam] = [
     {
         "type": "function",
         "function": {
-            "name": "execute_bash",
+            "name": "terminal",
             "description": "Execute a bash command in the terminal.",
             "parameters": {
                 "type": "object",
@@ -65,7 +68,7 @@ def test_convert_fncall_to_non_fncall_basic():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -84,14 +87,12 @@ def test_convert_fncall_to_non_fncall_basic():
     # Check that tool calls are converted to text format
     assistant_msg = None
     for msg in non_fncall_messages:
-        if msg.get("role") == "assistant" and "execute_bash" in str(
-            msg.get("content", "")
-        ):
+        if msg.get("role") == "assistant" and "terminal" in str(msg.get("content", "")):
             assistant_msg = msg
             break
 
     assert assistant_msg is not None
-    assert "execute_bash" in assistant_msg["content"]
+    assert "terminal" in assistant_msg["content"]
 
 
 def test_convert_non_fncall_to_fncall_basic():
@@ -102,7 +103,7 @@ def test_convert_non_fncall_to_fncall_basic():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command for you.\n\n<function=execute_bash>\n"
+                "I'll run the ls command for you.\n\n<function=terminal>\n"
                 "<parameter=command>ls</parameter>\n</function>"
             ),
         },
@@ -125,7 +126,7 @@ def test_convert_non_fncall_to_fncall_basic():
     assert assistant_msg is not None
     assert "tool_calls" in assistant_msg
     assert len(assistant_msg["tool_calls"]) == 1
-    assert assistant_msg["tool_calls"][0]["function"]["name"] == "execute_bash"
+    assert assistant_msg["tool_calls"][0]["function"]["name"] == "terminal"
 
 
 def test_convert_fncall_to_non_fncall_with_in_context_learning():
@@ -180,7 +181,7 @@ def test_convert_with_multiple_tool_calls():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 },
@@ -188,7 +189,7 @@ def test_convert_with_multiple_tool_calls():
                     "id": "call_456",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "pwd"}',
                     },
                 },
@@ -215,7 +216,7 @@ def test_convert_with_tool_response():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -262,7 +263,7 @@ def test_convert_roundtrip():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -328,7 +329,7 @@ def test_convert_with_malformed_parameters():
         {
             "role": "assistant",
             "content": (
-                "I'll run the ls command.\n\n<function=execute_bash>\n"
+                "I'll run the ls command.\n\n<function=terminal>\n"
                 "<parameter=invalid_param>ls</parameter>\n</function>"
             ),
         },
@@ -412,7 +413,7 @@ def test_convert_with_system_message():
                     "id": "call_123",
                     "type": "function",
                     "function": {
-                        "name": "execute_bash",
+                        "name": "terminal",
                         "arguments": '{"command": "ls"}',
                     },
                 }
@@ -467,6 +468,89 @@ def test_convert_with_finish_tool():
     assert has_finish
 
 
+def test_convert_tools_to_description_array_items():
+    """Ensure array parameters with object items are formatted clearly."""
+    tools = cast(
+        list[ChatCompletionToolParam],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "task_tracker",
+                    "description": "Track task plans for execution.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {
+                                "type": "string",
+                                "description": "The command to execute. `view` shows the current task list. `plan` creates or updates the task list based on provided requirements and progress. Always `view` the current list before making changes.",  # noqa: E501
+                                "enum": ["view", "plan"],
+                            },
+                            "task_list": {
+                                "type": "array",
+                                "description": (
+                                    "The full task list. Required parameter of `plan` command."  # noqa: E501
+                                ),
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {
+                                            "type": "string",
+                                            "description": "A brief title for the task.",  # noqa: E501
+                                        },
+                                        "notes": {
+                                            "type": "string",
+                                            "description": "Additional details or notes about the task.",  # noqa: E501
+                                        },
+                                        "status": {
+                                            "type": "string",
+                                            "description": (
+                                                "The current status of the task. One of "  # noqa: E501
+                                                "'todo', 'in_progress', or 'done'."
+                                            ),
+                                            "enum": ["todo", "in_progress", "done"],
+                                        },
+                                    },
+                                    "required": ["title"],
+                                },
+                            },
+                        },
+                        "required": [],
+                    },
+                },
+            }
+        ],
+    )
+
+    description = convert_tools_to_description(tools)
+
+    expected_command_line = (
+        "  (1) command (string, optional): The command to execute. `view` shows the current task list. "  # noqa: E501
+        "`plan` creates or updates the task list based on provided requirements and progress. "  # noqa: E501
+        "Always `view` the current list before making changes.\n"
+        "Allowed values: [`view`, `plan`]\n"
+    )
+    assert expected_command_line in description
+    # Top-level parameter line should reflect the summarized array type
+    assert (
+        "  (2) task_list (array[object], optional): The full task list. Required parameter of `plan` command.\n"  # noqa: E501
+        in description
+    )
+    # Nested structure should be shown via the generic recursive formatter
+    assert "Object properties:" in description
+    assert "- title (string, required): A brief title for the task." in description
+    assert (
+        "- notes (string, optional): Additional details or notes about the task."
+        in description
+    )
+    assert (
+        "- status (string, optional): The current status of the task. One of 'todo', 'in_progress', or 'done'."  # noqa: E501
+        in description
+    )
+    # Nested enum values are described inline in the field description; no separate
+    # "Allowed values" line is required.
+
+
 @pytest.mark.parametrize(
     "tool_call, expected",
     [
@@ -476,14 +560,11 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "execute_bash",
+                    "name": "terminal",
                     "arguments": '{"command": "ls -la"}',
                 },
             },
-            (
-                "<function=execute_bash>\n<parameter=command>ls -la</parameter>\n"
-                "</function>"
-            ),
+            ("<function=terminal>\n<parameter=command>ls -la</parameter>\n</function>"),
         ),
         # Multiple parameters with different types
         (
@@ -491,7 +572,7 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "str_replace_editor",
+                    "name": "file_editor",
                     "arguments": (
                         '{"command": "view", "path": "/test/file.py", '
                         '"view_range": [1, 10]}'
@@ -499,7 +580,7 @@ def test_convert_with_finish_tool():
                 },
             },
             (
-                "<function=str_replace_editor>\n<parameter=command>view</parameter>\n"
+                "<function=file_editor>\n<parameter=command>view</parameter>\n"
                 "<parameter=path>/test/file.py</parameter>\n"
                 "<parameter=view_range>[1, 10]</parameter>\n</function>"
             ),
@@ -510,7 +591,7 @@ def test_convert_with_finish_tool():
                 "id": "test_id",
                 "type": "function",
                 "function": {
-                    "name": "str_replace_editor",
+                    "name": "file_editor",
                     "arguments": json.dumps(
                         {
                             "command": "str_replace",
@@ -525,7 +606,7 @@ def test_convert_with_finish_tool():
                 },
             },
             (
-                "<function=str_replace_editor>\n<parameter=command>str_replace</parameter>\n"
+                "<function=file_editor>\n<parameter=command>str_replace</parameter>\n"
                 "<parameter=path>/test/file.py</parameter>\n<parameter=old_str>\n"
                 "def example():\n    pass\n</parameter>\n<parameter=new_str>\n"
                 'def example():\n    # This is indented\n    print("hello")\n'
@@ -689,3 +770,152 @@ def test_convert_fncall_messages_with_image_url():
         image_content["image_url"]["url"]
         == "data:image/gif;base64,R0lGODlhAQABAAAAACw="
     )
+
+
+def test_convert_tools_to_description_nested_array():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "nested_array",
+                "description": "Handle nested arrays",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "items": {
+                            "type": "array",
+                            "description": "List of entries",
+                            "items": {
+                                "type": "object",
+                                "properties": {
+                                    "value": {
+                                        "type": "integer",
+                                        "description": "The numeric value",
+                                    }
+                                },
+                                "required": ["value"],
+                            },
+                        }
+                    },
+                    "required": ["items"],
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: nested_array ----
+        Description: Handle nested arrays
+        Parameters:
+          (1) items (array[object], required): List of entries
+              Array items:
+                Type: object
+                  Object properties:
+                    - value (integer, required): The numeric value
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
+
+
+def test_convert_tools_to_description_union_options():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "union_tool",
+                "description": "Test union parameter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "filters": {
+                            "description": "Supported filters",
+                            "anyOf": [
+                                {"type": "string", "description": "match by name"},
+                                {"type": "integer", "description": "match by id"},
+                            ],
+                        }
+                    },
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: union_tool ----
+        Description: Test union parameter
+        Parameters:
+          (1) filters (string or integer, optional): Supported filters
+              anyOf options:
+                - string: match by name
+                - integer: match by id
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()
+
+
+def test_convert_tools_to_description_object_details():
+    tools: list[ChatCompletionToolParam] = [
+        {
+            "type": "function",
+            "function": {
+                "name": "object_tool",
+                "description": "Test object parameter",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "config": {
+                            "type": "object",
+                            "description": "Configuration payload",
+                            "properties": {
+                                "name": {
+                                    "type": "string",
+                                    "description": "Friendly name",
+                                },
+                                "thresholds": {
+                                    "type": "array",
+                                    "description": "Threshold list",
+                                    "items": {"type": "number"},
+                                },
+                            },
+                            "required": ["name"],
+                            "additionalProperties": {
+                                "type": "string",
+                                "description": "Extra properties",
+                            },
+                        }
+                    },
+                    "required": ["config"],
+                },
+            },
+        }
+    ]
+
+    result = convert_tools_to_description(tools)
+
+    expected = textwrap.dedent(
+        """\
+        ---- BEGIN FUNCTION #1: object_tool ----
+        Description: Test object parameter
+        Parameters:
+          (1) config (object, required): Configuration payload
+              Object properties:
+                - name (string, required): Friendly name
+                - thresholds (array[number], optional): Threshold list
+                  Array items:
+                    Type: number
+              Additional properties allowed: string
+        ---- END FUNCTION #1 ----
+        """
+    )
+
+    assert result.strip() == expected.strip()

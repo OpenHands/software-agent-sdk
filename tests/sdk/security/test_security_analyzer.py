@@ -1,5 +1,7 @@
 """Tests for the SecurityAnalyzer class."""
 
+from pydantic import Field
+
 from openhands.sdk.event import ActionEvent, PauseEvent
 from openhands.sdk.llm import MessageToolCall, TextContent
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -19,9 +21,9 @@ class SecurityAnalyzer(SecurityAnalyzerBase):
     """
 
     risk_return_value: SecurityRisk = SecurityRisk.LOW
-    security_risk_calls: list[ActionEvent] = []
-    handle_api_request_calls: list[dict] = []
-    close_calls: list[bool] = []
+    security_risk_calls: list[ActionEvent] = Field(default_factory=list)
+    handle_api_request_calls: list[dict] = Field(default_factory=list)
+    close_calls: list[bool] = Field(default_factory=list)
 
     def security_risk(self, action: ActionEvent) -> SecurityRisk:
         """Return configurable risk level for testing."""
@@ -131,11 +133,13 @@ def test_analyze_pending_actions_mixed_risks() -> None:
 
     class VariableRiskAnalyzer(SecurityAnalyzer):
         call_count: int = 0
-        risks: list[SecurityRisk] = [
-            SecurityRisk.LOW,
-            SecurityRisk.HIGH,
-            SecurityRisk.MEDIUM,
-        ]
+        risks: list[SecurityRisk] = Field(
+            default_factory=lambda: [
+                SecurityRisk.LOW,
+                SecurityRisk.HIGH,
+                SecurityRisk.MEDIUM,
+            ]
+        )
 
         def security_risk(self, action: ActionEvent) -> SecurityRisk:
             risk = self.risks[self.call_count % len(self.risks)]

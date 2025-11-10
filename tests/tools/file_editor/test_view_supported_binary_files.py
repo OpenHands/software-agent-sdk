@@ -74,12 +74,12 @@ startxref
 
         assert isinstance(result, FileEditorObservation)
         assert_successful_result(result)
-        assert f"Here's the result of running `cat -n` on {test_file}" in result.output
+        assert f"Here's the result of running `cat -n` on {test_file}" in result.text
 
         # Check for specific content present in the PDF
         assert (
-            result.output is not None
-            and "Printer-Friendly Caltrain Schedule" in result.output
+            result.text is not None
+            and "Printer-Friendly Caltrain Schedule" in result.text
         )
     finally:
         # Clean up the temporary file

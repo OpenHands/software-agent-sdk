@@ -13,7 +13,7 @@ openhands-agent-server = { workspace = true }
 dev = [
     "pre-commit>=4.3.0",
     "psutil>=7.0.0",
-    "basedpyright>=1.21.0",
+    "pyright[nodejs]>=1.1.405",
     "pytest>=8.4.1",
     "pytest-cov>=5.0.0",
     "ruff>=0.12.10",
@@ -43,10 +43,24 @@ select = [
     "UP",   # pyupgrade
     "ARG",  # flake8-unused-arguments
 ]
+# Enforce rules that catch mutable defaults and related pitfalls
+# - B006: mutable-argument-default
+# - B008: function-call-in-default-argument
+# - B039: mutable-contextvar-default
+# - RUF012: mutable-class-default
+extend-select = ["B006", "B008", "B039", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
 # Test files often have unused arguments (fixtures, mocks, interface implementations)
 "tests/**/*.py" = ["ARG"]
+
+
+# Allowlist safe default calls for flake8-bugbear rules (e.g., FastAPI Depends)
+[tool.ruff.lint.flake8-bugbear]
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.params.Depends",
+]
 
 [tool.ruff.lint.isort]
 known-first-party = ["openhands"]
@@ -65,33 +79,29 @@ python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
 
-# basedpyright configuration
-[tool.basedpyright]
-include = ["openhands"]
-exclude = ["**/__pycache__", "**/.venv", "**/node_modules"]
-
-# Start with basic type checking and gradually increase strictness
-typeCheckingMode = "basic"
-
-# Disable some of the most noisy warnings initially to focus on critical errors
-reportUnusedCallResult = false
-reportAny = false
-reportUnknownMemberType = false
-reportUnknownArgumentType = false
-reportImplicitOverride = false
-reportUnnecessaryIsInstance = false
-reportImplicitStringConcatenation = false
-reportAttributeAccessIssue = false
-reportOptionalMemberAccess = false
-reportRedeclaration = false
-reportMissingImports = false
-reportArgumentType = false
-reportCallIssue = false
-
-# Keep critical errors enabled, but allow some flexibility for generic types
-reportMissingTypeArgument = false  # Too strict for existing generic Tool usage
-reportUnannotatedClassAttribute = true
-reportExplicitAny = false  # Allow Any for generic type parameters
+# Pyright configuration for PEP 420 namespace packages
+# This is needed for VSCode to properly resolve imports across multiple packages in the monorepo
+[tool.pyright]
+include = [
+    "openhands-sdk",
+    "openhands-tools",
+    "openhands-workspace",
+    "openhands-agent-server",
+    "examples",
+    "tests",
+    "scripts"
+]
+extraPaths = [
+    "openhands-sdk",
+    "openhands-tools",
+    "openhands-workspace",
+    "openhands-agent-server"
+]
+venvPath = "."
+venv = ".venv"
+pythonVersion = "3.12"
+useLibraryCodeForTypes = true
+typeCheckingMode = "standard"
 
 [[tool.uv.index]]
 name = "testpypi"

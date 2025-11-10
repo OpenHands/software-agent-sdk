@@ -7,7 +7,10 @@ from collections.abc import Callable
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, BaseConversation, Conversation
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
 from openhands.tools.preset.default import get_default_agent
 
@@ -56,10 +59,10 @@ def run_until_finished(conversation: BaseConversation, confirmer: Callable) -> N
     on reject, call reject_pending_actions().
     Preserves original error if agent waits but no actions exist.
     """
-    while conversation.state.agent_status != AgentExecutionStatus.FINISHED:
+    while conversation.state.execution_status != ConversationExecutionStatus.FINISHED:
         if (
-            conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         ):
             pending = ConversationState.get_unmatched_actions(conversation.state.events)
             if not pending:
@@ -88,7 +91,10 @@ llm = LLM(
     api_key=SecretStr(api_key),
 )
 
-agent = get_default_agent(llm=llm)
+add_security_analyzer = bool(os.getenv("ADD_SECURITY_ANALYZER", "").strip())
+if add_security_analyzer:
+    print("Agent security analyzer added.")
+agent = get_default_agent(llm=llm, add_security_analyzer=add_security_analyzer)
 conversation = Conversation(agent=agent, workspace=os.getcwd())
 
 # 1) Confirmation mode ON
@@ -122,7 +128,7 @@ print("\n=== Example Complete ===")
 print("Key points:")
 print(
     "- conversation.run() creates actions; confirmation mode "
-    "sets agent_status=WAITING_FOR_CONFIRMATION"
+    "sets execution_status=WAITING_FOR_CONFIRMATION"
 )
 print("- User confirmation is handled via a single reusable function")
 print("- Rejection uses conversation.reject_pending_actions() and the loop continues")

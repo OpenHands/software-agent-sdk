@@ -30,10 +30,10 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
-          - id: basedpyright
-            name: Type check with basedpyright
+          - id: pyright
+            name: Type check with pyright
             entry: uv
-            args: [run, basedpyright, --project, .]
+            args: [run, pyright]
             language: system
             types: [python]
             pass_filenames: true

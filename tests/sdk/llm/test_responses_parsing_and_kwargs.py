@@ -58,7 +58,7 @@ def test_from_llm_responses_output_parsing():
 
 
 def test_normalize_responses_kwargs_policy():
-    llm = LLM(model="gpt-5-mini")
+    llm = LLM(model="gpt-5-mini", reasoning_effort="high")
     # Use a model that is explicitly Responses-capable per model_features
 
     # enable encrypted reasoning and set max_output_tokens to test passthrough
@@ -75,12 +75,25 @@ def test_normalize_responses_kwargs_policy():
     assert set(out["include"]) >= {"text.output_text", "reasoning.encrypted_content"}
     # store default to False when None passed
     assert out["store"] is False
-    # reasoning config defaulted
+    # reasoning config with effort only (no summary for unverified orgs)
     r = out["reasoning"]
     assert r["effort"] in {"low", "medium", "high", "none"}
-    assert r["summary"] == "detailed"
+    assert "summary" not in r  # Summary not included to support unverified orgs
     # max_output_tokens preserved
     assert out["max_output_tokens"] == 128
+
+
+def test_normalize_responses_kwargs_with_summary():
+    """Test reasoning_summary is included when set (verified orgs)."""
+    llm = LLM(model="gpt-5-mini", reasoning_effort="high", reasoning_summary="detailed")
+
+    out = select_responses_options(
+        llm, {"temperature": 0.3}, include=["text.output_text"], store=None
+    )
+    # Verify reasoning includes both effort and summary when summary is set
+    r = out["reasoning"]
+    assert r["effort"] == "high"
+    assert r["summary"] == "detailed"
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")

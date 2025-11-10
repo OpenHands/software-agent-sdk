@@ -72,7 +72,7 @@ jobs:
 
             - name: Upload sdk coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-sdk
                   path: coverage-sdk.dat
@@ -126,7 +126,7 @@ jobs:
 
             - name: Upload tools coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-tools
                   path: coverage-tools.dat
@@ -180,7 +180,7 @@ jobs:
 
             - name: Upload Agent Server coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-agent-server
                   path: coverage-agent-server.dat
@@ -236,7 +236,7 @@ jobs:
 
             - name: Upload cross coverage
               if: steps.changed.outputs.any_changed == 'true' && always()
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               with:
                   name: coverage-cross
                   path: coverage-cross.dat
@@ -259,7 +259,7 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Download coverage artifacts
-              uses: actions/download-artifact@v5
+              uses: actions/download-artifact@v6
               with:
                   path: ./cov
               continue-on-error: true

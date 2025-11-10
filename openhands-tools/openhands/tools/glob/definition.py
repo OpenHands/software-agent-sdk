@@ -6,12 +6,17 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolAnnotations,
+    ToolDefinition,
+    register_tool,
+)
+
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
-
-from openhands.sdk.llm import ImageContent, TextContent
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
 
 
 class GlobAction(Action):
@@ -40,32 +45,6 @@ class GlobObservation(Observation):
     truncated: bool = Field(
         default=False, description="Whether results were truncated to 100 files"
     )
-    error: str | None = Field(default=None, description="Error message if any")
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        """Convert observation to LLM content."""
-        if self.error:
-            return [TextContent(text=f"Error: {self.error}")]
-
-        if not self.files:
-            content = (
-                f"No files found matching pattern '{self.pattern}' "
-                f"in directory '{self.search_path}'"
-            )
-        else:
-            file_list = "\n".join(self.files)
-            content = (
-                f"Found {len(self.files)} file(s) matching pattern "
-                f"'{self.pattern}' in '{self.search_path}':\n{file_list}"
-            )
-            if self.truncated:
-                content += (
-                    "\n\n[Results truncated to first 100 files. "
-                    "Consider using a more specific pattern.]"
-                )
-
-        return [TextContent(text=content)]
 
 
 TOOL_DESCRIPTION = """Fast file pattern matching tool.
@@ -117,7 +96,6 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="glob",
                 description=enhanced_description,
                 action_type=GlobAction,
                 observation_type=GlobObservation,
@@ -131,3 +109,7 @@ class GlobTool(ToolDefinition[GlobAction, GlobObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(GlobTool.name, GlobTool)

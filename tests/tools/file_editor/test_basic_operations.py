@@ -62,11 +62,11 @@ def test_file_editor_happy_path(temp_file):
     # Validate the result
     assert_successful_result(result, str(temp_file))
     assert (
-        result.output is not None
-        and "The file" in result.output
-        and "has been edited" in result.output
+        result.text is not None
+        and "The file" in result.text
+        and "has been edited" in result.text
     )
-    assert result.output is not None and "This is a sample file." in result.output
+    assert result.text is not None and "This is a sample file." in result.text
     assert result.path == str(temp_file)
     assert result.prev_exist is True
     assert (
@@ -106,15 +106,15 @@ match = re.search(
     # Validate the result
     assert_successful_result(result, str(temp_file))
     assert (
-        result.output is not None
-        and "Here's the result of running `cat -n`" in result.output
+        result.text is not None
+        and "Here's the result of running `cat -n`" in result.text
     )
     assert (
-        result.output is not None
-        and "This is a file with XML tags parsing logic..." in result.output
+        result.text is not None
+        and "This is a file with XML tags parsing logic..." in result.text
     )
-    assert result.output is not None and "match = re.search(" in result.output
-    assert result.output is not None and "...More text here." in result.output
+    assert result.text is not None and "match = re.search(" in result.text
+    assert result.text is not None and "...More text here." in result.text
 
 
 def test_successful_operations(temp_file):
@@ -131,10 +131,10 @@ def test_successful_operations(temp_file):
     )
     assert_successful_result(result)
     assert (
-        result.output is not None
-        and "Here's the result of running `cat -n`" in result.output
+        result.text is not None
+        and "Here's the result of running `cat -n`" in result.text
     )
-    assert result.output is not None and "line 1" in result.output
+    assert result.text is not None and "line 1" in result.text
 
     # Test str_replace
     result = file_editor(
@@ -144,8 +144,8 @@ def test_successful_operations(temp_file):
         new_str="replaced line",
     )
     assert_successful_result(result)
-    assert result.output is not None and "has been edited" in result.output
-    assert result.output is not None and "replaced line" in result.output
+    assert result.text is not None and "has been edited" in result.text
+    assert result.text is not None and "replaced line" in result.text
 
     # Test insert
     result = file_editor(
@@ -155,8 +155,8 @@ def test_successful_operations(temp_file):
         new_str="inserted line",
     )
     assert_successful_result(result)
-    assert result.output is not None and "has been edited" in result.output
-    assert result.output is not None and "inserted line" in result.output
+    assert result.text is not None and "has been edited" in result.text
+    assert result.text is not None and "inserted line" in result.text
 
     # Test undo
     result = file_editor(
@@ -164,7 +164,7 @@ def test_successful_operations(temp_file):
         path=str(temp_file),
     )
     assert_successful_result(result)
-    assert result.output is not None and "undone successfully" in result.output
+    assert result.text is not None and "undone successfully" in result.text
 
 
 def test_tab_expansion(temp_file):
@@ -181,8 +181,8 @@ def test_tab_expansion(temp_file):
     )
     assert_successful_result(result)
     # Tabs should be preserved in output
-    assert result.output is not None and "\tindented" in result.output
-    assert result.output is not None and "line\twith\ttabs" in result.output
+    assert result.text is not None and "\tindented" in result.text
+    assert result.text is not None and "line\twith\ttabs" in result.text
 
     # Test str_replace with tabs in old_str
     result = file_editor(
@@ -192,7 +192,7 @@ def test_tab_expansion(temp_file):
         new_str="replaced line",
     )
     assert_successful_result(result)
-    assert result.output is not None and "replaced line" in result.output
+    assert result.text is not None and "replaced line" in result.text
 
     # Test str_replace with tabs in new_str
     result = file_editor(
@@ -202,7 +202,7 @@ def test_tab_expansion(temp_file):
         new_str="new\tline\twith\ttabs",
     )
     assert_successful_result(result)
-    assert result.output is not None and "new\tline\twith\ttabs" in result.output
+    assert result.text is not None and "new\tline\twith\ttabs" in result.text
 
     # Test insert with tabs
     result = file_editor(
@@ -212,7 +212,7 @@ def test_tab_expansion(temp_file):
         new_str="\tindented\tline",
     )
     assert_successful_result(result)
-    assert result.output is not None and "\tindented\tline" in result.output
+    assert result.text is not None and "\tindented\tline" in result.text
 
 
 def test_create_operation(temp_file):
@@ -229,7 +229,7 @@ def test_create_operation(temp_file):
     )
 
     assert_successful_result(result, str(temp_file))
-    assert result.output is not None and "created successfully" in result.output
+    assert result.text is not None and "created successfully" in result.text
     assert result.prev_exist is False
     assert result.new_content == content
 
@@ -258,29 +258,29 @@ def test_view_operation_truncation(temp_file):
     )
 
     assert_successful_result(result)
-    assert result.output is not None
+    assert result.text is not None
 
     # Check that truncation notice is present
-    assert TEXT_FILE_CONTENT_TRUNCATED_NOTICE in result.output
+    assert TEXT_FILE_CONTENT_TRUNCATED_NOTICE in result.text
 
     # The content should be truncated before line numbers are added
     # So the final output will be longer than MAX_RESPONSE_LEN_CHAR due to formatting
     # but the original content was truncated
-    assert "Here's the result of running `cat -n`" in result.output
+    assert "Here's the result of running `cat -n`" in result.text
 
     # With head-and-tail truncation, should contain both start and end content
     # The line numbers will show as "     1\tA..." at start and end with "A"
-    assert "\tA" in result.output  # Should have A's with tab formatting
+    assert "\tA" in result.text  # Should have A's with tab formatting
 
 
 def test_view_file(editor):
     editor, test_file = editor
     result = editor(command="view", path=str(test_file))
     assert isinstance(result, FileEditorObservation)
-    assert f"Here's the result of running `cat -n` on {test_file}:" in result.output
-    assert "1\tThis is a test file." in result.output
-    assert "2\tThis file is for testing purposes." in result.output
-    assert "3\t" not in result.output  # No extra line
+    assert f"Here's the result of running `cat -n` on {test_file}:" in result.text
+    assert "1\tThis is a test file." in result.text
+    assert "2\tThis file is for testing purposes." in result.text
+    assert "3\t" not in result.text  # No extra line
 
 
 def test_view_directory(editor):
@@ -288,7 +288,7 @@ def test_view_directory(editor):
     parent_dir = test_file.parent
     result = editor(command="view", path=str(parent_dir))
     assert (
-        result.output
+        result.text
         == f"""Here's the files and directories up to 2 levels deep in {parent_dir}, excluding hidden items:
 {parent_dir}/
 {parent_dir}/test.txt"""  # noqa: E501
@@ -315,11 +315,11 @@ def test_view_with_a_specific_range(editor):
 
     # View file in range 50-100
     result = editor(command="view", path=str(test_file), view_range=[50, 100])
-    assert f"Here's the result of running `cat -n` on {test_file}:" in result.output
-    assert "    49\tLine 49" not in result.output
-    assert "    50\tLine 50" in result.output
-    assert "   100\tLine 100" in result.output
-    assert "101" not in result.output
+    assert f"Here's the result of running `cat -n` on {test_file}:" in result.text
+    assert "    49\tLine 49" not in result.text
+    assert "    50\tLine 50" in result.text
+    assert "   100\tLine 100" in result.text
+    assert "101" not in result.text
 
 
 def test_create_file(editor):
@@ -328,7 +328,7 @@ def test_create_file(editor):
     result = editor(command="create", path=str(new_file), file_text="New file content")
     assert new_file.exists()
     assert new_file.read_text() == "New file content"
-    assert "File created successfully" in result.output
+    assert "File created successfully" in result.text
 
 
 def test_create_with_empty_string(editor):
@@ -337,12 +337,12 @@ def test_create_with_empty_string(editor):
     result = editor(command="create", path=str(new_file), file_text="")
     assert new_file.exists()
     assert new_file.read_text() == ""
-    assert "File created successfully" in result.output
+    assert "File created successfully" in result.text
 
     # Test the view command showing an empty line
     result = editor(command="view", path=str(new_file))
-    assert f"Here's the result of running `cat -n` on {new_file}:" in result.output
-    assert "1\t" in result.output  # Check for empty line
+    assert f"Here's the result of running `cat -n` on {new_file}:" in result.text
+    assert "1\t" in result.text  # Check for empty line
 
 
 def test_create_with_none_file_text(editor):
@@ -365,7 +365,7 @@ def test_str_replace_no_linting(editor):
 
     # Test str_replace command
     assert (
-        result.output
+        result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of {test_file}:
      1\tThis is a sample file.
      2\tThis file is for testing purposes.
@@ -388,7 +388,7 @@ def test_str_replace_multi_line_no_linting(editor):
 
     # Test str_replace command
     assert (
-        result.output
+        result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of {test_file}:
      1\tThis is a sample file.
      2\tThis file is for testing purposes.
@@ -407,7 +407,7 @@ def test_str_replace_multi_line_with_tabs_no_linting(editor_python_file_with_tab
     assert isinstance(result, FileEditorObservation)
 
     assert (
-        result.output
+        result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of {test_file}:
      1\tdef test():
      2\t\tprint("Hello, Universe!")
@@ -510,7 +510,7 @@ def test_insert_no_linting(editor):
     assert isinstance(result, FileEditorObservation)
     assert "Inserted line" in test_file.read_text()
     assert (
-        result.output
+        result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of the edited file:
      1\tThis is a test file.
      2\tInserted line
@@ -559,7 +559,7 @@ def test_insert_chinese_text_into_english_file(editor):
     assert isinstance(result, FileEditorObservation)
     assert "中文文本" in test_file.read_text()
     assert (
-        result.output
+        result.text
         == f"""The file {test_file} has been edited. Here's the result of running `cat -n` on a snippet of the edited file:
      1\t中文文本
      2\tThis is a test file.
@@ -592,7 +592,7 @@ def test_undo_edit(editor):
     # Undo the edit
     result = editor(command="undo_edit", path=str(test_file))
     assert isinstance(result, FileEditorObservation)
-    assert "Last edit to" in result.output
+    assert "Last edit to" in result.text
     assert "test file" in test_file.read_text()  # Original content restored
 
 
@@ -615,13 +615,13 @@ def test_multiple_undo_edits(editor):
     # Undo the last edit
     result = editor(command="undo_edit", path=str(test_file))
     assert isinstance(result, FileEditorObservation)
-    assert "Last edit to" in result.output
+    assert "Last edit to" in result.text
     assert "sample file v1" in test_file.read_text()  # Previous content restored
 
     # Undo the first edit
     result = editor(command="undo_edit", path=str(test_file))
     assert isinstance(result, FileEditorObservation)
-    assert "Last edit to" in result.output
+    assert "Last edit to" in result.text
     assert "test file" in test_file.read_text()  # Original content restored
 
 
@@ -697,16 +697,16 @@ def test_view_directory_with_hidden_files(tmp_path):
 
     # Verify output
     assert isinstance(result, FileEditorObservation)
-    assert str(test_dir) in result.output
-    assert "visible.txt" in result.output  # Visible file is shown
-    assert "visible_dir" in result.output  # Visible directory is shown
-    assert ".hidden1" not in result.output  # Hidden files not shown
-    assert ".hidden2" not in result.output
-    assert ".hidden_dir" not in result.output
+    assert str(test_dir) in result.text
+    assert "visible.txt" in result.text  # Visible file is shown
+    assert "visible_dir" in result.text  # Visible directory is shown
+    assert ".hidden1" not in result.text  # Hidden files not shown
+    assert ".hidden2" not in result.text
+    assert ".hidden_dir" not in result.text
     assert (
-        "3 hidden files/directories in this directory are excluded" in result.output
+        "3 hidden files/directories in this directory are excluded" in result.text
     )  # Shows count of hidden items in current dir only
-    assert "ls -la" in result.output  # Shows command to view hidden files
+    assert "ls -la" in result.text  # Shows command to view hidden files
 
 
 def test_view_symlinked_directory(tmp_path):
@@ -732,11 +732,11 @@ def test_view_symlinked_directory(tmp_path):
 
     # Verify that all files are listed through the symlink
     assert isinstance(result, FileEditorObservation)
-    assert str(symlink_dir) in result.output
-    assert "file1.txt" in result.output
-    assert "file2.txt" in result.output
-    assert "subdir" in result.output
-    assert "file3.txt" in result.output
+    assert str(symlink_dir) in result.text
+    assert "file1.txt" in result.text
+    assert "file2.txt" in result.text
+    assert "subdir" in result.text
+    assert "file3.txt" in result.text
 
 
 def test_view_large_directory_with_truncation(editor, tmp_path):
@@ -749,7 +749,7 @@ def test_view_large_directory_with_truncation(editor, tmp_path):
 
     result = editor(command="view", path=str(large_dir))
     assert isinstance(result, FileEditorObservation)
-    assert DIRECTORY_CONTENT_TRUNCATED_NOTICE in result.output
+    assert DIRECTORY_CONTENT_TRUNCATED_NOTICE in result.text
 
 
 def test_view_directory_on_hidden_path(tmp_path):
@@ -791,22 +791,22 @@ def test_view_directory_on_hidden_path(tmp_path):
     # Verify output
     assert isinstance(result, FileEditorObservation)
     # Depth 1: Visible files/dirs shown, hidden files/dirs not shown
-    assert "visible1.txt" in result.output
-    assert "visible_dir" in result.output
-    assert ".hidden1" not in result.output
-    assert ".hidden_dir" not in result.output
+    assert "visible1.txt" in result.text
+    assert "visible_dir" in result.text
+    assert ".hidden1" not in result.text
+    assert ".hidden_dir" not in result.text
 
     # Depth 2: Files in visible_dir shown
-    assert "visible2.txt" in result.output
-    assert ".hidden2" not in result.output
+    assert "visible2.txt" in result.text
+    assert ".hidden2" not in result.text
 
     # Depth 2: Files in hidden_dir not shown
-    assert "visible3.txt" not in result.output
-    assert ".hidden3" not in result.output
+    assert "visible3.txt" not in result.text
+    assert ".hidden3" not in result.text
 
     # Hidden file count only includes depth 1
     assert (
-        "2 hidden files/directories in this directory are excluded" in result.output
+        "2 hidden files/directories in this directory are excluded" in result.text
     )  # Only .hidden1 and .hidden_dir at depth 1
 
 
@@ -819,7 +819,7 @@ def test_view_large_file_with_truncation(editor, tmp_path):
 
     result = editor(command="view", path=str(large_file))
     assert isinstance(result, FileEditorObservation)
-    assert TEXT_FILE_CONTENT_TRUNCATED_NOTICE in result.output
+    assert TEXT_FILE_CONTENT_TRUNCATED_NOTICE in result.text
 
 
 def test_validate_path_suggests_absolute_path(editor, tmp_path):
@@ -868,8 +868,8 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
 
     # View file
     result = editor(command="view", path=str(test_file))
-    assert "     1\tLine 1" in result.output
-    assert "   500\tLine 500" in result.output
+    assert "     1\tLine 1" in result.text
+    assert "   500\tLine 500" in result.text
 
     # Replace line 500's content with '500 new'
     result = editor(
@@ -878,14 +878,14 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         old_str="Line 500",
         new_str="500 new",
     )
-    assert "   500\t500 new" in result.output
+    assert "   500\t500 new" in result.text
 
     # Delete the line '500 new'
     result = editor(
         command="str_replace", path=str(test_file), old_str="500 new\n", new_str=""
     )
-    assert "   499\tLine 499" in result.output
-    assert "   500\tLine 501" in result.output
+    assert "   499\tLine 499" in result.text
+    assert "   500\tLine 501" in result.text
 
     # Insert content at line 500
     result = editor(
@@ -894,4 +894,4 @@ def test_str_replace_and_insert_snippet_output_on_a_large_file(editor):
         insert_line=499,
         new_str="Inserted line at 500",
     )
-    assert "   500\tInserted line at 500" in result.output
+    assert "   500\tInserted line at 500" in result.text

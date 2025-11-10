@@ -1,7 +1,7 @@
 """VSCode service for managing OpenVSCode Server in the agent server."""
 
 import asyncio
-import uuid
+import os
 from pathlib import Path
 
 from openhands.sdk.logger import get_logger
@@ -16,6 +16,7 @@ class VSCodeService:
     def __init__(
         self,
         port: int = 8001,
+        connection_token: str | None = None,
     ):
         """Initialize VSCode service.
 
@@ -26,7 +27,7 @@ class VSCodeService:
                 exist
         """
         self.port: int = port
-        self.connection_token: str | None = None
+        self.connection_token: str | None = connection_token
         self.process: asyncio.subprocess.Process | None = None
         self.openvscode_server_root: Path = Path("/openhands/.openvscode-server")
         self.extensions_dir: Path = self.openvscode_server_root / "extensions"
@@ -45,8 +46,9 @@ class VSCodeService:
                 )
                 return False
 
-            # Generate connection token
-            self.connection_token = str(uuid.uuid4())
+            # Generate connection token if not already set
+            if self.connection_token is None:
+                self.connection_token = os.urandom(32).hex()
 
             # Check if port is available
             if not await self._is_port_available():
@@ -95,7 +97,7 @@ class VSCodeService:
         Returns:
             VSCode URL with token, or None if not available
         """
-        if not self.connection_token:
+        if self.connection_token is None:
             return None
 
         if base_url is None:
@@ -221,5 +223,10 @@ def get_vscode_service() -> VSCodeService | None:
             logger.info("VSCode is disabled in configuration")
             return None
         else:
-            _vscode_service = VSCodeService(port=config.vscode_port)
+            connection_token = None
+            if config.session_api_keys:
+                connection_token = config.session_api_keys[0]
+            _vscode_service = VSCodeService(
+                port=config.vscode_port, connection_token=connection_token
+            )
     return _vscode_service

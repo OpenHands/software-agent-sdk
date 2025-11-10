@@ -1,3 +1,5 @@
+from pydantic import Field
+
 from openhands.sdk import LLM, Agent, LLMSummarizingCondenser
 from openhands.sdk.llm.router import MultimodalRouter
 
@@ -36,7 +38,7 @@ def test_automatic_llm_discovery_for_multiple_llms():
 
 def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
     class CustomAgent(Agent):
-        model_routers: list[LLM] = []
+        model_routers: list[LLM] = Field(default_factory=list)
 
     llm_service_id = "main-agent"
     router_service_id = "secondary_llm"
@@ -94,8 +96,8 @@ def test_automatic_llm_discovery_with_multimodal_router():
 
 def test_automatic_llm_discovery_with_llm_as_base_class():
     class NewLLM(LLM):
-        list_llms: list[LLM] = []
-        dict_llms: dict[str, LLM] = {}
+        list_llms: list[LLM] = Field(default_factory=list)
+        dict_llms: dict[str, LLM] = Field(default_factory=dict)
         raw_llm: LLM | None = None
 
     list_llm = LLM(model="list-model", usage_id="list-model")

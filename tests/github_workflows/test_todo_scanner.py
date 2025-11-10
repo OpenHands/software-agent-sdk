@@ -9,7 +9,7 @@ from pathlib import Path
 todo_mgmt_path = (
     Path(__file__).parent.parent.parent
     / "examples"
-    / "github_workflows"
+    / "03_github_workflows"
     / "03_todo_management"
 )
 sys.path.append(str(todo_mgmt_path))

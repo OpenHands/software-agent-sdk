@@ -163,7 +163,7 @@ class DockerWorkspace(RemoteWorkspace):
         # Build image if needed
 
         if self.base_image:
-            if "ghcr.io/all-hands-ai/agent-server" in self.base_image:
+            if "ghcr.io/openhands/agent-server" in self.base_image:
                 raise RuntimeError(
                     "base_image cannot be a pre-built agent-server image. "
                     "Use server_image=... instead."
@@ -172,6 +172,7 @@ class DockerWorkspace(RemoteWorkspace):
                 base_image=self.base_image,
                 target=self.target,
                 platforms=[self.platform],
+                push=False,
             )
             tags = build(opts=build_opts)
             assert tags and len(tags) > 0, "Build failed, no image tags returned"

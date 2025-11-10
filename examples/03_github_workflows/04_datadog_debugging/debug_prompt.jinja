@@ -1,0 +1,127 @@
+Your task is to debug an error from Datadog Error Tracking to find out why it is happening.
+
+## GitHub Issue for Tracking
+
+A GitHub issue has been created to track this investigation: {{ issue_url }}
+
+**IMPORTANT**: As you make progress in your investigation, post your findings as comments on this GitHub issue using curl commands:
+
+```bash
+curl -X POST \
+  'https://api.github.com/repos/{REPO}/issues/{NUMBER}/comments' \
+  -H 'Authorization: Bearer $GITHUB_TOKEN' \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'Content-Type: application/json' \
+  -d '{"body": "Your finding here"}'
+```
+
+Post updates when you:
+- Complete analyzing the error data
+- Find relevant code in the repositories
+- Identify the root cause
+- Attempt a reproduction
+- Make any significant discovery
+
+## Error Tracking Issues
+
+I have already fetched error tracking issues and saved them to: `{{ errors_file }}`
+
+This JSON file contains:
+- `query`: The Datadog query used to fetch these errors
+- `total_examples`: Number of error tracking issues in the file
+- `examples`: Array of error tracking issues, where each has:
+  - `issue_id`: Unique identifier for the aggregated error issue
+  - `total_count`: Total number of error occurrences
+  - `impacted_users`: Number of users affected
+  - `service`: Service name where errors occurred
+  - `error_type`: Type of error (e.g., exception class)
+  - `error_message`: Error message text
+  - `file_path`: Source file where error occurred
+  - `function_name`: Function where error occurred
+  - `first_seen`: Timestamp when first seen (milliseconds)
+  - `last_seen`: Timestamp when last seen (milliseconds)
+  - `state`: Issue state (OPEN, ACKNOWLEDGED, RESOLVED, etc.)
+
+**First, read the GitHub issue** to see the error summary, then read `{{ errors_file }}` to understand the error patterns. Error Tracking aggregates similar errors together, so each issue may represent many occurrences.
+
+## Additional Context
+
+The original Datadog query was: `{{ query }}`
+
+If you need more details, you can use Datadog APIs via curl commands with $DD_API_KEY and $DD_APP_KEY environment variables.
+
+To search for more error tracking issues:
+```bash
+curl -X POST '{{ error_tracking_url }}' \
+  -H 'Content-Type: application/json' \
+  -H 'DD-API-KEY: $DD_API_KEY' \
+  -H 'DD-APPLICATION-KEY: $DD_APP_KEY' \
+  -d '{"data": {"attributes": {"query": "service:YOUR_SERVICE", "from": <timestamp_ms>, "to": <timestamp_ms>, "track": "logs"}, "type": "search_request"}}'
+```
+
+To query individual log entries, use the Logs API:
+```bash
+curl -X POST '{{ logs_url }}' \
+  -H 'Content-Type: application/json' \
+  -H 'DD-API-KEY: $DD_API_KEY' \
+  -H 'DD-APPLICATION-KEY: $DD_APP_KEY' \
+  -d '{
+    "filter": {
+      "query": "YOUR_QUERY_HERE",
+      "from": "now-1d",
+      "to": "now"
+    },
+    "sort": "timestamp",
+    "page": {
+      "limit": 10
+    }
+  }'
+```
+
+The Datadog query syntax supports:
+- status:error - Find error logs
+- service:my-service - Filter by service
+- "exact phrase" - Search for exact text
+- -(status:info OR status:debug) - Exclude certain statuses
+- Use time ranges to focus on recent issues
+
+The error class that I would like you to debug is characterized by this datadog query:
+{{ query }}
+
+To clone the GitHub repositories, use git with authentication:
+```bash
+git clone https://$GITHUB_TOKEN@github.com/OWNER/REPO.git
+```
+
+The github repos that you should clone (using GITHUB_TOKEN) are the following:
+{{ repos_list }}
+
+## Debugging Steps
+
+Follow these steps systematically:
+
+1. **Read the error file** - Start by reading `{{ errors_file }}` to understand the error patterns. Examine all examples to identify:
+   - Common error messages
+   - Stack traces and their origins
+   - Affected services
+   - Timestamps (when did errors start?)
+
+2. **Analyze the timeline** - Check when the error class started occurring/becoming frequent. Look at the timestamps in the error examples. This helps identify what code changes or deployment may have caused the issue. Code changed during the release cycle before the error occurred will be most suspicious.
+
+3. **Clone repositories** - Clone the relevant repositories using:
+   ```bash
+   git clone https://$GITHUB_TOKEN@github.com/OWNER/REPO.git
+   ```
+
+4. **Investigate the codebase** - Carefully read the code related to the error. Look at:
+   - Files mentioned in stack traces
+   - Recent commits (use git log)
+   - Related code paths
+
+5. **Develop hypotheses** - Think of 5 possible root causes and write sample code to test each hypothesis. Try to reproduce the error.
+
+6. **Create fix or summarize** - Based on your findings:
+   - If reproducible: Create a fix and optionally open a draft PR
+   - If not reproducible: Summarize your investigation, findings, and recommendations
+
+**Important**: Use the task_tracker tool to organize your work and keep track of your progress through these steps.

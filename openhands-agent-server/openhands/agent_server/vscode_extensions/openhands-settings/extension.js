@@ -14,6 +14,7 @@ function activate(context) {
   config.update('telemetry.telemetryLevel', 'off', target);
   config.update('extensions.autoCheckUpdates', false, target);
   config.update('extensions.autoUpdate', false, target);
+  config.update('chat.commandCenter.enabled', false, target);
 }
 
 function deactivate() {}

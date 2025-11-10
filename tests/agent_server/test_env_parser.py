@@ -6,12 +6,17 @@ Tests cover:
 - Complex parsers (list, dict, union, model parsers)
 - Config class parsing with nested attributes and webhook specs
 - Self-referential Node model parsing
+- Enum and string literal parsing
+- Template generation (to_env methods)
 - Edge cases and error conditions
 """
 
 import json
 import os
+from enum import Enum
+from io import StringIO
 from pathlib import Path
+from typing import Literal
 
 import pytest
 from pydantic import BaseModel, Field
@@ -25,6 +30,7 @@ from openhands.agent_server.env_parser import (
     FloatEnvParser,
     IntEnvParser,
     ListEnvParser,
+    LiteralEnvParser,
     ModelEnvParser,
     NoneEnvParser,
     StrEnvParser,
@@ -32,7 +38,9 @@ from openhands.agent_server.env_parser import (
     from_env,
     get_env_parser,
     merge,
+    to_env,
 )
+from openhands.sdk.security.risk import SecurityRisk
 from tests.sdk.utils.test_discriminated_union import Animal, Dog
 
 
@@ -155,12 +163,12 @@ def test_none_env_parser(clean_env):
     """Test NoneEnvParser behavior."""
     parser = NoneEnvParser()
 
-    # Test missing key (should return None)
-    assert parser.from_env("MISSING_KEY") is None
+    # Test missing key (should return MISSING)
+    assert parser.from_env("SOME_VALUE") is MISSING
 
-    # Test present key (should return MISSING)
-    os.environ["TEST_NONE"] = "any_value"
-    assert parser.from_env("TEST_NONE") is MISSING
+    # Test present key (should return None)
+    os.environ["SOME_VALUE_IS_NONE"] = "1"
+    assert parser.from_env("SOME_VALUE") is None
 
 
 def test_dict_env_parser(clean_env):
@@ -194,7 +202,7 @@ def test_dict_env_parser(clean_env):
 def test_list_env_parser_with_json(clean_env):
     """Test ListEnvParser with JSON list values."""
     item_parser = StrEnvParser()
-    parser = ListEnvParser(item_parser)
+    parser = ListEnvParser(item_parser, str)
 
     # Test JSON list
     test_list = ["item1", "item2", "item3"]
@@ -218,7 +226,7 @@ def test_list_env_parser_with_json(clean_env):
 def test_list_env_parser_sequential(clean_env):
     """Test ListEnvParser with sequential environment variables."""
     item_parser = StrEnvParser()
-    parser = ListEnvParser(item_parser)
+    parser = ListEnvParser(item_parser, str)
 
     # Test sequential items without base key
     os.environ["TEST_LIST_0"] = "first"
@@ -236,7 +244,7 @@ def test_list_env_parser_sequential(clean_env):
 def test_list_env_parser_with_complex_items(clean_env):
     """Test ListEnvParser with complex item types."""
     item_parser = IntEnvParser()
-    parser = ListEnvParser(item_parser)
+    parser = ListEnvParser(item_parser, int)
 
     # Test with integer items
     os.environ["TEST_LIST_0"] = "10"
@@ -248,7 +256,7 @@ def test_list_env_parser_with_complex_items(clean_env):
 
 def test_union_env_parser(clean_env):
     """Test UnionEnvParser with multiple parser types."""
-    parsers = [StrEnvParser(), IntEnvParser()]
+    parsers = {str: StrEnvParser(), int: IntEnvParser()}
     parser = UnionEnvParser(parsers)
 
     # Test with string value that can't be parsed as int - this will fail
@@ -263,7 +271,7 @@ def test_union_env_parser(clean_env):
     assert result == 42
 
     # Test with compatible parsers (str and bool)
-    bool_str_parsers = [StrEnvParser(), BoolEnvParser()]
+    bool_str_parsers = {str: StrEnvParser(), bool: BoolEnvParser()}
     bool_str_parser = UnionEnvParser(bool_str_parsers)
 
     os.environ["TEST_UNION"] = "true"
@@ -283,7 +291,8 @@ def test_model_env_parser_simple(clean_env):
         "name": StrEnvParser(),
         "count": IntEnvParser(),
     }
-    parser = ModelEnvParser(field_parsers)
+    descriptions = {}
+    parser = ModelEnvParser(field_parsers, descriptions)
 
     # Test with individual field overrides
     os.environ["TEST_MODEL_NAME"] = "test_name"
@@ -766,3 +775,366 @@ def test_config_vnc_various_boolean_values(clean_env, env_value, expected):
     assert config.enable_vnc is expected, (
         f"Failed for OH_ENABLE_VNC='{env_value}', expected {expected}"
     )
+
+
+# ============================================================================
+# ENUM PARSING TESTS
+# ============================================================================
+
+
+class SampleEnum(str, Enum):
+    """Sample enum for parsing tests."""
+
+    OPTION_A = "option_a"
+    OPTION_B = "option_b"
+    OPTION_C = "option_c"
+
+
+def test_enum_env_parser_creation():
+    """Test that enum types create LiteralEnvParser with correct values."""
+    parsers = {}
+    parser = get_env_parser(SampleEnum, parsers)
+
+    assert isinstance(parser, LiteralEnvParser)
+    assert parser.values == ("option_a", "option_b", "option_c")
+
+
+def test_enum_parsing_valid_values(clean_env):
+    """Test parsing valid enum values from environment variables."""
+
+    class EnumModel(BaseModel):
+        risk_level: SecurityRisk = SecurityRisk.LOW
+        test_option: SampleEnum = SampleEnum.OPTION_A
+
+    # Test SecurityRisk enum
+    os.environ["TEST_RISK_LEVEL"] = "HIGH"
+    os.environ["TEST_TEST_OPTION"] = "option_b"
+
+    result = from_env(EnumModel, "TEST")
+    assert result.risk_level == SecurityRisk.HIGH
+    assert result.test_option == SampleEnum.OPTION_B
+
+
+def test_enum_parsing_invalid_values(clean_env):
+    """Test parsing invalid enum values from environment variables."""
+
+    class EnumModel(BaseModel):
+        risk_level: SecurityRisk = SecurityRisk.LOW
+
+    # Test invalid enum value
+    os.environ["TEST_RISK_LEVEL"] = "INVALID_RISK"
+
+    # Should use default value when invalid value is provided
+    result = from_env(EnumModel, "TEST")
+    assert result.risk_level == SecurityRisk.LOW
+
+
+def test_enum_parsing_missing_values(clean_env):
+    """Test parsing when enum environment variables are missing."""
+
+    class EnumModel(BaseModel):
+        risk_level: SecurityRisk = SecurityRisk.MEDIUM
+        test_option: SampleEnum = SampleEnum.OPTION_C
+
+    # No environment variables set - should use defaults
+    result = from_env(EnumModel, "TEST")
+    assert result.risk_level == SecurityRisk.MEDIUM
+    assert result.test_option == SampleEnum.OPTION_C
+
+
+# ============================================================================
+# STRING LITERAL PARSING TESTS
+# ============================================================================
+
+
+def test_literal_env_parser_creation():
+    """Test that Literal types create LiteralEnvParser with correct values."""
+    type_: type = Literal["red", "green", "blue"]  # type: ignore
+    parsers = {}
+    parser = get_env_parser(type_, parsers)
+
+    assert isinstance(parser, LiteralEnvParser)
+    assert parser.values == ("red", "green", "blue")
+
+
+def test_literal_parsing_valid_values(clean_env):
+    """Test parsing valid literal values from environment variables."""
+
+    class LiteralModel(BaseModel):
+        color: Literal["red", "green", "blue"] = "red"
+        size: Literal["small", "medium", "large"] = "medium"
+
+    os.environ["TEST_COLOR"] = "blue"
+    os.environ["TEST_SIZE"] = "large"
+
+    result = from_env(LiteralModel, "TEST")
+    assert result.color == "blue"
+    assert result.size == "large"
+
+
+def test_literal_parsing_invalid_values(clean_env):
+    """Test parsing invalid literal values from environment variables."""
+
+    class LiteralModel(BaseModel):
+        color: Literal["red", "green", "blue"] = "red"
+
+    # Test invalid literal value
+    os.environ["TEST_COLOR"] = "purple"
+
+    # Should use default value when invalid value is provided
+    result = from_env(LiteralModel, "TEST")
+    assert result.color == "red"
+
+
+def test_literal_parsing_missing_values(clean_env):
+    """Test parsing when literal environment variables are missing."""
+
+    class LiteralModel(BaseModel):
+        color: Literal["red", "green", "blue"] = "green"
+        size: Literal["small", "medium", "large"] = "small"
+
+    # No environment variables set - should use defaults
+    result = from_env(LiteralModel, "TEST")
+    assert result.color == "green"
+    assert result.size == "small"
+
+
+def test_literal_env_parser_direct():
+    """Test LiteralEnvParser directly with various scenarios."""
+    parser = LiteralEnvParser(("alpha", "beta", "gamma"))
+
+    # Test missing key
+    assert parser.from_env("MISSING_KEY") is MISSING
+
+    # Test valid values
+    os.environ["TEST_LITERAL"] = "alpha"
+    assert parser.from_env("TEST_LITERAL") == "alpha"
+
+    os.environ["TEST_LITERAL"] = "beta"
+    assert parser.from_env("TEST_LITERAL") == "beta"
+
+    # Test invalid value
+    os.environ["TEST_LITERAL"] = "invalid"
+    assert parser.from_env("TEST_LITERAL") is MISSING
+
+    # Clean up
+    del os.environ["TEST_LITERAL"]
+
+
+# ============================================================================
+# TEMPLATE GENERATION (to_env) TESTS
+# ============================================================================
+
+
+def test_bool_env_parser_to_env():
+    """Test BoolEnvParser template generation."""
+    parser = BoolEnvParser()
+    output = StringIO()
+
+    # Test True value
+    parser.to_env("TEST_BOOL", True, output)
+    assert output.getvalue() == "TEST_BOOL=1\n"
+
+    # Test False value
+    output = StringIO()
+    parser.to_env("TEST_BOOL", False, output)
+    assert output.getvalue() == "TEST_BOOL=0\n"
+
+
+def test_none_env_parser_to_env():
+    """Test NoneEnvParser template generation."""
+    parser = NoneEnvParser()
+    output = StringIO()
+
+    # Test None value
+    parser.to_env("TEST_VALUE", None, output)
+    assert output.getvalue() == "TEST_VALUE_IS_NONE=1\n"
+
+    # Test non-None value (should produce no output)
+    output = StringIO()
+    parser.to_env("TEST_VALUE", "not_none", output)
+    assert output.getvalue() == ""
+
+
+def test_literal_env_parser_to_env():
+    """Test LiteralEnvParser template generation."""
+    parser = LiteralEnvParser(("red", "green", "blue"))
+    output = StringIO()
+
+    parser.to_env("TEST_COLOR", "red", output)
+    result = output.getvalue()
+
+    # Should include permitted values comment and the actual value
+    assert "# Permitted Values: red, green, blue" in result
+    assert "TEST_COLOR=red\n" in result
+
+
+def test_list_env_parser_to_env():
+    """Test ListEnvParser template generation."""
+    item_parser = StrEnvParser()
+    parser = ListEnvParser(item_parser, str)
+    output = StringIO()
+
+    test_list = ["item1", "item2", "item3"]
+    parser.to_env("TEST_LIST", test_list, output)
+    result = output.getvalue()
+
+    # Should generate indexed environment variables
+    assert "TEST_LIST_0=item1\n" in result
+    assert "TEST_LIST_1=item2\n" in result
+    assert "TEST_LIST_2=item3\n" in result
+
+
+def test_model_env_parser_to_env():
+    """Test ModelEnvParser template generation."""
+
+    class TestModel(BaseModel):
+        name: str = Field(description="The name field")
+        count: int = Field(description="The count field")
+        enabled: bool = True
+
+    # Create model instance
+    model = TestModel(name="test", count=42, enabled=False)
+
+    # Generate template
+    template = to_env(model, "TEST_MODEL")
+
+    # Should include field descriptions and values
+    assert "# The name field" in template
+    assert "# The count field" in template
+    assert "TEST_MODEL_NAME=test" in template
+    assert "TEST_MODEL_COUNT=42" in template
+    assert "TEST_MODEL_ENABLED=0" in template
+
+
+def test_union_env_parser_to_env():
+    """Test UnionEnvParser template generation."""
+    parsers = {str: StrEnvParser(), int: IntEnvParser()}
+    parser = UnionEnvParser(parsers)
+    output = StringIO()
+
+    # Test with string value
+    parser.to_env("TEST_UNION", "hello", output)
+    result = output.getvalue()
+
+    # Should include the actual value and commented samples
+    assert "TEST_UNION=hello\n" in result
+
+
+def test_to_env_function_with_enum():
+    """Test the main to_env function with enum values."""
+
+    class EnumModel(BaseModel):
+        risk: SecurityRisk = SecurityRisk.LOW
+        option: SampleEnum = SampleEnum.OPTION_A
+
+    model = EnumModel(risk=SecurityRisk.HIGH, option=SampleEnum.OPTION_B)
+    template = to_env(model, "TEST")
+
+    # Should generate templates for enum fields
+    assert "TEST_RISK=HIGH" in template
+    assert "TEST_OPTION=option_b" in template
+    # Should include permitted values comments
+    assert "Permitted Values:" in template
+
+
+def test_to_env_function_with_literal():
+    """Test the main to_env function with literal values."""
+
+    class LiteralModel(BaseModel):
+        color: Literal["red", "green", "blue"] = "red"
+        size: Literal["small", "medium", "large"] = "medium"
+
+    model = LiteralModel(color="blue", size="large")
+    template = to_env(model, "TEST")
+
+    # Should generate templates for literal fields
+    assert "TEST_COLOR=blue" in template
+    assert "TEST_SIZE=large" in template
+    # Should include permitted values comments
+    assert "Permitted Values:" in template
+
+
+def test_to_env_function_with_complex_model():
+    """Test the main to_env function with a complex nested model."""
+
+    class Address(BaseModel):
+        street: str = Field(description="Street address")
+        city: str = Field(description="City name")
+        zip_code: str = "00000"
+
+    class Person(BaseModel):
+        name: str = Field(description="Person's name")
+        age: int = Field(description="Person's age")
+        addresses: list[Address] = Field(
+            default_factory=list, description="List of addresses"
+        )
+        risk_level: SecurityRisk = SecurityRisk.LOW
+
+    # Create complex model instance
+    person = Person(
+        name="John Doe",
+        age=30,
+        addresses=[
+            Address(street="123 Main St", city="Anytown", zip_code="12345"),
+            Address(street="456 Oak Ave", city="Other City", zip_code="67890"),
+        ],
+        risk_level=SecurityRisk.MEDIUM,
+    )
+
+    template = to_env(person, "PERSON")
+
+    # Should include field descriptions
+    assert "# Person's name" in template
+    assert "# Person's age" in template
+    assert "# List of addresses" in template
+    assert "# Street address" in template
+    assert "# City name" in template
+
+    # Should include nested structure
+    assert "PERSON_NAME=John Doe" in template
+    assert "PERSON_AGE=30" in template
+    assert "PERSON_ADDRESSES_0_STREET=123 Main St" in template
+    assert "PERSON_ADDRESSES_0_CITY=Anytown" in template
+    assert "PERSON_ADDRESSES_0_ZIP_CODE=12345" in template
+    assert "PERSON_ADDRESSES_1_STREET=456 Oak Ave" in template
+    assert "PERSON_ADDRESSES_1_CITY=Other City" in template
+    assert "PERSON_ADDRESSES_1_ZIP_CODE=67890" in template
+    assert "PERSON_RISK_LEVEL=MEDIUM" in template
+
+
+def test_to_env_function_with_none_values():
+    """Test the main to_env function with None values."""
+
+    class OptionalModel(BaseModel):
+        required_field: str
+        optional_field: str | None = None
+        another_optional: int | None = None
+
+    model = OptionalModel(
+        required_field="required", optional_field=None, another_optional=42
+    )
+
+    template = to_env(model, "TEST")
+
+    # Should handle None values with _IS_NONE suffix
+    assert "TEST_REQUIRED_FIELD=required" in template
+    assert "TEST_OPTIONAL_FIELD_IS_NONE=1" in template
+    assert "TEST_ANOTHER_OPTIONAL=42" in template
+
+
+def test_to_env_function_with_boolean_values():
+    """Test the main to_env function with boolean values."""
+
+    class BoolModel(BaseModel):
+        enabled: bool = True
+        disabled: bool = False
+        maybe: bool | None = None
+
+    model = BoolModel(enabled=True, disabled=False, maybe=None)
+    template = to_env(model, "BOOL_TEST")
+
+    # Should convert booleans to 1/0
+    assert "BOOL_TEST_ENABLED=1" in template
+    assert "BOOL_TEST_DISABLED=0" in template
+    assert "BOOL_TEST_MAYBE_IS_NONE=1" in template

@@ -23,7 +23,7 @@ from openhands.agent_server.config import get_default_config
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
-from openhands.agent_server.models import BashEventBase
+from openhands.agent_server.models import BashEventBase, ExecuteBashRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event, Message
 
@@ -50,8 +50,10 @@ async def events_socket(
         return
 
     await websocket.accept()
+    logger.info(f"Event Websocket Connected: {conversation_id}")
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
+        logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
         return
 
@@ -62,6 +64,7 @@ async def events_socket(
     try:
         # Resend all existing events if requested
         if resend_all:
+            logger.info(f"Resending events: {conversation_id}")
             page_id = None
             while True:
                 page = await event_service.search_events(page_id=page_id)
@@ -75,9 +78,11 @@ async def events_socket(
         while True:
             try:
                 data = await websocket.receive_json()
+                logger.info(f"Received message: {conversation_id}")
                 message = Message.model_validate(data)
                 await event_service.send_message(message, True)
             except WebSocketDisconnect:
+                logger.info(f"Event websocket disconnected: {conversation_id}")
                 # Exit the loop when websocket disconnects
                 return
             except Exception as e:
@@ -105,12 +110,14 @@ async def bash_events_socket(
         return
 
     await websocket.accept()
+    logger.info("Bash Websocket Connected")
     subscriber_id = await bash_event_service.subscribe_to_events(
         _BashWebSocketSubscriber(websocket)
     )
     try:
         # Resend all existing events if requested
         if resend_all:
+            logger.info("Resending bash events")
             page_id = None
             while True:
                 page = await bash_event_service.search_bash_events(page_id=page_id)
@@ -123,9 +130,13 @@ async def bash_events_socket(
         while True:
             try:
                 # Keep the connection alive and handle any incoming messages
-                await websocket.receive_text()
+                data = await websocket.receive_json()
+                logger.info("Received bash request")
+                request = ExecuteBashRequest.model_validate(data)
+                await bash_event_service.start_bash_command(request)
             except WebSocketDisconnect:
                 # Exit the loop when websocket disconnects
+                logger.info("Bash websocket disconnected")
                 return
             except Exception as e:
                 logger.exception("error_in_bash_event_subscription", stack_info=True)

@@ -37,7 +37,7 @@ def test_grep_executor_basic_search():
         action = GrepAction(pattern="print")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 2  # Two files containing "print"
         assert observation.pattern == "print"
         assert observation.search_path == str(Path(temp_dir).resolve())
@@ -59,7 +59,7 @@ def test_grep_executor_case_insensitive():
         action = GrepAction(pattern="print")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1  # File contains pattern (case-insensitive)
         assert "case_test.py" in observation.matches[0]
 
@@ -75,7 +75,7 @@ def test_grep_executor_include_filter():
         action = GrepAction(pattern="test", include="*.py")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.matches[0].endswith(".py")
 
@@ -92,7 +92,7 @@ def test_grep_executor_custom_path():
         action = GrepAction(pattern="print", path=str(sub_dir))
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.search_path == str(sub_dir.resolve())
         assert str(sub_dir) in str(observation.matches[0])
@@ -105,8 +105,8 @@ def test_grep_executor_invalid_path():
         action = GrepAction(pattern="test", path="/nonexistent/path")
         observation = executor(action)
 
-        assert observation.error is not None
-        assert "not a valid directory" in observation.error
+        assert observation.is_error is True
+        assert "not a valid directory" in observation.text
 
 
 def test_grep_executor_no_matches():
@@ -118,7 +118,7 @@ def test_grep_executor_no_matches():
         action = GrepAction(pattern="nonexistent")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 0
 
 
@@ -132,7 +132,7 @@ def test_grep_executor_hidden_files_excluded():
         action = GrepAction(pattern="test")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 1
         assert ".hidden" not in observation.matches[0]
 
@@ -155,7 +155,7 @@ def test_grep_executor_sorting():
         action = GrepAction(pattern="test")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 2
         # Newest file should be first
         assert "new.py" in observation.matches[0]
@@ -173,7 +173,7 @@ def test_grep_executor_truncation():
         action = GrepAction(pattern="test")
         observation = executor(action)
 
-        assert observation.error is None
+        assert observation.is_error is False
         assert len(observation.matches) == 100
         assert observation.truncated is True
 
@@ -185,5 +185,5 @@ def test_grep_executor_invalid_regex():
         action = GrepAction(pattern="[invalid")
         observation = executor(action)
 
-        assert observation.error is not None
-        assert "Invalid regex pattern" in observation.error
+        assert observation.is_error is True
+        assert "Invalid regex pattern" in observation.text

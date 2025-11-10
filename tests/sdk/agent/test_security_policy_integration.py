@@ -250,7 +250,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
         convo.send_message(
             Message(role="user", content=[TextContent(text="Please think")])
         )
-        agent.step(convo.state, on_event=events.append)
+        agent.step(convo, on_event=events.append)
 
     # No agent errors
     assert not any(isinstance(e, AgentErrorEvent) for e in events)

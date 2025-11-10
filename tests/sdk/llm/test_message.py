@@ -142,6 +142,45 @@ def test_message_with_tool_calls():
     assert result["tool_calls"][0]["function"]["arguments"] == '{"arg": "value"}'
 
 
+def test_message_tool_calls_drop_empty_string_content():
+    """Assistant tool calls with no text should not include empty content strings."""
+    from openhands.sdk.llm.message import Message, MessageToolCall
+
+    tool_call = MessageToolCall(
+        id="call_empty",
+        name="test_function",
+        arguments="{}",
+        origin="completion",
+    )
+
+    message = Message(role="assistant", content=[], tool_calls=[tool_call])
+
+    result = message.to_chat_dict()
+    assert "content" not in result
+
+
+def test_message_tool_calls_strip_blank_list_content():
+    """List-serialized tool call messages should drop blank text content blocks."""
+    from openhands.sdk.llm.message import Message, MessageToolCall, TextContent
+
+    tool_call = MessageToolCall(
+        id="call_blank_list",
+        name="test_function",
+        arguments="{}",
+        origin="completion",
+    )
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[tool_call],
+        function_calling_enabled=True,
+    )
+
+    result = message.to_chat_dict()
+    assert "content" not in result
+
+
 def test_message_from_llm_chat_message_function_role_error():
     """Test Message.from_llm_chat_message with function role raises error."""
     from litellm.types.utils import Message as LiteLLMMessage

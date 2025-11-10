@@ -6,6 +6,7 @@ from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelRespons
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
+from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -80,7 +81,7 @@ def test_completion_retries_api_connection_error(
 def test_completion_max_retries_api_connection_error(
     mock_litellm_completion, default_config
 ):
-    """Test that APIConnectionError respects max retries."""
+    """Test that APIConnectionError respects max retries and is mapped to SDK error."""
     # Mock the litellm_completion to raise APIConnectionError multiple times
     mock_litellm_completion.side_effect = [
         APIConnectionError(
@@ -110,8 +111,9 @@ def test_completion_max_retries_api_connection_error(
         usage_id="test-service",
     )
 
-    # The completion should raise an APIConnectionError after exhausting all retries
-    with pytest.raises(APIConnectionError) as excinfo:
+    # The completion should raise an SDK typed error after exhausting all retries
+
+    with pytest.raises(LLMServiceUnavailableError) as excinfo:
         llm.completion(
             messages=[Message(role="user", content=[TextContent(text="Hello!")])],
         )
@@ -122,6 +124,9 @@ def test_completion_max_retries_api_connection_error(
 
     # The exception should contain connection error information
     assert "API connection error" in str(excinfo.value)
+
+    # Ensure the original provider exception is preserved as the cause
+    assert isinstance(excinfo.value.__cause__, APIConnectionError)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

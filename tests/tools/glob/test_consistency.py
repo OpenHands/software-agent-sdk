@@ -107,18 +107,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="*.py")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
-
-        # Convert to sets of relative paths for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        # Convert to sets for exact comparison
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -134,18 +132,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="**/*.py")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
-
-        # Convert to sets of relative paths for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        # Convert to sets for exact comparison
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -161,18 +157,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="*.nonexistent")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed with identical empty results
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both must return exactly the same (empty) set
         assert ripgrep_files == fallback_files == set()
@@ -183,18 +177,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern=".*")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -210,18 +202,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="*.tar.gz")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -237,18 +227,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="**/level3/*.py")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -264,18 +252,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="**/test*.py")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -293,20 +279,16 @@ class TestGlobConsistency:
             action = GlobAction(pattern=pattern)
 
             # Get results from both methods
-            ripgrep_result = executor._execute_with_ripgrep(
-                action, Path(temp_dir_with_files)
+            ripgrep_files, _ = executor._execute_with_ripgrep(
+                action.pattern, Path(temp_dir_with_files)
             )
-            fallback_result = executor._execute_with_glob(
-                action, Path(temp_dir_with_files)
+            fallback_files, _ = executor._execute_with_glob(
+                action.pattern, Path(temp_dir_with_files)
             )
-
-            # Both should succeed
-            assert not ripgrep_result.error
-            assert not fallback_result.error
 
             # Convert to sets for exact comparison
-            ripgrep_files = set(ripgrep_result.files)
-            fallback_files = set(fallback_result.files)
+            ripgrep_files = set(ripgrep_files)
+            fallback_files = set(fallback_files)
 
             # Both methods must return exactly the same files
             assert ripgrep_files == fallback_files, (
@@ -325,18 +307,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="*-with-*.py")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (
@@ -352,18 +332,16 @@ class TestGlobConsistency:
         action = GlobAction(pattern="*.md")
 
         # Get results from both methods
-        ripgrep_result = executor._execute_with_ripgrep(
-            action, Path(temp_dir_with_files)
+        ripgrep_files, _ = executor._execute_with_ripgrep(
+            action.pattern, Path(temp_dir_with_files)
         )
-        fallback_result = executor._execute_with_glob(action, Path(temp_dir_with_files))
-
-        # Both should succeed
-        assert not ripgrep_result.error
-        assert not fallback_result.error
+        fallback_files, _ = executor._execute_with_glob(
+            action.pattern, Path(temp_dir_with_files)
+        )
 
         # Convert to sets for exact comparison
-        ripgrep_files = set(ripgrep_result.files)
-        fallback_files = set(fallback_result.files)
+        ripgrep_files = set(ripgrep_files)
+        fallback_files = set(fallback_files)
 
         # Both methods must return exactly the same files
         assert ripgrep_files == fallback_files, (

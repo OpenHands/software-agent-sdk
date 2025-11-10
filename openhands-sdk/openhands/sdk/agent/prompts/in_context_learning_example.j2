@@ -5,13 +5,13 @@ Here's a running example of how to perform a task with the provided tools.
 USER: Create a list of numbers from 1 to 10, and display them in a web page at port 5000.
 
 A: Sure! Let me first check the current directory:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 pwd && ls
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 /workspace
 openhands@runtime:~/workspace$
 
@@ -37,37 +37,37 @@ USER: EXECUTION RESULT of [str_replace_editor]:
 File created successfully at: /workspace/app.py
 
 A: I have created a Python file `app.py` that will display a list of numbers from 1 to 10 when you run it. Let me run the Python file for you:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 python3 app.py > server.log 2>&1 &
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1] 121
 [1]+  Exit 1                  python3 app.py > server.log 2>&1
 
 A: Looks like the server is running with PID 121 then crashed. Let me check the server log:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 cat server.log
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 Traceback (most recent call last):
   File "/workspace/app.py", line 2, in <module>
     from flask import Flask
 ModuleNotFoundError: No module named 'flask'
 
 A: Looks like the server crashed because the `flask` module is not installed. Let me install the `flask` module for you:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 pip3 install flask
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 Defaulting to user installation because normal site-packages is not writeable
 Collecting flask
   Using cached flask-3.0.3-py3-none-any.whl (101 kB)
@@ -85,24 +85,24 @@ Installing collected packages: Werkzeug, itsdangerous, click, blinker, flask
 Successfully installed Werkzeug-3.0.2 blinker-1.7.0 click-8.1.7 flask-3.0.3 itsdangerous-2.2.0
 
 A: The `flask` module is installed successfully. Let me run the Python file again:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 python3 app.py > server.log 2>&1 &
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1] 124
 
 A:
 Let me check the server log again:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 cat server.log
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 * Serving Flask app 'app'
  * Debug mode: off
 WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
@@ -116,13 +116,13 @@ USER: Now kill the server, make it display the numbers in a table format.
 
 A:
 Sure! Let me stop the server first:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 kill 124
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1]+  Terminated              python3 app.py > server.log 2>&1
 
 A:
@@ -148,13 +148,13 @@ Review the changes and make sure they are as expected. Edit the file again if ne
 
 A:
 Running the updated file:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 python3 app.py > server.log 2>&1 &
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1] 126
 
 A:

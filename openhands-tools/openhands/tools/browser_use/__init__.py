@@ -23,31 +23,10 @@ from openhands.tools.browser_use.definition import (
     BrowserToolSet,
     BrowserTypeAction,
     BrowserTypeTool,
-    browser_click_tool,
-    browser_close_tab_tool,
-    browser_get_content_tool,
-    browser_get_state_tool,
-    browser_go_back_tool,
-    browser_list_tabs_tool,
-    browser_navigate_tool,
-    browser_scroll_tool,
-    browser_switch_tab_tool,
-    browser_type_tool,
 )
 
 
 __all__ = [
-    # Tool objects
-    "browser_navigate_tool",
-    "browser_click_tool",
-    "browser_type_tool",
-    "browser_get_state_tool",
-    "browser_get_content_tool",
-    "browser_scroll_tool",
-    "browser_go_back_tool",
-    "browser_list_tabs_tool",
-    "browser_switch_tab_tool",
-    "browser_close_tab_tool",
     # Tool classes
     "BrowserNavigateTool",
     "BrowserClickTool",

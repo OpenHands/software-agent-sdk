@@ -6,9 +6,10 @@ import subprocess
 import time
 
 from openhands.sdk import get_logger
+from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -102,10 +103,10 @@ class SimpleBrowsingTest(BaseIntegrationTest):
     @property
     def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
-        register_tool("BashTool", BashTool)
+        register_tool("TerminalTool", TerminalTool)
         register_tool("FileEditorTool", FileEditorTool)
         return [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
 
@@ -136,10 +137,10 @@ class SimpleBrowsingTest(BaseIntegrationTest):
 
     def verify_result(self) -> TestResult:
         """Verify that the agent successfully browsed the page and found the answer."""
-        # Use the base method to get the agent's final response
-        agent_final_response = self.conversation.agent_final_response()
+        # Use the utility function to get the agent's final response
+        agent_response = get_agent_final_response(self.conversation.state.events)
 
-        logger.info(f"Agent final response to analyze: {agent_final_response[:500]}...")
+        logger.info(f"Agent final response to analyze: {agent_response[:500]}...")
 
         # Use regex to check if the agent found the correct answer
         # The expected answer is "The answer is OpenHands is all you need!"
@@ -154,7 +155,7 @@ class SimpleBrowsingTest(BaseIntegrationTest):
         matched_pattern = None
 
         for pattern in answer_patterns:
-            if re.search(pattern, agent_final_response):
+            if re.search(pattern, agent_response):
                 found_answer = True
                 matched_pattern = pattern
                 break
@@ -173,7 +174,7 @@ class SimpleBrowsingTest(BaseIntegrationTest):
                 success=False,
                 reason=(
                     "Agent did not find the answer. "
-                    f"Response: {agent_final_response[:200]}..."
+                    f"Response: {agent_response[:200]}..."
                 ),
             )
 

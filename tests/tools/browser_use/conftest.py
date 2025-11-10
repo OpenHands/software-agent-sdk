@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from openhands.sdk.tool.schema import TextContent
 from openhands.tools.browser_use.definition import BrowserObservation
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
@@ -30,9 +31,11 @@ def create_mock_browser_response(
     screenshot_data: str | None = None,
 ):
     """Helper to create mock browser responses."""
-    return BrowserObservation(
-        output=output, error=error, screenshot_data=screenshot_data
-    )
+    if error:
+        return BrowserObservation.from_text(
+            text=error, is_error=True, screenshot_data=screenshot_data
+        )
+    return BrowserObservation.from_text(text=output, screenshot_data=screenshot_data)
 
 
 def assert_browser_observation_success(
@@ -40,9 +43,15 @@ def assert_browser_observation_success(
 ):
     """Assert that a browser observation indicates success."""
     assert isinstance(observation, BrowserObservation)
-    assert observation.error is None
+    assert observation.is_error is False
     if expected_output:
-        assert expected_output in observation.output
+        if isinstance(observation.content, str):
+            output_text = observation.content
+        else:
+            output_text = "".join(
+                [c.text for c in observation.content if isinstance(c, TextContent)]
+            )
+        assert expected_output in output_text
 
 
 def assert_browser_observation_error(
@@ -50,6 +59,6 @@ def assert_browser_observation_error(
 ):
     """Assert that a browser observation contains an error."""
     assert isinstance(observation, BrowserObservation)
-    assert observation.error is not None
+    assert observation.is_error is True
     if expected_error:
-        assert expected_error in observation.error
+        assert expected_error in observation.text

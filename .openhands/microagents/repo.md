@@ -139,3 +139,29 @@ When reviewing code, provide constructive feedback:
 - If you find yourself duplicating logics in preparing mocks, loading data etc, these logic should be fixtures in conftest.py!
 - Please test only the logic implemented in the current codebase. Do not test functionality (e.g., BaseModel.model_dumps()) that is not implemented in this repository.
 </TESTING>
+
+<DOCUMENTATION_WORKFLOW>
+# Documentation Repository
+
+Documentation lives in **github.com/OpenHands/docs** under the `sdk/` folder. When adding features or modifying APIs, you MUST update documentation there.
+
+## Workflow
+
+1. Clone docs repo: `git clone https://github.com/OpenHands/docs.git /workspace/project/openhands-docs`
+2. Create matching branch in both repos
+3. Update documentation in `openhands-docs/sdk/` folder
+4. **If you are creating a PR to `OpenHands/agent-sdk`**, you must also create a corresponding PR to `OpenHands/docs` with documentation updates in the `sdk/` folder
+5. Cross-reference both PRs in their descriptions
+
+Example:
+```bash
+cd /workspace/project/openhands-docs
+git checkout -b <feature-name>
+# Edit files in sdk/ folder
+git add sdk/
+git commit -m "Document <feature>
+
+Co-authored-by: openhands <openhands@all-hands.dev>"
+git push -u origin <feature-name>
+```
+</DOCUMENTATION_WORKFLOW>

@@ -56,14 +56,10 @@ def test_llm_secret_fields_serialization() -> None:
     # Deserialize from JSON
     deserialized_llm = LLM.model_validate_json(llm_json)
 
-    # Secret fields should be SecretStr objects with masked
-    # values after JSON deserialization
-    assert isinstance(deserialized_llm.api_key, SecretStr)
-    assert deserialized_llm.api_key.get_secret_value() == "**********"
-    assert isinstance(deserialized_llm.aws_access_key_id, SecretStr)
-    assert deserialized_llm.aws_access_key_id.get_secret_value() == "**********"
-    assert isinstance(deserialized_llm.aws_secret_access_key, SecretStr)
-    assert deserialized_llm.aws_secret_access_key.get_secret_value() == "**********"
+    # Secret fields should be None objects after JSON Deserialization
+    assert deserialized_llm.api_key is None
+    assert deserialized_llm.aws_access_key_id is None
+    assert deserialized_llm.aws_secret_access_key is None
 
 
 def test_llm_excluded_fields_not_serialized() -> None:
@@ -99,7 +95,6 @@ def test_llm_private_attributes_not_serialized() -> None:
     # Set private attributes (these would normally be set internally)
     llm._model_info = {"some": "info"}
     llm._tokenizer = "mock-tokenizer"
-    llm._function_calling_active = True
 
     # Serialize to dict
     llm_dict = llm.model_dump()
@@ -107,7 +102,6 @@ def test_llm_private_attributes_not_serialized() -> None:
     # Private attributes should not be present
     assert "_model_info" not in llm_dict
     assert "_tokenizer" not in llm_dict
-    assert "_function_calling_active" not in llm_dict
     assert "_telemetry" not in llm_dict
 
     # Serialize to JSON and deserialize
@@ -118,7 +112,7 @@ def test_llm_private_attributes_not_serialized() -> None:
     # (LLM creates telemetry automatically)
     assert deserialized_llm._model_info is None
     assert deserialized_llm._tokenizer is None
-    assert deserialized_llm._function_calling_active is False
+    assert deserialized_llm.native_tool_calling is True
     assert (
         deserialized_llm._telemetry is not None
     )  # LLM creates telemetry automatically

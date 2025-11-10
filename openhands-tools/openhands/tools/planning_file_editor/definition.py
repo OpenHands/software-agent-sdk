@@ -11,6 +11,7 @@ if TYPE_CHECKING:
 from openhands.sdk.tool import (
     ToolAnnotations,
     ToolDefinition,
+    register_tool,
 )
 from openhands.tools.file_editor.definition import (
     TOOL_DESCRIPTION as FILE_EDITOR_TOOL_DESCRIPTION,
@@ -100,7 +101,6 @@ class PlanningFileEditorTool(
 
         return [
             cls(
-                name="planning_file_editor",
                 description=enhanced_description,
                 action_type=PlanningFileEditorAction,
                 observation_type=PlanningFileEditorObservation,
@@ -114,3 +114,7 @@ class PlanningFileEditorTool(
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(PlanningFileEditorTool.name, PlanningFileEditorTool)

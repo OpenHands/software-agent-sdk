@@ -6,12 +6,17 @@ from typing import TYPE_CHECKING
 
 from pydantic import Field
 
+from openhands.sdk.tool import (
+    Action,
+    Observation,
+    ToolAnnotations,
+    ToolDefinition,
+    register_tool,
+)
+
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
-
-from openhands.sdk.llm import ImageContent, TextContent
-from openhands.sdk.tool import Action, Observation, ToolAnnotations, ToolDefinition
 
 
 class GrepAction(Action):
@@ -46,43 +51,6 @@ class GrepObservation(Observation):
     truncated: bool = Field(
         default=False, description="Whether results were truncated to 100 files"
     )
-    error: str | None = Field(default=None, description="Error message if any")
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        """Convert observation to LLM content."""
-        if self.error:
-            return [TextContent(text=f"Error: {self.error}")]
-
-        if not self.matches:
-            include_info = (
-                f" (filtered by '{self.include_pattern}')"
-                if self.include_pattern
-                else ""
-            )
-            content = (
-                f"No files found containing pattern '{self.pattern}' "
-                f"in directory '{self.search_path}'{include_info}"
-            )
-        else:
-            include_info = (
-                f" (filtered by '{self.include_pattern}')"
-                if self.include_pattern
-                else ""
-            )
-            file_list = "\n".join(self.matches)
-            content = (
-                f"Found {len(self.matches)} file(s) containing pattern "
-                f"'{self.pattern}' in '{self.search_path}'{include_info}:\n"
-                f"{file_list}"
-            )
-            if self.truncated:
-                content += (
-                    "\n\n[Results truncated to first 100 files. "
-                    "Consider using a more specific pattern.]"
-                )
-
-        return [TextContent(text=content)]
 
 
 TOOL_DESCRIPTION = """Fast content search tool.
@@ -130,7 +98,6 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                name="grep",
                 description=enhanced_description,
                 action_type=GrepAction,
                 observation_type=GrepObservation,
@@ -144,3 +111,7 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(GrepTool.name, GrepTool)

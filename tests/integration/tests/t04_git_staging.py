@@ -5,8 +5,8 @@ import subprocess
 
 from openhands.sdk import get_logger
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -26,10 +26,10 @@ class GitStagingTest(BaseIntegrationTest):
     @property
     def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
-        register_tool("BashTool", BashTool)
+        register_tool("TerminalTool", TerminalTool)
         register_tool("FileEditorTool", FileEditorTool)
         return [
-            Tool(name="BashTool"),
+            Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
         ]
 

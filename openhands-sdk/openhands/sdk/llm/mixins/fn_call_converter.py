@@ -11,7 +11,7 @@ import json
 import re
 import sys
 from collections.abc import Iterable
-from typing import Literal, NotRequired, TypedDict, cast
+from typing import Any, Literal, NotRequired, TypedDict, cast
 
 from litellm import ChatCompletionToolParam, ChatCompletionToolParamFunctionChunk
 
@@ -33,14 +33,19 @@ class TextPart(TypedDict):
 
 Content = str | list[TextPart]
 
-EXECUTE_BASH_TOOL_NAME = "execute_bash"
-STR_REPLACE_EDITOR_TOOL_NAME = "str_replace_editor"
+TERMINAL_TOOL_NAME = "terminal"
+STR_REPLACE_EDITOR_TOOL_NAME = "file_editor"
 BROWSER_TOOL_NAME = "browser"
 FINISH_TOOL_NAME = "finish"
 LLM_BASED_EDIT_TOOL_NAME = "edit_file"
 TASK_TRACKER_TOOL_NAME = "task_tracker"
 
 # Inspired by: https://docs.together.ai/docs/llama-3-function-calling#function-calling-w-llama-31-70b
+MISSING_DESCRIPTION_PLACEHOLDER = "No description provided"
+SCHEMA_INDENT_STEP = 2
+SCHEMA_UNION_KEYS = ("anyOf", "oneOf", "allOf")
+
+
 system_message_suffix_TEMPLATE = """
 You have access to the following functions:
 
@@ -81,41 +86,41 @@ def refine_prompt(prompt: str) -> str:
 
 # Example snippets for each tool
 TOOL_EXAMPLES = {
-    "execute_bash": {
+    "bash": {
         "check_dir": """
 ASSISTANT: Sure! Let me first check the current directory:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 pwd && ls
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 /workspace
 openhands@runtime:~/workspace$
 """,  # noqa: E501
         "run_server": """
 ASSISTANT:
 Let me run the Python file for you:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 python3 app.py > server.log 2>&1 &
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1] 121
 [1]+  Exit 1                  python3 app.py > server.log 2>&1
 
 ASSISTANT:
 Looks like the server was running with PID 121 then crashed. Let me check the server log:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 cat server.log
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 Traceback (most recent call last):
   File "/workspace/app.py", line 2, in <module>
     from flask import Flask
@@ -123,13 +128,13 @@ ModuleNotFoundError: No module named 'flask'
 
 ASSISTANT:
 Looks like the server crashed because the `flask` module is not installed. Let me install the `flask` module for you:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 pip3 install flask
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 Defaulting to user installation because normal site-packages is not writeable
 Collecting flask
   Using cached flask-3.0.3-py3-none-any.whl (101 kB)
@@ -148,24 +153,24 @@ Successfully installed Werkzeug-3.0.2 blinker-1.7.0 click-8.1.7 flask-3.0.3 itsd
 
 ASSISTANT:
 The `flask` module is installed successfully. Let me run the Python file again:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 python3 app.py > server.log 2>&1 &
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1] 124
 
 ASSISTANT:
 Let me check the server log again:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 cat server.log
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 * Serving Flask app 'app'
  * Debug mode: off
 WARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.
@@ -180,32 +185,32 @@ USER: Now kill the server, make it display the numbers in a table format.
 
 ASSISTANT:
 Sure! Let me stop the server first:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 kill 124
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1]+  Terminated              python3 app.py > server.log 2>&1
 """,  # noqa: E501
         "run_server_again": """
 ASSISTANT:
 Running the updated file:
-<function=execute_bash>
+<function=terminal>
 <parameter=command>
 python3 app.py > server.log 2>&1 &
 </parameter>
 </function>
 
-USER: EXECUTION RESULT of [execute_bash]:
+USER: EXECUTION RESULT of [terminal]:
 [1] 126
 
 ASSISTANT:
 The server is running on port 5000 with PID 126. You can access the list of numbers in a table format by visiting http://127.0.0.1:5000.
 """,  # noqa: E501
     },
-    "str_replace_editor": {
+    "file_editor": {
         "create_file": """
 ASSISTANT:
 There is no `app.py` file in the current directory. Let me create a Python file `app.py`:
@@ -329,6 +334,35 @@ The server is running on port 5000 with PID 126. You can access the list of numb
 </function>
 """  # noqa: E501
     },
+    "task_tracker": {
+        "view": """
+ASSISTANT:
+Let me check the current task list first:
+<function=task_tracker>
+<parameter=command>view</parameter>
+</function>
+""",
+        "plan": """
+I'll create or update the full plan based on your requirements and current progress:
+<function=task_tracker>
+<parameter=command>plan</parameter>
+<parameter=task_list>
+[
+  {
+    "title": "Initialize repo",
+    "status": "done",
+    "notes": "Repository created and README added."
+  },
+  {
+    "title": "Implement nested param parsing",
+    "status": "in_progress",
+    "notes": "Add recursive parsing for array-typed parameters."
+  }
+]
+</parameter>
+</function>
+""",
+    },
 }
 
 
@@ -338,16 +372,18 @@ def get_example_for_tools(tools: list[ChatCompletionToolParam]) -> str:
     for tool in tools:
         if tool["type"] == "function":
             name = tool["function"]["name"]
-            if name == EXECUTE_BASH_TOOL_NAME:
-                available_tools.add("execute_bash")
+            if name == TERMINAL_TOOL_NAME:
+                available_tools.add("terminal")
             elif name == STR_REPLACE_EDITOR_TOOL_NAME:
-                available_tools.add("str_replace_editor")
+                available_tools.add("file_editor")
             elif name == BROWSER_TOOL_NAME:
                 available_tools.add("browser")
             elif name == FINISH_TOOL_NAME:
                 available_tools.add("finish")
             elif name == LLM_BASED_EDIT_TOOL_NAME:
                 available_tools.add("edit_file")
+            elif name == TASK_TRACKER_TOOL_NAME:
+                available_tools.add("task_tracker")
 
     if not available_tools:
         return ""
@@ -361,33 +397,37 @@ USER: Create a list of numbers from 1 to 10, and display them in a web page at p
 """  # noqa: E501
 
     # Build example based on available tools
-    if "execute_bash" in available_tools:
-        example += TOOL_EXAMPLES["execute_bash"]["check_dir"]
+    if "terminal" in available_tools:
+        example += TOOL_EXAMPLES["bash"]["check_dir"]
 
-    if "str_replace_editor" in available_tools:
-        example += TOOL_EXAMPLES["str_replace_editor"]["create_file"]
+    if "file_editor" in available_tools:
+        example += TOOL_EXAMPLES["file_editor"]["create_file"]
     elif "edit_file" in available_tools:
         example += TOOL_EXAMPLES["edit_file"]["create_file"]
 
-    if "execute_bash" in available_tools:
-        example += TOOL_EXAMPLES["execute_bash"]["run_server"]
+    if "terminal" in available_tools:
+        example += TOOL_EXAMPLES["bash"]["run_server"]
 
     if "browser" in available_tools:
         example += TOOL_EXAMPLES["browser"]["view_page"]
 
-    if "execute_bash" in available_tools:
-        example += TOOL_EXAMPLES["execute_bash"]["kill_server"]
+    if "terminal" in available_tools:
+        example += TOOL_EXAMPLES["bash"]["kill_server"]
 
-    if "str_replace_editor" in available_tools:
-        example += TOOL_EXAMPLES["str_replace_editor"]["edit_file"]
+    if "file_editor" in available_tools:
+        example += TOOL_EXAMPLES["file_editor"]["edit_file"]
     elif "edit_file" in available_tools:
         example += TOOL_EXAMPLES["edit_file"]["edit_file"]
 
-    if "execute_bash" in available_tools:
-        example += TOOL_EXAMPLES["execute_bash"]["run_server_again"]
+    if "terminal" in available_tools:
+        example += TOOL_EXAMPLES["bash"]["run_server_again"]
 
     if "finish" in available_tools:
         example += TOOL_EXAMPLES["finish"]["example"]
+
+    if "task_tracker" in available_tools:
+        example += TOOL_EXAMPLES["task_tracker"]["view"]
+        example += TOOL_EXAMPLES["task_tracker"]["plan"]
 
     example += """
 --------------------- END OF EXAMPLE ---------------------
@@ -452,6 +492,155 @@ def convert_tool_call_to_string(tool_call: dict) -> str:
     return ret
 
 
+def _summarize_schema_type(schema: object | None) -> str:
+    """
+    Capture array, union, enum, and nested type info.
+    """
+    if not isinstance(schema, dict):
+        return "unknown" if schema is None else str(schema)
+
+    for key in SCHEMA_UNION_KEYS:
+        if key in schema:
+            return " or ".join(_summarize_schema_type(option) for option in schema[key])
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        return " or ".join(str(t) for t in schema_type)
+    if schema_type == "array":
+        items = schema.get("items")
+        if isinstance(items, list):
+            item_types = ", ".join(_summarize_schema_type(item) for item in items)
+            return f"array[{item_types}]"
+        if isinstance(items, dict):
+            return f"array[{_summarize_schema_type(items)}]"
+        return "array"
+    if schema_type:
+        return str(schema_type)
+    if "enum" in schema:
+        return "enum"
+    return "unknown"
+
+
+def _indent(indent: int) -> str:
+    return " " * indent
+
+
+def _nested_indent(indent: int, levels: int = 1) -> int:
+    return indent + SCHEMA_INDENT_STEP * levels
+
+
+def _get_description(schema: dict[str, object] | None) -> str:
+    """
+    Extract description from schema, or return placeholder if missing.
+    """
+    if not isinstance(schema, dict):
+        return MISSING_DESCRIPTION_PLACEHOLDER
+    description = schema.get("description")
+    if isinstance(description, str) and description.strip():
+        return description
+    return MISSING_DESCRIPTION_PLACEHOLDER
+
+
+def _format_union_details(schema: dict[str, object], indent: int) -> list[str] | None:
+    for key in SCHEMA_UNION_KEYS:
+        options = schema.get(key)
+        if not isinstance(options, list):
+            continue
+        lines = [f"{_indent(indent)}{key} options:"]
+        for option in options:
+            option_type = _summarize_schema_type(option)
+            option_line = f"{_indent(_nested_indent(indent))}- {option_type}"
+            option_line += (
+                f": {_get_description(option if isinstance(option, dict) else None)}"
+            )
+            lines.append(option_line)
+            lines.extend(_format_schema_detail(option, _nested_indent(indent, 2)))
+        return lines
+    return None
+
+
+def _format_array_details(schema: dict[str, object], indent: int) -> list[str]:
+    lines = [f"{_indent(indent)}Array items:"]
+    items = schema.get("items")
+    if isinstance(items, list):
+        for index, item_schema in enumerate(items):
+            item_type = _summarize_schema_type(item_schema)
+            lines.append(
+                f"{_indent(_nested_indent(indent))}- index {index}: {item_type}"
+            )
+            lines.extend(_format_schema_detail(item_schema, _nested_indent(indent, 2)))
+    elif isinstance(items, dict):
+        lines.append(
+            f"{_indent(_nested_indent(indent))}Type: {_summarize_schema_type(items)}"
+        )
+        lines.extend(_format_schema_detail(items, _nested_indent(indent, 2)))
+    else:
+        lines.append(f"{_indent(_nested_indent(indent))}Type: unknown")
+    return lines
+
+
+def _format_additional_properties(
+    additional_props: object | None, indent: int
+) -> list[str]:
+    if isinstance(additional_props, dict):
+        line = (
+            f"{_indent(indent)}Additional properties allowed: "
+            f"{_summarize_schema_type(additional_props)}"
+        )
+        lines = [line]
+        lines.extend(_format_schema_detail(additional_props, _nested_indent(indent)))
+        return lines
+    if additional_props is True:
+        return [f"{_indent(indent)}Additional properties allowed."]
+    if additional_props is False:
+        return [f"{_indent(indent)}Additional properties not allowed."]
+    return []
+
+
+def _format_object_details(schema: dict[str, Any], indent: int) -> list[str]:
+    lines: list[str] = []
+    properties = schema.get("properties", {})
+    required = set(schema.get("required", []))
+    if isinstance(properties, dict) and properties:
+        lines.append(f"{_indent(indent)}Object properties:")
+        for name, prop in properties.items():
+            prop_type = _summarize_schema_type(prop)
+            required_flag = "required" if name in required else "optional"
+            prop_desc = _get_description(prop if isinstance(prop, dict) else None)
+            lines.append(
+                f"{_indent(_nested_indent(indent))}- {name} ({prop_type},"
+                f" {required_flag}): {prop_desc}"
+            )
+            lines.extend(_format_schema_detail(prop, _nested_indent(indent, 2)))
+    lines.extend(
+        _format_additional_properties(schema.get("additionalProperties"), indent)
+    )
+    return lines
+
+
+def _format_schema_detail(schema: object | None, indent: int = 4) -> list[str]:
+    """Recursively describe arrays, objects, unions, and additional properties."""
+    if not isinstance(schema, dict):
+        return []
+
+    union_lines = _format_union_details(schema, indent)
+    if union_lines is not None:
+        return union_lines
+
+    schema_type = schema.get("type")
+    if isinstance(schema_type, list):
+        allowed_types = ", ".join(str(t) for t in schema_type)
+        return [f"{_indent(indent)}Allowed types: {allowed_types}"]
+
+    if schema_type == "array":
+        return _format_array_details(schema, indent)
+
+    if schema_type == "object":
+        return _format_object_details(schema, indent)
+
+    return []
+
+
 def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
     ret = ""
     for i, tool in enumerate(tools):
@@ -469,15 +658,14 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
             required_params = set(fn["parameters"].get("required", []))
 
             for j, (param_name, param_info) in enumerate(properties.items()):
-                # Indicate required/optional in parentheses with type
                 is_required = param_name in required_params
                 param_status = "required" if is_required else "optional"
-                param_type = param_info.get("type", "string")
+                param_type = _summarize_schema_type(param_info)
 
-                # Get parameter description
-                desc = param_info.get("description", "No description provided")
+                desc = _get_description(
+                    param_info if isinstance(param_info, dict) else None
+                )
 
-                # Handle enum values if present
                 if "enum" in param_info:
                     enum_values = ", ".join(f"`{v}`" for v in param_info["enum"])
                     desc += f"\nAllowed values: [{enum_values}]"
@@ -485,6 +673,11 @@ def convert_tools_to_description(tools: list[ChatCompletionToolParam]) -> str:
                 ret += (
                     f"  ({j + 1}) {param_name} ({param_type}, {param_status}): {desc}\n"
                 )
+
+                detail_lines = _format_schema_detail(param_info, indent=6)
+                if detail_lines:
+                    ret += "\n".join(detail_lines) + "\n"
+
         else:
             ret += "No parameters are required for this function.\n"
 

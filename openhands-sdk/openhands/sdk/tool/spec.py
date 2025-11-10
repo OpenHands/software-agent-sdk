@@ -12,10 +12,10 @@ class Tool(BaseModel):
     name: str = Field(
         ...,
         description=(
-            "Name of the tool class, e.g., 'BashTool'. "
+            "Name of the tool class, e.g., 'TerminalTool'. "
             "Import it from an `openhands.tools.<module>` subpackage."
         ),
-        examples=["BashTool", "FileEditorTool", "TaskTrackerTool"],
+        examples=["TerminalTool", "FileEditorTool", "TaskTrackerTool"],
     )
     params: dict[str, Any] = Field(
         default_factory=dict,
