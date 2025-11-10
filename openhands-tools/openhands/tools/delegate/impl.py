@@ -117,7 +117,6 @@ class DelegateExecutor(ToolExecutor):
                     sub_visualizer = DelegationVisualizer(
                         name=agent_id,
                         highlight_regex=parent_visualizer._highlight_patterns,
-                        skip_user_messages=parent_visualizer._skip_user_messages,
                     )
                 else:
                     # No visualizer for sub-agents if parent doesn't use one

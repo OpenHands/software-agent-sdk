@@ -45,7 +45,6 @@ class DelegationVisualizer(DefaultConversationVisualizer):
         self,
         name: str | None = None,
         highlight_regex: dict[str, str] | None = None,
-        skip_user_messages: bool = False,
     ):
         """Initialize the delegation visualizer.
 
@@ -53,12 +52,8 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             name: Agent name to display in panel titles for delegation context.
             highlight_regex: Dictionary mapping regex patterns to Rich color styles
                            for highlighting keywords in the visualizer.
-            skip_user_messages: If True, skip displaying user messages.
         """
-        super().__init__(
-            highlight_regex=highlight_regex,
-            skip_user_messages=skip_user_messages,
-        )
+        super().__init__(highlight_regex=highlight_regex)
         self._name = name
 
     @staticmethod
