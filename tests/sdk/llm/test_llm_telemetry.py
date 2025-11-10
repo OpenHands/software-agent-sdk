@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from litellm.types.utils import ModelResponse, Usage
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
 from openhands.sdk.llm.utils.metrics import Metrics
 from openhands.sdk.llm.utils.telemetry import Telemetry, _safe_json
@@ -416,7 +416,51 @@ class TestTelemetryLogging:
 
             assert "raw_response" in data
 
-    def test_log_completion_model_name_sanitization(self, mock_metrics, mock_response):
+    def test_log_completion_with_pydantic_objects_in_context(
+        self, mock_metrics, mock_response
+    ):
+        """
+        Ensure logging works when log_ctx contains Pydantic models with
+        excluded fields. This simulates the remote-run case where tools
+        (Pydantic models with excluded runtime-only fields like executors)
+        are included in the log context. Using Pydantic's model_dump should
+        avoid circular references.
+        """
+
+        class SelfReferencingModel(BaseModel):
+            name: str
+            # Simulate an executor-like field that should not be serialized
+            executor: object | None = Field(default=None, exclude=True)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telemetry = Telemetry(
+                model_name="gpt-4o",
+                log_enabled=True,
+                log_dir=temp_dir,
+                metrics=mock_metrics,
+            )
+
+            # Create a self-referencing instance via an excluded field
+            m = SelfReferencingModel(name="tool-like")
+            m.executor = m  # would create a cycle if serialized via __dict__
+
+            telemetry.on_request({"tools": [m]})
+
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                telemetry.log_llm_call(mock_response, 0.25)
+
+            # Should not raise circular reference warnings
+            msgs = [str(x.message) for x in w]
+            assert not any("Circular reference detected" in s for s in msgs)
+
+            # Log file should be created and readable JSON
+            files = os.listdir(temp_dir)
+            assert len(files) == 1
+            with open(os.path.join(temp_dir, files[0])) as f:
+                data = json.loads(f.read())
+            assert "response" in data
+
         """Test that model names with slashes are sanitized in filenames."""
         with tempfile.TemporaryDirectory() as temp_dir:
             telemetry = Telemetry(
