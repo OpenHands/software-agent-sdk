@@ -21,7 +21,7 @@ env:
 
 jobs:
     post-initial-comment:
-        if: github.event_name == 'pull_request' && github.event.label.name == 'integration-test'
+        if: github.event_name == 'pull_request_target' && github.event.label.name == 'integration-test'
         runs-on: ubuntu-latest
         permissions:
             pull-requests: write
@@ -54,15 +54,15 @@ jobs:
             matrix:
                 python-version: ['3.12']
                 job-config:
-                    # - name: Claude Sonnet 4.5
-                    #   run-suffix: sonnet_run
-                    #   llm-config:
-                    #       model: litellm_proxy/claude-sonnet-4-5-20250929
-                    # - name: GPT-5 Mini 2025-08-07
-                    #   run-suffix: gpt5_mini_run
-                    #   llm-config:
-                    #       model: litellm_proxy/gpt-5-mini-2025-08-07
-                    #       temperature: 1.0
+                    - name: Claude Sonnet 4.5
+                      run-suffix: sonnet_run
+                      llm-config:
+                          model: litellm_proxy/claude-sonnet-4-5-20250929
+                    - name: GPT-5 Mini 2025-08-07
+                      run-suffix: gpt5_mini_run
+                      llm-config:
+                          model: litellm_proxy/gpt-5-mini-2025-08-07
+                          temperature: 1.0
                     - name: Deepseek Chat
                       run-suffix: deepseek_run
                       llm-config:
