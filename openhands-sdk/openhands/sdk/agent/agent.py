@@ -262,6 +262,8 @@ class Agent(AgentBase):
             )
             on_event(msg_event)
 
+        # If using VLLM, we can get the raw prompt and response tokens 
+        # that can be useful for RL training.
         if ("return_token_ids" in self.llm.litellm_extra_body) and \
             self.llm.litellm_extra_body["return_token_ids"]:
             token_event = TokenEvent(
