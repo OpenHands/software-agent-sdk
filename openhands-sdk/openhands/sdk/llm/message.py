@@ -269,14 +269,7 @@ class Message(BaseModel):
         # Assistant function_call(s)
         if self.role == "assistant" and self.tool_calls:
             message_dict["tool_calls"] = [tc.to_chat_dict() for tc in self.tool_calls]
-            if "content" in message_dict:
-                normalized_content = self._normalize_tool_call_content(
-                    message_dict["content"]
-                )
-                if normalized_content is None:
-                    message_dict.pop("content", None)
-                else:
-                    message_dict["content"] = normalized_content
+            self._remove_content_if_empty(message_dict)
 
         # Tool result (observation) threading
         if self.role == "tool" and self.tool_call_id is not None:
@@ -339,12 +332,23 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _normalize_tool_call_content(self, content: Any) -> Any | None:
-        """Remove empty text payloads from assistant tool call messages."""
+    def _remove_content_if_empty(self, message_dict: dict[str, Any]) -> None:
+        """Remove empty text content entries from assistant tool-call messages.
+
+        Mutates the provided message_dict in-place:
+        - If content is a string of only whitespace, drop the 'content' key
+        - If content is a list, remove any text items with empty text; if the list
+          becomes empty, drop the 'content' key
+        """
+        if "content" not in message_dict:
+            return
+
+        content = message_dict["content"]
+
         if isinstance(content, str):
             if content.strip() == "":
-                return None
-            return content
+                message_dict.pop("content", None)
+            return
 
         if isinstance(content, list):
             normalized: list[Any] = []
@@ -364,9 +368,13 @@ class Message(BaseModel):
 
                 normalized.append(item)
 
-            return normalized if normalized else None
+            if normalized:
+                message_dict["content"] = normalized
+            else:
+                message_dict.pop("content", None)
+            return
 
-        return content
+        # Any other content shape is left as-is
 
     def to_responses_value(self, *, vision_enabled: bool) -> str | list[dict[str, Any]]:
         """Return serialized form.
