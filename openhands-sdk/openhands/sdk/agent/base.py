@@ -134,7 +134,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default=None,
         description="Optional security analyzer to evaluate action risks.",
         examples=[{"kind": "LLMSecurityAnalyzer"}],
-        exclude=True,  # <- prevents it from being serialized going forward
     )
 
     condenser: CondenserBase | None = Field(
