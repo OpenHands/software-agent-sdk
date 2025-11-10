@@ -134,6 +134,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         default=None,
         description="Optional security analyzer to evaluate action risks.",
         examples=[{"kind": "LLMSecurityAnalyzer"}],
+        exclude=True,  # <- prevents it from being serialized going forward
     )
 
     condenser: CondenserBase | None = Field(
@@ -217,6 +218,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def _initialize(self, state: "ConversationState"):
         """Create an AgentBase instance from an AgentSpec."""
+
+        # 1) Migrate deprecated analyzer → state (if present)
+        if self.security_analyzer and not state.security_analyzer:
+            state.security_analyzer = self.security_analyzer
+            # 2) Clear on the immutable model (allowed via object.__setattr__)
+            try:
+                object.__setattr__(self, "security_analyzer", None)
+            except Exception:
+                # If you want to be extra-safe: only warn if this somehow fails
+                logger.warning("Could not clear deprecated Agent.security_analyzer")
+
         if self._tools:
             logger.warning("Agent already initialized; skipping re-initialization.")
             return
