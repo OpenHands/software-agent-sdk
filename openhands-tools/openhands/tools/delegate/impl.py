@@ -19,18 +19,6 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-def _format_agent_name(agent_id: str) -> str:
-    """Format agent ID to human-readable name.
-
-    Args:
-        agent_id: Agent identifier, typically in snake_case (e.g., "lodging_expert")
-
-    Returns:
-        Formatted name with proper capitalization (e.g., "Lodging Expert")
-    """
-    return agent_id.replace("_", " ").title()
-
-
 class DelegateExecutor(ToolExecutor):
     """Executor for delegation operations.
 
@@ -126,7 +114,7 @@ class DelegateExecutor(ToolExecutor):
 
                 # Format the agent ID for display
                 # (e.g., "lodging_expert" -> "Lodging Expert")
-                formatted_name = _format_agent_name(agent_id)
+                formatted_name = DelegationVisualizer._format_agent_name(agent_id)
 
                 # Use DelegationVisualizer for sub-agents
                 # to show proper sender/receiver info
@@ -227,7 +215,9 @@ class DelegateExecutor(ToolExecutor):
                     logger.info(f"Sub-agent {agent_id} starting task: {task[:100]}...")
                     # Format the parent agent name for display
                     formatted_parent_name = (
-                        _format_agent_name(parent_name) if parent_name else None
+                        DelegationVisualizer._format_agent_name(parent_name)
+                        if parent_name
+                        else None
                     )
                     conversation.send_message(task, sender=formatted_parent_name)
                     conversation.run()
