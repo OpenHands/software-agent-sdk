@@ -422,7 +422,8 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(agent_event)
     assert panel is not None
     title = str(panel.title)
-    assert "Message from MainAgent" in title
+    # Default visualizer uses generic "Agent" label
+    assert "Message from Agent" in title
 
     # Test 3: User message (default visualizer ignores sender field)
     delegated_message = Message(
@@ -445,5 +446,5 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(response_event)
     assert panel is not None
     title = str(panel.title)
-    # Default visualizer shows simple "Message from [Agent]"
-    assert "Message from MainAgent" in title
+    # Default visualizer uses generic "Agent" label (not specific agent name)
+    assert "Message from Agent" in title

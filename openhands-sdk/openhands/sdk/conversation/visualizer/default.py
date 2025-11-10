@@ -67,8 +67,8 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         """Initialize the visualizer.
 
         Args:
-            name: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
+            name: Optional name to prefix in panel titles for action/observation
+                  events. Not used for message events in the default visualizer.
             highlight_regex: Dictionary mapping regex patterns to Rich color styles
                            for highlighting keywords in the visualizer.
                            For example: {"Reasoning:": "bold blue",
@@ -197,9 +197,8 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             if event.llm_message.role == "user":
                 title_text = f"[bold {role_color}]Message from User[/bold {role_color}]"
             else:
-                agent_name = self._name if self._name else "Agent"
                 title_text = (
-                    f"[bold {role_color}]Message from {agent_name}[/bold {role_color}]"
+                    f"[bold {role_color}]Message from Agent[/bold {role_color}]"
                 )
 
             return Panel(
