@@ -221,7 +221,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # 1) Migrate deprecated analyzer → state (if present)
         if self.security_analyzer and not state.security_analyzer:
-            state.security_analyzer = self.security_analyzer
+            state.update_security_analyzer_and_record_transitions(
+                self.security_analyzer
+            )
             # 2) Clear on the immutable model (allowed via object.__setattr__)
             try:
                 object.__setattr__(self, "security_analyzer", None)
