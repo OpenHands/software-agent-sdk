@@ -52,7 +52,7 @@ def test_delegation_visualizer_user_message_without_sender():
 
 
 def test_delegation_visualizer_user_message_with_sender():
-    """Test delegated message shows 'Delegator Message to Lodging Expert'."""
+    """Test delegated message shows 'Delegator Message to Lodging Expert Agent'."""
     visualizer = DelegationVisualizer(name="Lodging Expert")
     mock_state = MagicMock()
     mock_state.stats = ConversationStats()
@@ -69,11 +69,11 @@ def test_delegation_visualizer_user_message_with_sender():
 
     assert panel is not None
     title = str(panel.title)
-    assert "Delegator Message to Lodging Expert" in title
+    assert "Delegator Message to Lodging Expert Agent" in title
 
 
 def test_delegation_visualizer_agent_response_to_user():
-    """Test agent response to user shows 'Message from [Agent]'."""
+    """Test agent response to user shows 'Message from [Agent] to User'."""
     visualizer = DelegationVisualizer(name="MainAgent")
     mock_state = MagicMock()
     mock_state.stats = ConversationStats()
@@ -88,7 +88,7 @@ def test_delegation_visualizer_agent_response_to_user():
 
     assert panel is not None
     title = str(panel.title)
-    assert "Message from Main Agent" in title
+    assert "Message from Main Agent to User" in title
 
 
 def test_delegation_visualizer_agent_response_to_delegator():

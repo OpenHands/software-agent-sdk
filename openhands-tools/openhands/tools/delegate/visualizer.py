@@ -202,7 +202,7 @@ class DelegationVisualizer(DefaultConversationVisualizer):
                 sender_display = _format_agent_name(event.sender)
                 title_text = (
                     f"[bold {role_color}]{sender_display} Message to "
-                    f"{agent_name}[/bold {role_color}]"
+                    f"{agent_name} Agent[/bold {role_color}]"
                 )
             else:
                 # Regular user message
@@ -229,7 +229,8 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             else:
                 # Agent responding to user
                 title_text = (
-                    f"[bold {role_color}]Message from {agent_name}[/bold {role_color}]"
+                    f"[bold {role_color}]Message from {agent_name} to User"
+                    f"[/bold {role_color}]"
                 )
 
         return Panel(
