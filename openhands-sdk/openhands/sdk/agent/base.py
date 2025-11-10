@@ -328,8 +328,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
                 updates["condenser"] = new_condenser
 
-        # Note: security_analyzer is now handled by ConversationState, not Agent
-
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}
         persisted_tools_map = {tool.name: tool for tool in persisted.tools}
