@@ -111,20 +111,17 @@ class DelegateExecutor(ToolExecutor):
                     ),
                 )
 
-                # Delegation requires DelegationVisualizer
+                # If parent uses DelegationVisualizer, create sub-agent visualizer
                 # Pass raw agent_id - visualizer handles formatting
-                if not isinstance(parent_visualizer, DelegationVisualizer):
-                    raise ValueError(
-                        "Delegation tool requires DelegationVisualizer. "
-                        "Please use DelegationVisualizer when creating "
-                        "the parent conversation."
+                if isinstance(parent_visualizer, DelegationVisualizer):
+                    sub_visualizer = DelegationVisualizer(
+                        name=agent_id,
+                        highlight_regex=parent_visualizer._highlight_patterns,
+                        skip_user_messages=parent_visualizer._skip_user_messages,
                     )
-
-                sub_visualizer = DelegationVisualizer(
-                    name=agent_id,
-                    highlight_regex=parent_visualizer._highlight_patterns,
-                    skip_user_messages=parent_visualizer._skip_user_messages,
-                )
+                else:
+                    # No visualizer for sub-agents if parent doesn't use one
+                    sub_visualizer = None
 
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
