@@ -328,6 +328,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
                 updates["condenser"] = new_condenser
 
+        # Allow security_analyzer to differ - use the runtime (self) version
+        updates["security_analyzer"] = self.security_analyzer
+
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}
         persisted_tools_map = {tool.name: tool for tool in persisted.tools}
