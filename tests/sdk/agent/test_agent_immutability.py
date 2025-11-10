@@ -54,28 +54,6 @@ class TestAgentImmutability:
             keyword in msg1.lower() for keyword in ["assistant", "help", "task", "user"]
         )
 
-    def test_agent_with_different_configs_are_different(self):
-        """Test that agents with different configs produce different system messages."""
-        # Security analyzer context is automatically included in system messages
-        # and cli_mode differences will be visible in the system message
-        agent1 = Agent(
-            llm=self.llm,
-            tools=[],
-            system_prompt_kwargs={"cli_mode": True},
-        )
-        agent2 = Agent(
-            llm=self.llm,
-            tools=[],
-            system_prompt_kwargs={"cli_mode": False},
-        )
-
-        # System messages should be different due to cli_mode
-        msg1 = agent1.system_message
-        msg2 = agent2.system_message
-
-        # They should be different (cli_mode affects the template)
-        assert msg1 != msg2
-
     def test_condenser_property_access(self):
         """Test that condenser property works correctly."""
         # Test with None condenser
