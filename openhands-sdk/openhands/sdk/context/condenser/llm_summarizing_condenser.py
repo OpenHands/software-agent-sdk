@@ -39,7 +39,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         head = view[: self.keep_first]
         target_size = self.max_size // 2
         if view.unhandled_condensation_request:
-            # Condensation triggered by a condensation request 
+            # Condensation triggered by a condensation request
             # should be calculated based on the view size.
             target_size = len(view) // 2
         # Number of events to keep from the tail -- target size, minus however many
