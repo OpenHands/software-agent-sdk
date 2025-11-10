@@ -555,9 +555,9 @@ class TestRemoteConversation:
         # Verify WebSocket client was stopped
         mock_ws_instance.stop.assert_called_once()
 
-        # NOTE: We don't verify HTTP client closure here because the client is shared
-        # with the workspace. The workspace owns the client and will close it during
-        # its own cleanup.
+        # Verify HTTP client was NOT closed because it's shared with the workspace.
+        # The workspace owns the client and will close it during its own cleanup.
+        mock_client_instance.close.assert_not_called()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
