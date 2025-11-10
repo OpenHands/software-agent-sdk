@@ -217,10 +217,8 @@ class Telemetry(BaseModel):
         if not self.log_dir:
             return
         try:
-            # Only log if directory exists and is writable.
-            # Do not create directories implicitly.
-            if not os.path.isdir(self.log_dir):
-                raise FileNotFoundError(f"log_dir does not exist: {self.log_dir}")
+            # Create log directory if it doesn't exist
+            os.makedirs(self.log_dir, exist_ok=True)
             if not os.access(self.log_dir, os.W_OK):
                 raise PermissionError(f"log_dir is not writable: {self.log_dir}")
 
