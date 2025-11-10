@@ -161,7 +161,7 @@ def test_no_security_analyzer_still_includes_risk_assessment():
     assert "When using tools that support the security_risk parameter" in system_message
 
 
-def test_non_llm_security_analyzer_excludes_risk_assessment():
+def test_non_llm_security_analyzer_still_includes_risk_assessment():
     """Test that security risk assessment section is excluded when security analyzer is not LLMSecurityAnalyzer."""  # noqa: E501
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
     from openhands.sdk.security.risk import SecurityRisk
@@ -178,18 +178,16 @@ def test_non_llm_security_analyzer_excludes_risk_assessment():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
+        security_analyzer=MockSecurityAnalyzer(),
     )
 
-    # Get the system message with non-LLM security analyzer
-    system_message = agent.get_system_message(MockSecurityAnalyzer())
+    # Get the system message
+    system_message = agent.system_message
 
     # Verify that the security risk assessment section is NOT included
-    assert "<SECURITY_RISK_ASSESSMENT>" not in system_message
-    assert "# Security Risk Policy" not in system_message
-    assert (
-        "When using tools that support the security_risk parameter"
-        not in system_message
-    )
+    assert "<SECURITY_RISK_ASSESSMENT>" in system_message
+    assert "# Security Risk Policy" in system_message
+    assert "When using tools that support the security_risk parameter" in system_message
 
 
 def _tool_response(name: str, args_json: str) -> ModelResponse:
