@@ -363,8 +363,10 @@ class Message(BaseModel):
                         if text_value.strip() == "":
                             continue
                     else:
-                        if str(text_value).strip() == "":
-                            continue
+                        raise ValueError(
+                            f"Text content item has non-string text value: "
+                            f"{text_value!r}"
+                        )
 
                 normalized.append(item)
 
