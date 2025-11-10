@@ -5,8 +5,14 @@ multi-agent delegation.
 
 from rich.panel import Panel
 
-from openhands.sdk.conversation.visualizer.default import DefaultConversationVisualizer
-from openhands.sdk.event import MessageEvent
+from openhands.sdk.conversation.visualizer.default import (
+    _ACTION_COLOR,
+    _OBSERVATION_COLOR,
+    _PANEL_PADDING,
+    DefaultConversationVisualizer,
+)
+from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
+from openhands.sdk.event.base import Event
 
 
 def _format_agent_name(name: str) -> str:
@@ -85,6 +91,73 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             skip_user_messages=skip_user_messages,
         )
         self._name = name
+
+    def _create_event_panel(self, event: Event) -> Panel | None:
+        """
+        Override event panel creation to add agent names to action and
+        observation titles.
+
+        For actions and observations, prepend the agent name to the title
+        (e.g., "Delegator Action", "Lodging Expert Observation").
+        For messages, delegate to the specialized message handler.
+
+        Args:
+            event: The event to visualize
+
+        Returns:
+            A Rich Panel with agent-specific title, or None if visualization fails
+        """
+        # For message events, use our specialized handler
+        if isinstance(event, MessageEvent):
+            return self._create_message_event_panel(event)
+
+        # For actions and observations, add agent name to the title
+        if isinstance(event, (ActionEvent, ObservationEvent)):
+            content = event.visualize
+            if not content.plain.strip():
+                return None
+
+            # Apply highlighting if configured
+            if self._highlight_patterns:
+                content = self._apply_highlighting(content)
+
+            agent_name = _format_agent_name(self._name) if self._name else "Agent"
+
+            if isinstance(event, ActionEvent):
+                # Check if action is None (non-executable)
+                if event.action is None:
+                    title = (
+                        f"[bold {_ACTION_COLOR}]{agent_name} Action (Not Executed)"
+                        f"[/bold {_ACTION_COLOR}]"
+                    )
+                else:
+                    title = (
+                        f"[bold {_ACTION_COLOR}]{agent_name} Action"
+                        f"[/bold {_ACTION_COLOR}]"
+                    )
+                return Panel(
+                    content,
+                    title=title,
+                    subtitle=self._format_metrics_subtitle(),
+                    border_style=_ACTION_COLOR,
+                    padding=_PANEL_PADDING,
+                    expand=True,
+                )
+            else:  # ObservationEvent
+                title = (
+                    f"[bold {_OBSERVATION_COLOR}]{agent_name} Observation"
+                    f"[/bold {_OBSERVATION_COLOR}]"
+                )
+                return Panel(
+                    content,
+                    title=title,
+                    border_style=_OBSERVATION_COLOR,
+                    padding=_PANEL_PADDING,
+                    expand=True,
+                )
+
+        # For all other event types, use the parent implementation
+        return super()._create_event_panel(event)
 
     def _create_message_event_panel(self, event: MessageEvent) -> Panel | None:
         """
