@@ -67,11 +67,13 @@ class AsyncExecutor:
         if self._shutdown.is_set():
             logger.info("AsyncExecutor has been shutdown")
             return
+
+        self._shutdown.set()
+
         with self._lock:
             loop, t = self._loop, self._thread
             self._loop = None
             self._thread = None
-            self._shutdown.set()
 
         if loop and loop.is_running():
             try:
@@ -124,7 +126,14 @@ class AsyncExecutor:
             return asyncio.run_coroutine_threadsafe(coro, loop)
 
         fut = self._safe_execute_on_loop(submit_task)
-        return fut.result(timeout)
+
+        try:
+            return fut.result(timeout)
+        except asyncio.TimeoutError:
+            fut.cancel()
+            raise
+        except concurrent.futures.CancelledError:
+            raise
 
     def close(self):
         """Close the async executor and cleanup resources."""
