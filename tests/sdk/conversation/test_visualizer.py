@@ -412,8 +412,7 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(user_event)
     assert panel is not None
     title = str(panel.title)
-    # Note: name is capitalized by the base class
-    assert "Message from User to Mainagent" in title
+    assert "Message from User to MainAgent" in title
 
     # Test 2: Agent response to user (no sender specified)
     agent_message = Message(
@@ -423,7 +422,7 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(agent_event)
     assert panel is not None
     title = str(panel.title)
-    assert "Message from Mainagent" in title
+    assert "Message from MainAgent" in title
 
     # Test 3: Delegated message with sender (parent agent to sub-agent)
     delegated_message = Message(
@@ -435,7 +434,7 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(delegated_event)
     assert panel is not None
     title = str(panel.title)
-    assert "Delegator Message to Mainagent" in title
+    assert "Delegator Message to MainAgent" in title
 
     # Test 4: Sub-agent response to parent (with sender info)
     response_message = Message(
@@ -448,4 +447,4 @@ def test_message_event_title_with_sender():
     assert panel is not None
     title = str(panel.title)
     # Agent responds to the sender
-    assert "Mainagent Message to Delegator" in title
+    assert "MainAgent Message to Delegator" in title

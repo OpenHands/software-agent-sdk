@@ -39,10 +39,9 @@ class ConversationVisualizerBase(ABC):
 
         Args:
             name: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking. Will be
-                                  capitalized automatically.
+                                  which agent/conversation is speaking.
         """
-        self._name = name.capitalize() if name else None
+        self._name = name
         self._state = None
 
     @final

@@ -139,7 +139,7 @@ class DelegateExecutor(ToolExecutor):
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
                     workspace=workspace_path,
-                    visualize=sub_visualizer,
+                    visualizer=sub_visualizer,
                 )
 
                 self._sub_agents[agent_id] = sub_conversation
