@@ -131,19 +131,9 @@ def test_conversation_state_persistence_save_load():
         assert isinstance(loaded_state.events[1], MessageEvent)
         assert loaded_state.agent.llm.model == agent.llm.model
         assert loaded_state.agent.__class__ == agent.__class__
-        # Test model_dump equality (excluding timestamps which will differ)
-        original_dump = state.model_dump(mode="json")
-        loaded_dump = loaded_state.model_dump(mode="json")
+        # Test model_dump equality
+        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
-        # Remove timestamps from security_analyzer_history for comparison
-        if "security_analyzer_history" in original_dump:
-            for record in original_dump["security_analyzer_history"]:
-                record.pop("timestamp", None)
-        if "security_analyzer_history" in loaded_dump:
-            for record in loaded_dump["security_analyzer_history"]:
-                record.pop("timestamp", None)
-
-        assert loaded_dump == original_dump
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
@@ -204,19 +194,8 @@ def test_conversation_state_incremental_save():
         assert conversation.state.persistence_dir == persist_path_for_state
         loaded_state = conversation._state
         assert len(loaded_state.events) == 2
-        # Test model_dump equality (excluding timestamps which will differ)
-        original_dump = state.model_dump(mode="json")
-        loaded_dump = loaded_state.model_dump(mode="json")
-
-        # Remove timestamps from security_analyzer_history for comparison
-        if "security_analyzer_history" in original_dump:
-            for record in original_dump["security_analyzer_history"]:
-                record.pop("timestamp", None)
-        if "security_analyzer_history" in loaded_dump:
-            for record in loaded_dump["security_analyzer_history"]:
-                record.pop("timestamp", None)
-
-        assert loaded_dump == original_dump
+        # Test model_dump equality
+        assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
 
 def test_conversation_state_event_file_scanning():
@@ -353,7 +332,7 @@ def test_conversation_state_empty_filestore():
 
         # Should create new state
         assert conversation._state.id is not None
-        assert len(conversation._state.events) == 1  # System prompt event only
+        assert len(conversation._state.events) == 1  # System prompt event
         assert isinstance(conversation._state.events[0], SystemPromptEvent)
 
 
@@ -572,13 +551,5 @@ def test_conversation_with_agent_different_llm_config():
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
-
-        # Remove timestamps from security_analyzer_history for comparison
-        if "security_analyzer_history" in original_state_dump:
-            for record in original_state_dump["security_analyzer_history"]:
-                record.pop("timestamp", None)
-        if "security_analyzer_history" in new_dump:
-            for record in new_dump["security_analyzer_history"]:
-                record.pop("timestamp", None)
 
         assert new_dump == original_state_dump
