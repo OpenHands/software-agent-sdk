@@ -1,11 +1,35 @@
 """Tests for the DelegationVisualizer class."""
 
+import json
 from unittest.mock import MagicMock
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
-from openhands.sdk.event import MessageEvent
-from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
+from openhands.sdk.tool import Action, Observation
 from openhands.tools.delegate import DelegationVisualizer
+
+
+class MockAction(Action):
+    """Mock action for testing."""
+
+    command: str
+
+
+class MockObservation(Observation):
+    """Mock observation for testing."""
+
+    pass
+
+
+def create_tool_call(call_id: str, function_name: str, args: dict) -> MessageToolCall:
+    """Helper to create a MessageToolCall."""
+    return MessageToolCall(
+        id=call_id,
+        name=function_name,
+        arguments=json.dumps(args),
+        origin="completion",
+    )
 
 
 def test_delegation_visualizer_user_message_without_sender():
@@ -125,3 +149,53 @@ def test_delegation_visualizer_formats_agent_names():
     assert panel is not None
     title = str(panel.title)
     assert "Lodging Expert Message to Main Delegator" in title
+
+
+def test_delegation_visualizer_action_event():
+    """Test action event shows '[Agent] Action'."""
+    visualizer = DelegationVisualizer(name="MainAgent")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    action = MockAction(command="ls -la")
+    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
+    action_event = ActionEvent(
+        thought=[TextContent(text="I need to list files")],
+        action=action,
+        tool_name="terminal",
+        tool_call_id="call_123",
+        tool_call=tool_call,
+        llm_response_id="response_456",
+    )
+    panel = visualizer._create_event_panel(action_event)
+
+    assert panel is not None
+    title = str(panel.title)
+    assert "Main Agent Action" in title
+
+
+def test_delegation_visualizer_observation_event():
+    """Test observation event shows '[Agent] Observation'."""
+    visualizer = DelegationVisualizer(name="lodging_expert")
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    mock_state.events = []
+    visualizer.initialize(mock_state)
+
+    observation = MockObservation(
+        content=[TextContent(text="Command executed successfully")]
+    )
+    observation_event = ObservationEvent(
+        observation=observation,
+        action_id="action_123",
+        tool_name="terminal",
+        tool_call_id="call_123",
+    )
+    panel = visualizer._create_event_panel(observation_event)
+
+    assert panel is not None
+    title = str(panel.title)
+    # Agent name should be formatted from snake_case to Title Case
+    assert "Lodging Expert Observation" in title
