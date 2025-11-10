@@ -228,7 +228,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             try:
                 object.__setattr__(self, "security_analyzer", None)
             except Exception:
-                # If you want to be extra-safe: only warn if this somehow fails
                 logger.warning("Could not clear deprecated Agent.security_analyzer")
 
         if self._tools:
