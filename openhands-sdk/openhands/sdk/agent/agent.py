@@ -254,20 +254,10 @@ class Agent(AgentBase):
         else:
             logger.info("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
-
-            # Determine recipient from the last user message
-            # This supports multi-agent scenarios where we respond to the sender
-            recipient = None
-            for event in reversed(state.events):
-                if isinstance(event, MessageEvent) and event.llm_message.role == "user":
-                    recipient = event.sender
-                    break
-
             msg_event = MessageEvent(
                 source="agent",
                 llm_message=message,
                 llm_response_id=llm_response.id,
-                recipient=recipient,
             )
             on_event(msg_event)
 

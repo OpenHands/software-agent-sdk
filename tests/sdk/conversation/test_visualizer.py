@@ -436,15 +436,15 @@ def test_message_event_title_with_sender():
     title = str(panel.title)
     assert "Delegator Message to MainAgent" in title
 
-    # Test 4: Sub-agent response to parent (with recipient info)
+    # Test 4: Sub-agent response to parent (recipient derived from event history)
+    # Set up mock_state.events so the visualizer can derive the recipient
+    mock_state.events = [delegated_event]
     response_message = Message(
         role="assistant", content=[TextContent(text="Response from sub-agent")]
     )
-    response_event = MessageEvent(
-        source="agent", llm_message=response_message, recipient="Delegator"
-    )
+    response_event = MessageEvent(source="agent", llm_message=response_message)
     panel = visualizer._create_event_panel(response_event)
     assert panel is not None
     title = str(panel.title)
-    # Agent responds to the recipient
+    # Agent responds to the recipient (derived from last user message sender)
     assert "MainAgent Message to Delegator" in title

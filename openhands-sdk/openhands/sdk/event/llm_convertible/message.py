@@ -50,13 +50,6 @@ class MessageEvent(LLMConvertibleEvent):
             "Can be used to track message origin in multi-agent scenarios."
         ),
     )
-    recipient: str | None = Field(
-        default=None,
-        description=(
-            "Optional identifier of the recipient. "
-            "Can be used to track message destination in multi-agent scenarios."
-        ),
-    )
 
     @property
     def reasoning_content(self) -> str:
