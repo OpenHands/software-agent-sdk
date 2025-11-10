@@ -193,54 +193,15 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             }
             role_color = role_colors.get(event.llm_message.role, "white")
 
-            # Determine sender and recipient for title
-            # For user messages:
-            #   - If sender is provided, use it
-            #     (e.g., "Delegator Message to Lodging Expert")
-            #   - Otherwise, use "Message from User to [Agent]"
-            # For agent messages:
-            #   - Derive recipient from event history (last user message sender)
-            #   - Use "[Agent] Message to [Recipient]" if available
-            #   - Otherwise, use "Message from [Agent]"
-            agent_name = self._name if self._name else "Agent"
-
+            # Simple titles for base visualizer
             if event.llm_message.role == "user":
-                if event.sender:
-                    # Message from another agent (via delegation or similar)
-                    title_text = (
-                        f"[bold {role_color}]{event.sender} Message to "
-                        f"{agent_name}[/bold {role_color}]"
-                    )
-                else:
-                    # Regular user message
-                    title_text = (
-                        f"[bold {role_color}]Message from User to "
-                        f"{agent_name}[/bold {role_color}]"
-                    )
+                title_text = f"[bold {role_color}]Message from User[/bold {role_color}]"
             else:
-                # For agent messages, derive recipient from last user message
-                recipient = None
-                if self._state:
-                    for evt in reversed(self._state.events):
-                        if (
-                            isinstance(evt, MessageEvent)
-                            and evt.llm_message.role == "user"
-                        ):
-                            recipient = evt.sender
-                            break
+                agent_name = self._name if self._name else "Agent"
+                title_text = (
+                    f"[bold {role_color}]Message from {agent_name}[/bold {role_color}]"
+                )
 
-                if recipient:
-                    # Agent responding to another agent
-                    title_text = (
-                        f"[bold {role_color}]{agent_name} Message to "
-                        f"{recipient}[/bold {role_color}]"
-                    )
-                else:
-                    # Agent responding to user
-                    title_text = (
-                        f"[bold {role_color}]Message from "
-                        f"{agent_name}[/bold {role_color}]"
-                    )
             return Panel(
                 content,
                 title=title_text,

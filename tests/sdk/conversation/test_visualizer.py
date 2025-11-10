@@ -406,13 +406,13 @@ def test_message_event_title_with_sender():
     mock_state.stats = ConversationStats()
     visualizer.initialize(mock_state)
 
-    # Test 1: User message to agent (no sender specified)
+    # Test 1: User message (default visualizer shows simple title)
     user_message = Message(role="user", content=[TextContent(text="Hello from user")])
     user_event = MessageEvent(source="user", llm_message=user_message)
     panel = visualizer._create_event_panel(user_event)
     assert panel is not None
     title = str(panel.title)
-    assert "Message from User to MainAgent" in title
+    assert "Message from User" in title
 
     # Test 2: Agent response to user (no sender specified)
     agent_message = Message(
@@ -424,7 +424,7 @@ def test_message_event_title_with_sender():
     title = str(panel.title)
     assert "Message from MainAgent" in title
 
-    # Test 3: Delegated message with sender (parent agent to sub-agent)
+    # Test 3: User message (default visualizer ignores sender field)
     delegated_message = Message(
         role="user", content=[TextContent(text="Task from parent")]
     )
@@ -434,11 +434,10 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(delegated_event)
     assert panel is not None
     title = str(panel.title)
-    assert "Delegator Message to MainAgent" in title
+    # Default visualizer shows simple "Message from User"
+    assert "Message from User" in title
 
-    # Test 4: Sub-agent response to parent (recipient derived from event history)
-    # Set up mock_state.events so the visualizer can derive the recipient
-    mock_state.events = [delegated_event]
+    # Test 4: Agent response (default visualizer shows simple message)
     response_message = Message(
         role="assistant", content=[TextContent(text="Response from sub-agent")]
     )
@@ -446,5 +445,5 @@ def test_message_event_title_with_sender():
     panel = visualizer._create_event_panel(response_event)
     assert panel is not None
     title = str(panel.title)
-    # Agent responds to the recipient (derived from last user message sender)
-    assert "MainAgent Message to Delegator" in title
+    # Default visualizer shows simple "Message from [Agent]"
+    assert "Message from MainAgent" in title
