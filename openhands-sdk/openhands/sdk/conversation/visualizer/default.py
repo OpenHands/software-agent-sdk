@@ -199,7 +199,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             #     (e.g., "Delegator Message to Lodging Expert")
             #   - Otherwise, use "Message from User to [Agent]"
             # For agent messages:
-            #   - Use "Message from [Agent] to [Sender]" if sender is available
+            #   - Use "[Agent] Message to [Recipient]" if recipient is available
             #   - Otherwise, use "Message from [Agent]"
             agent_name = self._name if self._name else "Agent"
 
@@ -217,11 +217,11 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                         f"{agent_name}[/bold {role_color}]"
                     )
             else:
-                if event.sender:
+                if event.recipient:
                     # Agent responding to another agent
                     title_text = (
                         f"[bold {role_color}]{agent_name} Message to "
-                        f"{event.sender}[/bold {role_color}]"
+                        f"{event.recipient}[/bold {role_color}]"
                     )
                 else:
                     # Agent responding to user
