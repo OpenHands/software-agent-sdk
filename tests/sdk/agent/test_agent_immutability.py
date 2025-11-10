@@ -125,8 +125,6 @@ class TestAgentImmutability:
 
     def test_agent_model_copy_creates_new_instance(self):
         """Test that model_copy creates a new Agent instance with modified fields."""
-        # Security analyzer context is automatically included in system messages
-        # and cli_mode differences will be visible in the system message
         original_agent = Agent(
             llm=self.llm,
             tools=[],
