@@ -31,7 +31,8 @@ class SecurityAnalyzerRecord(OpenHandsModel):
     """Record of a security analyzer configuration change."""
 
     analyzer_type: str | None = Field(
-        description="Type of security analyzer configured, or None if not configured"
+        default=None,
+        description="Type of security analyzer configured, or None if not configured",
     )
     timestamp: datetime = Field(description="Timestamp when this configuration was set")
 
