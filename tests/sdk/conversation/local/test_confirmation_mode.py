@@ -679,9 +679,7 @@ class TestConfirmationMode:
             tools=[Tool(name="test_tool")],
         )
         conversation_with_analyzer = Conversation(agent=agent)
-        conversation_with_analyzer.state.update_security_analyzer_and_record_transitions(
-            LLMSecurityAnalyzer()
-        )
+        conversation_with_analyzer.set_security_analyzer(LLMSecurityAnalyzer())
 
         # Initially with security analyzer but NeverConfirm policy
         assert conversation_with_analyzer.state.security_analyzer is not None
