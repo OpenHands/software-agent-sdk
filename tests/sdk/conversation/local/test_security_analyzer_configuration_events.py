@@ -50,7 +50,10 @@ def agent_without_analyzer(mock_llm):
 def test_new_conversation_sets_security_analyzer_state(
     request, agent_fixture, expected_analyzer_type
 ):
-    """Test that new conversations set security analyzer configuration in ConversationState."""  # noqa: E501
+    """Test that new conversations set security analyzer configuration.
+
+    Verifies that ConversationState is properly configured.
+    """
     # Get the agent fixture
     agent = request.getfixturevalue(agent_fixture)
 
@@ -95,7 +98,10 @@ def test_new_conversation_sets_security_analyzer_state(
 def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_record(
     mock_llm,
 ):
-    """Test that reinitializing with same analyzer type does not create new history record."""  # noqa: E501
+    """Test that reinitializing with same analyzer type does not create new record.
+
+    Verifies that no duplicate history records are created.
+    """
     agent = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -103,7 +109,8 @@ def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_r
             agent=agent, persistence_dir=tmpdir, workspace=tmpdir
         )
 
-        # Get initial history count - should have 2 records (None -> LLMSecurityAnalyzer)  # noqa: E501
+        # Get initial history count - should have 2 records
+        # (None -> LLMSecurityAnalyzer)
         assert len(conversation.state.security_analyzer_history) == 2
         assert conversation.state.security_analyzer_history[0].analyzer_type is None
         assert (
@@ -134,7 +141,7 @@ def test_reinitialize_same_conversation_with_same_analyzer_does_not_create_new_r
 def test_reinitialize_conversation_with_different_analyzer_creates_two_records(
     mock_llm,
 ):
-    """Test that reinitializing with different analyzer creates two history records."""  # noqa: E501
+    """Test that reinitializing with different analyzer creates two history records."""
     # Start with agent that has LLM analyzer
     agent_with_analyzer = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
 
@@ -172,7 +179,10 @@ def test_reinitialize_conversation_with_different_analyzer_creates_two_records(
 
 
 def test_reinitialize_conversation_from_none_to_analyzer_creates_two_records(mock_llm):
-    """Test that reinitializing from no analyzer to analyzer creates two history records."""  # noqa: E501
+    """Test that reinitializing from no analyzer to analyzer creates two records.
+
+    Verifies that history tracks the transition properly.
+    """
     # Start with agent without analyzer
     agent_without_analyzer = Agent(llm=mock_llm)
 
@@ -213,7 +223,10 @@ def test_reinitialize_conversation_from_none_to_analyzer_creates_two_records(moc
 
 
 def test_multiple_reinitializations_create_appropriate_records(mock_llm):
-    """Test that multiple reinitializations create the appropriate number of history records."""  # noqa: E501
+    """Test that multiple reinitializations create appropriate history records.
+
+    Verifies that each analyzer change is properly tracked.
+    """
     # Start with agent without analyzer
     agent_without_analyzer = Agent(llm=mock_llm)
 
@@ -254,7 +267,8 @@ def test_multiple_reinitializations_create_appropriate_records(mock_llm):
         assert conversation.state.security_analyzer_history[2].analyzer_type is None
         assert conversation.state.security_analyzer_history[-1].analyzer_type is None
 
-        # Switch to same LLM analyzer again (should create new record since type changed)  # noqa: E501
+        # Switch to same LLM analyzer again
+        # (should create new record since type changed)
         conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
         # Should have 4 records: None, LLMSecurityAnalyzer, None, LLMSecurityAnalyzer
