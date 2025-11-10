@@ -82,34 +82,18 @@ def extract_matrix_run_suffix(full_run_suffix: str) -> str | None:
     - litellm_proxy_openai_gpt_5_mini_0dd44e1_gpt5_mini_run_N7_20251006_183117
       -> gpt5_mini_run
     """  # noqa: E501
+    import re
 
-    if not full_run_suffix:
-        return None
+    # Pattern to match the matrix run suffix
+    # Look for pattern: _{7_hex_chars}_{matrix_run_suffix}_N{number}_
+    # The commit hash is always 7 hex characters
+    pattern = r"_[a-f0-9]{7}_([^_]+(?:_[^_]+)*_run)_N\d+_"
+    match = re.search(pattern, full_run_suffix)
 
-    try:
-        # Separate the trailing `_N{count}_{timestamp}` section
-        prefix, _ = full_run_suffix.rsplit("_N", 1)
-    except ValueError:
-        return None
+    if match:
+        return match.group(1)
 
-    tokens = prefix.split("_")
-    if len(tokens) < 2:
-        return None
-
-    for idx in range(len(tokens) - 1, -1, -1):
-        token = tokens[idx]
-        token_lower = token.lower()
-        if len(token_lower) >= 7 and all(
-            ch in "0123456789abcdef" for ch in token_lower
-        ):
-            matrix_tokens = tokens[idx + 1 :]
-            if not matrix_tokens:
-                continue
-
-            matrix_run_suffix = "_".join(matrix_tokens)
-            if matrix_run_suffix.endswith("_run"):
-                return matrix_run_suffix
-
+    # Fallback: if pattern doesn't match, return None
     return None
 
 
