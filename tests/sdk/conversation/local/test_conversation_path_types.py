@@ -97,9 +97,8 @@ def test_local_workspace_with_path():
         workspace_path = Path(tmpdir) / "workspace"
         workspace_path.mkdir(parents=True, exist_ok=True)
 
-        # Should accept Path object in constructor (converted to str by validator)
-        # We need to cast to str for type checker, but at runtime Path is accepted
-        workspace = LocalWorkspace(working_dir=str(workspace_path))
+        # Should accept Path object directly (converted to str by validator)
+        workspace = LocalWorkspace(working_dir=workspace_path)
 
         # Verify the working_dir is properly converted to string
         assert workspace.working_dir == str(workspace_path)
@@ -115,7 +114,7 @@ def test_conversation_with_localworkspace_from_path():
         workspace_path.mkdir(parents=True, exist_ok=True)
 
         # Create LocalWorkspace with Path (converted to str by validator)
-        workspace = LocalWorkspace(working_dir=str(workspace_path))
+        workspace = LocalWorkspace(working_dir=workspace_path)
 
         # Pass LocalWorkspace to Conversation
         conv = Conversation(agent=agent, workspace=workspace)

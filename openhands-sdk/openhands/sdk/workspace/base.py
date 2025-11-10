@@ -34,11 +34,13 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
     """
 
     working_dir: Annotated[
-        str,
+        str | Path,
         BeforeValidator(_convert_path_to_str),
         Field(
             description=(
-                "The working directory for agent operations and tool execution."
+                "The working directory for agent operations and tool execution. "
+                "Accepts both string paths and Path objects. "
+                "Path objects are automatically converted to strings."
             )
         ),
     ]
