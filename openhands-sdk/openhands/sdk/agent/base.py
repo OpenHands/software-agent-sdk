@@ -1,11 +1,12 @@
 import os
 import re
 import sys
+import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
@@ -13,6 +14,7 @@ from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.security import analyzer
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
@@ -23,6 +25,13 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.types import ConversationCallbackType
 
 logger = get_logger(__name__)
+
+
+AGENT_SECURITY_ANALYZER_DEPRECATION_WARNING = (
+    "Agent.security_analyzer is deprecated and will be removed "
+    "in a future release.\n\n use `conversation = Conversation();"
+    "conversation.set_security_analyzer(...)` instead."
+)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -121,6 +130,12 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         examples=[{"cli_mode": True}],
     )
 
+    security_analyzer: analyzer.SecurityAnalyzerBase | None = Field(
+        default=None,
+        description="Optional security analyzer to evaluate action risks.",
+        examples=[{"kind": "LLMSecurityAnalyzer"}],
+    )
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -141,22 +156,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
 
+    @model_validator(mode="before")
     @classmethod
-    def model_validate(cls, obj: dict | object, **kwargs) -> "AgentBase":
-        """Custom validation to handle backwards compatibility.
+    def _coerce_inputs(cls, data):
+        if not isinstance(data, dict):
+            return data
+        d = dict(data)
 
-        Handles the case where old serialized agents have a security_analyzer field
-        that should now be ignored during deserialization.
-        """
-        if isinstance(obj, dict):
-            # Remove security_analyzer field if present for backwards compatibility
-            obj = obj.copy()
-            if "security_analyzer" in obj:
-                # Store it temporarily in case we need it later
-                # For now, we just remove it since it will be set via ConversationState
-                obj.pop("security_analyzer")
+        if "security_analyzer" in d and d["security_analyzer"]:
+            warnings.warn(
+                AGENT_SECURITY_ANALYZER_DEPRECATION_WARNING,
+                DeprecationWarning,
+                stacklevel=3,
+            )
 
-        return super().model_validate(obj, **kwargs)
+        return d
 
     @property
     def prompt_dir(self) -> str:
