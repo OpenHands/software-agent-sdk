@@ -60,15 +60,12 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
     def __init__(
         self,
-        name: str | None = None,
         highlight_regex: dict[str, str] | None = DEFAULT_HIGHLIGHT_REGEX,
         skip_user_messages: bool = False,
     ):
         """Initialize the visualizer.
 
         Args:
-            name: Optional name to prefix in panel titles for action/observation
-                  events. Not used for message events in the default visualizer.
             highlight_regex: Dictionary mapping regex patterns to Rich color styles
                            for highlighting keywords in the visualizer.
                            For example: {"Reasoning:": "bold blue",
@@ -76,9 +73,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             skip_user_messages: If True, skip displaying user messages. Useful for
                                 scenarios where user input is not relevant to show.
         """
-        super().__init__(
-            name=name,
-        )
+        super().__init__()
         self._console = Console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
@@ -126,10 +121,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
         # Determine panel styling based on event type
         if isinstance(event, SystemPromptEvent):
-            title = f"[bold {_SYSTEM_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"System Prompt[/bold {_SYSTEM_COLOR}]"
+            title = f"[bold {_SYSTEM_COLOR}]System Prompt[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -139,13 +131,13 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             )
         elif isinstance(event, ActionEvent):
             # Check if action is None (non-executable)
-            title = f"[bold {_ACTION_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
             if event.action is None:
-                title += f"Agent Action (Not Executed)[/bold {_ACTION_COLOR}]"
+                title = (
+                    f"[bold {_ACTION_COLOR}]Agent Action (Not Executed)"
+                    f"[/bold {_ACTION_COLOR}]"
+                )
             else:
-                title += f"Agent Action[/bold {_ACTION_COLOR}]"
+                title = f"[bold {_ACTION_COLOR}]Agent Action[/bold {_ACTION_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -155,10 +147,9 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 expand=True,
             )
         elif isinstance(event, ObservationEvent):
-            title = f"[bold {_OBSERVATION_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"Observation[/bold {_OBSERVATION_COLOR}]"
+            title = (
+                f"[bold {_OBSERVATION_COLOR}]Observation[/bold {_OBSERVATION_COLOR}]"
+            )
             return Panel(
                 content,
                 title=title,
@@ -167,10 +158,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 expand=True,
             )
         elif isinstance(event, UserRejectObservation):
-            title = f"[bold {_ERROR_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"User Rejected Action[/bold {_ERROR_COLOR}]"
+            title = f"[bold {_ERROR_COLOR}]User Rejected Action[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -210,10 +198,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 expand=True,
             )
         elif isinstance(event, AgentErrorEvent):
-            title = f"[bold {_ERROR_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"Agent Error[/bold {_ERROR_COLOR}]"
+            title = f"[bold {_ERROR_COLOR}]Agent Error[/bold {_ERROR_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -223,10 +208,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 expand=True,
             )
         elif isinstance(event, PauseEvent):
-            title = f"[bold {_PAUSE_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"User Paused[/bold {_PAUSE_COLOR}]"
+            title = f"[bold {_PAUSE_COLOR}]User Paused[/bold {_PAUSE_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -235,10 +217,7 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 expand=True,
             )
         elif isinstance(event, Condensation):
-            title = f"[bold {_SYSTEM_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"Condensation[/bold {_SYSTEM_COLOR}]"
+            title = f"[bold {_SYSTEM_COLOR}]Condensation[/bold {_SYSTEM_COLOR}]"
             return Panel(
                 content,
                 title=title,
@@ -248,10 +227,10 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
             )
         else:
             # Fallback panel for unknown event types
-            title = f"[bold {_ERROR_COLOR}]"
-            if self._name:
-                title += f"{self._name} "
-            title += f"UNKNOWN Event: {event.__class__.__name__}[/bold {_ERROR_COLOR}]"
+            title = (
+                f"[bold {_ERROR_COLOR}]UNKNOWN Event: "
+                f"{event.__class__.__name__}[/bold {_ERROR_COLOR}]"
+            )
             return Panel(
                 content,
                 title=title,

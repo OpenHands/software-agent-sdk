@@ -399,7 +399,7 @@ def test_message_event_title_with_sender():
 
     from openhands.sdk.conversation.conversation_stats import ConversationStats
 
-    visualizer = DefaultConversationVisualizer(name="MainAgent")
+    visualizer = DefaultConversationVisualizer()
 
     # Initialize mock state with proper stats
     mock_state = MagicMock()
