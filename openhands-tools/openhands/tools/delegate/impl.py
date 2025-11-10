@@ -18,6 +18,18 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _format_agent_name(agent_id: str) -> str:
+    """Format agent ID to human-readable name.
+
+    Args:
+        agent_id: Agent identifier, typically in snake_case (e.g., "lodging_expert")
+
+    Returns:
+        Formatted name with proper capitalization (e.g., "Lodging Expert")
+    """
+    return agent_id.replace("_", " ").title()
+
+
 class DelegateExecutor(ToolExecutor):
     """Executor for delegation operations.
 
@@ -111,12 +123,16 @@ class DelegateExecutor(ToolExecutor):
                     ),
                 )
 
+                # Format the agent ID for display
+                # (e.g., "lodging_expert" -> "Lodging Expert")
+                formatted_name = _format_agent_name(agent_id)
+
                 if isinstance(parent_visualizer, ConversationVisualizerBase):
-                    sub_visualizer = parent_visualizer.__class__(name=agent_id)
+                    sub_visualizer = parent_visualizer.__class__(name=formatted_name)
                 elif isinstance(parent_visualizer, type) and issubclass(
                     parent_visualizer, ConversationVisualizerBase
                 ):
-                    sub_visualizer = parent_visualizer(name=agent_id)
+                    sub_visualizer = parent_visualizer(name=formatted_name)
                 else:
                     sub_visualizer = None
 
@@ -180,11 +196,28 @@ class DelegateExecutor(ToolExecutor):
             results = {}
             errors = {}
 
-            def run_task(agent_id: str, conversation: LocalConversation, task: str):
+            # Get the parent agent's name from the visualizer
+            parent_conversation = self.parent_conversation
+            parent_name = None
+            if hasattr(parent_conversation, "_visualizer"):
+                visualizer = parent_conversation._visualizer
+                if isinstance(visualizer, ConversationVisualizerBase):
+                    parent_name = visualizer._name
+
+            def run_task(
+                agent_id: str,
+                conversation: LocalConversation,
+                task: str,
+                parent_name: str | None,
+            ):
                 """Run a single task on a sub-agent."""
                 try:
                     logger.info(f"Sub-agent {agent_id} starting task: {task[:100]}...")
-                    conversation.send_message(task)
+                    # Format the parent agent name for display
+                    formatted_parent_name = (
+                        _format_agent_name(parent_name) if parent_name else None
+                    )
+                    conversation.send_message(task, sender=formatted_parent_name)
                     conversation.run()
 
                     # Extract the final response using get_agent_final_response
@@ -208,7 +241,7 @@ class DelegateExecutor(ToolExecutor):
                 conversation = self._sub_agents[agent_id]
                 thread = threading.Thread(
                     target=run_task,
-                    args=(agent_id, conversation, task),
+                    args=(agent_id, conversation, task, parent_name),
                     name=f"Task-{agent_id}",
                 )
                 threads.append(thread)

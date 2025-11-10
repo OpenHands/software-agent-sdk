@@ -391,3 +391,61 @@ def test_event_base_fallback_visualize():
 
     text_content = result.plain
     assert "Unknown event type: UnknownEvent" in text_content
+
+
+def test_message_event_title_with_sender():
+    """Test that MessageEvent title reflects sender information correctly."""
+    from unittest.mock import MagicMock
+
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+
+    visualizer = DefaultConversationVisualizer(name="MainAgent")
+
+    # Initialize mock state with proper stats
+    mock_state = MagicMock()
+    mock_state.stats = ConversationStats()
+    visualizer.initialize(mock_state)
+
+    # Test 1: User message to agent (no sender specified)
+    user_message = Message(role="user", content=[TextContent(text="Hello from user")])
+    user_event = MessageEvent(source="user", llm_message=user_message)
+    panel = visualizer._create_event_panel(user_event)
+    assert panel is not None
+    title = str(panel.title)
+    # Note: name is capitalized by the base class
+    assert "Message from User to Mainagent" in title
+
+    # Test 2: Agent response to user (no sender specified)
+    agent_message = Message(
+        role="assistant", content=[TextContent(text="Hello from agent")]
+    )
+    agent_event = MessageEvent(source="agent", llm_message=agent_message)
+    panel = visualizer._create_event_panel(agent_event)
+    assert panel is not None
+    title = str(panel.title)
+    assert "Message from Mainagent" in title
+
+    # Test 3: Delegated message with sender (parent agent to sub-agent)
+    delegated_message = Message(
+        role="user", content=[TextContent(text="Task from parent")]
+    )
+    delegated_event = MessageEvent(
+        source="user", llm_message=delegated_message, sender="Delegator"
+    )
+    panel = visualizer._create_event_panel(delegated_event)
+    assert panel is not None
+    title = str(panel.title)
+    assert "Delegator Message to Mainagent" in title
+
+    # Test 4: Sub-agent response to parent (with sender info)
+    response_message = Message(
+        role="assistant", content=[TextContent(text="Response from sub-agent")]
+    )
+    response_event = MessageEvent(
+        source="agent", llm_message=response_message, sender="Delegator"
+    )
+    panel = visualizer._create_event_panel(response_event)
+    assert panel is not None
+    title = str(panel.title)
+    # Agent responds to the sender
+    assert "Mainagent Message to Delegator" in title
