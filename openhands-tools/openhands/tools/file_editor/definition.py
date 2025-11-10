@@ -158,7 +158,6 @@ Command = Literal[
 TOOL_DESCRIPTION = """Custom editing tool for viewing, creating and editing files in plain-text format
 * State is persistent across command calls and discussions with the user
 * If `path` is a text file, `view` displays the result of applying `cat -n`. If `path` is a directory, `view` lists non-hidden files and directories up to 2 levels deep
-* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, .bmp), `view` displays the image content
 * The `create` command cannot be used if the specified `path` already exists as a file
 * If a `command` generates a long output, it will be truncated and marked with `<response clipped>`
 * The `undo_edit` command will revert the last edit made to the file at `path`
@@ -210,11 +209,28 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         # Initialize the executor
         executor = FileEditorExecutor(workspace_root=conv_state.workspace.working_dir)
 
+        # Build the tool description with conditional image viewing support
+        # Split TOOL_DESCRIPTION to insert image viewing line after the second bullet
+        description_lines = TOOL_DESCRIPTION.split("\n")
+        base_description = "\n".join(description_lines[:2])  # First two lines
+        remaining_description = "\n".join(description_lines[2:])  # Rest of description
+
+        # Add image viewing line if LLM supports vision
+        if conv_state.agent.llm.vision_is_active():
+            tool_description = (
+                f"{base_description}\n"
+                "* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, "
+                ".bmp), `view` displays the image content\n"
+                f"{remaining_description}"
+            )
+        else:
+            tool_description = TOOL_DESCRIPTION
+
         # Add working directory information to the tool description
         # to guide the agent to use the correct directory instead of root
         working_dir = conv_state.workspace.working_dir
         enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
+            f"{tool_description}\n\n"
             f"Your current working directory is: {working_dir}\n"
             f"When exploring project structure, start with this directory "
             f"instead of the root filesystem."
