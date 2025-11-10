@@ -34,7 +34,7 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
     """
 
     working_dir: Annotated[
-        str | Path,
+        str,
         BeforeValidator(_convert_path_to_str),
         Field(
             description=(

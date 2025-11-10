@@ -91,7 +91,7 @@ class LocalConversation(BaseConversation):
         self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
-            workspace = LocalWorkspace(working_dir=workspace)
+            workspace = LocalWorkspace(working_dir=str(workspace))
         assert isinstance(workspace, LocalWorkspace), (
             "workspace must be a LocalWorkspace instance"
         )
