@@ -280,6 +280,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "api_key",
         "aws_access_key_id",
         "aws_secret_access_key",
+        # Dynamic runtime metadata for telemetry/routing that can differ across sessions
+        # and should not cause resume-time diffs. Always prefer the runtime value.
+        "litellm_extra_body",
     )
 
     # Runtime-only private attrs

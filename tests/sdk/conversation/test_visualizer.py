@@ -2,6 +2,7 @@
 
 import json
 
+from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.conversation.visualizer import (
@@ -34,7 +35,7 @@ class VisualizerMockAction(Action):
 class VisualizerCustomAction(Action):
     """Custom action with overridden visualize method."""
 
-    task_list: list[dict] = []
+    task_list: list[dict] = Field(default_factory=list)
 
     @property
     def visualize(self) -> Text:
