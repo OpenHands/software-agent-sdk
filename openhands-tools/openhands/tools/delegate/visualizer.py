@@ -21,43 +21,6 @@ from openhands.sdk.event import (
 from openhands.sdk.event.base import Event
 
 
-def _format_agent_name(name: str) -> str:
-    """
-    Convert snake_case or camelCase agent name to Title Case for display.
-
-    Args:
-        name: Agent name in snake_case (e.g., "lodging_expert") or
-              camelCase (e.g., "MainAgent") or already formatted (e.g., "Main Agent")
-
-    Returns:
-        Formatted name in Title Case (e.g., "Lodging Expert" or "Main Agent")
-
-    Examples:
-        >>> _format_agent_name("lodging_expert")
-        'Lodging Expert'
-        >>> _format_agent_name("MainAgent")
-        'Main Agent'
-        >>> _format_agent_name("main_delegator")
-        'Main Delegator'
-        >>> _format_agent_name("Main Agent")
-        'Main Agent'
-    """
-    # If already has spaces, assume it's already formatted
-    if " " in name:
-        return name
-
-    # Handle snake_case by replacing underscores with spaces
-    if "_" in name:
-        return name.replace("_", " ").title()
-
-    # Handle camelCase/PascalCase by inserting spaces before capitals
-    import re
-
-    # Insert space before each capital letter (except the first one)
-    spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", name)
-    return spaced.title()
-
-
 class DelegationVisualizer(DefaultConversationVisualizer):
     """
     Custom visualizer for agent delegation that shows detailed sender/receiver
@@ -98,6 +61,44 @@ class DelegationVisualizer(DefaultConversationVisualizer):
         )
         self._name = name
 
+    @staticmethod
+    def _format_agent_name(name: str) -> str:
+        """
+        Convert snake_case or camelCase agent name to Title Case for display.
+
+        Args:
+            name: Agent name in snake_case (e.g., "lodging_expert") or
+                  camelCase (e.g., "MainAgent") or already formatted
+                  (e.g., "Main Agent")
+
+        Returns:
+            Formatted name in Title Case (e.g., "Lodging Expert" or "Main Agent")
+
+        Examples:
+            >>> DelegationVisualizer._format_agent_name("lodging_expert")
+            'Lodging Expert'
+            >>> DelegationVisualizer._format_agent_name("MainAgent")
+            'Main Agent'
+            >>> DelegationVisualizer._format_agent_name("main_delegator")
+            'Main Delegator'
+            >>> DelegationVisualizer._format_agent_name("Main Agent")
+            'Main Agent'
+        """
+        # If already has spaces, assume it's already formatted
+        if " " in name:
+            return name
+
+        # Handle snake_case by replacing underscores with spaces
+        if "_" in name:
+            return name.replace("_", " ").title()
+
+        # Handle camelCase/PascalCase by inserting spaces before capitals
+        import re
+
+        # Insert space before each capital letter (except the first one)
+        spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", name)
+        return spaced.title()
+
     def _create_event_panel(self, event: Event) -> Panel | None:
         """
         Override event panel creation to add agent names to titles.
@@ -127,7 +128,7 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             if self._highlight_patterns:
                 content = self._apply_highlighting(content)
 
-            agent_name = _format_agent_name(self._name) if self._name else "Agent"
+            agent_name = self._format_agent_name(self._name) if self._name else "Agent"
 
             if isinstance(event, SystemPromptEvent):
                 title = (
@@ -212,12 +213,12 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             role_color = "white"
 
         # Build title with sender/recipient information for delegation
-        agent_name = _format_agent_name(self._name) if self._name else "Agent"
+        agent_name = self._format_agent_name(self._name) if self._name else "Agent"
 
         if event.llm_message.role == "user":
             if event.sender:
                 # Message from another agent (via delegation)
-                sender_display = _format_agent_name(event.sender)
+                sender_display = self._format_agent_name(event.sender)
                 title_text = (
                     f"[bold {role_color}]{sender_display} Agent Message to "
                     f"{agent_name} Agent[/bold {role_color}]"
@@ -239,7 +240,7 @@ class DelegationVisualizer(DefaultConversationVisualizer):
 
             if recipient:
                 # Agent responding to another agent
-                recipient_display = _format_agent_name(recipient)
+                recipient_display = self._format_agent_name(recipient)
                 title_text = (
                     f"[bold {role_color}]{agent_name} Agent Message to "
                     f"{recipient_display} Agent[/bold {role_color}]"
