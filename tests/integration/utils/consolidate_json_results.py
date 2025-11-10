@@ -87,7 +87,7 @@ def extract_matrix_run_suffix(full_run_suffix: str) -> str | None:
     # Pattern to match the matrix run suffix
     # Look for pattern: _{7_hex_chars}_{matrix_run_suffix}_N{number}_
     # The commit hash is always 7 hex characters
-    pattern = r"_[a-f0-9]{7}_([^_]+(?:_[^_]+)*_run)_N\d+_"
+    pattern = r"_[a-f0-9]{7}_([\w\-]+(?:_[\w\-]+)*_run)_N\d+_"
     match = re.search(pattern, full_run_suffix)
 
     if match:
