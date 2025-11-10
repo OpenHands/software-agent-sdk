@@ -1,6 +1,7 @@
 """Test for FunctionCallingConverter."""
 
 import json
+from textwrap import dedent
 from typing import cast
 
 import pytest
@@ -769,3 +770,103 @@ def test_convert_fncall_messages_with_image_url():
         image_content["image_url"]["url"]
         == "data:image/gif;base64,R0lGODlhAQABAAAAACw="
     )
+
+
+# Additional tools to verify number and boolean coercion behavior
+COERCE_TOOLS: list[ChatCompletionToolParam] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_resource",
+            "description": "Get a resource from the store",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "resourceId": {"type": "integer"},
+                    "temperature": {"type": "number"},
+                    "images": {"type": "boolean"},
+                },
+                "required": ["resourceId"],
+            },
+        },
+    }
+]
+
+
+def numeric_coercion_msg(
+    resourceId: str = "1", temperature: str = "0.7", images: str = "false"
+) -> list[dict]:
+    return [
+        {
+            "content": [
+                {
+                    "text": dedent(
+                        "Let's look at the resource mentioned in the task:\n\n"
+                        "<function=get_resource>\n"
+                        f"<parameter=resourceId>{resourceId}</parameter>\n"
+                        f"<parameter=temperature>{temperature}</parameter>\n"
+                        f"<parameter=images>{images}</parameter>\n"
+                        "</function>"
+                    ),
+                    "type": "text",
+                }
+            ],
+            "role": "assistant",
+        }
+    ]
+
+
+def test_numeric_type_conversions():
+    fncall_messages = [
+        {
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Let's look at the resource mentioned in the task:",
+                }
+            ],
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "index": 1,
+                    "function": {
+                        "arguments": (
+                            '{"resourceId": 1, "temperature": 0.7, "images": false}'
+                        ),
+                        "name": "get_resource",
+                    },
+                    "id": "toolu_01",
+                    "type": "function",
+                }
+            ],
+        }
+    ]
+
+    non_fncall_messages = numeric_coercion_msg()
+
+    converted_non_fncall = convert_fncall_messages_to_non_fncall_messages(
+        fncall_messages, COERCE_TOOLS
+    )
+    assert converted_non_fncall == non_fncall_messages
+
+    converted_fncall = convert_non_fncall_messages_to_fncall_messages(
+        non_fncall_messages, COERCE_TOOLS
+    )
+    assert converted_fncall == fncall_messages
+
+
+def test_invalid_numeric_types_error():
+    with pytest.raises(FunctionCallValidationError):
+        convert_non_fncall_messages_to_fncall_messages(
+            numeric_coercion_msg(resourceId="one"), COERCE_TOOLS
+        )
+
+    with pytest.raises(FunctionCallValidationError):
+        convert_non_fncall_messages_to_fncall_messages(
+            numeric_coercion_msg(temperature="False"), COERCE_TOOLS
+        )
+
+    with pytest.raises(FunctionCallValidationError):
+        convert_non_fncall_messages_to_fncall_messages(
+            numeric_coercion_msg(images="nah"), COERCE_TOOLS
+        )

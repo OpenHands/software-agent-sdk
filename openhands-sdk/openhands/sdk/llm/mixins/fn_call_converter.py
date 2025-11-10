@@ -478,6 +478,8 @@ def convert_tool_call_to_string(tool_call: dict) -> str:
             ret += "\n"
         if isinstance(param_value, list) or isinstance(param_value, dict):
             ret += json.dumps(param_value)
+        elif isinstance(param_value, bool):
+            ret += str(param_value).lower()
         else:
             ret += f"{param_value}"
         if is_multiline:
@@ -760,16 +762,45 @@ def _extract_and_validate_params(
             )
 
         # Validate and convert parameter type
-        # supported: string, integer, array
+        # supported: string, integer, float, number, boolean, array
         if param_name in param_name_to_type:
-            if param_name_to_type[param_name] == "integer":
+            param_type = param_name_to_type[param_name]
+            if param_type == "integer":
                 try:
                     param_value = int(param_value)
                 except ValueError:
                     raise FunctionCallValidationError(
                         f"Parameter '{param_name}' is expected to be an integer."
                     )
-            elif param_name_to_type[param_name] == "array":
+            elif param_type == "float":
+                try:
+                    param_value = float(param_value)
+                except ValueError:
+                    raise FunctionCallValidationError(
+                        f"Parameter '{param_name}' is expected to be a float."
+                    )
+            elif param_type == "number":
+                try:
+                    float_value = float(param_value)
+                    if float_value.is_integer():
+                        param_value = int(float_value)
+                    else:
+                        param_value = float_value
+                except ValueError:
+                    raise FunctionCallValidationError(
+                        f"Parameter '{param_name}' is expected to be a number."
+                    )
+            elif param_type == "boolean":
+                match str(param_value).strip().lower():
+                    case "true" | "1" | "y" | "yes" | "accept" | "ok" | "okay":
+                        param_value = True
+                    case "false" | "0" | "n" | "no" | "deny":
+                        param_value = False
+                    case _:
+                        raise FunctionCallValidationError(
+                            f"Parameter '{param_name}' is expected to be a boolean."
+                        )
+            elif param_type == "array":
                 try:
                     param_value = json.loads(param_value)
                 except json.JSONDecodeError:
