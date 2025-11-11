@@ -88,37 +88,6 @@ class Agent(AgentBase):
                 system_message += "\n\n" + _system_message_suffix
         return system_message
 
-    def get_system_message(
-        self, security_analyzer: analyzer.SecurityAnalyzerBase | None = None
-    ) -> str:
-        """Get system message with conditional security analyzer context.
-
-        Args:
-            security_analyzer: Security analyzer to determine if security risk
-                assessment should be included
-
-        Returns:
-            System message with or without security risk assessment section
-        """
-        template_kwargs = dict(self.system_prompt_kwargs)
-        # Only include security risk assessment if analyzer is LLMSecurityAnalyzer
-        from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-
-        template_kwargs["llm_security_analyzer"] = isinstance(
-            security_analyzer, LLMSecurityAnalyzer
-        )
-
-        system_message = render_template(
-            prompt_dir=self.prompt_dir,
-            template_name=self.system_prompt_filename,
-            **template_kwargs,
-        )
-        if self.agent_context:
-            _system_message_suffix = self.agent_context.get_system_message_suffix()
-            if _system_message_suffix:
-                system_message += "\n\n" + _system_message_suffix
-        return system_message
-
     def init_state(
         self,
         state: ConversationState,
