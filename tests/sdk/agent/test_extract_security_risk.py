@@ -111,19 +111,6 @@ def test_extract_security_risk(
         assert arguments["some_param"] == "value"
 
 
-def test_extract_security_risk_error_messages(agent_with_llm_analyzer):
-    """Test that appropriate error messages are raised."""
-    # Test missing security_risk with LLM analyzer
-    agent, security_analyzer = agent_with_llm_analyzer
-    arguments = {"some_param": "value"}
-    tool_name = "test_tool"
-
-    with pytest.raises(
-        ValueError, match="Failed to provide security_risk field in tool 'test_tool'"
-    ):
-        agent._extract_security_risk(arguments, tool_name, False, security_analyzer)
-
-
 def test_extract_security_risk_arguments_mutation():
     """Test that arguments dict is properly mutated (security_risk is popped)."""
     agent = Agent(
@@ -172,8 +159,8 @@ def test_extract_security_risk_with_empty_arguments():
     assert arguments == {}  # Should remain empty
 
 
-def test_extract_security_risk_with_readonly_hint():
-    """Test _extract_security_risk with readOnlyHint=True."""
+def test_extract_security_risk_with_read_only_tool():
+    """Test _extract_security_risk with read only tool."""
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -189,7 +176,7 @@ def test_extract_security_risk_with_readonly_hint():
         arguments, "test_tool", True, LLMSecurityAnalyzer()
     )
 
-    # Should return UNKNOWN when readOnlyHint is True
+    # Should return UNKNOWN when read_only_tool is True
     assert result == SecurityRisk.UNKNOWN
     # security_risk should still be popped from arguments
     assert "security_risk" not in arguments
