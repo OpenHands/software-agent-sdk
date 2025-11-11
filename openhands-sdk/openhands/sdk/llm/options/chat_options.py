@@ -76,9 +76,6 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # Strict policy: NEVER send metadata for any provider
-    out.pop("metadata", None)
-
     # Only forward extra_body for litellm_proxy providers
     is_proxy = "litellm_proxy" in llm.model
     if is_proxy:
