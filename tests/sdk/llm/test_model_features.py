@@ -240,3 +240,23 @@ def test_force_string_serializer_full_model_names():
     assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
     # Groq-prefixed Kimi should force string serializer
     assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True
+
+
+@pytest.mark.parametrize(
+    "model,expected_send_reasoning",
+    [
+        ("kimi-k2-thinking", True),
+        ("kimi-k2-thinking-0905", True),
+        ("Kimi-K2-Thinking", True),  # Case insensitive
+        ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        ("kimi-k2-instruct", False),  # Different variant
+        ("gpt-4o", False),
+        ("claude-3-5-sonnet", False),
+        ("o1", False),
+        ("unknown-model", False),
+    ],
+)
+def test_send_reasoning_content_support(model, expected_send_reasoning):
+    """Test that models like kimi-k2-thinking require send_reasoning_content."""
+    features = get_features(model)
+    assert features.send_reasoning_content is expected_send_reasoning
