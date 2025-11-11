@@ -124,7 +124,6 @@ def get_features(model: str) -> ModelFeatures:
 
 # Default temperature mapping.
 # Each entry: (pattern, default_temperature)
-# The last pattern "*" acts as a wildcard fallback.
 DEFAULT_TEMPERATURE_PATTERNS: list[tuple[str, float]] = [
     ("kimi-k2-thinking", 1.0),
 ]
