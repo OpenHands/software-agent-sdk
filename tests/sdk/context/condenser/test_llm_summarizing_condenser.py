@@ -65,6 +65,7 @@ def mock_llm() -> LLM:
     mock_llm.base_url = None
     mock_llm.reasoning_effort = None
     mock_llm.litellm_extra_body = {}
+    mock_llm.temperature = 0.0
 
     # Explicitly set pricing attributes required by LLM -> Telemetry wiring
     mock_llm.input_cost_per_token = None

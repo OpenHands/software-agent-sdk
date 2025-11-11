@@ -149,6 +149,10 @@ class Telemetry(BaseModel):
         if p_details is not None:
             cache_read = int(getattr(p_details, "cached_tokens", 0) or 0)
 
+        # Kimi-K2-thinking populate usage.cached_tokens field
+        if not cache_read and hasattr(usage, "cached_tokens"):
+            cache_read = int(getattr(usage, "cached_tokens", 0) or 0)
+
         reasoning_tokens = 0
         c_details = getattr(usage, "completion_tokens_details", None) or getattr(
             usage, "output_tokens_details", None
@@ -217,10 +221,8 @@ class Telemetry(BaseModel):
         if not self.log_dir:
             return
         try:
-            # Only log if directory exists and is writable.
-            # Do not create directories implicitly.
-            if not os.path.isdir(self.log_dir):
-                raise FileNotFoundError(f"log_dir does not exist: {self.log_dir}")
+            # Create log directory if it doesn't exist
+            os.makedirs(self.log_dir, exist_ok=True)
             if not os.access(self.log_dir, os.W_OK):
                 raise PermissionError(f"log_dir is not writable: {self.log_dir}")
 
@@ -303,14 +305,17 @@ class Telemetry(BaseModel):
 
 def _safe_json(obj: Any) -> Any:
     # Centralized serializer for telemetry logs.
-    # Today, responses are Pydantic ModelResponse or ResponsesAPIResponse; rely on it.
+    # Prefer robust serialization for Pydantic models first to avoid cycles.
+    # Typed LiteLLM responses
     if isinstance(obj, ModelResponse) or isinstance(obj, ResponsesAPIResponse):
-        # Use mode='json' to ensure proper serialization of nested Pydantic models
-        # and avoid PydanticSerializationUnexpectedValue warnings.
-        # exclude_none=True reduces payload size by omitting None fields.
         return obj.model_dump(mode="json", exclude_none=True)
 
-    # Fallbacks for non-Pydantic objects used elsewhere in the log payload
+    # Any Pydantic BaseModel (e.g., ToolDefinition, ChatCompletionToolParam, etc.)
+    if isinstance(obj, BaseModel):
+        # Use Pydantic's serializer which respects field exclusions (e.g., executors)
+        return obj.model_dump(mode="json", exclude_none=True)
+
+    # Fallbacks for other non-serializable objects used elsewhere in the log payload
     try:
         return obj.__dict__
     except Exception:

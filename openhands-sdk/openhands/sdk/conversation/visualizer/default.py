@@ -17,7 +17,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import Condensation, CondensationRequest
 
 
 # These are external inputs
@@ -250,6 +250,19 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 title=title,
                 subtitle=self._format_metrics_subtitle(),
                 border_style=_SYSTEM_COLOR,
+                expand=True,
+            )
+
+        elif isinstance(event, CondensationRequest):
+            title = f"[bold {_SYSTEM_COLOR}]"
+            if self._name:
+                title += f"{self._name} "
+            title += f"Condensation Request[/bold {_SYSTEM_COLOR}]"
+            return Panel(
+                content,
+                title=title,
+                border_style=_SYSTEM_COLOR,
+                padding=_PANEL_PADDING,
                 expand=True,
             )
         else:

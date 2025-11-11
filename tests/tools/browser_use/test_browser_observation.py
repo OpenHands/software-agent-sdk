@@ -112,3 +112,41 @@ def test_browser_observation_empty_screenshot_handling():
     observation = BrowserObservation.from_text(text="Test", screenshot_data=None)
     agent_obs = observation.to_llm_content
     assert len(agent_obs) == 1  # Only text content, no image
+
+
+def test_browser_observation_mime_type_detection():
+    """Test MIME type detection for different image formats."""
+    test_cases = [
+        (
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",  # noqa: E501
+            "image/png",
+        ),
+        (
+            "/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/2wBDAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQH/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAv/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwA/",  # noqa: E501
+            "image/jpeg",
+        ),
+        (
+            "R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7",
+            "image/gif",
+        ),
+        (
+            "UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v3AgAA=",
+            "image/webp",
+        ),
+        (
+            "AAAABBBBCCCC",  # Unknown format
+            "image/png",  # Falls back to PNG
+        ),
+    ]
+
+    for screenshot_data, expected_mime_type in test_cases:
+        observation = BrowserObservation.from_text(
+            text="Test", screenshot_data=screenshot_data
+        )
+        agent_obs = observation.to_llm_content
+
+        assert len(agent_obs) == 2
+        assert isinstance(agent_obs[1], ImageContent)
+        assert (
+            agent_obs[1].image_urls[0].startswith(f"data:{expected_mime_type};base64,")
+        )

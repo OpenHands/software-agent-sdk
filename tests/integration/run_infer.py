@@ -17,7 +17,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.logger import get_logger
-from tests.integration.base import BaseIntegrationTest, TestResult
+from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 from tests.integration.schemas import ModelTestResults
 from tests.integration.utils.format_costs import format_cost
 
@@ -171,6 +171,20 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             log_file_path=log_file_path,
         )
 
+    except SkipTest as e:
+        # Test should be skipped (e.g., LLM doesn't support required capabilities)
+        logger.info("Test %s skipped: %s", instance.instance_id, str(e))
+        return EvalOutput(
+            instance_id=instance.instance_id,
+            test_result=TestResult(
+                success=False,
+                reason=str(e),
+                skipped=True,
+            ),
+            llm_model=llm_config.get("model", "unknown"),
+            cost=0.0,
+        )
+
     except Exception as e:
         logger.error("Error running test %s: %s", instance.instance_id, e)
         return EvalOutput(
@@ -274,11 +288,17 @@ def generate_structured_results(
     # Print summary for console output
     success_rate = structured_results.success_rate
     successful = structured_results.successful_tests
+    skipped = structured_results.skipped_tests
     total = structured_results.total_tests
     logger.info("Success rate: %.2f%% (%d/%d)", success_rate * 100, successful, total)
+    if skipped > 0:
+        logger.info("Skipped tests: %d", skipped)
     logger.info("Evaluation Results:")
     for instance in structured_results.test_instances:
-        status = "✓" if instance.test_result.success else "✗"
+        if instance.test_result.skipped:
+            status = "⊘"  # Skipped symbol
+        else:
+            status = "✓" if instance.test_result.success else "✗"
         reason = instance.test_result.reason or "N/A"
         logger.info("%s: %s - %s", instance.instance_id, status, reason)
     logger.info("Total cost: %s", format_cost(structured_results.total_cost))
