@@ -130,6 +130,7 @@ def test_conversation_state_persistence_save_load():
         assert loaded_state.agent.__class__ == agent.__class__
         # Test model_dump equality
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
@@ -544,4 +545,5 @@ def test_conversation_with_agent_different_llm_config():
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
+
         assert new_dump == original_state_dump

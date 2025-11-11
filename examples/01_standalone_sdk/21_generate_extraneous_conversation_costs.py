@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 # Configure LLM using LLMRegistry
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 
 # Create LLM instance
@@ -65,7 +65,7 @@ conversation.run()
 # Demonstrate extraneous costs part of the conversation
 second_llm = LLM(
     usage_id="demo-secondary",
-    model="openhands/claude-sonnet-4-5-20250929",
+    model=model,
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )

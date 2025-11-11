@@ -16,6 +16,7 @@ from openhands.agent_server.models import (
     GenerateTitleResponse,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
+    SetSecurityAnalyzerRequest,
     StartConversationRequest,
     Success,
     UpdateConversationRequest,
@@ -234,6 +235,23 @@ async def set_conversation_confirmation_policy(
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     await event_service.set_confirmation_policy(request.policy)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/security_analyzer",
+    responses={404: {"description": "Item not found"}},
+)
+async def set_conversation_security_analyzer(
+    conversation_id: UUID,
+    request: SetSecurityAnalyzerRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Set the security analyzer for a conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.set_security_analyzer(request.security_analyzer)
     return Success()
 
 

@@ -73,7 +73,7 @@ from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -149,7 +149,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Approx max chars in each event/content sent to the LLM.",
     )
 
-    temperature: float | None = Field(default=0.0, ge=0)
+    temperature: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Sampling temperature for response generation. "
+            "Defaults to 0 for most models and provider default for reasoning models."
+        ),
+    )
     top_p: float | None = Field(default=1.0, ge=0, le=1)
     top_k: float | None = Field(default=None, ge=0)
 
@@ -375,9 +382,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Capabilities + model info
         self._init_model_info_and_caps()
 
+        if self.temperature is None:
+            self.temperature = get_default_temperature(self.model)
+
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
-            f"reasoning_effort={self.reasoning_effort}"
+            f"reasoning_effort={self.reasoning_effort} "
+            f"temperature={self.temperature}"
         )
         return self
 
@@ -826,7 +837,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.max_output_tokens is None:
             if any(
                 m in self.model
-                for m in ["claude-3-7-sonnet", "claude-3.7-sonnet", "claude-sonnet-4"]
+                for m in [
+                    "claude-3-7-sonnet",
+                    "claude-3.7-sonnet",
+                    "claude-sonnet-4",
+                    "kimi-k2-thinking",
+                ]
             ):
                 self.max_output_tokens = (
                     64000  # practical cap (litellm may allow 128k with header)
@@ -932,9 +948,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
-            message.force_string_serializer = get_features(
-                self.model
-            ).force_string_serializer
+            model_features = get_features(self.model)
+            message.force_string_serializer = model_features.force_string_serializer
+            message.send_reasoning_content = model_features.send_reasoning_content
 
         formatted_messages = [message.to_chat_dict() for message in messages]
 
