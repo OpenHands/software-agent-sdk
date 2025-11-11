@@ -14,6 +14,7 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
     start_active_span,
 )
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -47,6 +48,11 @@ class ConversationStateProtocol(Protocol):
     @property
     def confirmation_policy(self) -> ConfirmationPolicyBase:
         """The confirmation policy."""
+        ...
+
+    @property
+    def security_analyzer(self) -> SecurityAnalyzerBase | None:
+        """The security analyzer."""
         ...
 
     @property
@@ -145,13 +151,12 @@ class BaseConversation(ABC):
         """Check if confirmation mode is active.
 
         Returns True if BOTH conditions are met:
-        1. The agent has a security analyzer set (not None)
+        1. The conversation state has a security analyzer set (not None)
         2. The confirmation policy is active
 
         """
         return (
-            self.state.agent.security_analyzer is not None
-            and self.confirmation_policy_active
+            self.state.security_analyzer is not None and self.confirmation_policy_active
         )
 
     @abstractmethod

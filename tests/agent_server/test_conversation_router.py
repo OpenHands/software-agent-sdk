@@ -22,6 +22,7 @@ from openhands.agent_server.models import (
 from openhands.agent_server.utils import utc_now
 from openhands.sdk import LLM, Agent, TextContent, Tool
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -74,6 +75,12 @@ def mock_event_service():
     """Create a mock EventService for testing."""
     service = AsyncMock(spec=EventService)
     return service
+
+
+@pytest.fixture
+def llm_security_analyzer():
+    """Create an LLMSecurityAnalyzer for testing."""
+    return LLMSecurityAnalyzer()
 
 
 @pytest.fixture
@@ -1169,3 +1176,92 @@ def test_generate_conversation_title_invalid_params(
         assert response.status_code == 422  # Validation error
     finally:
         client.app.dependency_overrides.clear()
+
+
+def test_set_conversation_security_analyzer_success(
+    client,
+    sample_conversation_id,
+    mock_conversation_service,
+    mock_event_service,
+    llm_security_analyzer,
+):
+    """Test successful setting of security analyzer via API endpoint."""
+    # Setup mocks
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.set_security_analyzer.return_value = None
+
+    # Override dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    # Make request
+    response = client.post(
+        f"/api/conversations/{sample_conversation_id}/security_analyzer",
+        json={"security_analyzer": llm_security_analyzer.model_dump()},
+    )
+
+    # Verify response
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+
+    # Verify service calls
+    mock_conversation_service.get_event_service.assert_called_once_with(
+        sample_conversation_id
+    )
+    mock_event_service.set_security_analyzer.assert_called_once()
+
+
+def test_set_conversation_security_analyzer_with_none(
+    client, sample_conversation_id, mock_conversation_service, mock_event_service
+):
+    """Test setting security analyzer to None via API endpoint."""
+    # Setup mocks
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.set_security_analyzer.return_value = None
+
+    # Override dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    # Make request with None analyzer
+    response = client.post(
+        f"/api/conversations/{sample_conversation_id}/security_analyzer",
+        json={"security_analyzer": None},
+    )
+
+    # Verify response
+    assert response.status_code == 200
+    assert response.json() == {"success": True}
+
+    # Verify service calls
+    mock_conversation_service.get_event_service.assert_called_once_with(
+        sample_conversation_id
+    )
+    mock_event_service.set_security_analyzer.assert_called_once_with(None)
+
+
+def test_security_analyzer_endpoint_with_malformed_analyzer_data(
+    client, sample_conversation_id, mock_conversation_service, mock_event_service
+):
+    """Test endpoint behavior with malformed security analyzer data."""
+    # Setup mocks
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.set_security_analyzer.return_value = None
+
+    # Override dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    # Test with invalid analyzer type (should be rejected)
+    response = client.post(
+        f"/api/conversations/{sample_conversation_id}/security_analyzer",
+        json={"security_analyzer": {"kind": "InvalidAnalyzerType"}},
+    )
+
+    # Should return validation error for unknown analyzer type
+    assert response.status_code == 422
+    response_data = response.json()
+    assert "detail" in response_data

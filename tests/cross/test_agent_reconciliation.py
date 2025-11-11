@@ -517,6 +517,6 @@ def test_conversation_restart_adding_security_analyzer():
 
         # Verify conversation loaded successfully
         assert new_conversation.id == conversation_id
-        assert new_conversation.agent.security_analyzer is not None
-        assert isinstance(new_conversation.agent.security_analyzer, LLMSecurityAnalyzer)
+        assert new_conversation.state.security_analyzer is not None
+        assert isinstance(new_conversation.state.security_analyzer, LLMSecurityAnalyzer)
         assert len(new_conversation.state.events) > 0

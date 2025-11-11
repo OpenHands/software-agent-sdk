@@ -20,6 +20,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
@@ -301,6 +302,17 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
+        )
+
+    async def set_security_analyzer(
+        self, security_analyzer: SecurityAnalyzerBase | None
+    ):
+        """Set the security analyzer for the conversation."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.set_security_analyzer, security_analyzer
         )
 
     async def close(self):
