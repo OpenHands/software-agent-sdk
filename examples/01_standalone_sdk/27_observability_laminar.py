@@ -34,5 +34,6 @@ conversation = Conversation(agent=agent, workspace=".")
 conversation.send_message("List the files in the current directory and print them.")
 conversation.run()
 print(
-    "All done! Check your Laminar dashboard for traces (session is the conversation UUID)."
+    "All done! Check your Laminar dashboard for traces "
+    "(session is the conversation UUID)."
 )
