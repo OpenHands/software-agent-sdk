@@ -50,9 +50,6 @@ def select_responses_options(
         if llm.reasoning_summary:
             out["reasoning"]["summary"] = llm.reasoning_summary
 
-    # Strict policy: NEVER send metadata for any provider
-    out.pop("metadata", None)
-
     # Only forward extra_body for litellm_proxy models
     is_proxy = "litellm_proxy" in llm.model
     if is_proxy:
