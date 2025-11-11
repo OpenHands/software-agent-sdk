@@ -37,8 +37,8 @@ def test_metadata_filtered_for_non_proxy_providers():
         assert "metadata" not in call_kwargs
 
 
-def test_metadata_preserved_for_litellm_proxy():
-    """Test that metadata is preserved for litellm_proxy providers."""
+def test_metadata_filtered_for_litellm_proxy_too():
+    """We NEVER send metadata, even for litellm_proxy providers."""
     llm = LLM(
         model="litellm_proxy/gpt-4o",
         usage_id="test",
@@ -70,14 +70,15 @@ def test_metadata_preserved_for_litellm_proxy():
         mock_completion.assert_called_once()
         call_kwargs = mock_completion.call_args[1]
 
-        # Check that metadata was preserved for litellm_proxy
-        assert "metadata" in call_kwargs
-        assert call_kwargs["metadata"] == test_metadata
+        # Check that metadata is NOT forwarded, even for litellm_proxy
+        assert "metadata" not in call_kwargs
 
 
 def test_extra_body_filtered_for_non_proxy_providers():
     """Test that extra_body is also filtered out for non-proxy providers."""
     llm = LLM(model="cerebras/llama-3.3-70b", usage_id="test")
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
     with patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion:

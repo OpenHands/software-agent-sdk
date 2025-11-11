@@ -76,15 +76,15 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # Strict policy: never send telemetry to non-proxy providers.
+    # Strict policy: NEVER send metadata for any provider
+    out.pop("metadata", None)
+
+    # Only forward extra_body for litellm_proxy providers
     is_proxy = "litellm_proxy" in llm.model
     if is_proxy:
-        # Only for litellm_proxy, propagate telemetry payload via extra_body
         if llm.litellm_extra_body:
             out["extra_body"] = llm.litellm_extra_body
     else:
-        # For non-proxy providers, drop any extra_body/metadata regardless of source
         out.pop("extra_body", None)
-        out.pop("metadata", None)
 
     return out
