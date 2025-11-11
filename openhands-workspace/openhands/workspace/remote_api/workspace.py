@@ -70,6 +70,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
     pause_on_close: bool = Field(
         default=False, description="Pause instead of stop on cleanup"
     )
+    target_type: Literal["binary", "source"] = Field(
+        default="binary",
+        description="Type of agent server target (binary or source)",
+    )
 
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
@@ -150,10 +154,14 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     def _start_runtime(self) -> None:
         """Start a new runtime."""
+        if self.target_type == "binary":
+            executable = "/usr/local/bin/openhands-agent-server"
+        else:
+            executable = "/agent-server/.venv/bin/python -m openhands.agent_server"
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {
             "image": self.server_image,
-            "command": "/usr/local/bin/openhands-agent-server --port 60000",
+            "command": f"{executable} --port 60000",
             "working_dir": "/",  # Match Dockerfile WORKDIR
             "environment": {},
             "session_id": self.session_id,
