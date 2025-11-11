@@ -12,6 +12,7 @@ from openhands.sdk.event.llm_convertible import (
     ObservationBaseEvent,
     ObservationEvent,
     SystemPromptEvent,
+    TokenEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.types import EventID, ToolCallID
@@ -23,6 +24,7 @@ __all__ = [
     "LLMConvertibleEvent",
     "SystemPromptEvent",
     "ActionEvent",
+    "TokenEvent",
     "ObservationEvent",
     "ObservationBaseEvent",
     "MessageEvent",

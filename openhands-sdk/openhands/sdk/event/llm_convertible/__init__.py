@@ -7,6 +7,7 @@ from openhands.sdk.event.llm_convertible.observation import (
     UserRejectObservation,
 )
 from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
+from openhands.sdk.event.llm_convertible.token import TokenEvent
 
 
 __all__ = [
@@ -17,4 +18,5 @@ __all__ = [
     "MessageEvent",
     "AgentErrorEvent",
     "UserRejectObservation",
+    "TokenEvent",
 ]
