@@ -4,10 +4,14 @@ Observability & Laminar example
 This example demonstrates enabling OpenTelemetry tracing with Laminar in the
 OpenHands SDK. Set LMNR_PROJECT_API_KEY and run the script to see traces.
 """
+
 import os
+
 from pydantic import SecretStr
+
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.tools.terminal import TerminalTool
+
 
 # Tip: Set LMNR_PROJECT_API_KEY in your environment before running, e.g.:
 #   export LMNR_PROJECT_API_KEY="your-laminar-api-key"
@@ -29,4 +33,6 @@ agent = Agent(
 conversation = Conversation(agent=agent, workspace=".")
 conversation.send_message("List the files in the current directory and print them.")
 conversation.run()
-print("All done! Check your Laminar dashboard for traces (session is the conversation UUID).")
+print(
+    "All done! Check your Laminar dashboard for traces (session is the conversation UUID)."
+)
