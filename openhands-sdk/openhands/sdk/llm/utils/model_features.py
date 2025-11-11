@@ -133,7 +133,6 @@ def get_default_temperature(model: str) -> float:
     """Return the default temperature for a given model pattern.
 
     Uses case-insensitive substring matching via model_matches.
-    The last entry with '*' is treated as a wildcard fallback.
     """
     for pattern, value in DEFAULT_TEMPERATURE_PATTERNS:
         if model_matches(model, [pattern]):
