@@ -189,6 +189,21 @@ class ConversationService:
             )
             return conversation_info, False
 
+        # Dynamically register tools from client's registry
+        if request.registered_tools:
+            from openhands.agent_server.tool_utils import register_tools_by_name
+
+            try:
+                register_tools_by_name(request.registered_tools)
+                logger.info(
+                    f"Dynamically registered {len(request.registered_tools)} tools "
+                    f"for conversation {conversation_id}: {request.registered_tools}"
+                )
+            except ValueError as e:
+                logger.error(f"Failed to register tools: {e}")
+                # Continue even if some tools fail to register
+                # The agent will fail gracefully if it tries to use unregistered tools
+
         stored = StoredConversation(id=conversation_id, **request.model_dump())
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

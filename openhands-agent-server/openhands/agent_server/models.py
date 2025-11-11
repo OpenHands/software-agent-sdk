@@ -97,6 +97,13 @@ class StartConversationRequest(BaseModel):
         default_factory=dict,
         description="Secrets available in the conversation",
     )
+    registered_tools: list[str] = Field(
+        default_factory=list,
+        description=(
+            "List of tool names registered on the client that should be "
+            "dynamically registered on the server for this conversation."
+        ),
+    )
 
 
 class StoredConversation(StartConversationRequest):
