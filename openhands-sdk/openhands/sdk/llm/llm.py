@@ -149,7 +149,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Approx max chars in each event/content sent to the LLM.",
     )
 
-    temperature: float | None = Field(default=0.0, ge=0)
+    temperature: float | None = Field(default=1.0, ge=0)
     top_p: float | None = Field(default=1.0, ge=0, le=1)
     top_k: float | None = Field(default=None, ge=0)
 
@@ -826,7 +826,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.max_output_tokens is None:
             if any(
                 m in self.model
-                for m in ["claude-3-7-sonnet", "claude-3.7-sonnet", "claude-sonnet-4"]
+                for m in [
+                    "claude-3-7-sonnet",
+                    "claude-3.7-sonnet",
+                    "claude-sonnet-4",
+                    "kimi-k2-thinking",
+                ]
             ):
                 self.max_output_tokens = (
                     64000  # practical cap (litellm may allow 128k with header)
@@ -932,9 +937,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
-            message.force_string_serializer = get_features(
-                self.model
-            ).force_string_serializer
+            model_features = get_features(self.model)
+            message.force_string_serializer = model_features.force_string_serializer
+            message.send_reasoning_content = model_features.send_reasoning_content
 
         formatted_messages = [message.to_chat_dict() for message in messages]
 
