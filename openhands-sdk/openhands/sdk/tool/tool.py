@@ -98,30 +98,6 @@ class ToolExecutor[ActionT, ObservationT](ABC):
         pass
 
 
-class StatefulToolExecutor[ActionT, ObservationT](ToolExecutor[ActionT, ObservationT]):
-    """Executor for tools that require access to conversation state.
-
-    This is an opt-in interface for tools that need to access the conversation
-    state (e.g., to read conversation history, access secrets, etc.).
-
-    Tools that don't need state should use the regular ToolExecutor instead.
-    """
-
-    @abstractmethod
-    def __call__(self, action: ActionT, state: Any = None) -> ObservationT:
-        """Execute the tool with the given action and conversation state.
-
-        Args:
-            action: The action to execute, containing the parameters and context
-                   needed for the tool operation.
-            state: The conversation state, providing access to events, history,
-                  secrets, and other conversation-level context.
-
-        Returns:
-            An observation containing the results of the tool execution.
-        """
-
-
 class ExecutableTool(Protocol):
     """Protocol for tools that are guaranteed to have a non-None executor.
 

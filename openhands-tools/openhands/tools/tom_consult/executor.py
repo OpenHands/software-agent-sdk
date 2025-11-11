@@ -9,6 +9,7 @@ from tom_swe.memory.locations import get_usermodeling_dir
 from tom_swe.tom_agent import create_tom_agent
 
 from openhands.sdk.conversation.event_store import EventLog
+from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.event import (
     ActionEvent,
     LLMConvertibleEvent,
@@ -16,7 +17,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
-from openhands.sdk.tool import Observation, StatefulToolExecutor
+from openhands.sdk.tool import Observation, ToolExecutor
 from openhands.tools.tom_consult.action import ConsultTomAction, SleeptimeComputeAction
 from openhands.tools.tom_consult.observation import (
     ConsultTomObservation,
@@ -27,13 +28,13 @@ from openhands.tools.tom_consult.observation import (
 if TYPE_CHECKING:
     from tom_swe.tom_agent import ToMAgent
 
-    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.conversation.base import BaseConversation
 
 logger = get_logger(__name__)
 
 
 class TomConsultExecutor(
-    StatefulToolExecutor[ConsultTomAction | SleeptimeComputeAction, Observation]
+    ToolExecutor[ConsultTomAction | SleeptimeComputeAction, Observation]
 ):
     """Executor for consulting Tom agent.
 
@@ -85,30 +86,32 @@ class TomConsultExecutor(
     def __call__(
         self,
         action: ConsultTomAction | SleeptimeComputeAction,
-        state: "ConversationState | None" = None,
+        conversation: "BaseConversation | None" = None,
     ) -> ConsultTomObservation | SleeptimeComputeObservation:
         """Execute Tom operation.
 
         Args:
             action: The action to execute (consultation or sleeptime compute)
-            state: Conversation state for accessing history
+            conversation: Conversation context for accessing state and history
 
         Returns:
             Observation with results
         """
         if isinstance(action, SleeptimeComputeAction):
-            return self._sleeptime_compute(state)
+            return self._sleeptime_compute(conversation)
         else:
-            return self._consult_tom(action, state)
+            return self._consult_tom(action, conversation)
 
     def _format_events(
-        self, event_log: EventLog, state: "ConversationState | None" = None
+        self,
+        event_log: EventLog | EventsListBase,
+        conversation: "BaseConversation | None" = None,
     ) -> list[dict[str, Any]]:
         """Format events into messages for Tom agent.
 
         Args:
-            events: List of events to format
-            state: Optional conversation state for LLM formatting
+            event_log: Events to format
+            conversation: Optional conversation for LLM formatting
 
         Returns:
             List of formatted messages (skips system messages)
@@ -134,12 +137,12 @@ class TomConsultExecutor(
         # Convert to messages
         messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
 
-        # Format messages - use state's LLM if available, otherwise manual format
-        if state is not None:
+        # Format messages - use conversation's LLM if available, otherwise manual format
+        if conversation is not None:
             # Skip system message (first message)
-            return state.agent.llm.format_messages_for_llm(messages)[1:]
+            return conversation.state.agent.llm.format_messages_for_llm(messages)[1:]
         else:
-            # If no state, format messages directly from events
+            # If no conversation, format messages directly from events
             from openhands.sdk.llm import TextContent
 
             formatted_messages = []
@@ -157,13 +160,13 @@ class TomConsultExecutor(
             return formatted_messages
 
     def _consult_tom(
-        self, action: ConsultTomAction, state: "ConversationState | None" = None
+        self, action: ConsultTomAction, conversation: "BaseConversation | None" = None
     ) -> ConsultTomObservation:
         """Execute Tom consultation.
 
         Args:
             action: The consultation action with query details
-            state: Conversation state for accessing history
+            conversation: Conversation context for accessing history
 
         Returns:
             ConsultTomObservation with Tom's suggestions
@@ -182,10 +185,12 @@ class TomConsultExecutor(
                     suggestions="[CRITICAL] Tom agent cannot provide consultation for this user message. Do not consult ToM agent again for this message and use other actions instead."  # noqa: E501
                 )
 
-            # Get conversation history from state if available
+            # Get conversation history if available
             formatted_messages = []
-            if state is not None:
-                formatted_messages = self._format_events(state.events, state)
+            if conversation is not None:
+                formatted_messages = self._format_events(
+                    conversation.state.events, conversation
+                )
 
                 # Get last user message for query text
                 if formatted_messages:
@@ -242,7 +247,7 @@ class TomConsultExecutor(
             )
 
     def _sleeptime_compute(
-        self, state: "ConversationState | None" = None
+        self, conversation: "BaseConversation | None" = None
     ) -> SleeptimeComputeObservation:
         """Execute sleeptime compute to index conversations for user modeling.
 
@@ -250,13 +255,12 @@ class TomConsultExecutor(
         similar to the OpenHands implementation.
 
         Args:
-            state: Conversation state (used for LLM formatting)
+            conversation: Conversation context (used for LLM formatting)
 
         Returns:
             SleeptimeComputeObservation with indexing results
         """
         tom_agent = self._get_tom_agent()
-        # avoid session_id
 
         logger.info("🔄 Tom: Starting sleeptime compute")
 
@@ -309,7 +313,7 @@ class TomConsultExecutor(
         # Collect session data for each conversation
         sessions_data = []
         for session_id in sessions_to_process:
-            session_data = self._extract_session_data(session_id, state)
+            session_data = self._extract_session_data(session_id, conversation)
             if session_data:
                 sessions_data.append(session_data)
         if not sessions_data:
@@ -337,7 +341,7 @@ class TomConsultExecutor(
         )
 
     def _extract_session_data(
-        self, session_id: str, state: "ConversationState | None"
+        self, session_id: str, conversation: "BaseConversation | None"
     ) -> dict[str, Any] | None:
         """Extract session data from a conversation directory."""
 
@@ -346,7 +350,7 @@ class TomConsultExecutor(
         events = EventLog(self.file_store, events_dir)
 
         # Format events into messages
-        formatted_messages = self._format_events(events, state)
+        formatted_messages = self._format_events(events, conversation)
         if not formatted_messages:
             return None
 
