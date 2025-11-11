@@ -67,6 +67,10 @@ jobs:
                       run-suffix: deepseek_run
                       llm-config:
                           model: litellm_proxy/deepseek/deepseek-chat
+                    - name: Kimi K2 Thinking
+                      run-suffix: kimi_k2_run
+                      llm-config:
+                          model: litellm_proxy/moonshot/kimi-k2-thinking
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
