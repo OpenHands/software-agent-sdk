@@ -20,6 +20,7 @@ class TestResultData(BaseModel):
 
     success: bool
     reason: str | None = None
+    skipped: bool = False
 
 
 class TestInstanceResult(BaseModel):
@@ -46,6 +47,7 @@ class ModelTestResults(BaseModel):
     # Summary statistics
     total_tests: int
     successful_tests: int
+    skipped_tests: int
     success_rate: float
     total_cost: float
 
@@ -75,6 +77,7 @@ class ModelTestResults(BaseModel):
                     test_result=TestResultData(
                         success=output.test_result.success,
                         reason=output.test_result.reason,
+                        skipped=output.test_result.skipped,
                     ),
                     cost=output.cost,
                     error_message=output.error_message,
@@ -84,6 +87,7 @@ class ModelTestResults(BaseModel):
         # Calculate summary statistics
         total_tests = len(test_instances)
         successful_tests = sum(1 for t in test_instances if t.test_result.success)
+        skipped_tests = sum(1 for t in test_instances if t.test_result.skipped)
         success_rate = successful_tests / total_tests if total_tests > 0 else 0.0
         total_cost = sum(t.cost for t in test_instances)
 
@@ -94,6 +98,7 @@ class ModelTestResults(BaseModel):
             test_instances=test_instances,
             total_tests=total_tests,
             successful_tests=successful_tests,
+            skipped_tests=skipped_tests,
             success_rate=success_rate,
             total_cost=total_cost,
             eval_note=eval_note,
