@@ -120,3 +120,23 @@ def get_features(model: str) -> ModelFeatures:
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_PATTERNS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_PATTERNS),
     )
+
+
+# Default temperature mapping.
+# Each entry: (pattern, default_temperature)
+# The last pattern "*" acts as a wildcard fallback.
+DEFAULT_TEMPERATURE_PATTERNS: list[tuple[str, float]] = [
+    ("kimi-k2-thinking", 1.0),
+]
+
+
+def get_default_temperature(model: str) -> float:
+    """Return the default temperature for a given model pattern.
+
+    Uses case-insensitive substring matching via model_matches.
+    The last entry with '*' is treated as a wildcard fallback.
+    """
+    for pattern, value in DEFAULT_TEMPERATURE_PATTERNS:
+        if model_matches(model, [pattern]):
+            return value
+    return 0.0

@@ -73,7 +73,7 @@ from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
@@ -149,7 +149,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="Approx max chars in each event/content sent to the LLM.",
     )
 
-    temperature: float | None = Field(default=0.0, ge=0)
+    temperature: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Sampling temperature for response generation. "
+            "Defaults to 0 for most models and provider default for reasoning models."
+        ),
+    )
     top_p: float | None = Field(default=1.0, ge=0, le=1)
     top_k: float | None = Field(default=None, ge=0)
 
@@ -375,9 +382,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Capabilities + model info
         self._init_model_info_and_caps()
 
+        if self.temperature is None:
+            self.temperature = get_default_temperature(self.model)
+
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
-            f"reasoning_effort={self.reasoning_effort}"
+            f"reasoning_effort={self.reasoning_effort} "
+            f"temperature={self.temperature}"
         )
         return self
 
