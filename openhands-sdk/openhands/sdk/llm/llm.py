@@ -280,6 +280,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "api_key",
         "aws_access_key_id",
         "aws_secret_access_key",
+        # Dynamic runtime metadata for telemetry/routing that can differ across sessions
+        # and should not cause resume-time diffs. Always prefer the runtime value.
+        "litellm_extra_body",
     )
 
     # Runtime-only private attrs
@@ -528,7 +531,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # 6) telemetry
             self._telemetry.on_response(resp, raw_resp=raw_resp)
 
-            # Ensure at least one choice
+            # Ensure at least one choice.
+            # Gemini sometimes returns empty choices; we raise LLMNoResponseError here
+            # inside the retry boundary so it is retried.
             if not resp.get("choices") or len(resp["choices"]) < 1:
                 raise LLMNoResponseError(
                     "Response choices is less than 1. Response: " + str(resp)
