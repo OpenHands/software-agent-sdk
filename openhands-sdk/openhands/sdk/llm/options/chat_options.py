@@ -76,15 +76,15 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # Pass through litellm_extra_body if provided
-    if llm.litellm_extra_body:
-        out["extra_body"] = llm.litellm_extra_body
-    # non litellm proxy special-case: keep `extra_body` off unless model requires it
-    # or user provided it
-    elif "litellm_proxy" not in llm.model:
+    # Strict policy: never send telemetry to non-proxy providers.
+    is_proxy = "litellm_proxy" in llm.model
+    if is_proxy:
+        # Only for litellm_proxy, propagate telemetry payload via extra_body
+        if llm.litellm_extra_body:
+            out["extra_body"] = llm.litellm_extra_body
+    else:
+        # For non-proxy providers, drop any extra_body/metadata regardless of source
         out.pop("extra_body", None)
-        # Also remove metadata for non-proxy providers
-        # Metadata is telemetry that should only be sent to litellm_proxy
         out.pop("metadata", None)
 
     return out
