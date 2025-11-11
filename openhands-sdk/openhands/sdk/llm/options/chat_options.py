@@ -83,5 +83,8 @@ def select_chat_options(
     # or user provided it
     elif "litellm_proxy" not in llm.model:
         out.pop("extra_body", None)
+        # Also remove metadata for non-proxy providers
+        # Metadata is telemetry that should only be sent to litellm_proxy
+        out.pop("metadata", None)
 
     return out
