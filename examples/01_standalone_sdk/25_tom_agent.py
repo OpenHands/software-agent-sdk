@@ -45,6 +45,11 @@ sleeptime_compute_tool = conversation.agent.tools_map["sleeptime_compute"]
 assert sleeptime_compute_tool is not None
 sleeptime_result = sleeptime_compute_tool.executor(SleeptimeComputeAction())
 
+
+# Display the result of sleeptime_compute
+print("\nSleeptime Compute Result:")
+print(sleeptime_compute_tool.executor.list_user_models())
+
 # Send a potentially vague message where Tom consultation might help
 conversation.send_message(
     "I need to debug some code but I'm not sure where to start. "
@@ -55,6 +60,7 @@ conversation.run()
 print("\n" + "=" * 80)
 print("Tom agent consultation example completed!")
 print("=" * 80)
+
 
 # Optional: Index this conversation for Tom's user modeling
 # This builds user preferences and patterns from conversation history
