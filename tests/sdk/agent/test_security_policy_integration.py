@@ -129,6 +129,8 @@ def test_llm_security_analyzer_sandbox_mode():
     # Get system message (security analyzer context is automatically included)
     system_message = agent.system_message
 
+    print(agent.system_prompt_kwargs)
+
     # Verify that the security risk assessment section is included with sandbox mode content  # noqa: E501
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
     assert "# Security Risk Policy" in system_message
