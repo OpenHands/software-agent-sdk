@@ -209,6 +209,3 @@ openapi.json
 .worktrees/
 agent-sdk.workspace.code-workspace
 
-# lock files
-uv.lock
-
