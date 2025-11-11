@@ -217,8 +217,21 @@ class Message(BaseModel):
     # - tool execution result (to LLM)
     tool_call_id: str | None = None
     name: str | None = None  # name of the tool
-    # force string serializer
-    force_string_serializer: bool = False
+    force_string_serializer: bool = Field(
+        default=False,
+        description=(
+            "Force using string content serializer when sending to LLM API. "
+            "Useful for providers that do not support list content, "
+            "like HuggingFace and Groq."
+        ),
+    )
+    send_reasoning_content: bool = Field(
+        default=False,
+        description=(
+            "Whether to include the full reasoning content when sending to the LLM. "
+            "Useful for models that support extended reasoning, like Kimi-K2-thinking."
+        ),
+    )
     # reasoning content (from reasoning models like o1, Claude thinking, DeepSeek R1)
     reasoning_content: str | None = Field(
         default=None,
@@ -278,6 +291,10 @@ class Message(BaseModel):
             )
             message_dict["tool_call_id"] = self.tool_call_id
             message_dict["name"] = self.name
+
+        # Required for model like kimi-k2-thinking
+        if self.send_reasoning_content and self.reasoning_content:
+            message_dict["reasoning_content"] = self.reasoning_content
 
         return message_dict
 
