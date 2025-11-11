@@ -16,7 +16,11 @@ def test_litellm_extra_body_passed_to_completion():
         },
     }
 
-    llm = LLM(model="gpt-4o", usage_id="test", litellm_extra_body=custom_extra_body)
+    llm = LLM(
+        model="litellm_proxy/gpt-4o",
+        usage_id="test",
+        litellm_extra_body=custom_extra_body,
+    )
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
     with patch("openhands.sdk.llm.llm.litellm_completion") as mock_completion:
