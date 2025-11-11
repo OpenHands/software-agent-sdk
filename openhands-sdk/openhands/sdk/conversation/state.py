@@ -1,7 +1,6 @@
 # state.py
 import json
 from collections.abc import Sequence
-from datetime import datetime
 from enum import Enum
 from typing import Any, Self
 
@@ -25,16 +24,6 @@ from openhands.sdk.security.confirmation_policy import (
 )
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
-
-
-class SecurityAnalyzerRecord(OpenHandsModel):
-    """Record of a security analyzer configuration change."""
-
-    analyzer_type: str | None = Field(
-        default=None,
-        description="Type of security analyzer configured, or None if not configured",
-    )
-    timestamp: datetime = Field(description="Timestamp when this configuration was set")
 
 
 logger = get_logger(__name__)
@@ -117,12 +106,6 @@ class ConversationState(OpenHandsModel):
         serialization_alias="secret_registry",
     )
 
-    # Security analyzer configuration history
-    security_analyzer_history: list[SecurityAnalyzerRecord] = Field(
-        default_factory=list,
-        description="History of security analyzer configurations with timestamps",
-    )
-
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
@@ -149,30 +132,6 @@ class ConversationState(OpenHandsModel):
                      or None to remove the callback
         """
         self._on_state_change = callback
-
-    def update_security_analyzer_and_record_transitions(
-        self, analyzer: SecurityAnalyzerBase | None
-    ) -> None:
-        """Update the security analyzer configuration history.
-
-        Args:
-            analyzer: The security analyzer instance, or None if not configured
-        """
-        # Update the current security analyzer
-        self.security_analyzer = analyzer
-
-        # Extract the analyzer type from the analyzer object
-        analyzer_type = analyzer.__class__.__name__ if analyzer else None
-
-        # Only add a new record if the analyzer type has changed
-        if (
-            not self.security_analyzer_history
-            or self.security_analyzer_history[-1].analyzer_type != analyzer_type
-        ):
-            record = SecurityAnalyzerRecord(
-                analyzer_type=analyzer_type, timestamp=datetime.now()
-            )
-            self.security_analyzer_history.append(record)
 
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
@@ -251,7 +210,7 @@ class ConversationState(OpenHandsModel):
             stuck_detection=stuck_detection,
         )
         # Record existing analyzer configuration in state
-        state.update_security_analyzer_and_record_transitions(state.security_analyzer)
+        state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()

@@ -407,7 +407,7 @@ class LocalConversation(BaseConversation):
     def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
         """Set the security analyzer for the conversation."""
         with self._state:
-            self._state.update_security_analyzer_and_record_transitions(analyzer)
+            self._state.security_analyzer = analyzer
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""

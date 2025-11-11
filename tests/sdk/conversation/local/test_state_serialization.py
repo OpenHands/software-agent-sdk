@@ -102,9 +102,6 @@ def test_conversation_state_persistence_save_load():
         state.events.append(event2)
         state.stats.register_llm(RegistryEvent(llm=llm))
 
-        # Populate security analyzer history
-        state.update_security_analyzer_and_record_transitions(None)
-
         # State auto-saves when events are added
         # Verify files were created
         assert Path(persist_path_for_state, "base_state.json").exists()
@@ -164,9 +161,6 @@ def test_conversation_state_incremental_save():
         )
         state.events.append(event1)
         state.stats.register_llm(RegistryEvent(llm=llm))
-
-        # Populate security analyzer history
-        state.update_security_analyzer_and_record_transitions(None)
 
         # Verify event files exist (may have additional events from Agent.init_state)
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
