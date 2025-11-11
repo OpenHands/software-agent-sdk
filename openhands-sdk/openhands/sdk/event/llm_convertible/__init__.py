@@ -9,6 +9,7 @@ from openhands.sdk.event.llm_convertible.observation import (
 from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
 from openhands.sdk.event.llm_convertible.token import TokenEvent
 
+
 __all__ = [
     "SystemPromptEvent",
     "ActionEvent",

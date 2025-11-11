@@ -12,8 +12,8 @@ from openhands.sdk.event.llm_convertible import (
     ObservationBaseEvent,
     ObservationEvent,
     SystemPromptEvent,
-    UserRejectObservation,
     TokenEvent,
+    UserRejectObservation,
 )
 from openhands.sdk.event.types import EventID, ToolCallID
 from openhands.sdk.event.user_action import PauseEvent
