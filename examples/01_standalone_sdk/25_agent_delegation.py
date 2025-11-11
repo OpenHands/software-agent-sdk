@@ -30,7 +30,7 @@ logger = get_logger(__name__)
 # You can get an API key from https://app.all-hands.dev/settings/api-keys
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 llm = LLM(
     model=model,
     api_key=SecretStr(api_key),

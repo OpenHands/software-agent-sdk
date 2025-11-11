@@ -7,7 +7,7 @@ from openhands.tools.terminal import TerminalTool
 
 
 llm = LLM(
-    model="anthropic/claude-sonnet-4-5-20250929",
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     api_key=os.getenv("LLM_API_KEY"),
 )
 
