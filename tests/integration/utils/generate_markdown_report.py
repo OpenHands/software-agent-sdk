@@ -24,7 +24,8 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
 
     for result in model_results:
         success_rate = f"{result.success_rate:.1%}"
-        tests_passed = f"{result.successful_tests}/{result.total_tests}"
+        non_skipped = result.total_tests - result.skipped_tests
+        tests_passed = f"{result.successful_tests}/{non_skipped}"
         skipped = f"{result.skipped_tests}"
         cost = format_cost(result.total_cost)
 
@@ -45,11 +46,12 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
     sections = []
 
     for result in model_results:
+        non_skipped = result.total_tests - result.skipped_tests
         section_lines = [
             f"### {result.model_name}",
             "",
             f"- **Success Rate**: {result.success_rate:.1%} "
-            f"({result.successful_tests}/{result.total_tests})",
+            f"({result.successful_tests}/{non_skipped})",
             f"- **Total Cost**: {format_cost(result.total_cost)}",
             f"- **Run Suffix**: `{result.run_suffix}`",
         ]
