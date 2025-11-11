@@ -677,6 +677,12 @@ class RemoteConversation(BaseConversation):
         return data["title"]
 
     def close(self) -> None:
+        """Close the conversation and clean up resources.
+
+        Note: We don't close self._client here because it's shared with the workspace.
+        The workspace owns the client and will close it during its own cleanup.
+        Closing it here would prevent the workspace from making cleanup API calls.
+        """
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
@@ -686,11 +692,6 @@ class RemoteConversation(BaseConversation):
             pass
 
         self._end_observability_span()
-
-        try:
-            self._client.close()
-        except Exception:
-            pass
 
     def __del__(self) -> None:
         try:
