@@ -18,10 +18,14 @@ from openhands.tools.terminal import TerminalTool
 # For non-Laminar OTLP backends, set OTEL_* variables instead.
 
 # Configure LLM and Agent
-llm_api_key = os.getenv("LLM_API_KEY")
+api_key = os.getenv("LLM_API_KEY")
+model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    model="anthropic/claude-sonnet-4-5-20250929",
-    api_key=SecretStr(llm_api_key) if llm_api_key else None,
+    model=model,
+    api_key=SecretStr(api_key) if api_key else None,
+    base_url=base_url,
+    usage_id="agent",
 )
 
 agent = Agent(
