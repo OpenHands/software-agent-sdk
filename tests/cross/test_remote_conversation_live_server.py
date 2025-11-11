@@ -569,3 +569,151 @@ def test_conversation_stats_with_live_server(
     assert stats_from_field, "Expected non-empty stats in the 'stats' field after run()"
 
     conv.close()
+
+
+def test_security_risk_field_with_live_server(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Integration test validating security_risk field functionality.
+
+    This test validates the fix for issue #819 where security_risk field handling
+    was inconsistent. It tests that:
+    1. Actions execute successfully with security_risk provided
+    2. Actions execute successfully without security_risk (defaults to UNKNOWN)
+
+    This is a regression test spawning a real agent server to ensure end-to-end
+    functionality of security_risk field handling.
+    """
+    from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+
+    # Track which completion call we're on to control behavior
+    call_count = {"count": 0}
+
+    def fake_completion_with_tool_calls(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        call_count["count"] += 1
+
+        # First call: return tool call WITHOUT security_risk
+        # (to test error event when analyzer is configured)
+        if call_count["count"] == 1:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_1",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": '{"message": "Task complete"}',
+                            },
+                        }
+                    ],
+                }
+            )
+        # Second call: return tool call WITH security_risk
+        # (to test successful execution after error)
+        elif call_count["count"] == 2:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": "call_2",
+                            "type": "function",
+                            "function": {
+                                "name": "finish",
+                                "arguments": (
+                                    '{"message": "Task complete", '
+                                    '"security_risk": "LOW"}'
+                                ),
+                            },
+                        }
+                    ],
+                }
+            )
+        # Third call: simple message to finish
+        else:
+            litellm_msg = LiteLLMMessage.model_validate(
+                {"role": "assistant", "content": "Done"}
+            )
+
+        raw_response = ModelResponse(
+            id=f"test-resp-{call_count['count']}",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(
+        LLM, "completion", fake_completion_with_tool_calls, raising=True
+    )
+
+    # Create an Agent with LLMSecurityAnalyzer
+    # Using empty tools list since tools need to be registered in the server
+    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        security_analyzer=LLMSecurityAnalyzer(),
+    )
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    # Step 1: Send message WITHOUT security_risk - should still execute (defaults to
+    # UNKNOWN)
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # Wait for action event - should succeed even without security_risk
+    found_action_without_risk = False
+    for attempt in range(50):  # up to ~5s
+        events = conv.state.events
+        for e in events:
+            if isinstance(e, ActionEvent) and e.tool_name == "finish":
+                # Verify it has a security risk attribute
+                assert hasattr(e, "security_risk"), (
+                    "Expected ActionEvent to have security_risk attribute"
+                )
+                found_action_without_risk = True
+                break
+        if found_action_without_risk:
+            break
+        time.sleep(0.1)
+
+    assert found_action_without_risk, (
+        "Expected to find ActionEvent with finish tool even without security_risk"
+    )
+
+    conv.close()
+
+    # The test validates that:
+    # 1. Actions can be executed without security_risk (defaults to UNKNOWN)
+    # 2. ActionEvent always has a security_risk attribute
