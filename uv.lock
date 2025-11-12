@@ -2294,7 +2294,7 @@ requires-dist = [
     { name = "libtmux", specifier = ">=0.46.2" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.11.7" },
-    { name = "tom-swe", specifier = ">=1.0.0" },
+    { name = "tom-swe", specifier = ">=1.0.1" },
 ]
 
 [[package]]
@@ -6737,7 +6737,7 @@ wheels = [
 
 [[package]]
 name = "tom-swe"
-version = "1.0.0"
+version = "1.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
@@ -6760,9 +6760,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uvicorn" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bc/9a/06dd76a03c8e8eba3615b40ac283b9695d08569960b23b3ec77983abf8f0/tom_swe-1.0.0.tar.gz", hash = "sha256:f8125d51a696f15e90eef0b6967a303614edd44f3dd8fb25c6f1611396b6b826", size = 9126, upload-time = "2025-11-12T03:54:49.919Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/de/2b/f9662e31c728264efec9361e95a38fe4c2e70359bbad3442bc18fd34ce2e/tom_swe-1.0.1.tar.gz", hash = "sha256:862b64ac642ca1517a97882111483f375fcfdc6e8b99f2a1b9bd24323b15adc8", size = 41218, upload-time = "2025-11-12T04:37:22.318Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/af/04/1c5f3648ee194520482beaf9ce3e96beea141d4a052ad1084e4bcbdad36b/tom_swe-1.0.0-py3-none-any.whl", hash = "sha256:ba84c8c84fa9f60e5a00f45f10b5ce2dccec281d1b414dd3781abed587a03f67", size = 10067, upload-time = "2025-11-12T03:54:48.452Z" },
+    { url = "https://files.pythonhosted.org/packages/20/a7/a68ad9216fa36e596ea6b624bd80dafc03bffb22e4e954ecf3e36c26fa47/tom_swe-1.0.1-py3-none-any.whl", hash = "sha256:3b74e94712f84c0d27a1dff50fa831efb383cbd370a25b0687870867ea5864a1", size = 51133, upload-time = "2025-11-12T04:37:20.781Z" },
 ]
 
 [[package]]
