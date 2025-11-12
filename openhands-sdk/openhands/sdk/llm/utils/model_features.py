@@ -104,6 +104,7 @@ FORCE_STRING_SERIALIZER_PATTERNS: list[str] = [
 # in the message input
 SEND_REASONING_CONTENT_PATTERNS: list[str] = [
     "kimi-k2-thinking",
+    "openrouter/minimax-m2",  # MiniMax-M2 via OpenRouter (interleaved thinking)
 ]
 
 
