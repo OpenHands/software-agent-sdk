@@ -2294,7 +2294,7 @@ requires-dist = [
     { name = "libtmux", specifier = ">=0.46.2" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.11.7" },
-    { name = "tom-swe", git = "https://github.com/all-hands-ai/ToM-SWE.git?rev=main" },
+    { name = "tom-swe", specifier = ">=1.0.0" },
 ]
 
 [[package]]
@@ -6738,7 +6738,7 @@ wheels = [
 [[package]]
 name = "tom-swe"
 version = "1.0.0"
-source = { git = "https://github.com/all-hands-ai/ToM-SWE.git?rev=main#94aecd293bf66e5c0d76d3f2c70bc5e7cead3fa2" }
+source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiofiles" },
     { name = "bm25s" },
@@ -6759,6 +6759,10 @@ dependencies = [
     { name = "tqdm" },
     { name = "typing-extensions" },
     { name = "uvicorn" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bc/9a/06dd76a03c8e8eba3615b40ac283b9695d08569960b23b3ec77983abf8f0/tom_swe-1.0.0.tar.gz", hash = "sha256:f8125d51a696f15e90eef0b6967a303614edd44f3dd8fb25c6f1611396b6b826", size = 9126, upload-time = "2025-11-12T03:54:49.919Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/af/04/1c5f3648ee194520482beaf9ce3e96beea141d4a052ad1084e4bcbdad36b/tom_swe-1.0.0-py3-none-any.whl", hash = "sha256:ba84c8c84fa9f60e5a00f45f10b5ce2dccec281d1b414dd3781abed587a03f67", size = 10067, upload-time = "2025-11-12T03:54:48.452Z" },
 ]
 
 [[package]]
