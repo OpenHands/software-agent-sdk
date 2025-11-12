@@ -12,6 +12,7 @@ from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
     CondensationRequest,
+    ConversationStateUpdateEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -411,3 +412,13 @@ def test_event_base_fallback_visualize():
 
     text_content = result.plain
     assert "Unknown event type: UnknownEvent" in text_content
+
+
+def test_visualizer_conversation_state_update_event_skipped():
+    """Test that ConversationStateUpdateEvent is not visualized."""
+    visualizer = DefaultConversationVisualizer()
+    event = ConversationStateUpdateEvent(key="execution_status", value="finished")
+
+    panel = visualizer._create_event_panel(event)
+    # Should return None to skip visualization
+    assert panel is None
