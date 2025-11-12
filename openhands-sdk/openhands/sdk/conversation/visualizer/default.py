@@ -10,6 +10,7 @@ from openhands.sdk.conversation.visualizer.base import (
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
+    ConversationStateUpdateEvent,
     MessageEvent,
     ObservationEvent,
     PauseEvent,
@@ -265,6 +266,9 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 padding=_PANEL_PADDING,
                 expand=True,
             )
+        elif isinstance(event, ConversationStateUpdateEvent):
+            # Skip visualizing conversation state updates - these are internal events
+            return None
         else:
             # Fallback panel for unknown event types
             title = f"[bold {_ERROR_COLOR}]"
