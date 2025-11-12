@@ -51,6 +51,7 @@ def create_terminal_session(
     username: str | None = None,
     no_change_timeout_seconds: int | None = None,
     terminal_type: Literal["tmux", "subprocess"] | None = None,
+    shell_path: str | None = None,
 ) -> TerminalSession:
     """Create an appropriate terminal session based on system capabilities.
 
@@ -60,6 +61,8 @@ def create_terminal_session(
         no_change_timeout_seconds: Timeout for no output change
         terminal_type: Force a specific session type ('tmux', 'subprocess')
                      If None, auto-detect based on system capabilities
+        shell_path: Path to the shell binary (for subprocess terminal type only).
+                   If None, will auto-detect bash from PATH.
 
     Returns:
         TerminalSession instance
@@ -89,7 +92,7 @@ def create_terminal_session(
             )
 
             logger.info("Using forced SubprocessTerminal")
-            terminal = SubprocessTerminal(work_dir, username)
+            terminal = SubprocessTerminal(work_dir, username, shell_path)
             return TerminalSession(terminal, no_change_timeout_seconds)
         else:
             raise ValueError(f"Unknown session type: {terminal_type}")
@@ -115,5 +118,5 @@ def create_terminal_session(
             )
 
             logger.info("Auto-detected: Using SubprocessTerminal (tmux not available)")
-            terminal = SubprocessTerminal(work_dir, username)
+            terminal = SubprocessTerminal(work_dir, username, shell_path)
             return TerminalSession(terminal, no_change_timeout_seconds)

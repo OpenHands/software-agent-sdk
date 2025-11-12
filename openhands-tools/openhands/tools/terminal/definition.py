@@ -196,6 +196,7 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 * Persistent session: Commands execute in a persistent shell session where environment variables, virtual environments, and working directory persist between commands.
 * Soft timeout: Commands have a soft timeout of 10 seconds, once that's reached, you have the option to continue or interrupt the command (see section below for details)
 * Shell options: Do NOT use `set -e`, `set -eu`, or `set -euo pipefail` in shell scripts or commands in this environment. The runtime may not support them and can cause unusable shell sessions. If you want to run multi-line bash commands, write the commands to a file and then run it, instead.
+* Shell configuration: By default, the tool auto-detects bash from PATH. You can customize the shell binary by passing the `shell_path` parameter when creating the TerminalTool
 
 ### Long-running Commands
 * For commands that may run indefinitely, run them in the background and redirect output to a file, e.g. `python3 app.py > server.log 2>&1 &`.
@@ -229,6 +230,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
+        shell_path: str | None = None,
         executor: ToolExecutor | None = None,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
@@ -244,6 +246,8 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                          If None, auto-detect based on system capabilities:
                          - On Windows: PowerShell if available, otherwise subprocess
                          - On Unix-like: tmux if available, otherwise subprocess
+            shell_path: Path to the shell binary (for subprocess terminal type only).
+                       If None, will auto-detect bash from PATH.
         """
         # Import here to avoid circular imports
         from openhands.tools.terminal.impl import BashExecutor
@@ -259,6 +263,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 username=username,
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
+                shell_path=shell_path,
             )
 
         # Initialize the parent ToolDefinition with the executor
