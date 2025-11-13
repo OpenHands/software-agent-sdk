@@ -46,45 +46,6 @@ def test_completion_forwards_extra_body_for_proxy_models():
         assert call_kwargs["extra_body"] == custom_extra_body
 
 
-def test_responses_forwards_extra_body_for_proxy_models():
-    """Test that litellm_extra_body is forwarded to litellm.responses().
-
-    This applies for proxy models.
-    """
-    custom_extra_body = {
-        "cluster_id": "prod-cluster-1",
-        "routing_key": "high-priority",
-    }
-
-    llm = LLM(
-        model="litellm_proxy/gpt-4o",
-        usage_id="test",
-        litellm_extra_body=custom_extra_body,
-    )
-    messages = [Message(role="user", content=[TextContent(text="Hello")])]
-
-    with patch("openhands.sdk.llm.llm.litellm_responses") as mock_responses:
-        mock_response = MagicMock(spec=ResponsesAPIResponse)
-        mock_response.id = "test-id"
-        mock_response.created_at = 1234567890
-        mock_response.model = "gpt-4o"
-        mock_response.output = MagicMock()
-        mock_response.output.type = "message"
-        mock_response.output.message = MagicMock()
-        mock_response.output.message.role = "assistant"
-        mock_response.output.message.content = [MagicMock(type="text", text="Hello!")]
-        mock_response.usage = MagicMock()
-        mock_response.usage.input_tokens = 10
-        mock_response.usage.output_tokens = 5
-        mock_responses.return_value = mock_response
-
-        llm.responses(messages=messages, include=None, store=False)
-
-        call_kwargs = mock_responses.call_args[1]
-        assert "extra_body" in call_kwargs
-        assert call_kwargs["extra_body"] == custom_extra_body
-
-
 def test_responses_forwards_extra_body_for_all_models():
     """Test that extra_body is forwarded for all models.
 
