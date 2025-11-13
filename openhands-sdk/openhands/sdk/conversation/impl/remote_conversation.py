@@ -568,11 +568,12 @@ class RemoteConversation(BaseConversation):
             # to match it against configured LLMs
             log_dir = None
 
-            # First, try to match by usage_id if we can determine it
-            # Since we don't have usage_id in the event, we'll use the first
-            # matching log folder, or fall back to a default
-            if self._log_completion_folders:
-                # Use the first configured log folder (typically there's only one)
+            # Prefer usage_id provided by the event to select the correct folder
+            if isinstance(event, LLMCompletionLogEvent) and event.usage_id:
+                log_dir = self._log_completion_folders.get(event.usage_id)
+
+            # Fallback to the first configured log folder if usage_id unavailable
+            if not log_dir and self._log_completion_folders:
                 log_dir = next(iter(self._log_completion_folders.values()))
 
             if not log_dir:

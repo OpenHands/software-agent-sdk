@@ -235,18 +235,24 @@ class EventService:
     def _setup_llm_log_streaming(self, agent: Agent) -> None:
         """Configure LLM log callbacks to stream logs via events."""
 
-        def log_callback(filename: str, log_data: str) -> None:
-            """Callback to emit LLM completion logs as events."""
-            # Extract model name from filename (format: model__timestamp_uuid.json)
-            model_name = filename.split("-")[0].replace("__", "/")
-            event = LLMCompletionLogEvent(
-                filename=filename,
-                log_data=log_data,
-                model_name=model_name,
-            )
-            # Publish to all subscribers - schedule in the main event loop
-            if self._main_loop and self._main_loop.is_running():
-                asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+        def make_log_callback(usage_id: str):
+            def log_callback(filename: str, log_data: str) -> None:
+                """Callback to emit LLM completion logs as events."""
+                # Extract model name from filename (format: model__timestamp_uuid.json)
+                model_name = filename.split("-")[0].replace("__", "/")
+                event = LLMCompletionLogEvent(
+                    filename=filename,
+                    log_data=log_data,
+                    model_name=model_name,
+                    usage_id=usage_id,
+                )
+                # Publish to all subscribers - schedule in the main event loop
+                if self._main_loop and self._main_loop.is_running():
+                    asyncio.run_coroutine_threadsafe(
+                        self._pub_sub(event), self._main_loop
+                    )
+
+            return log_callback
 
         # Set callback for all LLMs in the agent that have logging enabled
         for llm in agent.get_all_llms():
@@ -254,7 +260,7 @@ class EventService:
                 # Access telemetry safely
                 telemetry = getattr(llm, "telemetry", None)
                 if telemetry is not None:
-                    telemetry.set_log_callback(log_callback)
+                    telemetry.set_log_callback(make_log_callback(llm.usage_id))
 
     def _setup_stats_streaming(self, agent: Agent) -> None:
         """Configure stats update callbacks to stream stats changes via events."""

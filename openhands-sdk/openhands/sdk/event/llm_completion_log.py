@@ -27,6 +27,13 @@ class LLMCompletionLogEvent(Event):
         default="unknown",
         description="The model name for context",
     )
+    usage_id: str = Field(
+        default="default",
+        description="The LLM usage_id that produced this log",
+    )
 
     def __str__(self) -> str:
-        return f"LLMCompletionLog(model={self.model_name}, file={self.filename})"
+        return (
+            f"LLMCompletionLog(usage_id={self.usage_id}, model={self.model_name}, "
+            f"file={self.filename})"
+        )
