@@ -263,11 +263,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default_factory=dict,
         description=(
             "Additional key-value pairs to pass to litellm's extra_body parameter. "
-            "This is useful for custom inference clusters that need additional "
-            "metadata for logging, tracking, or routing purposes. "
-            "Example structure: "
-            "{'trace_version': '1.0.0', 'tags': ['model:gpt-4', 'agent:my-agent'], "
-            "'session_id': 'session-123', 'trace_user_id': 'user-456'}"
+            "This is useful for custom inference endpoints that need additional "
+            "parameters for configuration, routing, or advanced features. "
+            "NOTE: Not all LLM providers support extra_body parameters. Some providers "
+            "(e.g., OpenAI) may reject requests with unrecognized options. "
+            "This is commonly supported by: "
+            "- LiteLLM proxy servers (routing metadata, tracing) "
+            "- vLLM endpoints (return_token_ids, etc.) "
+            "- Custom inference clusters "
+            "Examples: "
+            "- Proxy routing: {'trace_version': '1.0.0', 'tags': ['agent:my-agent']} "
+            "- vLLM features: {'return_token_ids': True}"
         ),
     )
 
