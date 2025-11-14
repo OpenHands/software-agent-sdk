@@ -15,9 +15,6 @@ from deprecation import (
 from packaging import version as pkg_version
 
 
-DEFAULT_DEPRECATED_IN = "1.1.0"
-DEFAULT_REMOVED_IN = "2.0.0"
-
 _FuncT = TypeVar("_FuncT", bound=Callable[..., Any])
 
 
@@ -31,12 +28,12 @@ def _current_version() -> str:
 
 def deprecated(
     *,
-    deprecated_in: str = DEFAULT_DEPRECATED_IN,
-    removed_in: str | date | None = DEFAULT_REMOVED_IN,
+    deprecated_in: str,
+    removed_in: str | date | None,
     current_version: str | None = None,
     details: str = "",
 ) -> Callable[[_FuncT], _FuncT]:
-    """Return a decorator that deprecates a callable via the project defaults.
+    """Return a decorator that deprecates a callable with explicit metadata.
 
     Use this helper when you can annotate a function, method, or property with
     `@deprecated(...)`. It transparently forwards to :func:`deprecation.deprecated`
@@ -86,8 +83,8 @@ def _should_warn(
 def warn_deprecated(
     feature: str,
     *,
-    deprecated_in: str = DEFAULT_DEPRECATED_IN,
-    removed_in: str | date | None = DEFAULT_REMOVED_IN,
+    deprecated_in: str,
+    removed_in: str | date | None,
     current_version: str | None = None,
     details: str = "",
     stacklevel: int = 2,
@@ -95,10 +92,9 @@ def warn_deprecated(
     """Emit a deprecation warning for dynamic access to a legacy feature.
 
     Prefer this helper when a decorator is not practical—e.g. attribute accessors,
-    data migrations, or other runtime paths that must conditionally warn. It
-    normalizes warning metadata so the SDK reports a consistent message and
-    upgrades to :class:`deprecation.UnsupportedWarning` after the removal
-    threshold.
+    data migrations, or other runtime paths that must conditionally warn. Provide
+    explicit version metadata so the SDK reports consistent messages and upgrades
+    to :class:`deprecation.UnsupportedWarning` after the removal threshold.
     """
 
     current_version = current_version or _current_version()
@@ -117,8 +113,6 @@ def warn_deprecated(
 
 
 __all__ = [
-    "DEFAULT_DEPRECATED_IN",
-    "DEFAULT_REMOVED_IN",
     "deprecated",
     "warn_deprecated",
 ]

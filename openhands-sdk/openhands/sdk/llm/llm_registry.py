@@ -6,7 +6,9 @@ from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils.deprecation import deprecated
+from openhands.sdk.utils.deprecation import (
+    deprecated,
+)
 
 
 logger = get_logger(__name__)
@@ -76,7 +78,11 @@ class LLMRegistry:
         return self._usage_to_llm
 
     @property
-    @deprecated(details=SERVICE_TO_LLM_DEPRECATION_DETAILS)
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_TO_LLM_DEPRECATION_DETAILS,
+    )
     def service_to_llm(self) -> dict[str, LLM]:  # pragma: no cover - compatibility shim
         return self._usage_to_llm
 
@@ -132,7 +138,11 @@ class LLMRegistry:
 
         return list(self._usage_to_llm.keys())
 
-    @deprecated(details=LIST_SERVICES_DEPRECATION_DETAILS)
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=LIST_SERVICES_DEPRECATION_DETAILS,
+    )
     def list_services(self) -> list[str]:  # pragma: no cover - compatibility shim
         """Deprecated alias for :meth:`list_usage_ids`."""
 

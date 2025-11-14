@@ -15,7 +15,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.security import analyzer
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
-from openhands.sdk.utils.deprecation import warn_deprecated
+from openhands.sdk.utils.deprecation import (
+    warn_deprecated,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -165,6 +167,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if "security_analyzer" in d and d["security_analyzer"]:
             warn_deprecated(
                 "Agent.security_analyzer",
+                deprecated_in="1.1.0",
+                removed_in="1.3.0",
                 details=AGENT_SECURITY_ANALYZER_DEPRECATION_DETAILS,
                 stacklevel=3,
             )

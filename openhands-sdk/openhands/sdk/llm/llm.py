@@ -28,7 +28,10 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
-from openhands.sdk.utils.deprecation import deprecated, warn_deprecated
+from openhands.sdk.utils.deprecation import (
+    deprecated,
+    warn_deprecated,
+)
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
@@ -317,6 +320,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if "service_id" in d and "usage_id" not in d:
             warn_deprecated(
                 "LLM.service_id",
+                deprecated_in="1.1.0",
+                removed_in="1.3.0",
                 details=SERVICE_ID_DEPRECATION_DETAILS,
                 stacklevel=3,
             )
@@ -403,12 +408,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Public API
     # =========================================================================
     @property
-    @deprecated(details=SERVICE_ID_DEPRECATION_DETAILS)
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_ID_DEPRECATION_DETAILS,
+    )
     def service_id(self) -> str:
         return self.usage_id
 
     @service_id.setter
-    @deprecated(details=SERVICE_ID_DEPRECATION_DETAILS)
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_ID_DEPRECATION_DETAILS,
+    )
     def service_id(self, value: str) -> None:
         self.usage_id = value
 

@@ -4,8 +4,6 @@ import pytest
 from deprecation import DeprecatedWarning
 
 from openhands.sdk.utils.deprecation import (
-    DEFAULT_DEPRECATED_IN,
-    DEFAULT_REMOVED_IN,
     deprecated,
     warn_deprecated,
 )
@@ -13,16 +11,25 @@ from openhands.sdk.utils.deprecation import (
 
 def test_warn_deprecated_uses_project_versions() -> None:
     with pytest.warns(DeprecatedWarning) as caught:
-        warn_deprecated("tests.api", details="Use tests.new_api()")
+        warn_deprecated(
+            "tests.api",
+            deprecated_in="1.1.0",
+            removed_in="2.0.0",
+            details="Use tests.new_api()",
+        )
 
     message = str(caught[0].message)
-    assert f"as of {DEFAULT_DEPRECATED_IN}" in message
-    assert f"removed in {DEFAULT_REMOVED_IN}" in message
+    assert "as of 1.1.0" in message
+    assert "removed in 2.0.0" in message
     assert "Use tests.new_api()" in message
 
 
 def test_deprecated_decorator_warns_and_preserves_call() -> None:
-    @deprecated(details="Use replacement()")
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="2.0.0",
+        details="Use replacement()",
+    )
     def old(x: int) -> int:
         return x * 2
 
