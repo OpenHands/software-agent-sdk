@@ -1,7 +1,6 @@
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Literal
 
 from rich.console import Console, Group
 from rich.rule import Rule
@@ -124,9 +123,6 @@ def build_event_block(
     return Group(*parts)
 
 
-ModeType = Literal["verbose", "concise"]
-
-
 def _get_action_title(event: Event) -> str:
     """Get title for ActionEvent based on whether action is None."""
     if isinstance(event, ActionEvent):
@@ -205,29 +201,23 @@ EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
 class DefaultConversationVisualizer(ConversationVisualizerBase):
     """Handles visualization of conversation events with Rich formatting.
 
-    Provides dual-mode output:
-    - Verbose: Full detail with rich formatting, indentation, and metrics
-    - Concise: Minimal 1-2 line summaries for quick scanning
+    Provides Rich-formatted output with semantic dividers and complete content display.
     """
 
     _console: Console
     _skip_user_messages: bool
     _highlight_patterns: dict[str, str]
-    _mode: ModeType
 
     def __init__(
         self,
-        mode: ModeType = "verbose",
         highlight_regex: dict[str, str] | None = DEFAULT_HIGHLIGHT_REGEX,
         skip_user_messages: bool = False,
     ):
         """Initialize the visualizer.
 
         Args:
-            mode: Visualization mode - "verbose" or "concise"
             highlight_regex: Dictionary mapping regex patterns to Rich color styles
                            for highlighting keywords in the visualizer.
-                           Only used in verbose mode.
                            For example: {"Reasoning:": "bold blue",
                            "Thought:": "bold green"}
             skip_user_messages: If True, skip displaying user messages. Useful for
@@ -237,10 +227,6 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         self._console = Console()
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
-        self._mode = mode
-
-        if self._mode not in ("verbose", "concise"):
-            raise ValueError(f"Invalid mode: {mode}. Must be 'verbose' or 'concise'")
 
     def _should_skip_event(self, event: Event) -> bool:
         """Check if an event should be skipped from visualization.
@@ -272,15 +258,9 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if self._should_skip_event(event):
             return
 
-        if self._mode == "verbose":
-            output = self._create_verbose_panel(event)
-            if output:
-                self._console.print(output)
-        else:  # concise mode
-            # Get concise visualization from the event itself
-            content = event.visualize(concise=True)
-            if content.plain.strip():
-                self._console.print(content)
+        output = self._create_event_block(event)
+        if output:
+            self._console.print(output)
 
     def _apply_highlighting(self, text: Text) -> Text:
         """Apply regex-based highlighting to text content.
@@ -304,14 +284,14 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
         return highlighted
 
-    def _create_verbose_panel(self, event: Event) -> Group | None:
-        """Create a verbose Rich panel for the event with full detail."""
+    def _create_event_block(self, event: Event) -> Group | None:
+        """Create a Rich event block for the event with full detail."""
         # Skip events that shouldn't be visualized
         if self._should_skip_event(event):
             return None
 
-        # Use the event's visualize method for content (verbose mode)
-        content = event.visualize(concise=False)
+        # Use the event's visualize property for content
+        content = event.visualize
 
         if not content.plain.strip():
             return None

@@ -112,7 +112,7 @@ def test_system_prompt_event_visualize():
         ],
     )
 
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -136,7 +136,7 @@ def test_action_event_visualize():
         llm_response_id="response_456",
     )
 
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -165,7 +165,7 @@ def test_observation_event_visualize():
         tool_call_id="call_123",
     )
 
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -187,7 +187,7 @@ def test_message_event_visualize():
         extended_content=[TextContent(text="Additional context")],
     )
 
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -205,7 +205,7 @@ def test_agent_error_event_visualize():
         tool_name="terminal",
     )
 
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -217,7 +217,7 @@ def test_pause_event_visualize():
     """Test PauseEvent visualization."""
     event = PauseEvent()
 
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -229,11 +229,13 @@ def test_conversation_visualizer_initialization():
     visualizer = DefaultConversationVisualizer()
     assert visualizer is not None
     assert hasattr(visualizer, "on_event")
-    assert hasattr(visualizer, "_create_verbose_panel")
+    assert hasattr(visualizer, "_create_event_block")
 
 
 def test_visualizer_event_panel_creation():
-    """Test that visualizer creates panels for different event types."""
+    """Test that visualizer creates event blocks for different event types."""
+    from rich.console import Group
+
     conv_viz = DefaultConversationVisualizer()
 
     # Test with a simple action event
@@ -247,17 +249,16 @@ def test_visualizer_event_panel_creation():
         tool_call=tool_call,
         llm_response_id="response_1",
     )
-    panel = conv_viz._create_verbose_panel(action_event)
-    assert panel is not None
-    # Panel is now a Group object from Rich
-    from rich.console import Group
-
-    assert isinstance(panel, Group)
+    block = conv_viz._create_event_block(action_event)
+    assert block is not None
+    assert isinstance(block, Group)
 
 
 def test_visualizer_action_event_with_none_action_panel():
     """ActionEvent with action=None should render as 'Agent Action (Not Executed)'."""
     import re
+
+    from rich.console import Console
 
     visualizer = DefaultConversationVisualizer()
     tc = create_tool_call("call_ne_1", "missing_fn", {})
@@ -269,14 +270,13 @@ def test_visualizer_action_event_with_none_action_panel():
         llm_response_id="resp_viz_1",
         action=None,
     )
-    panel = visualizer._create_verbose_panel(action_event)
-    assert panel is not None
-    # Convert Group to string to check content
-    from rich.console import Console
+    block = visualizer._create_event_block(action_event)
+    assert block is not None
 
+    # Render block to string to check content
     console = Console()
     with console.capture() as capture:
-        console.print(panel)
+        console.print(block)
     output = capture.get()
 
     # Strip ANSI codes for text comparison
@@ -290,7 +290,9 @@ def test_visualizer_action_event_with_none_action_panel():
 
 
 def test_visualizer_user_reject_observation_panel():
-    """UserRejectObservation should render a dedicated panel."""
+    """UserRejectObservation should render a dedicated event block."""
+    from rich.console import Console
+
     visualizer = DefaultConversationVisualizer()
     event = UserRejectObservation(
         tool_name="demo_tool",
@@ -299,37 +301,39 @@ def test_visualizer_user_reject_observation_panel():
         rejection_reason="User rejected the proposed action.",
     )
 
-    panel = visualizer._create_verbose_panel(event)
-    assert panel is not None
-    # Convert Group to string to check content
-    from rich.console import Console
+    block = visualizer._create_event_block(event)
+    assert block is not None
 
+    # Render block to string to check content
     console = Console()
     with console.capture() as capture:
-        console.print(panel)
+        console.print(block)
     output = capture.get()
+
     assert "UNKNOWN Event" not in output
     assert "User Rejected Action" in output
-    # ensure the reason is part of the renderable text
+    # ensure the reason is part of the rendered text
     assert "User rejected the proposed action." in output
 
 
 def test_visualizer_condensation_request_panel():
-    """CondensationRequest should render a system-styled panel with friendly text."""
-    visualizer = DefaultConversationVisualizer()
-    event = CondensationRequest()
-    panel = visualizer._create_verbose_panel(event)
-    assert panel is not None
-    # Convert Group to string to check content
+    """CondensationRequest renders system-styled event block with friendly text."""
     from rich.console import Console
 
+    visualizer = DefaultConversationVisualizer()
+    event = CondensationRequest()
+    block = visualizer._create_event_block(event)
+    assert block is not None
+
+    # Render block to string to check content
     console = Console()
     with console.capture() as capture:
-        console.print(panel)
+        console.print(block)
     output = capture.get()
+
     # Should not fall back to UNKNOWN
     assert "UNKNOWN Event" not in output
-    # Title should indicate condensation request (case-insensitive check on substring)
+    # Title should indicate condensation request
     assert "Condensation Request" in output
     # Body should be the friendly visualize text
     assert "Conversation Condensation Requested" in output
@@ -432,7 +436,7 @@ def test_event_base_fallback_visualize():
         source: SourceType = "agent"
 
     event = UnknownEvent()
-    result = event.visualize()
+    result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
@@ -444,6 +448,6 @@ def test_visualizer_conversation_state_update_event_skipped():
     visualizer = DefaultConversationVisualizer()
     event = ConversationStateUpdateEvent(key="execution_status", value="finished")
 
-    panel = visualizer._create_verbose_panel(event)
+    block = visualizer._create_event_block(event)
     # Should return None to skip visualization
-    assert panel is None
+    assert block is None

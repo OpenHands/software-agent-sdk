@@ -31,22 +31,16 @@ class Event(DiscriminatedUnionMixin, ABC):
     )  # consistent with V1
     source: SourceType = Field(..., description="The source of this event")
 
-    def visualize(self, concise: bool = False) -> Text:
+    @property
+    def visualize(self) -> Text:
         """Return Rich Text representation of this event.
 
         This is a fallback implementation for unknown event types.
         Subclasses should override this method to provide specific visualization.
-
-        Args:
-            concise: If True, return a minimal 1-2 line summary.
-                    If False (default), return detailed verbose representation.
         """
         content = Text()
-        if concise:
-            content.append(f"Unknown: {self.__class__.__name__}")
-        else:
-            content.append(f"Unknown event type: {self.__class__.__name__}")
-            content.append(f"\n{self.model_dump()}")
+        content.append(f"Unknown event type: {self.__class__.__name__}")
+        content.append(f"\n{self.model_dump()}")
         return content
 
     def __str__(self) -> str:

@@ -65,80 +65,45 @@ class ActionEvent(LLMConvertibleEvent):
         description="The LLM's assessment of the safety risk of this action.",
     )
 
-    def visualize(self, concise: bool = False) -> Text:
-        """Return Rich Text representation of this action event.
-
-        Args:
-            concise: If True, return a minimal 1-2 line summary.
-                    If False (default), return detailed verbose representation.
-        """
+    @property
+    def visualize(self) -> Text:
+        """Return Rich Text representation of this action event."""
         content = Text()
 
-        if concise:
-            # Concise mode: one-line summary
-            thought_text = " ".join([t.text for t in self.thought])
-            has_reasoning = bool(
-                self.reasoning_content
-                or self.thinking_blocks
-                or self.responses_reasoning_item
-            )
+        if self.security_risk != risk.SecurityRisk.UNKNOWN:
+            content.append(self.security_risk.visualize)
 
-            # Check if this is primarily a thinking/reasoning action
-            if has_reasoning or (thought_text and not self.action):
-                content.append("Thinking", style="bright_black")
-            elif self.action:
-                action_name = self.action.__class__.__name__
-                content.append("Run: ", style="bold blue")
-                content.append(action_name, style="blue")
+        # Display reasoning content first if available
+        if self.reasoning_content:
+            content.append("Reasoning:\n", style="bold")
+            content.append(self.reasoning_content)
+            content.append("\n\n")
 
-                # Extract key argument for context using raw action data
-                action_dict = self.action.model_dump()
+        # Display complete thought content
+        thought_text = " ".join([t.text for t in self.thought])
+        if thought_text:
+            content.append("Thought:\n", style="bold")
+            content.append(thought_text)
+            content.append("\n\n")
 
-                # Look for common patterns like file paths or commands
-                if "path" in action_dict and action_dict["path"]:
-                    content.append(f" {action_dict['path']}")
-                elif "command" in action_dict and action_dict["command"]:
-                    # Extract just the first word of the command for brevity
-                    cmd = str(action_dict["command"]).split()[0]
-                    content.append(f" ({cmd})")
-            else:
-                content.append("Action (Not Executed)", style="dim blue")
+        # Responses API reasoning (plaintext only; never render encrypted_content)
+        reasoning_item = self.responses_reasoning_item
+        if reasoning_item is not None:
+            content.append("Reasoning:\n", style="bold")
+            if reasoning_item.summary:
+                for s in reasoning_item.summary:
+                    content.append(f"- {s}\n")
+            if reasoning_item.content:
+                for b in reasoning_item.content:
+                    content.append(f"{b}\n")
+
+        # Display action information using action's visualize method
+        if self.action:
+            content.append(self.action.visualize)
         else:
-            # Verbose mode: full detail
-            if self.security_risk != risk.SecurityRisk.UNKNOWN:
-                content.append(self.security_risk.visualize)
-
-            # Display reasoning content first if available
-            if self.reasoning_content:
-                content.append("Reasoning:\n", style="bold")
-                content.append(self.reasoning_content)
-                content.append("\n\n")
-
-            # Display complete thought content
-            thought_text = " ".join([t.text for t in self.thought])
-            if thought_text:
-                content.append("Thought:\n", style="bold")
-                content.append(thought_text)
-                content.append("\n\n")
-
-            # Responses API reasoning (plaintext only; never render encrypted_content)
-            reasoning_item = self.responses_reasoning_item
-            if reasoning_item is not None:
-                content.append("Reasoning:\n", style="bold")
-                if reasoning_item.summary:
-                    for s in reasoning_item.summary:
-                        content.append(f"- {s}\n")
-                if reasoning_item.content:
-                    for b in reasoning_item.content:
-                        content.append(f"{b}\n")
-
-            # Display action information using action's visualize method
-            if self.action:
-                content.append(self.action.visualize)
-            else:
-                # When action is None (non-executable), show the function call
-                content.append("Function call:\n", style="bold")
-                content.append(f"- {self.tool_call.name} ({self.tool_call.id})\n")
+            # When action is None (non-executable), show the function call
+            content.append("Function call:\n", style="bold")
+            content.append(f"- {self.tool_call.name} ({self.tool_call.id})\n")
 
         return content
 
