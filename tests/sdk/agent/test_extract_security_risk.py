@@ -1,4 +1,4 @@
-"""Tests for Agent._extract_security_risk method.
+"""Tests for Agent._security_service.extract_security_risk method.
 
 This module tests the _extract_security_risk method which handles extraction
 and validation of security risk parameters from tool arguments.
@@ -36,22 +36,22 @@ def mock_llm():
 @pytest.fixture
 def agent_with_llm_analyzer(mock_llm):
     """Create an agent with LLMSecurityAnalyzer."""
-    agent = Agent(llm=mock_llm)
-    return agent, LLMSecurityAnalyzer()
+    agent = Agent(llm=mock_llm, security_analyzer=LLMSecurityAnalyzer())
+    return agent
 
 
 @pytest.fixture
 def agent_with_non_llm_analyzer(mock_llm):
     """Create an agent with non-LLM security analyzer."""
-    agent = Agent(llm=mock_llm)
-    return agent, MockNonLLMAnalyzer()
+    agent = Agent(llm=mock_llm, security_analyzer=MockNonLLMAnalyzer())
+    return agent
 
 
 @pytest.fixture
 def agent_without_analyzer(mock_llm):
     """Create an agent without security analyzer."""
     agent = Agent(llm=mock_llm)
-    return agent, None
+    return agent
 
 
 @pytest.mark.parametrize(
@@ -87,7 +87,7 @@ def test_extract_security_risk(
 ):
     """Test _extract_security_risk method with various scenarios."""
     # Get the agent fixture
-    agent, security_analyzer = request.getfixturevalue(agent_fixture)
+    agent = request.getfixturevalue(agent_fixture)
 
     # Prepare arguments
     arguments = {"some_param": "value"}
@@ -98,10 +98,10 @@ def test_extract_security_risk(
 
     if should_raise:
         with pytest.raises(ValueError):
-            agent._extract_security_risk(arguments, tool_name, False, security_analyzer)
+            agent._security_service.extract_security_risk(arguments, tool_name, False)
     else:
-        result = agent._extract_security_risk(
-            arguments, tool_name, False, security_analyzer
+        result = agent._security_service.extract_security_risk(
+            arguments, tool_name, False
         )
         assert result == expected_result
 
@@ -126,7 +126,9 @@ def test_extract_security_risk_arguments_mutation():
     arguments = {"param1": "value1", "security_risk": "LOW", "param2": "value2"}
     original_args = arguments.copy()
 
-    result = agent._extract_security_risk(arguments, "test_tool", False, None)
+    result = agent._security_service.extract_security_risk(
+        arguments, "test_tool", False
+    )
 
     # Verify result
     assert result == SecurityRisk.LOW
@@ -152,7 +154,9 @@ def test_extract_security_risk_with_empty_arguments():
     )
 
     arguments = {}
-    result = agent._extract_security_risk(arguments, "test_tool", False, None)
+    result = agent._security_service.extract_security_risk(
+        arguments, "test_tool", False
+    )
 
     # Should return UNKNOWN when no analyzer and no security_risk
     assert result == SecurityRisk.UNKNOWN
@@ -167,14 +171,13 @@ def test_extract_security_risk_with_read_only_tool():
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
-        )
+        ),
+        security_analyzer=LLMSecurityAnalyzer(),
     )
 
     # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
     arguments = {"param1": "value1", "security_risk": "HIGH"}
-    result = agent._extract_security_risk(
-        arguments, "test_tool", True, LLMSecurityAnalyzer()
-    )
+    result = agent._security_service.extract_security_risk(arguments, "test_tool", True)
 
     # Should return UNKNOWN when read_only_tool is True
     assert result == SecurityRisk.UNKNOWN
