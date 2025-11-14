@@ -74,7 +74,6 @@ def create_mcp_tools(
             "  1. Increase the timeout value (default is 30 seconds)\n"
             "  2. Check if the MCP server is running and responding\n"
             "  3. Verify network connectivity to the MCP server\n"
-            "  4. Check MCP server logs for errors or slow operations"
         )
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
