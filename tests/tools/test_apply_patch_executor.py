@@ -14,7 +14,7 @@ def tmp_ws(tmp_path: Path) -> Path:
 
 def run_exec(ws: Path, patch: str):
     ex = ApplyPatchExecutor(workspace_root=str(ws))
-    return ex(ApplyPatchAction(patch_text=patch))
+    return ex(ApplyPatchAction(patch=patch))
 
 
 def test_create_modify_delete(tmp_ws: Path):

@@ -24,14 +24,8 @@ if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
 
-from pydantic import AliasChoices
-
-
 class ApplyPatchAction(Action):
-    # Accept both OpenAI server-known param name 'patch' and local 'patch_text'
-    patch_text: str = Field(
-        validation_alias=AliasChoices("patch", "patch_text"),
-        serialization_alias="patch",
+    patch: str = Field(
         description=(
             "Patch content following the '*** Begin Patch' ... '*** End Patch' "
             "format as described in OpenAI GPT-5.1 prompting guide."
@@ -81,7 +75,7 @@ class ApplyPatchExecutor(ToolExecutor[ApplyPatchAction, ApplyPatchObservation]):
 
         try:
             msg, fuzz, commit = process_patch(
-                action.patch_text, open_file, write_file, remove_file
+                action.patch, open_file, write_file, remove_file
             )
             # Include a human-readable summary in content so Responses API sees
             # a function_call_output payload paired with the function_call.
