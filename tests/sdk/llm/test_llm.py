@@ -43,7 +43,7 @@ def test_llm_init_with_default_config(default_llm):
     assert default_llm.metrics.model_name == "gpt-4o"
 
 
-@patch("openhands.sdk.llm.llm.httpx.get")
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
 def test_base_url_for_openhands_provider(mock_get):
     """Test that openhands/ prefix automatically sets base_url to production proxy."""
     # Mock the model info fetch to avoid actual HTTP calls to production
