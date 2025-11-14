@@ -1,0 +1,256 @@
+---
+# Run evaluation on SDK PRs, releases, or manually (mirrors v0 flow)
+name: Run SDK Eval
+
+on:
+    pull_request:
+        types: [labeled]
+    release:
+        types: [published]
+    workflow_dispatch:
+        inputs:
+            branch:
+                description: Branch or tag to evaluate
+                required: true
+                default: main
+            eval_instances:
+                description: Number of SWE-bench instances
+                required: true
+                default: '50'
+                type: choice
+                options:
+                    - '1'
+                    - '5'
+                    - '50'
+                    - '200'
+            model:
+                description: Model configuration to evaluate
+                required: true
+                default: sonnet-4-5
+                type: choice
+                options:
+                    - sonnet-4-5
+                    - haiku-4-5
+            reason:
+                description: Reason for manual trigger
+                required: false
+                default: ''
+
+env:
+    MASTER_EVAL_ISSUE_NUMBER: ${{ vars.MASTER_EVAL_ISSUE_NUMBER || '0' }}
+    BENCHMARKS_REPO: https://github.com/OpenHands/benchmarks.git
+    BENCHMARKS_REF: main
+    MODELS_JSON: >-
+        [
+          {"id":"sonnet-4-5","llm_model":"litellm_proxy/anthropic/claude-sonnet-4-5-20250929","display_name":"Claude 3.5 Sonnet"},
+          {"id":"haiku-4-5","llm_model":"litellm_proxy/anthropic/claude-haiku-4-5-20251001","display_name":"Claude 3.5 Haiku"}
+        ]
+    RELEASE_INSTANCE_COUNT: '200'
+
+jobs:
+    trigger-eval:
+        name: Trigger remote eval
+        if: >
+            (github.event_name == 'pull_request' &&
+             startsWith(github.event.label.name, 'run-eval-')) ||
+            github.event_name == 'release' ||
+            github.event_name == 'workflow_dispatch'
+        runs-on: blacksmith-4vcpu-ubuntu-2204
+        permissions:
+            contents: read
+            issues: write
+            pull-requests: write
+
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v4
+
+            - name: Determine evaluation parameters
+              id: params
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  EVENT_PATH: ${{ github.event_path }}
+                  MASTER_ISSUE: ${{ env.MASTER_EVAL_ISSUE_NUMBER }}
+                  REPO: ${{ github.repository }}
+                  RUN_ID: ${{ github.run_id }}
+                  MODELS_JSON: ${{ env.MODELS_JSON }}
+                  RELEASE_INSTANCE_COUNT: ${{ env.RELEASE_INSTANCE_COUNT }}
+              run: |
+                  python <<'PY'
+                  import json
+                  import os
+                  import re
+                  import sys
+
+                  def emit(key: str, value: str) -> None:
+                      with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
+                          fh.write(f"{key}={value}\n")
+
+                  models = {m["id"]: m for m in json.loads(os.environ["MODELS_JSON"])}
+                  event_name = os.environ["EVENT_NAME"]
+                  master_issue = os.environ["MASTER_ISSUE"]
+                  event = json.load(open(os.environ["EVENT_PATH"], "r", encoding="utf-8"))
+
+                  targets: list[dict] = []
+                  trigger_desc = ""
+                  trigger_url = ""
+                  trigger_type = ""
+                  pr_number = master_issue
+                  sdk_ref = ""
+
+                  def build_target(model_id: str, eval_instances: str) -> dict:
+                      model = models[model_id]
+                      return {
+                          "model_id": model_id,
+                          "llm_model": model["llm_model"],
+                          "display_name": model["display_name"],
+                          "eval_instances": eval_instances,
+                      }
+
+                  if event_name == "pull_request":
+                      label = event.get("label", {}).get("name") or ""
+                      match = re.match(r"^run-eval-([a-z0-9\-]+)-([0-9]+)$", label)
+                      if not match:
+                          emit("should_run", "false")
+                          print(f"::warning::Label '{label}' does not match run-eval-<model>-<count> pattern; skipping eval trigger")
+                          sys.exit(0)
+                      model_id, eval_instances = match.groups()
+                      if model_id not in models:
+                          raise SystemExit(f"Unsupported model '{model_id}'")
+                      targets = [build_target(model_id, eval_instances)]
+                      sdk_ref = event["pull_request"]["head"]["ref"]
+                      pr_number = str(event["pull_request"]["number"])
+                      trigger_desc = f"Pull Request #{pr_number}"
+                      trigger_url = event["pull_request"].get("html_url") or ""
+                      trigger_type = "pull_request_label"
+                  elif event_name == "workflow_dispatch":
+                      inputs = event.get("inputs", {})
+                      model_id = inputs.get("model") or "sonnet-4-5"
+                      eval_instances = inputs.get("eval_instances") or "50"
+                      if model_id not in models:
+                          raise SystemExit(f"Unsupported model '{model_id}'")
+                      targets = [build_target(model_id, eval_instances)]
+                      sdk_ref = inputs.get("branch") or "main"
+                      reason = inputs.get("reason") or "Manual trigger"
+                      trigger_desc = f"Manual trigger ({reason})"
+                      trigger_url = f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}"
+                      trigger_type = "manual"
+                  elif event_name == "release":
+                      sdk_ref = str(event.get("release", {}).get("tag_name") or "")
+                      if not sdk_ref:
+                          sdk_ref = event.get("ref", "main")
+                      targets = [
+                          build_target(model_id, os.environ["RELEASE_INSTANCE_COUNT"])
+                          for model_id in models
+                      ]
+                      trigger_desc = f"Release {sdk_ref}"
+                      trigger_url = event.get("release", {}).get("html_url") or ""
+                      trigger_type = "release"
+                  else:
+                      emit("should_run", "false")
+                      print(f"::warning::Unsupported event '{event_name}' for this workflow")
+                      sys.exit(0)
+
+                  emit("should_run", "true")
+                  emit("sdk_ref", sdk_ref)
+                  emit("pr_number", pr_number)
+                  emit("targets", json.dumps(targets))
+                  emit("trigger_desc", trigger_desc)
+                  emit("trigger_url", trigger_url)
+                  emit("trigger_type", trigger_type)
+                  emit("models_text", ", ".join(f"{t['display_name']} ({t['eval_instances']})" for t in targets))
+                  PY
+
+            - name: Trigger evaluation workflow(s)
+              if: steps.params.outputs.should_run == 'true'
+              env:
+                  PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
+                  SDK_REPO: https://github.com/${{ github.repository }}
+                  SDK_REF: ${{ steps.params.outputs.sdk_ref }}
+                  PR_NUMBER: ${{ steps.params.outputs.pr_number }}
+                  TARGETS: ${{ steps.params.outputs.targets }}
+                  BENCHMARKS_REPO: ${{ env.BENCHMARKS_REPO }}
+                  BENCHMARKS_REF: ${{ env.BENCHMARKS_REF }}
+                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
+                  TRIGGER_TYPE: ${{ steps.params.outputs.trigger_type }}
+              run: |
+                  if [ -z "$PAT_TOKEN" ]; then
+                    echo "PAT_TOKEN is required to dispatch remote workflow"
+                    exit 1
+                  fi
+
+                  echo "$TARGETS" | jq -c '.[]' | while read -r target; do
+                    model_id=$(echo "$target" | jq -r '.model_id')
+                    llm_model=$(echo "$target" | jq -r '.llm_model')
+                    eval_instances=$(echo "$target" | jq -r '.eval_instances')
+
+                    payload=$(jq -n \
+                      --arg repo "$SDK_REPO" \
+                      --arg sdk_ref "$SDK_REF" \
+                      --arg benchmarks_repo "$BENCHMARKS_REPO" \
+                      --arg benchmarks_ref "$BENCHMARKS_REF" \
+                      --arg pr "$PR_NUMBER" \
+                      --arg instances "$eval_instances" \
+                      --arg model_id "$model_id" \
+                      --arg llm_model "$llm_model" \
+                      --arg trigger_desc "$TRIGGER_DESC" \
+                      --arg trigger_type "$TRIGGER_TYPE" \
+                      '{
+                        "ref": "main",
+                        "inputs": {
+                          "sdk-repo": $repo,
+                          "sdk-ref": $sdk_ref,
+                          "benchmarks-repo": $benchmarks_repo,
+                          "benchmarks-ref": $benchmarks_ref,
+                          "pr-number": $pr,
+                          "eval-instances": $instances,
+                          "llm-model-id": $model_id,
+                          "llm-model": $llm_model,
+                          "trigger-description": $trigger_desc,
+                          "trigger_type": $trigger_type
+                        }
+                      }')
+
+                    curl -sS -X POST \
+                      -H "Authorization: Bearer $PAT_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      -d "$payload" \
+                      https://api.github.com/repos/OpenHands/evaluation/actions/workflows/create-sdk-eval.yml/dispatches
+                  done
+
+            - name: Notify Slack
+              if: steps.params.outputs.should_run == 'true'
+              env:
+                  SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
+                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
+                  TRIGGER_URL: ${{ steps.params.outputs.trigger_url }}
+                  SDK_REF: ${{ steps.params.outputs.sdk_ref }}
+                  MODELS_TEXT: ${{ steps.params.outputs.models_text }}
+              run: |
+                  if [ -z "$SLACK_TOKEN" ]; then
+                    echo "SLACK_TOKEN secret not configured; skipping Slack notification"
+                    exit 0
+                  fi
+                  link="$TRIGGER_DESC"
+                  if [ -n "$TRIGGER_URL" ]; then
+                    link="$TRIGGER_DESC ($TRIGGER_URL)"
+                  fi
+                  text="SDK eval triggered for $link on ref $SDK_REF with models: $MODELS_TEXT."
+                  curl -sS -X POST -H 'Content-type: application/json' \
+                    --data "{\"text\":\"$text\"}" \
+                    https://hooks.slack.com/services/$SLACK_TOKEN
+
+            - name: Comment on PR / issue
+              if: steps.params.outputs.should_run == 'true'
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  number: ${{ steps.params.outputs.pr_number }}
+                  unique: false
+                  comment: |
+                      **SDK Evaluation Triggered**
+
+                      **Trigger:** ${{ steps.params.outputs.trigger_desc }}
+                      **Branch/Tag:** `${{ steps.params.outputs.sdk_ref }}`
+                      **Models:** ${{ steps.params.outputs.models_text }}
+
+                      Results will be posted here once the eval job completes.
