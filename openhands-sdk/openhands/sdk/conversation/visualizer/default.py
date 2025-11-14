@@ -1,4 +1,6 @@
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Literal
 
 from rich.console import Console, Group
@@ -46,6 +48,23 @@ DEFAULT_HIGHLIGHT_REGEX = {
     r"\*\*(.*?)\*\*": "bold",
     r"\*(.*?)\*": "italic",
 }
+
+
+@dataclass
+class EventVisualizationConfig:
+    """Configuration for how to visualize an event type."""
+
+    title: str | Callable[[Event], str]
+    """The title to display for this event. Can be a string or callable."""
+
+    color: str | Callable[[Event], str]
+    """The Rich color to use for the title and rule. Can be a string or callable."""
+
+    show_metrics: bool = False
+    """Whether to show the metrics subtitle."""
+
+    indent_content: bool = False
+    """Whether to indent the content."""
 
 
 def indent_content(content: Text, spaces: int = 4) -> Text:
@@ -108,6 +127,81 @@ def build_event_block(
 ModeType = Literal["verbose", "concise"]
 
 
+def _get_action_title(event: Event) -> str:
+    """Get title for ActionEvent based on whether action is None."""
+    if isinstance(event, ActionEvent):
+        return "Agent Action (Not Executed)" if event.action is None else "Agent Action"
+    return "Action"
+
+
+def _get_message_title(event: Event) -> str:
+    """Get title for MessageEvent based on role."""
+    if isinstance(event, MessageEvent) and event.llm_message:
+        return (
+            "Message from User"
+            if event.llm_message.role == "user"
+            else "Message from Agent"
+        )
+    return "Message"
+
+
+def _get_message_color(event: Event) -> str:
+    """Get color for MessageEvent based on role."""
+    if isinstance(event, MessageEvent) and event.llm_message:
+        return (
+            _MESSAGE_USER_COLOR
+            if event.llm_message.role == "user"
+            else _MESSAGE_ASSISTANT_COLOR
+        )
+    return "white"
+
+
+# Event type to visualization configuration mapping
+# This replaces the large isinstance chain with a cleaner lookup approach
+EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
+    SystemPromptEvent: EventVisualizationConfig(
+        title="System Prompt",
+        color=_SYSTEM_COLOR,
+    ),
+    ActionEvent: EventVisualizationConfig(
+        title=_get_action_title,
+        color=_ACTION_COLOR,
+        show_metrics=True,
+    ),
+    ObservationEvent: EventVisualizationConfig(
+        title="Observation",
+        color=_OBSERVATION_COLOR,
+    ),
+    UserRejectObservation: EventVisualizationConfig(
+        title="User Rejected Action",
+        color=_ERROR_COLOR,
+    ),
+    MessageEvent: EventVisualizationConfig(
+        title=_get_message_title,
+        color=_get_message_color,
+        show_metrics=True,
+    ),
+    AgentErrorEvent: EventVisualizationConfig(
+        title="Agent Error",
+        color=_ERROR_COLOR,
+        show_metrics=True,
+    ),
+    PauseEvent: EventVisualizationConfig(
+        title="User Paused",
+        color=_PAUSE_COLOR,
+    ),
+    Condensation: EventVisualizationConfig(
+        title="Condensation",
+        color="white",
+        show_metrics=True,
+    ),
+    CondensationRequest: EventVisualizationConfig(
+        title="Condensation Request",
+        color=_SYSTEM_COLOR,
+    ),
+}
+
+
 class DefaultConversationVisualizer(ConversationVisualizerBase):
     """Handles visualization of conversation events with Rich formatting.
 
@@ -148,26 +242,41 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if self._mode not in ("verbose", "concise"):
             raise ValueError(f"Invalid mode: {mode}. Must be 'verbose' or 'concise'")
 
+    def _should_skip_event(self, event: Event) -> bool:
+        """Check if an event should be skipped from visualization.
+
+        Args:
+            event: The event to check
+
+        Returns:
+            True if the event should be skipped, False otherwise
+        """
+        # Skip internal conversation state updates
+        if isinstance(event, ConversationStateUpdateEvent):
+            return True
+
+        # Skip user messages if configured
+        if (
+            self._skip_user_messages
+            and isinstance(event, MessageEvent)
+            and event.llm_message
+            and event.llm_message.role == "user"
+        ):
+            return True
+
+        return False
+
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
+        # Check if we should skip this event
+        if self._should_skip_event(event):
+            return
+
         if self._mode == "verbose":
             output = self._create_verbose_panel(event)
             if output:
                 self._console.print(output)
         else:  # concise mode
-            # Skip user messages if configured
-            if (
-                self._skip_user_messages
-                and isinstance(event, MessageEvent)
-                and event.llm_message
-                and event.llm_message.role == "user"
-            ):
-                return
-
-            # Skip internal conversation state updates
-            if isinstance(event, ConversationStateUpdateEvent):
-                return
-
             # Get concise visualization from the event itself
             content = event.visualize(concise=True)
             if content.plain.strip():
@@ -197,6 +306,10 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
     def _create_verbose_panel(self, event: Event) -> Group | None:
         """Create a verbose Rich panel for the event with full detail."""
+        # Skip events that shouldn't be visualized
+        if self._should_skip_event(event):
+            return None
+
         # Use the event's visualize method for content (verbose mode)
         content = event.visualize(concise=False)
 
@@ -207,95 +320,29 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if self._highlight_patterns:
             content = self._apply_highlighting(content)
 
-        # Determine panel styling based on event type
-        if isinstance(event, SystemPromptEvent):
-            return build_event_block(
-                content=content,
-                title="System Prompt",
-                title_color=_SYSTEM_COLOR,
-            )
-        elif isinstance(event, ActionEvent):
-            # Check if action is None (non-executable)
-            if event.action is None:
-                title = "Agent Action (Not Executed)"
-            else:
-                title = "Agent Action"
-            return build_event_block(
-                content=content,
-                title=title,
-                title_color=_ACTION_COLOR,
-                subtitle=self._format_metrics_subtitle(),
-            )
-        elif isinstance(event, ObservationEvent):
-            return build_event_block(
-                content=content,
-                title="Observation",
-                title_color=_OBSERVATION_COLOR,
-            )
-        elif isinstance(event, UserRejectObservation):
-            return build_event_block(
-                content=content,
-                title="User Rejected Action",
-                title_color=_ERROR_COLOR,
-            )
-        elif isinstance(event, MessageEvent):
-            if (
-                self._skip_user_messages
-                and event.llm_message
-                and event.llm_message.role == "user"
-            ):
-                return
-            assert event.llm_message is not None
-            # Role-based styling
-            role_colors = {
-                "user": _MESSAGE_USER_COLOR,
-                "assistant": _MESSAGE_ASSISTANT_COLOR,
-            }
-            role_color = role_colors.get(event.llm_message.role, "white")
+        # Look up visualization config for this event type
+        config = EVENT_VISUALIZATION_CONFIG.get(type(event))
 
-            # Simple titles for base visualizer
-            if event.llm_message.role == "user":
-                title = "Message from User"
-            else:
-                title = "Message from Agent"
+        if config:
+            # Resolve title (may be a string or callable)
+            title = config.title(event) if callable(config.title) else config.title
+
+            # Resolve color (may be a string or callable)
+            title_color = (
+                config.color(event) if callable(config.color) else config.color
+            )
+
+            # Build subtitle if needed
+            subtitle = self._format_metrics_subtitle() if config.show_metrics else None
 
             return build_event_block(
                 content=content,
                 title=title,
-                title_color=role_color,
-                subtitle=self._format_metrics_subtitle(),
+                title_color=title_color,
+                subtitle=subtitle,
             )
-        elif isinstance(event, AgentErrorEvent):
-            return build_event_block(
-                content=content,
-                title="Agent Error",
-                title_color=_ERROR_COLOR,
-                subtitle=self._format_metrics_subtitle(),
-            )
-        elif isinstance(event, PauseEvent):
-            return build_event_block(
-                content=content,
-                title="User Paused",
-                title_color=_PAUSE_COLOR,
-            )
-        elif isinstance(event, Condensation):
-            return build_event_block(
-                content=content,
-                title="Condensation",
-                title_color="white",
-                subtitle=self._format_metrics_subtitle(),
-            )
-        elif isinstance(event, CondensationRequest):
-            return build_event_block(
-                content=content,
-                title="Condensation Request",
-                title_color=_SYSTEM_COLOR,
-            )
-        elif isinstance(event, ConversationStateUpdateEvent):
-            # Skip visualizing conversation state updates - these are internal events
-            return None
         else:
-            # Fallback panel for unknown event types
+            # Fallback for unknown event types
             title = f"UNKNOWN Event: {event.__class__.__name__}"
             subtitle = f"({event.source})"
             return build_event_block(

@@ -91,21 +91,16 @@ class ActionEvent(LLMConvertibleEvent):
                 content.append("Run: ", style="bold blue")
                 content.append(action_name, style="blue")
 
-                # Try to extract key argument for context
-                action_viz = self.action.visualize
-                action_plain = action_viz.plain
-                # Look for common patterns like file paths
-                import re
+                # Extract key argument for context using raw action data
+                action_dict = self.action.model_dump()
 
-                path_match = re.search(r"path:\s*(.+?)(?:\n|$)", action_plain, re.I)
-                if path_match:
-                    path = path_match.group(1).strip()
-                    content.append(f" {path}")
-                else:
-                    cmd_match = re.search(r"command:\s*(\w+)", action_plain, re.I)
-                    if cmd_match:
-                        cmd = cmd_match.group(1).strip()
-                        content.append(f" ({cmd})")
+                # Look for common patterns like file paths or commands
+                if "path" in action_dict and action_dict["path"]:
+                    content.append(f" {action_dict['path']}")
+                elif "command" in action_dict and action_dict["command"]:
+                    # Extract just the first word of the command for brevity
+                    cmd = str(action_dict["command"]).split()[0]
+                    content.append(f" ({cmd})")
             else:
                 content.append("Action (Not Executed)", style="dim blue")
         else:

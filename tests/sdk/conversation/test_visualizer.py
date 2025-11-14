@@ -257,6 +257,8 @@ def test_visualizer_event_panel_creation():
 
 def test_visualizer_action_event_with_none_action_panel():
     """ActionEvent with action=None should render as 'Agent Action (Not Executed)'."""
+    import re
+
     visualizer = DefaultConversationVisualizer()
     tc = create_tool_call("call_ne_1", "missing_fn", {})
     action_event = ActionEvent(
@@ -276,10 +278,15 @@ def test_visualizer_action_event_with_none_action_panel():
     with console.capture() as capture:
         console.print(panel)
     output = capture.get()
+
+    # Strip ANSI codes for text comparison
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*m")
+    plain_output = ansi_escape.sub("", output)
+
     # Ensure it doesn't fall back to UNKNOWN
-    assert "UNKNOWN Event" not in output
+    assert "UNKNOWN Event" not in plain_output
     # And uses the 'Agent Action (Not Executed)' title
-    assert "Agent Action (Not Executed)" in output
+    assert "Agent Action (Not Executed)" in plain_output
 
 
 def test_visualizer_user_reject_observation_panel():
