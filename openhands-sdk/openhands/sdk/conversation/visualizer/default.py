@@ -1,7 +1,8 @@
+import logging
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
 
+from pydantic import BaseModel
 from rich.console import Console, Group
 from rich.rule import Rule
 from rich.text import Text
@@ -21,6 +22,9 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
+
+
+logger = logging.getLogger(__name__)
 
 
 # These are external inputs
@@ -49,8 +53,7 @@ DEFAULT_HIGHLIGHT_REGEX = {
 }
 
 
-@dataclass
-class EventVisualizationConfig:
+class EventVisualizationConfig(BaseModel):
     """Configuration for how to visualize an event type."""
 
     title: str | Callable[[Event], str]
@@ -64,6 +67,11 @@ class EventVisualizationConfig:
 
     indent_content: bool = False
     """Whether to indent the content."""
+
+    skip: bool = False
+    """If True, skip visualization of this event type entirely."""
+
+    model_config = {"arbitrary_types_allowed": True}
 
 
 def indent_content(content: Text, spaces: int = 4) -> Text:
@@ -195,6 +203,11 @@ EVENT_VISUALIZATION_CONFIG: dict[type[Event], EventVisualizationConfig] = {
         title="Condensation Request",
         color=_SYSTEM_COLOR,
     ),
+    ConversationStateUpdateEvent: EventVisualizationConfig(
+        title="Conversation State Update",
+        color=_SYSTEM_COLOR,
+        skip=True,
+    ),
 }
 
 
@@ -228,36 +241,8 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         self._skip_user_messages = skip_user_messages
         self._highlight_patterns = highlight_regex or {}
 
-    def _should_skip_event(self, event: Event) -> bool:
-        """Check if an event should be skipped from visualization.
-
-        Args:
-            event: The event to check
-
-        Returns:
-            True if the event should be skipped, False otherwise
-        """
-        # Skip internal conversation state updates
-        if isinstance(event, ConversationStateUpdateEvent):
-            return True
-
-        # Skip user messages if configured
-        if (
-            self._skip_user_messages
-            and isinstance(event, MessageEvent)
-            and event.llm_message
-            and event.llm_message.role == "user"
-        ):
-            return True
-
-        return False
-
     def on_event(self, event: Event) -> None:
         """Main event handler that displays events with Rich formatting."""
-        # Check if we should skip this event
-        if self._should_skip_event(event):
-            return
-
         output = self._create_event_block(event)
         if output:
             self._console.print(output)
@@ -286,8 +271,29 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
 
     def _create_event_block(self, event: Event) -> Group | None:
         """Create a Rich event block for the event with full detail."""
-        # Skip events that shouldn't be visualized
-        if self._should_skip_event(event):
+        # Look up visualization config for this event type
+        config = EVENT_VISUALIZATION_CONFIG.get(type(event))
+
+        if not config:
+            # Warn about unknown event types and skip
+            logger.warning(
+                "Event type %s is not registered in EVENT_VISUALIZATION_CONFIG. "
+                "Skipping visualization.",
+                event.__class__.__name__,
+            )
+            return None
+
+        # Check if this event type should be skipped
+        if config.skip:
+            return None
+
+        # Check if we should skip user messages based on runtime configuration
+        if (
+            self._skip_user_messages
+            and isinstance(event, MessageEvent)
+            and event.llm_message
+            and event.llm_message.role == "user"
+        ):
             return None
 
         # Use the event's visualize property for content
@@ -300,37 +306,21 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         if self._highlight_patterns:
             content = self._apply_highlighting(content)
 
-        # Look up visualization config for this event type
-        config = EVENT_VISUALIZATION_CONFIG.get(type(event))
+        # Resolve title (may be a string or callable)
+        title = config.title(event) if callable(config.title) else config.title
 
-        if config:
-            # Resolve title (may be a string or callable)
-            title = config.title(event) if callable(config.title) else config.title
+        # Resolve color (may be a string or callable)
+        title_color = config.color(event) if callable(config.color) else config.color
 
-            # Resolve color (may be a string or callable)
-            title_color = (
-                config.color(event) if callable(config.color) else config.color
-            )
+        # Build subtitle if needed
+        subtitle = self._format_metrics_subtitle() if config.show_metrics else None
 
-            # Build subtitle if needed
-            subtitle = self._format_metrics_subtitle() if config.show_metrics else None
-
-            return build_event_block(
-                content=content,
-                title=title,
-                title_color=title_color,
-                subtitle=subtitle,
-            )
-        else:
-            # Fallback for unknown event types
-            title = f"UNKNOWN Event: {event.__class__.__name__}"
-            subtitle = f"({event.source})"
-            return build_event_block(
-                content=content,
-                title=title,
-                title_color=_ERROR_COLOR,
-                subtitle=subtitle,
-            )
+        return build_event_block(
+            content=content,
+            title=title,
+            title_color=title_color,
+            subtitle=subtitle,
+        )
 
     def _format_metrics_subtitle(self) -> str | None:
         """Format LLM metrics as a visually appealing subtitle string with icons,
