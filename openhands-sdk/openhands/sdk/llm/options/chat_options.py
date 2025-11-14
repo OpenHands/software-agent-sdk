@@ -76,8 +76,11 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # Only send prompt_cache_retention for GPT-5.1 models; do not touch extra_body
-    if "gpt-5.1" in llm.model.lower() and llm.prompt_cache_retention:
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
     # Pass through user-provided extra_body unchanged

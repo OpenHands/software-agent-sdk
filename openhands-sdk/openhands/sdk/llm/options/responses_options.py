@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
+from openhands.sdk.llm.utils.model_features import get_features
 
 
 def select_responses_options(
@@ -50,8 +51,11 @@ def select_responses_options(
         if llm.reasoning_summary:
             out["reasoning"]["summary"] = llm.reasoning_summary
 
-    # Only send prompt_cache_retention for GPT-5.1 models; do not touch extra_body
-    if "gpt-5.1" in llm.model.lower() and llm.prompt_cache_retention:
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
         out["prompt_cache_retention"] = llm.prompt_cache_retention
 
     # Pass through user-provided extra_body unchanged
