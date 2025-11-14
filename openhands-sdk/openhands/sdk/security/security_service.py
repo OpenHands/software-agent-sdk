@@ -1,7 +1,6 @@
+from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.llm_convertible.action import ActionEvent
 from openhands.sdk.security import risk
-from openhands.sdk.security.analyzer import SecurityAnalyzerBase
-from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
@@ -10,11 +9,9 @@ from openhands.sdk.tool.builtins.think import ThinkAction
 class SecurityService:
     def __init__(
         self,
-        confirmation_policy: ConfirmationPolicyBase,
-        security_analyzer: SecurityAnalyzerBase | None = None,
+        state: ConversationState,
     ):
-        self._confirmation_policy = confirmation_policy
-        self._security_analyzer = security_analyzer
+        self._state = state
 
     def requires_confirmation(
         self,
@@ -39,17 +36,17 @@ class SecurityService:
             return False
         # If a security analyzer is registered, use it to grab the risks of the actions
         # involved. If not, we'll set the risks to UNKNOWN.
-        if self._security_analyzer is not None:
+        if self._state.security_analyzer is not None:
             risks = (
                 r
-                for _, r in self._security_analyzer.analyze_pending_actions(
+                for _, r in self._state.security_analyzer.analyze_pending_actions(
                     action_events
                 )
             )
         else:
             risks = (risk.SecurityRisk.UNKNOWN for _ in action_events)
 
-        return any(self._confirmation_policy.should_confirm(r) for r in risks)
+        return any(self._state.confirmation_policy.should_confirm(r) for r in risks)
 
     def extract_security_risk(
         self,
@@ -57,7 +54,7 @@ class SecurityService:
         tool_name: str,
         read_only_tool: bool,
     ) -> risk.SecurityRisk:
-        requires_sr = isinstance(self._security_analyzer, LLMSecurityAnalyzer)
+        requires_sr = isinstance(self._state.security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
         # Default risk value for action event

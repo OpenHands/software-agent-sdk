@@ -274,9 +274,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
         # Build the security service based on the state.
-        self._security_service = SecurityService(
-            state.confirmation_policy, state.security_analyzer
-        )
+        self._security_service = SecurityService(state)
 
     @abstractmethod
     def step(
