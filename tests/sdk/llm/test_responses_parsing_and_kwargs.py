@@ -12,6 +12,7 @@ from openai.types.responses.response_reasoning_item import (
 
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
+from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 
 
@@ -136,8 +137,8 @@ def test_llm_responses_end_to_end(mock_responses_call):
 @pytest.mark.parametrize(
     "model",
     [
-        "gpt-5.1-mini",
-        "openai/gpt-5.1-mini",
+        "gpt-5.1-codex-mini",
+        "openai/gpt-5.1-codex-mini",
     ],
 )
 def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
@@ -147,15 +148,19 @@ def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
     assert "reasoning" not in out
 
 
-def test_chat_options_prompt_cache_retention_gpt_5_1_and_non_gpt():
-    from openhands.sdk.llm.options.chat_options import select_chat_options
-
+def test_chat_and_responses_options_prompt_cache_retention_gpt_5_1_and_non_gpt():
     # GPT-5.1 should include prompt_cache_retention as a top-level arg
-    llm_51 = LLM(model="openai/gpt-5.1-mini")
-    opts_51 = select_chat_options(llm_51, {}, has_tools=False)
-    assert opts_51.get("prompt_cache_retention") == "24h"
+    llm_51 = LLM(model="openai/gpt-5.1-codex-mini")
+    opts_51_chat = select_chat_options(llm_51, {}, has_tools=False)
+    assert opts_51_chat.get("prompt_cache_retention") == "24h"
+
+    opts_51_resp = select_responses_options(llm_51, {}, include=None, store=None)
+    assert opts_51_resp.get("prompt_cache_retention") == "24h"
 
     # Non-GPT-5.1 should not include it at all
     llm_other = LLM(model="gpt-4o")
-    opts_other = select_chat_options(llm_other, {}, has_tools=False)
-    assert "prompt_cache_retention" not in opts_other
+    opts_other_chat = select_chat_options(llm_other, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_other_chat
+
+    opts_other_resp = select_responses_options(llm_other, {}, include=None, store=None)
+    assert "prompt_cache_retention" not in opts_other_resp

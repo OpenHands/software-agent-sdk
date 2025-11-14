@@ -26,7 +26,7 @@ logger = get_logger(__name__)
 api_key = os.getenv("LLM_API_KEY") or os.getenv("OPENAI_API_KEY")
 assert api_key, "Set LLM_API_KEY or OPENAI_API_KEY in your environment."
 
-model = "openai/gpt-5.1-mini"  # Use direct OpenAI; Responses-capable
+model = "openai/gpt-5.1-codex-mini"  # Use direct OpenAI; Responses-capable
 
 llm = LLM(
     model=model,
