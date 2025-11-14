@@ -210,7 +210,7 @@ class ConversationState(OpenHandsModel):
             stuck_detection=stuck_detection,
         )
         # Record existing analyzer configuration in state
-        state.security_analyzer = state.security_analyzer
+        state.security_analyzer = agent.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()
