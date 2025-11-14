@@ -1,4 +1,9 @@
-from openhands.sdk.conversation.state import ConversationState
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
+
 from openhands.sdk.event.llm_convertible.action import ActionEvent
 from openhands.sdk.security import risk
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
