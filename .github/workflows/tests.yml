@@ -1,172 +1,308 @@
 ---
-# Temporary override: reuse existing workflow name to trigger run-eval logic from this branch.
-name: Run SDK Eval (via tests workflow)
+name: Run tests
 
 on:
-    workflow_dispatch:
-        inputs:
-            branch:
-                description: Branch or tag to evaluate
-                required: true
-                default: main
-            eval_instances:
-                description: Number of SWE-bench instances
-                required: true
-                default: '50'
-                type: choice
-                options:
-                    - '1'
-                    - '5'
-                    - '50'
-                    - '200'
-            model:
-                description: Model configuration to evaluate
-                required: true
-                default: sonnet-4-5
-                type: choice
-                options:
-                    - sonnet-4-5
-                    - haiku-4-5
-            reason:
-                description: Reason for manual trigger
-                required: false
-                default: ''
+    push:
+        branches: [main]
+    pull_request:
+        branches: ['**']
 
-env:
-    MASTER_EVAL_ISSUE_NUMBER: ${{ vars.MASTER_EVAL_ISSUE_NUMBER || '0' }}
-    BENCHMARKS_REPO: https://github.com/OpenHands/benchmarks.git
-    BENCHMARKS_REF: main
-    MODELS_JSON: >-
-        [
-          {"id":"sonnet-4-5","llm_model":"litellm_proxy/anthropic/claude-sonnet-4-5-20250929","display_name":"Claude 3.5 Sonnet"},
-          {"id":"haiku-4-5","llm_model":"litellm_proxy/anthropic/claude-haiku-4-5-20251001","display_name":"Claude 3.5 Haiku"}
-        ]
-    RELEASE_INSTANCE_COUNT: '200'
+permissions:
+    contents: write
+    pull-requests: write
 
 jobs:
-    trigger-eval:
-        name: Trigger remote eval
-        runs-on: blacksmith-4vcpu-ubuntu-2204
-        permissions:
-            contents: read
-            issues: write
-            pull-requests: write
-
+    sdk-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
-            - name: Checkout repository
-              uses: actions/checkout@v4
+            - name: Checkout
+              uses: actions/checkout@v5
+              with: {fetch-depth: 0}
 
-            - name: Determine evaluation parameters
-              id: params
-              env:
-                  EVENT_PATH: ${{ github.event_path }}
-                  MASTER_ISSUE: ${{ env.MASTER_EVAL_ISSUE_NUMBER }}
-                  REPO: ${{ github.repository }}
-                  RUN_ID: ${{ github.run_id }}
-                  MODELS_JSON: ${{ env.MODELS_JSON }}
-                  RELEASE_INSTANCE_COUNT: ${{ env.RELEASE_INSTANCE_COUNT }}
+            - name: Detect sdk changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-sdk/**
+                      tests/sdk/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Check for openhands.tools imports in sdk tests
+              if: steps.changed.outputs.any_changed == 'true'
               run: |
-                  python <<'PY'
-                  import json
-                  import os
-
-                  def emit(key: str, value: str) -> None:
-                      with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-                          fh.write(f"{key}={value}\n")
-
-                  models = {m["id"]: m for m in json.loads(os.environ["MODELS_JSON"])}
-                  event = json.load(open(os.environ["EVENT_PATH"], "r", encoding="utf-8"))
-
-                  sdk_ref = event["inputs"]["branch"]
-                  model_id = event["inputs"]["model"]
-                  eval_instances = event["inputs"]["eval_instances"]
-                  reason = event["inputs"].get("reason", "Manual trigger")
-
-                  target = models.get(model_id)
-                  if not target:
-                      raise SystemExit(f"Unsupported model '{model_id}'")
-
-                  emit("sdk_ref", sdk_ref)
-                  emit("pr_number", os.environ["MASTER_ISSUE"])
-                  emit("model_id", model_id)
-                  emit("llm_model", target["llm_model"])
-                  emit("model_display", target["display_name"])
-                  emit("eval_instances", eval_instances)
-                  emit("trigger_desc", f"Proxy trigger ({reason})")
-                  emit("trigger_type", "manual")
-                  emit("trigger_url", f"https://github.com/{os.environ['REPO']}/actions/runs/{os.environ['RUN_ID']}")
-                  emit("models_text", f"{target['display_name']} ({eval_instances})")
-                  PY
-
-            - name: Trigger evaluation workflow
-              env:
-                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  SDK_REPO: https://github.com/${{ github.repository }}
-                  SDK_REF: ${{ steps.params.outputs.sdk_ref }}
-                  PR_NUMBER: ${{ steps.params.outputs.pr_number }}
-                  EVAL_INSTANCES: ${{ steps.params.outputs.eval_instances }}
-                  MODEL_ID: ${{ steps.params.outputs.model_id }}
-                  LLM_MODEL: ${{ steps.params.outputs.llm_model }}
-                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
-                  TRIGGER_TYPE: ${{ steps.params.outputs.trigger_type }}
-                  BENCHMARKS_REPO: ${{ env.BENCHMARKS_REPO }}
-                  BENCHMARKS_REF: ${{ env.BENCHMARKS_REF }}
-              run: |
-                  if [ -z "$PAT_TOKEN" ]; then
-                    echo "PAT_TOKEN is required to dispatch remote workflow"
+                  echo "Checking for openhands.tools imports in tests/sdk..."
+                  if grep -r "from openhands\.tools" tests/sdk/ || grep -r "import openhands\.tools" tests/sdk/; then
+                    echo "ERROR: Found openhands.tools imports in tests/sdk/"
+                    echo "SDK tests should only import from openhands.sdk"
+                    echo "Please move tests that use openhands.tools to tests/cross/"
                     exit 1
                   fi
+                  echo "✓ No openhands.tools imports found in tests/sdk/"
 
-                  payload=$(jq -n \
-                    --arg repo "$SDK_REPO" \
-                    --arg sdk_ref "$SDK_REF" \
-                    --arg benchmarks_repo "$BENCHMARKS_REPO" \
-                    --arg benchmarks_ref "$BENCHMARKS_REF" \
-                    --arg pr "$PR_NUMBER" \
-                    --arg instances "$EVAL_INSTANCES" \
-                    --arg model_id "$MODEL_ID" \
-                    --arg llm_model "$LLM_MODEL" \
-                    --arg trigger_desc "$TRIGGER_DESC" \
-                    --arg trigger_type "$TRIGGER_TYPE" \
-                    '{
-                      "ref": "main",
-                      "inputs": {
-                        "sdk-repo": $repo,
-                        "sdk-ref": $sdk_ref,
-                        "benchmarks-repo": $benchmarks_repo,
-                        "benchmarks-ref": $benchmarks_ref,
-                        "pr-number": $pr,
-                        "eval-instances": $instances,
-                        "llm-model-id": $model_id,
-                        "llm-model": $llm_model,
-                        "trigger-description": $trigger_desc,
-                        "trigger_type": $trigger_type
-                      }
-                    }')
-
-                  curl -sS -X POST \
-                    -H "Authorization: Bearer $PAT_TOKEN" \
-                    -H "Accept: application/vnd.github+json" \
-                    -d "$payload" \
-                    https://api.github.com/repos/OpenHands/evaluation/actions/workflows/create-sdk-eval.yml/dispatches
-
-            - name: Notify Slack
-              env:
-                  SLACK_TOKEN: ${{ secrets.SLACK_TOKEN }}
-                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
-                  TRIGGER_URL: ${{ steps.params.outputs.trigger_url }}
-                  SDK_REF: ${{ steps.params.outputs.sdk_ref }}
-                  MODELS_TEXT: ${{ steps.params.outputs.models_text }}
+            - name: Run sdk tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
               run: |
-                  if [ -z "$SLACK_TOKEN" ]; then
-                    echo "SLACK_TOKEN not configured; skipping Slack notification"
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    --forked \
+                    --cov=openhands-sdk \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/sdk
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-sdk.dat
+                    echo "SDK coverage file prepared for upload"
+                  fi
+
+            - name: Upload sdk coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v5
+              with:
+                  name: coverage-sdk
+                  path: coverage-sdk.dat
+                  if-no-files-found: warn
+
+    tools-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with: {fetch-depth: 0}
+
+            - name: Detect tools changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-tools/**
+                      tests/tools/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run tools tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    --forked \
+                    --cov=openhands-tools \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/tools
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-tools.dat
+                    echo "Tools coverage file prepared for upload"
+                  fi
+
+            - name: Upload tools coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v5
+              with:
+                  name: coverage-tools
+                  path: coverage-tools.dat
+                  if-no-files-found: warn
+
+    agent-server-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with: {fetch-depth: 0}
+
+            - name: Detect Agent Server changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-agent-server/**
+                      tests/agent_server/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Agent Server tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    --forked \
+                    --cov=openhands-agent-server \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/agent_server
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-agent-server.dat
+                    echo "Agent Server coverage file prepared for upload"
+                  fi
+
+            - name: Upload Agent Server coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v5
+              with:
+                  name: coverage-agent-server
+                  path: coverage-agent-server.dat
+                  if-no-files-found: warn
+
+    cross-tests:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with: {fetch-depth: 0}
+
+            - name: Detect cross changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      tests/**
+                      openhands/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run cross tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  rm -f .coverage
+                  CI=true uv run python -m pytest -vvs \
+                    --basetemp="${{ runner.temp }}/pytest" \
+                    -o tmp_path_retention=none \
+                    -o tmp_path_retention_count=0 \
+                    --cov=openhands \
+                    --cov-report=term-missing \
+                    --cov-fail-under=0 \
+                    --cov-config=pyproject.toml \
+                    tests/cross
+                  # Rename coverage file for upload
+                  if [ -f .coverage ]; then
+                    mv .coverage coverage-cross.dat
+                    echo "Cross coverage file prepared for upload"
+                  fi
+
+            - name: Upload cross coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v5
+              with:
+                  name: coverage-cross
+                  path: coverage-cross.dat
+                  if-no-files-found: warn
+
+    coverage-report:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        needs: [sdk-tests, tools-tests, agent-server-tests, cross-tests]
+        if: always() && github.event_name == 'pull_request'
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install deps (for coverage CLI)
+              run: uv sync --frozen --group dev
+
+            - name: Download coverage artifacts
+              uses: actions/download-artifact@v6
+              with:
+                  path: ./cov
+              continue-on-error: true
+
+            - name: Combine coverage data
+              run: |
+                  shopt -s nullglob
+                  # For some reason, the github action won't properly upload the original
+                  # .converage* files
+                  # Convert uploaded .dat files back to .coverage format for coverage tool
+                  for dat_file in cov/**/coverage-*.dat; do
+                    if [[ "$dat_file" == *coverage-sdk.dat ]]; then
+                      cp "$dat_file" .coverage.sdk
+                    elif [[ "$dat_file" == *coverage-tools.dat ]]; then
+                      cp "$dat_file" .coverage.tools  
+                    elif [[ "$dat_file" == *coverage-cross.dat ]]; then
+                      cp "$dat_file" .coverage.cross
+                    fi
+                  done
+
+                  # Check if we have any coverage files
+                  coverage_files=(.coverage.*)
+                  if [ ${#coverage_files[@]} -eq 0 ]; then
+                    echo "No coverage files found; skipping combined report."
                     exit 0
                   fi
-                  link="$TRIGGER_DESC"
-                  if [ -n "$TRIGGER_URL" ]; then
-                    link="$TRIGGER_DESC ($TRIGGER_URL)"
-                  fi
-                  text="SDK eval proxy triggered for $link on ref $SDK_REF with models: $MODELS_TEXT."
-                  curl -sS -X POST -H 'Content-type: application/json' \
-                    --data "{\"text\":\"$text\"}" \
-                    https://hooks.slack.com/services/$SLACK_TOKEN
+
+                  echo "Found ${#coverage_files[@]} coverage files"
+                  uv run coverage combine
+                  uv run coverage xml -i -o coverage.xml
+                  uv run coverage report -m
+
+            - name: Pytest coverage PR comment
+              if: always()
+              continue-on-error: true
+              uses: MishaKav/pytest-coverage-comment@v1
+              with:
+                  github-token: ${{ secrets.GITHUB_TOKEN }}
+                  pytest-xml-coverage-path: coverage.xml
+                  title: Coverage Report
+                  create-new-comment: false
+                  hide-report: false
+                  xml-skip-covered: true
+                  report-only-changed-files: true
+                  remove-links-to-files: true
+                  remove-links-to-lines: true
