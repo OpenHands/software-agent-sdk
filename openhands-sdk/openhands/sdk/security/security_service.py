@@ -1,7 +1,6 @@
-import risk
-
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event.llm_convertible.action import ActionEvent
+from openhands.sdk.security import risk
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
