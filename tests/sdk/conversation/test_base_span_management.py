@@ -40,7 +40,7 @@ class MockConversation(BaseConversation):
     def run(self) -> None:
         pass
 
-    def send_message(self, message: Any) -> None:
+    def send_message(self, message: Any, sender: str | None = None) -> None:
         pass
 
     def set_confirmation_policy(self, policy: Any) -> None:
