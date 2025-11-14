@@ -246,6 +246,27 @@ def test_force_string_serializer_full_model_names():
 
 
 @pytest.mark.parametrize(
+    "model,expected",
+    [
+        ("gpt-5.1", True),
+        ("openai/gpt-5.1-codex-mini", True),
+        ("gpt-5", False),
+        ("openai/gpt-5-mini", False),
+        ("gpt-4o", False),
+    ],
+)
+def test_prompt_cache_retention_support(model, expected):
+    features = get_features(model)
+    assert features.supports_prompt_cache_retention is expected
+
+    assert get_features("GLM-4.5").force_string_serializer is True
+    # Provider-agnostic Kimi should not force string serializer
+    assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
+    # Groq-prefixed Kimi should force string serializer
+    assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True
+
+
+@pytest.mark.parametrize(
     "model,expected_send_reasoning",
     [
         ("kimi-k2-thinking", True),
