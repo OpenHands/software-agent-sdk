@@ -36,7 +36,8 @@ class SecurityService:
             return False
 
         if all(
-            isinstance(action, (FinishAction, ThinkAction)) for action in action_events
+            isinstance(action_event.action, (FinishAction, ThinkAction))
+            for action_event in action_events
         ):
             return False
         # If a security analyzer is registered, use it to grab the risks of the actions
