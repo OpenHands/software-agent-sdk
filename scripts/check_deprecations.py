@@ -21,8 +21,39 @@ from packaging import version as pkg_version
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SDK_ROOT = REPO_ROOT / "openhands-sdk" / "openhands" / "sdk"
-PYPROJECT = REPO_ROOT / "openhands-sdk" / "pyproject.toml"
+
+
+@dataclass(frozen=True, slots=True)
+class PackageConfig:
+    name: str
+    pyproject: Path
+    source_roots: tuple[Path, ...]
+
+
+PACKAGES: tuple[PackageConfig, ...] = (
+    PackageConfig(
+        name="openhands-sdk",
+        pyproject=REPO_ROOT / "openhands-sdk" / "pyproject.toml",
+        source_roots=(REPO_ROOT / "openhands-sdk" / "openhands" / "sdk",),
+    ),
+    PackageConfig(
+        name="openhands-tools",
+        pyproject=REPO_ROOT / "openhands-tools" / "pyproject.toml",
+        source_roots=(REPO_ROOT / "openhands-tools" / "openhands" / "tools",),
+    ),
+    PackageConfig(
+        name="openhands-workspace",
+        pyproject=REPO_ROOT / "openhands-workspace" / "pyproject.toml",
+        source_roots=(REPO_ROOT / "openhands-workspace" / "openhands" / "workspace",),
+    ),
+    PackageConfig(
+        name="openhands-agent-server",
+        pyproject=REPO_ROOT / "openhands-agent-server" / "pyproject.toml",
+        source_roots=(
+            REPO_ROOT / "openhands-agent-server" / "openhands" / "agent_server",
+        ),
+    ),
+)
 
 
 @dataclass(slots=True)
@@ -33,6 +64,7 @@ class DeprecationRecord:
     path: Path
     line: int
     kind: str  # "decorator" | "warn_call"
+    package: str
 
 
 def _load_current_version(pyproject: Path) -> str:
@@ -156,7 +188,9 @@ def _extract_kw(call: ast.Call, name: str) -> ast.AST | None:
     return None
 
 
-def _gather_decorators(tree: ast.AST, path: Path) -> Iterator[DeprecationRecord]:
+def _gather_decorators(
+    tree: ast.AST, path: Path, *, package: str
+) -> Iterator[DeprecationRecord]:
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
             continue
@@ -191,11 +225,14 @@ def _gather_decorators(tree: ast.AST, path: Path) -> Iterator[DeprecationRecord]
                 path=path,
                 line=node.lineno,
                 kind="decorator",
+                package=package,
             )
             yield record
 
 
-def _gather_warn_calls(tree: ast.AST, path: Path) -> Iterator[DeprecationRecord]:
+def _gather_warn_calls(
+    tree: ast.AST, path: Path, *, package: str
+) -> Iterator[DeprecationRecord]:
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
             continue
@@ -228,6 +265,7 @@ def _gather_warn_calls(tree: ast.AST, path: Path) -> Iterator[DeprecationRecord]
             path=path,
             line=node.lineno,
             kind="warn_call",
+            package=package,
         )
 
 
@@ -250,13 +288,13 @@ def _attach_parents(tree: ast.AST) -> None:
             setattr(child, "parent", node)
 
 
-def _collect_records(files: Iterable[Path]) -> list[DeprecationRecord]:
+def _collect_records(files: Iterable[Path], *, package: str) -> list[DeprecationRecord]:
     records: list[DeprecationRecord] = []
     for path in files:
         tree = ast.parse(path.read_text())
         _attach_parents(tree)
-        records.extend(_gather_decorators(tree, path))
-        records.extend(_gather_warn_calls(tree, path))
+        records.extend(_gather_decorators(tree, path, package=package))
+        records.extend(_gather_warn_calls(tree, path, package=package))
     return records
 
 
@@ -294,7 +332,7 @@ def _format_record(record: DeprecationRecord) -> str:
         record.deprecated_in if record.deprecated_in is not None else "(unknown)"
     )
     return (
-        f"- {record.identifier} ({record.kind})\n"
+        f"- [{record.package}] {record.identifier} ({record.kind})\n"
         f"  deprecated in: {deprecated}\n"
         f"  removed in:    {removed}\n"
         f"  defined at:    {location}:{record.line}"
@@ -303,11 +341,33 @@ def _format_record(record: DeprecationRecord) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     argv = list(argv or [])
-    current_version = _load_current_version(PYPROJECT)
-    files = list(_iter_python_files(SDK_ROOT))
-    records = _collect_records(files)
 
-    overdue = [r for r in records if _should_fail(current_version, r)]
+    overdue: list[DeprecationRecord] = []
+    total_records = 0
+    package_summaries: list[tuple[str, str, int]] = []
+
+    for package in PACKAGES:
+        if not package.pyproject.exists():
+            raise SystemExit(
+                f"Unable to locate pyproject.toml for {package.name}: "
+                f"{package.pyproject}"
+            )
+
+        current_version = _load_current_version(package.pyproject)
+
+        files: list[Path] = []
+        for root in package.source_roots:
+            if not root.exists():
+                raise SystemExit(
+                    f"Source root {root} for package {package.name} does not exist"
+                )
+            files.extend(_iter_python_files(root))
+
+        records = _collect_records(files, package=package.name)
+
+        overdue.extend(r for r in records if _should_fail(current_version, r))
+        total_records += len(records)
+        package_summaries.append((package.name, current_version, len(records)))
 
     if overdue:
         print("The following deprecated features have passed their removal deadline:\n")
@@ -320,9 +380,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 1
 
+    for package_name, version, count in package_summaries:
+        print(
+            f"{package_name}: checked {count} deprecation metadata entries against "
+            f"version {version}."
+        )
     print(
-        f"Checked {len(records)} deprecation metadata entries against version "
-        f"{current_version}."
+        f"Checked {total_records} deprecation metadata entries across "
+        f"{len(package_summaries)} package(s)."
     )
     return 0
 
