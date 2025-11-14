@@ -9,6 +9,7 @@ This critic evaluates whether an agent properly finished a task by checking:
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.event import ActionEvent, LLMConvertibleEvent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.builtins.finish import FinishAction
 
 
 logger = get_logger(__name__)
@@ -72,7 +73,7 @@ class AgentFinishedCritic(CriticBase):
         for event in reversed(events):
             if isinstance(event, ActionEvent):
                 # Check if this is a FinishAction
-                if event.action and event.action.kind == "FinishAction":
+                if event.action and isinstance(event.action, FinishAction):
                     return True
                 # If we find any other action type, the agent didn't finish
                 return False
