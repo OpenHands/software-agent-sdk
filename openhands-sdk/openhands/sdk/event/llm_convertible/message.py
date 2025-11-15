@@ -7,6 +7,7 @@ from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType
+from openhands.sdk.event.utils import render_responses_reasoning_block
 from openhands.sdk.llm import (
     ImageContent,
     Message,
@@ -74,15 +75,11 @@ class MessageEvent(LLMConvertibleEvent):
             content.append("[no text content]")
 
         # Responses API reasoning (plaintext only; never render encrypted_content)
-        reasoning_item = self.llm_message.responses_reasoning_item
-        if reasoning_item is not None:
-            content.append("\n\nReasoning:\n", style="bold")
-            if reasoning_item.summary:
-                for s in reasoning_item.summary:
-                    content.append(f"- {s}\n")
-            if reasoning_item.content:
-                for b in reasoning_item.content:
-                    content.append(f"{b}\n")
+        reasoning_text = render_responses_reasoning_block(
+            self.llm_message.responses_reasoning_item, leading_newlines=True
+        )
+        if reasoning_text:
+            content.append(reasoning_text)
 
         # Add skill information if present
         if self.activated_skills:
