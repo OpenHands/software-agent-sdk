@@ -198,6 +198,7 @@ class BaseConversation(ABC):
 
         Returns:
             String path to the conversation-specific persistence directory.
+            Always returns a normalized string path even if a Path was provided.
         """
         return str(Path(persistence_base_dir) / conversation_id.hex)
 

@@ -98,7 +98,7 @@ def test_local_workspace_with_path():
         workspace_path.mkdir(parents=True, exist_ok=True)
 
         # Should accept Path object directly (converted to str by validator)
-        workspace = LocalWorkspace(working_dir=str(workspace_path))
+        workspace = LocalWorkspace(working_dir=workspace_path)
 
         # Verify the working_dir is properly converted to string
         assert workspace.working_dir == str(workspace_path)

@@ -91,13 +91,14 @@ class LocalConversation(BaseConversation):
         self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
-            workspace = LocalWorkspace(working_dir=str(workspace))
+            workspace = LocalWorkspace(working_dir=workspace)
         assert isinstance(workspace, LocalWorkspace), (
             "workspace must be a LocalWorkspace instance"
         )
         self.workspace = workspace
-        if not Path(self.workspace.working_dir).exists():
-            Path(self.workspace.working_dir).mkdir(parents=True, exist_ok=True)
+        ws_path = Path(self.workspace.working_dir)
+        if not ws_path.exists():
+            ws_path.mkdir(parents=True, exist_ok=True)
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
