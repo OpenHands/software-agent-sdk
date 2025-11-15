@@ -188,6 +188,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     ollama_base_url: str | None = Field(default=None)
 
+    ssl_verify: bool | str | None = Field(
+        default=None,
+        description=(
+            "TLS verification forwarded to LiteLLM; "
+            "set to False when corporate proxies break certificate chains."
+        ),
+    )
+
     drop_params: bool = Field(default=True)
     modify_params: bool = Field(
         default=True,
@@ -517,7 +525,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             log_ctx = {
                 "messages": formatted_messages[:],  # already simple dicts
                 "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
+                "kwargs": dict(call_kwargs),
                 "context_window": self.max_input_tokens or 0,
             }
             if tools and not use_native_fc:
@@ -634,7 +642,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 "llm_path": "responses",
                 "input": input_items[:],
                 "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
+                "kwargs": dict(call_kwargs),
                 "context_window": self.max_input_tokens or 0,
             }
         self._telemetry.on_request(log_ctx=log_ctx)
@@ -670,7 +678,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         api_key=api_key_value,
                         api_base=self.base_url,
                         api_version=self.api_version,
+                        custom_llm_provider=self.custom_llm_provider,
                         timeout=self.timeout,
+                        ssl_verify=self.ssl_verify,
                         drop_params=self.drop_params,
                         seed=self.seed,
                         **final_kwargs,
@@ -747,7 +757,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     api_key=api_key_value,
                     api_base=self.base_url,
                     api_version=self.api_version,
+                    custom_llm_provider=self.custom_llm_provider,
                     timeout=self.timeout,
+                    ssl_verify=self.ssl_verify,
                     drop_params=self.drop_params,
                     seed=self.seed,
                     messages=messages,
@@ -978,6 +990,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @classmethod
     def load_from_env(cls, prefix: str = "LLM_") -> LLM:
         TRUTHY = {"true", "1", "yes", "on"}
+        FALSY = {"false", "0", "no", "off"}
 
         def _unwrap_type(t: Any) -> Any:
             origin = get_origin(t)
@@ -986,20 +999,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             args = [a for a in get_args(t) if a is not type(None)]
             return args[0] if args else t
 
-        def _cast_value(raw: str, t: Any) -> Any:
-            t = _unwrap_type(t)
+        def _cast_value(field_name: str, raw: str, annotation: Any) -> Any:
+            stripped = raw.strip()
+            lowered = stripped.lower()
+            if field_name == "ssl_verify":
+                if lowered in TRUTHY:
+                    return True
+                if lowered in FALSY:
+                    return False
+                return stripped
+
+            t = _unwrap_type(annotation)
             if t is SecretStr:
-                return SecretStr(raw)
+                return SecretStr(stripped)
             if t is bool:
-                return raw.lower() in TRUTHY
+                if lowered in TRUTHY:
+                    return True
+                if lowered in FALSY:
+                    return False
+                return stripped.lower() in TRUTHY
             if t is int:
                 try:
-                    return int(raw)
+                    return int(stripped)
                 except ValueError:
                     return None
             if t is float:
                 try:
-                    return float(raw)
+                    return float(stripped)
                 except ValueError:
                     return None
             origin = get_origin(t)
@@ -1007,10 +1033,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 isinstance(t, type) and issubclass(t, BaseModel)
             ):
                 try:
-                    return json.loads(raw)
+                    return json.loads(stripped)
                 except Exception:
                     pass
-            return raw
+            return stripped
 
         data: dict[str, Any] = {}
         fields: dict[str, Any] = {
@@ -1025,7 +1051,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             field_name = key[len(prefix) :].lower()
             if field_name not in fields:
                 continue
-            v = _cast_value(value, fields[field_name])
+            v = _cast_value(field_name, value, fields[field_name])
             if v is not None:
                 data[field_name] = v
         return cls(**data)

@@ -16,6 +16,28 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
+_SENSITIVE_HEADER_NAMES = {
+    "authorization",
+    "proxy-authorization",
+    "proxy_authorization",
+    "cookie",
+    "set-cookie",
+    "set_cookie",
+}
+_SENSITIVE_HEADER_KEYWORDS = (
+    "api-key",
+    "api_key",
+    "access-token",
+    "access_token",
+    "auth-token",
+    "auth_token",
+    "secret",
+    "x-api-key",
+    "x-api-token",
+    "x-auth-token",
+)
+_MASK = "***"
+
 
 class Telemetry(BaseModel):
     """
@@ -234,7 +256,7 @@ class Telemetry(BaseModel):
                     f"{uuid.uuid4().hex[:4]}.json"
                 ),
             )
-            data = self._req_ctx.copy()
+            data = _sanitize_log_ctx(self._req_ctx)
             data["response"] = (
                 resp  # ModelResponse | ResponsesAPIResponse;
                 # serialized via _safe_json
@@ -301,6 +323,54 @@ class Telemetry(BaseModel):
                 f.write(json.dumps(data, default=_safe_json))
         except Exception as e:
             warnings.warn(f"Telemetry logging failed: {e}")
+
+
+def _sanitize_log_ctx(ctx: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(ctx, dict):
+        return {}
+    sanitized: dict[str, Any] = {}
+    for key, value in ctx.items():
+        if key == "kwargs" and isinstance(value, dict):
+            sanitized["kwargs"] = _sanitize_kwargs(value)
+        elif key == "extra_headers" and isinstance(value, dict):
+            sanitized["extra_headers"] = _sanitize_headers(value)
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
+def _sanitize_kwargs(kwargs: dict[str, Any]) -> dict[str, Any]:
+    sanitized = dict(kwargs)
+    extra_headers = sanitized.get("extra_headers")
+    if isinstance(extra_headers, dict):
+        sanitized["extra_headers"] = _sanitize_headers(extra_headers)
+    return sanitized
+
+
+def _sanitize_headers(headers: dict[str, Any]) -> dict[str, Any]:
+    sanitized: dict[str, Any] = {}
+    for key, value in headers.items():
+        sanitized[key] = _mask_header_value(key, value)
+    return sanitized
+
+
+def _mask_header_value(key: Any, value: Any) -> Any:
+    if not isinstance(key, str):
+        return value
+    if _is_sensitive_header(key):
+        return _mask_value(value)
+    return value
+
+
+def _is_sensitive_header(name: str) -> bool:
+    lowered = name.lower()
+    if lowered in _SENSITIVE_HEADER_NAMES:
+        return True
+    return any(keyword in lowered for keyword in _SENSITIVE_HEADER_KEYWORDS)
+
+
+def _mask_value(_value: Any) -> str:
+    return _MASK
 
 
 def _safe_json(obj: Any) -> Any:

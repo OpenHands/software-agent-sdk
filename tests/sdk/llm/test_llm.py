@@ -1,3 +1,4 @@
+import os
 from typing import Any
 from unittest.mock import Mock, patch
 
@@ -6,6 +7,7 @@ from litellm.exceptions import (
     RateLimitError,
 )
 from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from litellm.types.utils import ModelResponse
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
 from pydantic import SecretStr
@@ -447,6 +449,124 @@ def test_responses_call_time_extra_headers_override_config(mock_responses):
     assert "X-Trace" not in headers
 
 
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_llm_ssl_verify_and_custom_provider(mock_completion):
+    """Test that ssl_verify and custom_llm_provider are forwarded to LiteLLM."""
+    mock_response = create_mock_litellm_response("Test response")
+    mock_completion.return_value = mock_response
+
+    # Create LLM with ssl_verify and custom_llm_provider
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        ssl_verify=False,
+        custom_llm_provider="openai",
+        base_url="https://corporate-proxy.example.com/api",
+        extra_headers={"X-Corporate-Token": "secret"},
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.completion(messages=messages)
+
+    assert mock_completion.call_count == 1
+    _, kwargs = mock_completion.call_args
+
+    # Verify ssl_verify is passed
+    assert kwargs.get("ssl_verify") is False
+
+    # Verify custom_llm_provider is passed
+    assert kwargs.get("custom_llm_provider") == "openai"
+
+    # Verify api_base is passed
+    assert kwargs.get("api_base") == "https://corporate-proxy.example.com/api"
+
+    # Verify extra_headers are passed
+    headers = kwargs.get("extra_headers") or {}
+    assert headers.get("X-Corporate-Token") == "secret"
+
+
+@patch("openhands.sdk.llm.llm.litellm_responses")
+def test_llm_responses_ssl_verify_and_custom_provider(mock_responses):
+    """Test that ssl_verify and custom_llm_provider are forwarded in responses API."""
+    msg = ResponseOutputMessage.model_construct(
+        id="msg-test",
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[
+            ResponseOutputText(type="output_text", text="Test response", annotations=[])
+        ],
+    )
+    usage = ResponseAPIUsage(input_tokens=0, output_tokens=0, total_tokens=0)
+    resp = ResponsesAPIResponse(
+        id="test-resp",
+        created_at=0,
+        output=[msg],
+        usage=usage,
+        parallel_tool_calls=False,
+        tool_choice="auto",
+        top_p=None,
+        tools=[],
+        instructions="",
+        status="completed",
+    )
+    mock_responses.return_value = resp
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        ssl_verify=False,
+        custom_llm_provider="openai",
+        base_url="https://corporate-proxy.example.com/api",
+        num_retries=0,
+    )
+
+    messages = [Message(role="user", content=[TextContent(text="Hi")])]
+    _ = llm.responses(messages=messages)
+
+    assert mock_responses.call_count == 1
+    _, kwargs = mock_responses.call_args
+
+    # Verify ssl_verify is passed
+    assert kwargs.get("ssl_verify") is False
+
+    # Verify custom_llm_provider is passed
+    assert kwargs.get("custom_llm_provider") == "openai"
+
+    # Verify api_base is passed
+    assert kwargs.get("api_base") == "https://corporate-proxy.example.com/api"
+
+
+def test_llm_ssl_verify_env_parsing():
+    """Test that ssl_verify is correctly parsed from environment variables."""
+    # Test various false values
+    for value in ["false", "False", "FALSE", "0", "no", "off"]:
+        os.environ["LLM_SSL_VERIFY"] = value
+        os.environ["LLM_MODEL"] = "gpt-4"
+        llm = LLM.load_from_env()
+        assert llm.ssl_verify is False, f"Failed for value: {value}"
+
+    # Test various true values
+    for value in ["true", "True", "TRUE", "1", "yes", "on"]:
+        os.environ["LLM_SSL_VERIFY"] = value
+        llm = LLM.load_from_env()
+        assert llm.ssl_verify is True, f"Failed for value: {value}"
+
+    # Test certificate path (string value)
+    os.environ["LLM_SSL_VERIFY"] = "/path/to/cert.pem"
+    llm = LLM.load_from_env()
+    assert llm.ssl_verify == "/path/to/cert.pem"
+
+    # Clean up
+    if "LLM_SSL_VERIFY" in os.environ:
+        del os.environ["LLM_SSL_VERIFY"]
+    if "LLM_MODEL" in os.environ:
+        del os.environ["LLM_MODEL"]
+
+
 def test_llm_vision_support(default_llm):
     """Test LLM vision support detection."""
     llm = default_llm
@@ -651,7 +771,7 @@ def test_llm_config_validation():
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_llm_no_response_error(mock_completion):
     """Test handling of LLMNoResponseError."""
-    from litellm.types.utils import ModelResponse, Usage
+    from litellm.types.utils import Usage
 
     # Mock empty response using proper ModelResponse
     mock_response = ModelResponse(
