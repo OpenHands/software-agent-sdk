@@ -15,6 +15,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.security import analyzer
+from openhands.sdk.security.security_service import SecurityService
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
@@ -272,6 +273,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
+        # Build the security service based on the state.
+        self._security_service = SecurityService(state)
 
     @abstractmethod
     def step(
