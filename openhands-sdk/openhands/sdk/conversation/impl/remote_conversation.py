@@ -29,6 +29,7 @@ from openhands.sdk.event.conversation_state import (
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -344,6 +345,16 @@ class RemoteState(ConversationStateProtocol):
         return ConfirmationPolicyBase.model_validate(policy_data)
 
     @property
+    def security_analyzer(self) -> SecurityAnalyzerBase | None:
+        """The security analyzer."""
+        info = self._get_conversation_info()
+        analyzer_data = info.get("security_analyzer")
+        if analyzer_data:
+            return SecurityAnalyzerBase.model_validate(analyzer_data)
+
+        return None
+
+    @property
     def activated_knowledge_skills(self) -> list[str]:
         """List of activated knowledge skills."""
         info = self._get_conversation_info()
@@ -553,7 +564,7 @@ class RemoteConversation(BaseConversation):
         )
 
     @observe(name="conversation.send_message")
-    def send_message(self, message: str | Message) -> None:
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
         assert message.role == "user", (
@@ -564,6 +575,8 @@ class RemoteConversation(BaseConversation):
             "content": [c.model_dump() for c in message.content],
             "run": False,  # Mirror local semantics; explicit run() must be called
         }
+        if sender is not None:
+            payload["sender"] = sender
         _send_request(
             self._client, "POST", f"/api/conversations/{self._id}/events", json=payload
         )
@@ -594,6 +607,16 @@ class RemoteConversation(BaseConversation):
             self._client,
             "POST",
             f"/api/conversations/{self._id}/confirmation_policy",
+            json=payload,
+        )
+
+    def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
+        """Set the security analyzer for the remote conversation."""
+        payload = {"security_analyzer": analyzer.model_dump() if analyzer else analyzer}
+        _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/security_analyzer",
             json=payload,
         )
 
@@ -656,6 +679,12 @@ class RemoteConversation(BaseConversation):
         return data["title"]
 
     def close(self) -> None:
+        """Close the conversation and clean up resources.
+
+        Note: We don't close self._client here because it's shared with the workspace.
+        The workspace owns the client and will close it during its own cleanup.
+        Closing it here would prevent the workspace from making cleanup API calls.
+        """
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
@@ -665,11 +694,6 @@ class RemoteConversation(BaseConversation):
             pass
 
         self._end_observability_span()
-
-        try:
-            self._client.close()
-        except Exception:
-            pass
 
     def __del__(self) -> None:
         try:

@@ -151,10 +151,12 @@ class ConversationService:
     ) -> list[ConversationInfo | None]:
         """Given a list of ids, get a batch of conversation info, returning
         None for any that were not found."""
-        results = []
-        for id in conversation_ids:
-            result = await self.get_conversation(id)
-            results.append(result)
+        results = await asyncio.gather(
+            *[
+                self.get_conversation(conversation_id)
+                for conversation_id in conversation_ids
+            ]
+        )
         return results
 
     async def _notify_conversation_webhooks(self, conversation_info: ConversationInfo):

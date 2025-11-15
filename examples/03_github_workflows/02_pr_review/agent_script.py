@@ -10,7 +10,7 @@ Designed for use with GitHub Actions workflows triggered by PR labels.
 
 Environment Variables:
     LLM_API_KEY: API key for the LLM (required)
-    LLM_MODEL: Language model to use (default: openhands/claude-sonnet-4-5-20250929)
+    LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
     PR_NUMBER: Pull request number (required)
@@ -121,7 +121,7 @@ def main():
 
         # Configure LLM
         api_key = os.getenv("LLM_API_KEY")
-        model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
         base_url = os.getenv("LLM_BASE_URL")
 
         llm_config = {

@@ -5,7 +5,7 @@ on:
     push:
         branches: [main]
         tags:
-            - build-docker
+            - '*'  # Trigger on any tag (e.g., 1.0.0, 1.0.0a5, build-docker)
     pull_request:
         branches: [main]
     workflow_dispatch:
@@ -237,9 +237,12 @@ jobs:
 
                   # Generate build context and tags with arch suffix
                   # build.py now handles architecture tagging internally via --arch flag
-                  uv run ./openhands-agent-server/openhands/agent_server/docker/build.py \
-                      --build-ctx-only \
-                      --arch ${{ matrix.arch }}
+                  # Add --versioned-tag when triggered by a git tag (e.g., v1.0.0)
+                  BUILD_CMD="uv run ./openhands-agent-server/openhands/agent_server/docker/build.py --build-ctx-only --arch ${{ matrix.arch }}"
+                  if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+                      BUILD_CMD="$BUILD_CMD --versioned-tag"
+                  fi
+                  eval "$BUILD_CMD"
 
                   # Alias tags_csv output to tags for the build action
                   TAGS=$(grep '^tags_csv=' $GITHUB_OUTPUT | cut -d= -f2-)

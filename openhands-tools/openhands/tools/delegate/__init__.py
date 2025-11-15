@@ -6,6 +6,7 @@ from openhands.tools.delegate.definition import (
     DelegateTool,
 )
 from openhands.tools.delegate.impl import DelegateExecutor
+from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 
 __all__ = [
@@ -13,4 +14,5 @@ __all__ = [
     "DelegateObservation",
     "DelegateExecutor",
     "DelegateTool",
+    "DelegationVisualizer",
 ]

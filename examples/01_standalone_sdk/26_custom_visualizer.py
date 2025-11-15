@@ -26,15 +26,6 @@ from openhands.tools.preset.default import get_default_agent
 class MinimalVisualizer(ConversationVisualizerBase):
     """A minimal visualizer that print the raw events as they occur."""
 
-    def __init__(self, name: str | None = None):
-        """Initialize the minimal progress visualizer.
-
-        Args:
-            name: Optional name to identify the agent/conversation.
-        """
-        # Initialize parent - state will be set later via initialize()
-        super().__init__(name=name)
-
     def on_event(self, event: Event) -> None:
         """Handle events for minimal progress visualization."""
         print(f"\n\n[EVENT] {type(event).__name__}: {event.model_dump_json()[:200]}...")
@@ -42,7 +33,7 @@ class MinimalVisualizer(ConversationVisualizerBase):
 
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     model=model,

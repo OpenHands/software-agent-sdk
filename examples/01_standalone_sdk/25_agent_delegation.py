@@ -18,9 +18,8 @@ from openhands.sdk import (
     Tool,
     get_logger,
 )
-from openhands.sdk.conversation import DefaultConversationVisualizer
 from openhands.sdk.tool import register_tool
-from openhands.tools.delegate import DelegateTool
+from openhands.tools.delegate import DelegateTool, DelegationVisualizer
 from openhands.tools.preset.default import get_default_tools
 
 
@@ -30,7 +29,7 @@ logger = get_logger(__name__)
 # You can get an API key from https://app.all-hands.dev/settings/api-keys
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 llm = LLM(
     model=model,
     api_key=SecretStr(api_key),
@@ -51,7 +50,7 @@ main_agent = Agent(
 conversation = Conversation(
     agent=main_agent,
     workspace=cwd,
-    visualizer=DefaultConversationVisualizer(name="Delegator"),
+    visualizer=DelegationVisualizer(name="Delegator"),
 )
 
 task_message = (

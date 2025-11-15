@@ -26,11 +26,23 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.tool import Tool
 
 
+class SkipTest(Exception):
+    """
+    Exception raised to indicate that a test should be skipped.
+
+    This is useful for tests that require specific capabilities (e.g., vision)
+    that may not be available in all LLMs.
+    """
+
+    pass
+
+
 class TestResult(BaseModel):
     """Result of an integration test."""
 
     success: bool
     reason: str | None = None
+    skipped: bool = False
 
 
 class BaseIntegrationTest(ABC):

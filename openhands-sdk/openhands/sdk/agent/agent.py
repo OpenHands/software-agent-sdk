@@ -1,7 +1,8 @@
 import json
 
-from pydantic import ValidationError
+from pydantic import ValidationError, model_validator
 
+import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.utils import fix_malformed_tool_arguments
@@ -19,6 +20,7 @@ from openhands.sdk.event import (
     MessageEvent,
     ObservationEvent,
     SystemPromptEvent,
+    TokenEvent,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.llm import (
@@ -40,7 +42,6 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
@@ -71,9 +72,20 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
-    @property
-    def _add_security_risk_prediction(self) -> bool:
-        return isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+    @model_validator(mode="before")
+    @classmethod
+    def _add_security_prompt_as_default(cls, data):
+        """Ensure llm_security_analyzer=True is always set before initialization."""
+        if not isinstance(data, dict):
+            return data
+
+        kwargs = data.get("system_prompt_kwargs") or {}
+        if not isinstance(kwargs, dict):
+            kwargs = {}
+
+        kwargs.setdefault("llm_security_analyzer", True)
+        data["system_prompt_kwargs"] = kwargs
+        return data
 
     def init_state(
         self,
@@ -84,18 +96,6 @@ class Agent(AgentBase):
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
-        # Validate security analyzer configuration once during initialization
-        if self._add_security_risk_prediction and isinstance(
-            state.confirmation_policy, NeverConfirm
-        ):
-            # If security analyzer is enabled, we always need a policy that is not
-            # NeverConfirm, otherwise we are just predicting risks without using them,
-            # and waste tokens!
-            logger.warning(
-                "LLM security analyzer is enabled but confirmation "
-                "policy is set to NeverConfirm"
-            )
-
         llm_convertible_messages = [
             event for event in state.events if isinstance(event, LLMConvertibleEvent)
         ]
@@ -104,10 +104,15 @@ class Agent(AgentBase):
             event = SystemPromptEvent(
                 source="agent",
                 system_prompt=TextContent(text=self.system_message),
+                # Always expose a 'security_risk' parameter in tool schemas.
+                # This ensures the schema remains consistent, even if the
+                # security analyzer is disabled. Validation of this field
+                # happens dynamically at runtime depending on the analyzer
+                # configured. This allows weaker models to omit risk field
+                # and bypass validation requirements when analyzer is disabled.
+                # For detailed logic, see `_extract_security_risk` method.
                 tools=[
-                    t.to_openai_tool(
-                        add_security_risk_prediction=self._add_security_risk_prediction
-                    )
+                    t.to_openai_tool(add_security_risk_prediction=True)
                     for t in self.tools_map.values()
                 ],
             )
@@ -175,15 +180,13 @@ class Agent(AgentBase):
                     tools=list(self.tools_map.values()),
                     include=None,
                     store=False,
-                    add_security_risk_prediction=self._add_security_risk_prediction,
-                    extra_body=self.llm.litellm_extra_body,
+                    add_security_risk_prediction=True,
                 )
             else:
                 llm_response = self.llm.completion(
                     messages=_messages,
                     tools=list(self.tools_map.values()),
-                    extra_body=self.llm.litellm_extra_body,
-                    add_security_risk_prediction=self._add_security_risk_prediction,
+                    add_security_risk_prediction=True,
                 )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -229,6 +232,7 @@ class Agent(AgentBase):
                     tool_call,
                     llm_response_id=llm_response.id,
                     on_event=on_event,
+                    security_analyzer=state.security_analyzer,
                     thought=thought_content
                     if i == 0
                     else [],  # Only first gets thought
@@ -261,6 +265,20 @@ class Agent(AgentBase):
             )
             on_event(msg_event)
 
+        # If using VLLM, we can get the raw prompt and response tokens
+        # that can be useful for RL training.
+        if (
+            "return_token_ids" in self.llm.litellm_extra_body
+        ) and self.llm.litellm_extra_body["return_token_ids"]:
+            token_event = TokenEvent(
+                source="agent",
+                prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
+                response_token_ids=llm_response.raw_response["choices"][0][
+                    "provider_specific_fields"
+                ]["token_ids"],
+            )
+            on_event(token_event)
+
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> bool:
@@ -285,10 +303,10 @@ class Agent(AgentBase):
 
         # If a security analyzer is registered, use it to grab the risks of the actions
         # involved. If not, we'll set the risks to UNKNOWN.
-        if self.security_analyzer is not None:
+        if state.security_analyzer is not None:
             risks = [
                 risk
-                for _, risk in self.security_analyzer.analyze_pending_actions(
+                for _, risk in state.security_analyzer.analyze_pending_actions(
                     action_events
                 )
             ]
@@ -304,14 +322,47 @@ class Agent(AgentBase):
 
         return False
 
+    def _extract_security_risk(
+        self,
+        arguments: dict,
+        tool_name: str,
+        read_only_tool: bool,
+        security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
+    ) -> risk.SecurityRisk:
+        requires_sr = isinstance(security_analyzer, LLMSecurityAnalyzer)
+        raw = arguments.pop("security_risk", None)
+
+        # Default risk value for action event
+        # Tool is marked as read-only so security risk can be ignored
+        if read_only_tool:
+            return risk.SecurityRisk.UNKNOWN
+
+        # Raises exception if failed to pass risk field when expected
+        # Exception will be sent back to agent as error event
+        # Strong models like GPT-5 can correct itself by retrying
+        if requires_sr and raw is None:
+            raise ValueError(
+                f"Failed to provide security_risk field in tool '{tool_name}'"
+            )
+
+        # When using weaker models without security analyzer
+        # safely ignore missing security risk fields
+        if not requires_sr and raw is None:
+            return risk.SecurityRisk.UNKNOWN
+
+        # Raises exception if invalid risk enum passed by LLM
+        security_risk = risk.SecurityRisk(raw)
+        return security_risk
+
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
         llm_response_id: str,
         on_event: ConversationCallbackType,
-        thought: list[TextContent] = [],
+        security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
+        thought: list[TextContent] | None = None,
         reasoning_content: str | None = None,
-        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [],
+        thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
         responses_reasoning_item: ReasoningItemModel | None = None,
     ) -> ActionEvent | None:
         """Converts a tool call into an ActionEvent, validating arguments.
@@ -328,9 +379,9 @@ class Agent(AgentBase):
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
                 source="agent",
-                thought=thought,
+                thought=thought or [],
                 reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks,
+                thinking_blocks=thinking_blocks or [],
                 responses_reasoning_item=responses_reasoning_item,
                 tool_call=tool_call,
                 tool_name=tool_call.name,
@@ -354,25 +405,18 @@ class Agent(AgentBase):
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
-
-            # if the tool has a security_risk field (when security analyzer is set),
-            # pop it out as it's not part of the tool's action schema
-            if (
-                _predicted_risk := arguments.pop("security_risk", None)
-            ) is not None and self.security_analyzer is not None:
-                try:
-                    security_risk = risk.SecurityRisk(_predicted_risk)
-                except ValueError:
-                    logger.warning(
-                        f"Invalid security_risk value from LLM: {_predicted_risk}"
-                    )
-
+            security_risk = self._extract_security_risk(
+                arguments,
+                tool.name,
+                tool.annotations.readOnlyHint if tool.annotations else False,
+                security_analyzer,
+            )
             assert "security_risk" not in arguments, (
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
             action: Action = tool.action_from_arguments(arguments)
-        except (json.JSONDecodeError, ValidationError) as e:
+        except (json.JSONDecodeError, ValidationError, ValueError) as e:
             err = (
                 f"Error validating args {tool_call.arguments} for tool "
                 f"'{tool.name}': {e}"
@@ -380,9 +424,9 @@ class Agent(AgentBase):
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
                 source="agent",
-                thought=thought,
+                thought=thought or [],
                 reasoning_content=reasoning_content,
-                thinking_blocks=thinking_blocks,
+                thinking_blocks=thinking_blocks or [],
                 responses_reasoning_item=responses_reasoning_item,
                 tool_call=tool_call,
                 tool_name=tool_call.name,
@@ -401,9 +445,9 @@ class Agent(AgentBase):
 
         action_event = ActionEvent(
             action=action,
-            thought=thought,
+            thought=thought or [],
             reasoning_content=reasoning_content,
-            thinking_blocks=thinking_blocks,
+            thinking_blocks=thinking_blocks or [],
             responses_reasoning_item=responses_reasoning_item,
             tool_name=tool.name,
             tool_call_id=tool_call.id,

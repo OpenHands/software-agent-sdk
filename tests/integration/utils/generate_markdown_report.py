@@ -18,20 +18,22 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
     """Generate a summary table for all models."""
 
     table_lines = [
-        "| Model | Success Rate | Tests Passed | Total Tests | Cost |",
-        "|-------|--------------|--------------|-------------|------|",
+        "| Model | Success Rate | Tests Passed | Skipped | Total Tests | Cost |",
+        "|-------|--------------|--------------|---------|-------------|------|",
     ]
 
     for result in model_results:
         success_rate = f"{result.success_rate:.1%}"
-        tests_passed = f"{result.successful_tests}/{result.total_tests}"
+        non_skipped = result.total_tests - result.skipped_tests
+        tests_passed = f"{result.successful_tests}/{non_skipped}"
+        skipped = f"{result.skipped_tests}"
         cost = format_cost(result.total_cost)
 
         model_name = result.model_name
         total_tests = result.total_tests
         row = (
             f"| {model_name} | {success_rate} | {tests_passed} | "
-            f"{total_tests} | {cost} |"
+            f"{skipped} | {total_tests} | {cost} |"
         )
         table_lines.append(row)
 
@@ -44,18 +46,43 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
     sections = []
 
     for result in model_results:
+        non_skipped = result.total_tests - result.skipped_tests
         section_lines = [
             f"### {result.model_name}",
             "",
             f"- **Success Rate**: {result.success_rate:.1%} "
-            f"({result.successful_tests}/{result.total_tests})",
+            f"({result.successful_tests}/{non_skipped})",
             f"- **Total Cost**: {format_cost(result.total_cost)}",
             f"- **Run Suffix**: `{result.run_suffix}`",
-            "",
         ]
 
+        if result.skipped_tests > 0:
+            section_lines.append(f"- **Skipped Tests**: {result.skipped_tests}")
+
+        section_lines.append("")
+
+        # Add skipped tests if any
+        skipped_tests = [t for t in result.test_instances if t.test_result.skipped]
+        if skipped_tests:
+            section_lines.extend(
+                [
+                    "**Skipped Tests:**",
+                    "",
+                ]
+            )
+
+            for test in skipped_tests:
+                reason = test.test_result.reason or "No reason provided"
+                section_lines.append(f"- `{test.instance_id}`: {reason}")
+
+            section_lines.append("")
+
         # Add failed tests if any
-        failed_tests = [t for t in result.test_instances if not t.test_result.success]
+        failed_tests = [
+            t
+            for t in result.test_instances
+            if not t.test_result.success and not t.test_result.skipped
+        ]
         if failed_tests:
             section_lines.extend(
                 [

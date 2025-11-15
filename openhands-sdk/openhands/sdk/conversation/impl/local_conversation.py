@@ -23,10 +23,12 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -80,6 +82,11 @@ class LocalConversation(BaseConversation):
                        - None: No visualization
             stuck_detection: Whether to enable stuck detection
         """
+        super().__init__()  # Initialize with span tracking
+        # Mark cleanup as initiated as early as possible to avoid races or partially
+        # initialized instances during interpreter shutdown.
+        self._cleanup_initiated = False
+
         self.agent = agent
         if isinstance(workspace, str):
             workspace = LocalWorkspace(working_dir=workspace)
@@ -150,8 +157,6 @@ class LocalConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        super().__init__()  # Initialize base class with span tracking
-        self._cleanup_initiated = False
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
 
@@ -181,12 +186,16 @@ class LocalConversation(BaseConversation):
         return self._stuck_detector
 
     @observe(name="conversation.send_message")
-    def send_message(self, message: str | Message) -> None:
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
 
         Args:
             message: Either a string (which will be converted to a user message)
                     or a Message object
+            sender: Optional identifier of the sender. Can be used to track
+                   message origin in multi-agent scenarios. For example, when
+                   one agent delegates to another, the sender can be set to
+                   identify which agent is sending the message.
         """
         # Convert string to Message if needed
         if isinstance(message, str):
@@ -229,6 +238,7 @@ class LocalConversation(BaseConversation):
                 llm_message=message,
                 activated_skills=activated_skill_names,
                 extended_content=extended_content,
+                sender=sender,
             )
             self._on_event(user_msg_event)
 
@@ -309,6 +319,16 @@ class LocalConversation(BaseConversation):
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
+
+            # Add an error event
+            self._on_event(
+                ConversationErrorEvent(
+                    source="environment",
+                    code=e.__class__.__name__,
+                    detail=str(e),
+                )
+            )
+
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
         finally:
@@ -389,13 +409,22 @@ class LocalConversation(BaseConversation):
         secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")
 
+    def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
+        """Set the security analyzer for the conversation."""
+        with self._state:
+            self._state.security_analyzer = analyzer
+
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
-        self._end_observability_span()
+        try:
+            self._end_observability_span()
+        except AttributeError:
+            # Object may be partially constructed; span fields may be missing.
+            pass
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()
