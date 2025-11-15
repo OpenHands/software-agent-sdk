@@ -38,6 +38,7 @@ from prompt import PROMPT  # noqa: E402
 
 from openhands.sdk import LLM, Conversation, get_logger  # noqa: E402
 from openhands.sdk.conversation import get_agent_final_response  # noqa: E402
+from openhands.sdk.utils.github import sanitize_openhands_mentions  # noqa: E402
 from openhands.tools.preset.default import get_default_agent  # noqa: E402
 
 
@@ -51,6 +52,9 @@ def post_review_comment(review_content: str) -> None:
     Args:
         review_content: The review content to post
     """
+    # Sanitize @OpenHands mentions to prevent self-mention loops
+    review_content = sanitize_openhands_mentions(review_content)
+
     logger.info("Posting review comment to GitHub...")
     pr_number = os.getenv("PR_NUMBER")
     repo_name = os.getenv("REPO_NAME")
