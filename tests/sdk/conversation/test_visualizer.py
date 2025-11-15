@@ -6,6 +6,7 @@ from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.conversation.visualizer import (
+    ConversationVisualizer,
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
@@ -350,7 +351,47 @@ def test_metrics_formatting():
     assert "500" in subtitle  # Output tokens
     assert "20.00%" in subtitle  # Cache hit rate
     assert "200" in subtitle  # Reasoning tokens
-    assert "0.0234" in subtitle  # Cost
+    assert "$ 0.0234 (total)" in subtitle
+
+
+def test_metrics_formatting_uses_latest_request():
+    """Tokens should reflect the latest request while cost stays cumulative."""
+    from openhands.sdk.conversation.conversation_stats import ConversationStats
+    from openhands.sdk.llm.utils.metrics import Metrics
+
+    conversation_stats = ConversationStats()
+    metrics = Metrics(model_name="test-model")
+    metrics.add_cost(0.1)
+    metrics.add_token_usage(
+        prompt_tokens=120,
+        completion_tokens=40,
+        cache_read_tokens=12,
+        cache_write_tokens=0,
+        reasoning_tokens=5,
+        context_window=8000,
+        response_id="first",
+    )
+    metrics.add_cost(0.05)
+    metrics.add_token_usage(
+        prompt_tokens=200,
+        completion_tokens=75,
+        cache_read_tokens=25,
+        cache_write_tokens=0,
+        reasoning_tokens=0,
+        context_window=8000,
+        response_id="second",
+    )
+    conversation_stats.service_to_metrics["test_service"] = metrics
+
+    visualizer = ConversationVisualizer(conversation_stats=conversation_stats)
+
+    subtitle = visualizer._format_metrics_subtitle()
+    assert subtitle is not None
+    assert "input 200" in subtitle
+    assert "output 75" in subtitle
+    assert "cache hit 10.00%" not in subtitle  # ensure using latest cache values
+    assert "cache hit 12.50%" in subtitle
+    assert "$ 0.1500 (total)" in subtitle
 
 
 def test_metrics_abbreviation_formatting():
