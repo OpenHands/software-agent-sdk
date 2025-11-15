@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -19,7 +18,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.utils import utc_now
+from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
@@ -234,13 +233,35 @@ class ConversationService:
         event_service = self._event_services.pop(conversation_id, None)
         if event_service:
             # Notify conversation webhooks about the stopped conversation before closing
-            state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
-            await self._notify_conversation_webhooks(conversation_info)
+            try:
+                state = await event_service.get_state()
+                conversation_info = _compose_conversation_info(
+                    event_service.stored, state
+                )
+                await self._notify_conversation_webhooks(conversation_info)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to notify webhooks for conversation {conversation_id}: {e}"
+                )
 
-            await event_service.close()
-            shutil.rmtree(event_service.conversation_dir)
-            shutil.rmtree(event_service.stored.workspace.working_dir)
+            # Close the event service
+            try:
+                await event_service.close()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to close event service for conversation "
+                    f"{conversation_id}: {e}"
+                )
+
+            # Safely remove only the conversation directory (workspace is preserved).
+            # This operation may fail due to permission issues, but we don't want that
+            # to prevent the conversation from being marked as deleted.
+            safe_rmtree(
+                event_service.conversation_dir,
+                f"conversation directory for {conversation_id}",
+            )
+
+            logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
         return False
 
