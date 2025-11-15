@@ -5,6 +5,7 @@ Tests the core behavior: pause action execution for user confirmation.
 """
 
 from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import MagicMock, Mock, patch
 
 import pytest
@@ -19,7 +20,10 @@ from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation, LocalConversation
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import UserRejectObservation
@@ -58,6 +62,43 @@ class MockConfirmationModeObservation(Observation):
         return [TextContent(text=self.result)]
 
 
+class TestExecutor(
+    ToolExecutor[MockConfirmationModeAction, MockConfirmationModeObservation]
+):
+    """Test executor for confirmation mode testing."""
+
+    def __call__(
+        self,
+        action: MockConfirmationModeAction,
+        conversation=None,  # noqa: ARG002
+    ) -> MockConfirmationModeObservation:
+        return MockConfirmationModeObservation(result=f"Executed: {action.command}")
+
+
+class ConfirmationTestTool(
+    ToolDefinition[MockConfirmationModeAction, MockConfirmationModeObservation]
+):
+    """Concrete tool for confirmation mode testing."""
+
+    name: ClassVar[str] = "test_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["ConfirmationTestTool"]:
+        return [
+            cls(
+                description="A test tool",
+                action_type=MockConfirmationModeAction,
+                observation_type=MockConfirmationModeObservation,
+                executor=TestExecutor(),
+            )
+        ]
+
+
+def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+    """Factory function for creating test tools."""
+    return ConfirmationTestTool.create(conv_state, **params)
+
+
 class TestConfirmationMode:
     """Test suite for confirmation mode functionality."""
 
@@ -90,29 +131,6 @@ class TestConfirmationMode:
             accumulated_token_usage=mock_token_usage,
         )
         self.mock_llm.metrics.get_snapshot.return_value = mock_metrics_snapshot
-
-        class TestExecutor(
-            ToolExecutor[MockConfirmationModeAction, MockConfirmationModeObservation]
-        ):
-            def __call__(
-                self,
-                action: MockConfirmationModeAction,
-                conversation=None,  # noqa: ARG002
-            ) -> MockConfirmationModeObservation:
-                return MockConfirmationModeObservation(
-                    result=f"Executed: {action.command}"
-                )
-
-        def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
-            return [
-                ToolDefinition(
-                    name="test_tool",
-                    description="A test tool",
-                    action_type=MockConfirmationModeAction,
-                    observation_type=MockConfirmationModeObservation,
-                    executor=TestExecutor(),
-                )
-            ]
 
         register_tool("test_tool", _make_tool)
 
@@ -150,8 +168,8 @@ class TestConfirmationMode:
             self.conversation.run()
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
 
     def _mock_action_once(
@@ -334,7 +352,9 @@ class TestConfirmationMode:
         """Test basic confirmation mode operations."""
         # Test initial state
         assert self.conversation.state.confirmation_policy == NeverConfirm()
-        assert self.conversation.state.agent_status == AgentExecutionStatus.IDLE
+        assert (
+            self.conversation.state.execution_status == ConversationExecutionStatus.IDLE
+        )
         assert (
             ConversationState.get_unmatched_actions(self.conversation.state.events)
             == []
@@ -422,7 +442,10 @@ class TestConfirmationMode:
             )
             self.conversation.run()
 
-        assert self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
+        )
 
         msg_events = [
             e
@@ -466,7 +489,10 @@ class TestConfirmationMode:
                 if isinstance(e, UserRejectObservation)
             ]
             assert len(rejection_events) == 0
-            assert self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+            assert (
+                self.conversation.state.execution_status
+                == ConversationExecutionStatus.FINISHED
+            )
         else:
             self.conversation.reject_pending_actions("Not safe to run")
 
@@ -511,7 +537,8 @@ class TestConfirmationMode:
             self.conversation.state.confirmation_policy == AlwaysConfirm()
         )  # Still in confirmation mode
         assert (
-            self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
         )  # Agent should be finished
 
         # Should have no pending actions (FinishAction was executed immediately)
@@ -525,7 +552,8 @@ class TestConfirmationMode:
             e for e in self.conversation.state.events if isinstance(e, ObservationEvent)
         ]
         assert len(obs_events) == 1
-        assert obs_events[0].observation.message == "Task completed successfully!"  # type: ignore[attr-defined]
+        # FinishObservation should contain the finish message in content
+        assert obs_events[0].observation.text == "Task completed successfully!"
 
     def test_think_and_finish_action_skips_confirmation_entirely(self):
         """First step: ThinkAction (skips confirmation). Second step: FinishAction."""
@@ -550,7 +578,10 @@ class TestConfirmationMode:
 
         # Still in confirmation mode overall, but both actions should have executed
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
-        assert self.conversation.state.agent_status == AgentExecutionStatus.FINISHED
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
+        )
 
         # No pending actions
         pending_actions = ConversationState.get_unmatched_actions(
@@ -564,13 +595,13 @@ class TestConfirmationMode:
         ]
         assert len(obs_events) == 2
 
-        # 1) ThinkAction observation
+        # 1) ThinkAction observation - should contain the standard message
         assert hasattr(obs_events[0].observation, "content")
-        assert obs_events[0].observation.content == "Your thought has been logged."  # type: ignore[attr-defined]
+        assert obs_events[0].observation.text == "Your thought has been logged."
 
-        # 2) FinishAction observation
-        assert hasattr(obs_events[1].observation, "message")
-        assert obs_events[1].observation.message == "Analysis complete"  # type: ignore[attr-defined]
+        # 2) FinishAction observation - should contain the finish message
+        assert hasattr(obs_events[1].observation, "content")
+        assert obs_events[1].observation.text == "Analysis complete"
 
     def test_pause_during_confirmation_preserves_waiting_status(self):
         """Test that pausing during WAITING_FOR_CONFIRMATION preserves the status.
@@ -584,8 +615,8 @@ class TestConfirmationMode:
 
         # Verify we're in the expected state
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
 
@@ -595,55 +626,63 @@ class TestConfirmationMode:
         # Status should remain WAITING_FOR_CONFIRMATION, not change to PAUSED
         # This is the key fix: waiting for confirmation is a special type of pause
         assert (
-            self.conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
 
         # Test that pause works correctly for other states
         # Reset to IDLE state
         with self.conversation._state:
-            self.conversation._state.agent_status = AgentExecutionStatus.IDLE
+            self.conversation._state.execution_status = ConversationExecutionStatus.IDLE
 
         # Pause from IDLE should change status to PAUSED
         self.conversation.pause()
-        assert self.conversation._state.agent_status == AgentExecutionStatus.PAUSED
+        assert (
+            self.conversation._state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
 
         # Reset to RUNNING state
         with self.conversation._state:
-            self.conversation._state.agent_status = AgentExecutionStatus.RUNNING
+            self.conversation._state.execution_status = (
+                ConversationExecutionStatus.RUNNING
+            )
 
         # Pause from RUNNING should change status to PAUSED
         self.conversation.pause()
-        assert self.conversation._state.agent_status == AgentExecutionStatus.PAUSED
+        assert (
+            self.conversation._state.execution_status
+            == ConversationExecutionStatus.PAUSED
+        )
 
     def test_is_confirmation_mode_active_property(self):
         """Test the is_confirmation_mode_active property behavior."""
         # Initially, no security analyzer and NeverConfirm policy
-        assert self.conversation.state.agent.security_analyzer is None
+        assert self.conversation.state.security_analyzer is None
         assert self.conversation.state.confirmation_policy == NeverConfirm()
         assert not self.conversation.confirmation_policy_active
         assert not self.conversation.is_confirmation_mode_active
 
         # Set confirmation policy to AlwaysConfirm, but still no security analyzer
         self.conversation.set_confirmation_policy(AlwaysConfirm())
-        assert self.conversation.state.agent.security_analyzer is None
+        assert self.conversation.state.security_analyzer is None
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
         assert self.conversation.confirmation_policy_active
         # Still False because no security analyzer
         assert not self.conversation.is_confirmation_mode_active
 
-        # Create agent with security analyzer
+        # Create agent and set security analyzer on conversation state
         from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
-        agent_with_analyzer = Agent(
+        agent = Agent(
             llm=self.llm,
             tools=[Tool(name="test_tool")],
-            security_analyzer=LLMSecurityAnalyzer(),
         )
-        conversation_with_analyzer = Conversation(agent=agent_with_analyzer)
+        conversation_with_analyzer = Conversation(agent=agent)
+        conversation_with_analyzer.set_security_analyzer(LLMSecurityAnalyzer())
 
         # Initially with security analyzer but NeverConfirm policy
-        assert conversation_with_analyzer.state.agent.security_analyzer is not None
+        assert conversation_with_analyzer.state.security_analyzer is not None
         assert conversation_with_analyzer.state.confirmation_policy == NeverConfirm()
         assert not conversation_with_analyzer.confirmation_policy_active
         # False because policy is NeverConfirm
@@ -651,7 +690,7 @@ class TestConfirmationMode:
 
         # Set confirmation policy to AlwaysConfirm with security analyzer
         conversation_with_analyzer.set_confirmation_policy(AlwaysConfirm())
-        assert conversation_with_analyzer.state.agent.security_analyzer is not None
+        assert conversation_with_analyzer.state.security_analyzer is not None
         assert conversation_with_analyzer.state.confirmation_policy == AlwaysConfirm()
         assert conversation_with_analyzer.confirmation_policy_active
         # True because both conditions are met

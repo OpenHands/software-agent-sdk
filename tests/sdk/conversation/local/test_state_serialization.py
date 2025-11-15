@@ -11,7 +11,10 @@ from pydantic import SecretStr
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
@@ -127,6 +130,7 @@ def test_conversation_state_persistence_save_load():
         assert loaded_state.agent.__class__ == agent.__class__
         # Test model_dump equality
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
@@ -317,7 +321,7 @@ def test_conversation_state_empty_filestore():
             agent=agent,
             persistence_dir=temp_dir,
             workspace=LocalWorkspace(working_dir="/tmp"),
-            visualize=False,
+            visualizer=None,
         )
 
         # Should create new state
@@ -466,7 +470,7 @@ def test_conversation_state_flags_persistence():
         state.stats.register_llm(RegistryEvent(llm=llm))
 
         # Set various flags
-        state.agent_status = AgentExecutionStatus.FINISHED
+        state.execution_status = ConversationExecutionStatus.FINISHED
         state.confirmation_policy = AlwaysConfirm()
         state.activated_knowledge_skills = ["agent1", "agent2"]
 
@@ -482,7 +486,7 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.id == state.id
         assert loaded_state.agent.llm.model == state.agent.llm.model
         # Verify flags are preserved
-        assert loaded_state.agent_status == AgentExecutionStatus.FINISHED
+        assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
         assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
         # Test model_dump equality
@@ -505,7 +509,7 @@ def test_conversation_with_agent_different_llm_config():
             agent=original_agent,
             persistence_dir=temp_dir,
             workspace=LocalWorkspace(working_dir="/tmp"),
-            visualize=False,
+            visualizer=None,
         )
 
         # Send a message
@@ -533,11 +537,13 @@ def test_conversation_with_agent_different_llm_config():
             persistence_dir=temp_dir,
             workspace=LocalWorkspace(working_dir="/tmp"),
             conversation_id=conversation_id,  # Use same ID
-            visualize=False,
+            visualizer=None,
         )
 
         assert new_conversation._state.agent.llm.api_key is not None
+        assert isinstance(new_conversation._state.agent.llm.api_key, SecretStr)
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
+
         assert new_dump == original_state_dump

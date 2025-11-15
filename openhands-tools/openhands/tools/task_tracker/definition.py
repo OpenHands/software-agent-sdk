@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field, ValidationError
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
     from openhands.sdk.conversation.state import ConversationState
+
 from rich.text import Text
 
-from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import (
     Action,
@@ -19,6 +19,7 @@ from openhands.sdk.tool import (
     ToolAnnotations,
     ToolDefinition,
     ToolExecutor,
+    register_tool,
 )
 
 
@@ -70,22 +71,21 @@ class TaskTrackerAction(Action):
 class TaskTrackerObservation(Observation):
     """This data class represents the result of a task tracking operation."""
 
-    content: str = Field(
-        default="", description="The formatted task list or status message"
+    command: Literal["view", "plan"] = Field(
+        description='The command that was executed: "view" or "plan".'
     )
-    command: str = Field(default="", description="The command that was executed")
     task_list: list[TaskItem] = Field(
         default_factory=list, description="The current task list"
     )
 
     @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        return [TextContent(text=self.content)]
-
-    @property
     def visualize(self) -> Text:
         """Return Rich Text representation with task list formatting."""
-        content = Text()
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         if self.task_list:
             # Count tasks by status
@@ -97,11 +97,11 @@ class TaskTrackerObservation(Observation):
 
             # Show status summary
             if self.command == "plan":
-                content.append("✅ ", style="green")
-                content.append("Task list updated: ", style="green")
+                text.append("✅ ", style="green")
+                text.append("Task list updated: ", style="green")
             else:  # view command
-                content.append("📋 ", style="blue")
-                content.append("Current task list: ", style="blue")
+                text.append("📋 ", style="blue")
+                text.append("Current task list: ", style="blue")
 
             # Status counts
             status_parts = []
@@ -113,33 +113,33 @@ class TaskTrackerObservation(Observation):
                 status_parts.append(f"{done_count} done")
 
             if status_parts:
-                content.append(", ".join(status_parts), style="white")
-                content.append("\n\n")
+                text.append(", ".join(status_parts), style="white")
+                text.append("\n\n")
 
             # Show the actual task list
             for i, task in enumerate(self.task_list, 1):
                 # Status icon
                 if task.status == "done":
-                    content.append("✅ ", style="green")
+                    text.append("✅ ", style="green")
                 elif task.status == "in_progress":
-                    content.append("🔄 ", style="yellow")
+                    text.append("🔄 ", style="yellow")
                 else:  # todo
-                    content.append("⏳ ", style="blue")
+                    text.append("⏳ ", style="blue")
 
                 # Task title
-                content.append(f"{i}. {task.title}", style="white")
+                text.append(f"{i}. {task.title}", style="white")
 
                 # NEW: show notes under the title if present
                 if task.notes:
-                    content.append("\n   Notes: " + task.notes, style="italic")
+                    text.append("\n   Notes: " + task.notes, style="italic")
 
                 if i < len(self.task_list):
-                    content.append("\n")
+                    text.append("\n")
         else:
-            content.append("📝 ", style="blue")
-            content.append("Task list is empty")
+            text.append("📝 ", style="blue")
+            text.append("Task list is empty")
 
-        return content
+        return text
 
 
 class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation]):
@@ -174,28 +174,34 @@ class TaskTrackerExecutor(ToolExecutor[TaskTrackerAction, TaskTrackerObservation
             # Save to file if save_dir is provided
             if self.save_dir:
                 self._save_tasks()
-            return TaskTrackerObservation(
-                content="Task list has been updated with "
-                + f"{len(self._task_list)} item(s).",
+            return TaskTrackerObservation.from_text(
+                text=(
+                    f"Task list has been updated with {len(self._task_list)} item(s)."
+                ),
                 command=action.command,
                 task_list=self._task_list,
             )
         elif action.command == "view":
             # Return the current task list
             if not self._task_list:
-                return TaskTrackerObservation(
-                    content='No task list found. Use the "plan" command to create one.',
+                return TaskTrackerObservation.from_text(
+                    text=('No task list found. Use the "plan" command to create one.'),
                     command=action.command,
                     task_list=[],
                 )
             content = self._format_task_list(self._task_list)
-            return TaskTrackerObservation(
-                content=content, command=action.command, task_list=self._task_list
+            return TaskTrackerObservation.from_text(
+                text=content,
+                command=action.command,
+                task_list=self._task_list,
             )
         else:
-            return TaskTrackerObservation(
-                content=f"Unknown command: {action.command}. "
-                + 'Supported commands are "view" and "plan".',
+            return TaskTrackerObservation.from_text(
+                text=(
+                    f"Unknown command: {action.command}. "
+                    'Supported commands are "view" and "plan".'
+                ),
+                is_error=True,
                 command=action.command,
                 task_list=[],
             )
@@ -391,20 +397,6 @@ When uncertain, favor using this tool. Proactive task management demonstrates
 systematic approach and ensures comprehensive requirement fulfillment."""  # noqa: E501
 
 
-task_tracker_tool = ToolDefinition(
-    name="task_tracker",
-    description=TASK_TRACKER_DESCRIPTION,
-    action_type=TaskTrackerAction,
-    observation_type=TaskTrackerObservation,
-    annotations=ToolAnnotations(
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-
-
 class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation]):
     """A ToolDefinition subclass that automatically initializes a TaskTrackerExecutor."""  # noqa: E501
 
@@ -422,11 +414,19 @@ class TaskTrackerTool(ToolDefinition[TaskTrackerAction, TaskTrackerObservation])
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name="task_tracker",
                 description=TASK_TRACKER_DESCRIPTION,
                 action_type=TaskTrackerAction,
                 observation_type=TaskTrackerObservation,
-                annotations=task_tracker_tool.annotations,
+                annotations=ToolAnnotations(
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(TaskTrackerTool.name, TaskTrackerTool)

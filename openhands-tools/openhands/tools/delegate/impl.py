@@ -8,6 +8,7 @@ from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
+from openhands.tools.delegate.visualizer import DelegationVisualizer
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -58,9 +59,13 @@ class DelegateExecutor(ToolExecutor):
         elif action.command == "delegate":
             return self._delegate_tasks(action)
         else:
-            return DelegateObservation(
+            return DelegateObservation.from_text(
+                text=(
+                    f"Unsupported command: {action.command}. "
+                    "Available commands: spawn, delegate"
+                ),
                 command=action.command,
-                message=f"Unsupported command: {action.command}",
+                is_error=True,
             )
 
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
@@ -74,25 +79,28 @@ class DelegateExecutor(ToolExecutor):
             DelegateObservation indicating success/failure and which agents were spawned
         """
         if not action.ids:
-            return DelegateObservation(
-                command="spawn",
-                message="Error: at least one ID is required for spawn action",
+            return DelegateObservation.from_text(
+                text="At least one ID is required for spawn action",
+                command=action.command,
+                is_error=True,
             )
 
         if len(self._sub_agents) + len(action.ids) > self._max_children:
-            return DelegateObservation(
-                command="spawn",
-                message=(
+            return DelegateObservation.from_text(
+                text=(
                     f"Cannot spawn {len(action.ids)} agents. "
                     f"Already have {len(self._sub_agents)} agents, "
                     f"maximum is {self._max_children}"
                 ),
+                command=action.command,
+                is_error=True,
             )
 
         try:
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
-            visualize = getattr(parent_conversation, "visualize", True)
+            parent_visualizer = parent_conversation._visualizer
+
             workspace_path = parent_conversation.state.workspace.working_dir
 
             for agent_id in action.ids:
@@ -103,11 +111,22 @@ class DelegateExecutor(ToolExecutor):
                     ),
                 )
 
+                # If parent uses DelegationVisualizer, create sub-agent visualizer
+                # Pass raw agent_id - visualizer handles formatting
+                if isinstance(parent_visualizer, DelegationVisualizer):
+                    sub_visualizer = DelegationVisualizer(
+                        name=agent_id,
+                        highlight_regex=parent_visualizer._highlight_patterns,
+                        skip_user_messages=parent_visualizer._skip_user_messages,
+                    )
+                else:
+                    # No visualizer for sub-agents if parent doesn't use one
+                    sub_visualizer = None
+
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
                     workspace=workspace_path,
-                    visualize=visualize,
-                    name_for_visualization=agent_id,
+                    visualizer=sub_visualizer,
                 )
 
                 self._sub_agents[agent_id] = sub_conversation
@@ -115,16 +134,17 @@ class DelegateExecutor(ToolExecutor):
 
             agent_list = ", ".join(action.ids)
             message = f"Successfully spawned {len(action.ids)} sub-agents: {agent_list}"
-            return DelegateObservation(
-                command="spawn",
-                message=message,
+            return DelegateObservation.from_text(
+                text=message,
+                command=action.command,
             )
 
         except Exception as e:
             logger.error(f"Error: failed to spawn agents: {e}", exc_info=True)
-            return DelegateObservation(
-                command="spawn",
-                message=f"Error: failed to spawn agents: {str(e)}",
+            return DelegateObservation.from_text(
+                text=f"failed to spawn agents: {str(e)}",
+                command=action.command,
+                is_error=True,
             )
 
     def _delegate_tasks(self, action: "DelegateAction") -> "DelegateObservation":
@@ -139,20 +159,22 @@ class DelegateExecutor(ToolExecutor):
             DelegateObservation with consolidated results from all sub-agents
         """
         if not action.tasks:
-            return DelegateObservation(
-                command="delegate",
-                message="Error: at least one task is required for delegate action",
+            return DelegateObservation.from_text(
+                text="at least one task is required for delegate action",
+                command=action.command,
+                is_error=True,
             )
 
         # Check that all requested agent IDs exist
         missing_agents = set(action.tasks.keys()) - set(self._sub_agents.keys())
         if missing_agents:
-            return DelegateObservation(
-                command="delegate",
-                message=(
-                    f"Error: sub-agents not found: {', '.join(missing_agents)}. "
+            return DelegateObservation.from_text(
+                text=(
+                    f"sub-agents not found: {', '.join(missing_agents)}. "
                     f"Available agents: {', '.join(self._sub_agents.keys())}"
                 ),
+                command=action.command,
+                is_error=True,
             )
 
         try:
@@ -161,11 +183,25 @@ class DelegateExecutor(ToolExecutor):
             results = {}
             errors = {}
 
-            def run_task(agent_id: str, conversation: LocalConversation, task: str):
+            # Get the parent agent's name from the visualizer
+            parent_conversation = self.parent_conversation
+            parent_name = None
+            if hasattr(parent_conversation, "_visualizer"):
+                visualizer = parent_conversation._visualizer
+                if isinstance(visualizer, DelegationVisualizer):
+                    parent_name = visualizer._name
+
+            def run_task(
+                agent_id: str,
+                conversation: LocalConversation,
+                task: str,
+                parent_name: str | None,
+            ):
                 """Run a single task on a sub-agent."""
                 try:
                     logger.info(f"Sub-agent {agent_id} starting task: {task[:100]}...")
-                    conversation.send_message(task)
+                    # Pass raw parent_name - visualizer handles formatting
+                    conversation.send_message(task, sender=parent_name)
                     conversation.run()
 
                     # Extract the final response using get_agent_final_response
@@ -189,7 +225,7 @@ class DelegateExecutor(ToolExecutor):
                 conversation = self._sub_agents[agent_id]
                 thread = threading.Thread(
                     target=run_task,
-                    args=(agent_id, conversation, task),
+                    args=(agent_id, conversation, task, parent_name),
                     name=f"Task-{agent_id}",
                 )
                 threads.append(thread)
@@ -211,24 +247,25 @@ class DelegateExecutor(ToolExecutor):
                     all_results.append(f"Agent {agent_id}: No result")
 
             # Create comprehensive message with results
-            message = f"Completed delegation of {len(action.tasks)} tasks"
+            output_text = f"Completed delegation of {len(action.tasks)} tasks"
             if errors:
-                message += f" with {len(errors)} errors"
+                output_text += f" with {len(errors)} errors"
 
             if all_results:
                 results_text = "\n".join(
                     f"{i}. {result}" for i, result in enumerate(all_results, 1)
                 )
-                message += f"\n\nResults:\n{results_text}"
+                output_text += f"\n\nResults:\n{results_text}"
 
-            return DelegateObservation(
-                command="delegate",
-                message=message,
+            return DelegateObservation.from_text(
+                text=output_text,
+                command=action.command,
             )
 
         except Exception as e:
             logger.error(f"Failed to delegate tasks: {e}", exc_info=True)
-            return DelegateObservation(
-                command="delegate",
-                message=f"Error: failed to delegate tasks: {str(e)}",
+            return DelegateObservation.from_text(
+                text=f"failed to delegate tasks: {str(e)}",
+                command=action.command,
+                is_error=True,
             )

@@ -24,16 +24,15 @@ from openhands.sdk.tool import (
     ToolExecutor,
     register_tool,
 )
-from openhands.tools.execute_bash import (
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import (
     BashExecutor,
     ExecuteBashAction,
-    execute_bash_tool,
+    TerminalTool,
 )
-from openhands.tools.file_editor import FileEditorTool
 
 
 logger = get_logger(__name__)
-
 
 # --- Action / Observation ---
 
@@ -93,8 +92,10 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         files: set[str] = set()
 
         # grep returns exit code 1 when no matches; treat as empty
-        if result.output.strip():
-            for line in result.output.strip().splitlines():
+        output_text = result.text
+
+        if output_text.strip():
+            for line in output_text.strip().splitlines():
                 matches.append(line)
                 # Expect "path:line:content" — take the file part before first ":"
                 file_path = line.split(":", 1)[0]
@@ -115,10 +116,45 @@ _GREP_DESCRIPTION = """Fast content search tool.
 * When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead
 """  # noqa: E501
 
+
+# --- Tool Definition ---
+
+
+class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
+    """A custom grep tool that searches file contents using regular expressions."""
+
+    @classmethod
+    def create(
+        cls, conv_state, bash_executor: BashExecutor | None = None
+    ) -> Sequence[ToolDefinition]:
+        """Create GrepTool instance with a GrepExecutor.
+
+        Args:
+            conv_state: Conversation state to get working directory from.
+            bash_executor: Optional bash executor to reuse. If not provided,
+                         a new one will be created.
+
+        Returns:
+            A sequence containing a single GrepTool instance.
+        """
+        if bash_executor is None:
+            bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
+        grep_executor = GrepExecutor(bash_executor)
+
+        return [
+            cls(
+                description=_GREP_DESCRIPTION,
+                action_type=GrepAction,
+                observation_type=GrepObservation,
+                executor=grep_executor,
+            )
+        ]
+
+
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -132,28 +168,22 @@ cwd = os.getcwd()
 
 
 def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
-    """Create execute_bash and custom grep tools sharing one executor."""
+    """Create terminal and custom grep tools sharing one executor."""
 
     bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
-    bash_tool = execute_bash_tool.set_executor(executor=bash_executor)
+    # bash_tool = terminal_tool.set_executor(executor=bash_executor)
+    bash_tool = TerminalTool.create(conv_state, executor=bash_executor)[0]
 
-    grep_executor = GrepExecutor(bash_executor)
-    grep_tool = ToolDefinition(
-        name="grep",
-        description=_GREP_DESCRIPTION,
-        action_type=GrepAction,
-        observation_type=GrepObservation,
-        executor=grep_executor,
-    )
+    # Use the GrepTool.create() method with shared bash_executor
+    grep_tool = GrepTool.create(conv_state, bash_executor=bash_executor)[0]
 
     return [bash_tool, grep_tool]
 
 
-register_tool("FileEditorTool", FileEditorTool)
 register_tool("BashAndGrepToolSet", _make_bash_and_grep_tools)
 
 tools = [
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
     Tool(name="BashAndGrepToolSet"),
 ]
 
@@ -186,3 +216,7 @@ print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

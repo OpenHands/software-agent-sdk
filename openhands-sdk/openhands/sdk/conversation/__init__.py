@@ -6,7 +6,10 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.token_display import (
     TokenDisplay,
@@ -15,15 +18,20 @@ from openhands.sdk.conversation.token_display import (
     get_default_mode_from_env,
 )
 from openhands.sdk.conversation.types import ConversationCallbackType
-from openhands.sdk.conversation.visualizer import ConversationVisualizer
+from openhands.sdk.conversation.visualizer import (
+    ConversationVisualizerBase,
+    DefaultConversationVisualizer,
+)
 
 
 __all__ = [
     "Conversation",
     "BaseConversation",
     "ConversationState",
+    "ConversationExecutionStatus",
     "ConversationCallbackType",
-    "ConversationVisualizer",
+    "DefaultConversationVisualizer",
+    "ConversationVisualizerBase",
     "SecretRegistry",
     "StuckDetector",
     "EventLog",

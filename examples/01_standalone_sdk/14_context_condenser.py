@@ -18,10 +18,10 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -29,7 +29,7 @@ logger = get_logger(__name__)
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -40,15 +40,12 @@ llm = LLM(
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
-register_tool("TaskTrackerTool", TaskTrackerTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=TerminalTool.name,
     ),
-    Tool(name="FileEditorTool"),
-    Tool(name="TaskTrackerTool"),
+    Tool(name=FileEditorTool.name),
+    Tool(name=TaskTrackerTool.name),
 ]
 
 # Create a condenser to manage the context. The condenser will automatically truncate
@@ -105,7 +102,6 @@ conversation.send_message(
 )
 conversation.run()
 
-
 print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
@@ -129,10 +125,13 @@ print("Sending message to deserialized conversation...")
 conversation.send_message("Finally, clean up by deleting both files.")
 conversation.run()
 
-
 print("=" * 100)
 print("Conversation finished with LLM Summarizing Condenser.")
 print(f"Total LLM messages collected: {len(llm_messages)}")
 print("\nThe condenser automatically summarized older conversation history")
 print("when the conversation exceeded the configured max_size threshold.")
 print("This helps manage context length while preserving important information.")
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

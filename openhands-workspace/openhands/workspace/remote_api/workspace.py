@@ -1,7 +1,7 @@
 """API-based remote workspace implementation using runtime API."""
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 from urllib.request import urlopen
 
 import httpx
@@ -46,6 +46,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
         description="Container image for the agent server. "
         "It must be a public image or in a registry accessible by runtime API."
     )
+    image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = Field(
+        default="IfNotPresent",
+        description="Image pull policy for the API",
+    )
     session_id: str | None = Field(
         default_factory=lambda: f"agent-server-{uuid.uuid4()}",
         description="Session ID (auto-generated if None)",
@@ -54,7 +58,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         default=1, description="Resource scaling (1, 2, 4, or 8)"
     )
     runtime_class: str | None = Field(
-        default="sysbox", description="Runtime class (e.g., 'sysbox')"
+        default="sysbox-runc", description="Runtime class (e.g., 'sysbox')"
     )
     init_timeout: float = Field(
         default=300.0, description="Runtime init timeout (seconds)"
@@ -66,10 +70,29 @@ class APIRemoteWorkspace(RemoteWorkspace):
     pause_on_close: bool = Field(
         default=False, description="Pause instead of stop on cleanup"
     )
+    target_type: Literal["binary", "source"] = Field(
+        default="binary",
+        description="Type of agent server target (binary or source)",
+    )
 
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
+
+    @property
+    def _api_headers(self):
+        """Headers for runtime API requests."
+
+        This is used to manage new container runtimes via Runtime API.
+
+        For actual interaction with the remote agent server, the
+        `client` property is used, which includes the session API key
+        defined by ._headers property.
+        """
+        headers = {}
+        if self.runtime_api_key:
+            headers["X-API-Key"] = self.runtime_api_key
+        return headers
 
     def model_post_init(self, context: Any) -> None:
         """Set up the remote runtime and initialize the workspace."""
@@ -97,12 +120,18 @@ class APIRemoteWorkspace(RemoteWorkspace):
         logger.info(f"Runtime ready at {self._runtime_url}")
         self.host = self._runtime_url.rstrip("/")
         self.api_key = self._session_api_key
+        self._client = None  # Reset HTTP client with new host and API key
+        _ = self.client  # Initialize client by accessing the property
+        assert self.client is not None
+        assert self.client.base_url == self.host
 
     def _check_existing_runtime(self) -> bool:
         """Check if there's an existing runtime for this session."""
         try:
             resp = self._send_api_request(
-                "GET", f"{self.runtime_api_url}/sessions/{self.session_id}"
+                "GET",
+                f"{self.runtime_api_url}/sessions/{self.session_id}",
+                headers=self._api_headers,
             )
             data = resp.json()
             status = data.get("status")
@@ -125,16 +154,20 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     def _start_runtime(self) -> None:
         """Start a new runtime."""
+        if self.target_type == "binary":
+            executable = "/usr/local/bin/openhands-agent-server"
+        else:
+            executable = "/agent-server/.venv/bin/python -m openhands.agent_server"
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {
             "image": self.server_image,
-            "command": "/usr/local/bin/openhands-agent-server --port 60000",
+            "command": f"{executable} --port 60000",
             "working_dir": "/",  # Match Dockerfile WORKDIR
             "environment": {},
             "session_id": self.session_id,
             "run_as_user": 10001,
             "fs_group": 10001,
-            # "environment": {"DEBUG": "true"},
+            "image_pull_policy": self.image_pull_policy,
         }
 
         if self.runtime_class:
@@ -149,6 +182,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
             f"{self.runtime_api_url}/start",
             json=payload,
             timeout=self.init_timeout,
+            headers=self._api_headers,
         )
         self._parse_runtime_response(resp)
         logger.info(f"Runtime {self._runtime_id} at {self._runtime_url}")
@@ -160,6 +194,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
             f"{self.runtime_api_url}/resume",
             json={"runtime_id": self._runtime_id},
             timeout=self.init_timeout,
+            headers=self._api_headers,
         )
         self._parse_runtime_response(resp)
 
@@ -183,7 +218,9 @@ class APIRemoteWorkspace(RemoteWorkspace):
         logger.info("Waiting for runtime to become alive...")
 
         resp = self._send_api_request(
-            "GET", f"{self.runtime_api_url}/sessions/{self.session_id}"
+            "GET",
+            f"{self.runtime_api_url}/sessions/{self.session_id}",
+            headers=self._api_headers,
         )
         data = resp.json()
         pod_status = data.get("pod_status", "").lower()
@@ -244,12 +281,15 @@ class APIRemoteWorkspace(RemoteWorkspace):
     def _send_api_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an API request with error handling."""
         logger.debug(f"Sending {method} request to {url}")
-        logger.debug(f"Client headers: {self._headers}")
+        logger.debug(f"Request kwargs: {kwargs.keys()}")
+
         response = self.client.request(method, url, **kwargs)
         try:
             response.raise_for_status()
         except httpx.HTTPStatusError:
-            logger.debug(f"Request headers: {response.request.headers}")
+            # Log only header keys, not values (to avoid exposing API keys)
+            header_keys = list(response.request.headers.keys())
+            logger.debug(f"Request header keys: {header_keys}")
             try:
                 error_detail = response.json()
                 logger.info(f"API request failed: {error_detail}")
@@ -274,9 +314,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
                 f"{self.runtime_api_url}/{action}",
                 json={"runtime_id": self._runtime_id},
                 timeout=30.0,
+                headers=self._api_headers,
             )
         except Exception as e:
-            logger.error(f"Cleanup error: {e}")
+            logger.warning(f"Cleanup error: {e}")
         finally:
             self._runtime_id = None
             self._runtime_url = None

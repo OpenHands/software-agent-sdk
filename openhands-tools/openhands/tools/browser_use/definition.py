@@ -11,8 +11,8 @@ from openhands.sdk.tool import (
     Observation,
     ToolAnnotations,
     ToolDefinition,
+    register_tool,
 )
-from openhands.sdk.tool.tool import ToolBase
 from openhands.sdk.utils import maybe_truncate
 
 
@@ -24,46 +24,78 @@ if TYPE_CHECKING:
 # Maximum output size for browser observations
 MAX_BROWSER_OUTPUT_SIZE = 50000
 
+# Mapping of base64 prefixes to MIME types for image detection
+BASE64_IMAGE_PREFIXES = {
+    "/9j/": "image/jpeg",
+    "iVBORw0KGgo": "image/png",
+    "R0lGODlh": "image/gif",
+    "UklGR": "image/webp",
+}
+
+
+def detect_image_mime_type(base64_data: str) -> str:
+    """Detect MIME type from base64-encoded image data.
+
+    Args:
+        base64_data: Base64-encoded image data
+
+    Returns:
+        Detected MIME type, defaults to "image/png" if not detected
+    """
+    for prefix, mime_type in BASE64_IMAGE_PREFIXES.items():
+        if base64_data.startswith(prefix):
+            return mime_type
+    return "image/png"
+
 
 class BrowserObservation(Observation):
     """Base observation for browser operations."""
 
-    output: str = Field(description="The output message from the browser operation")
-    error: str | None = Field(default=None, description="Error message if any")
     screenshot_data: str | None = Field(
         default=None, description="Base64 screenshot data if available"
     )
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        if self.error:
-            return [TextContent(text=f"Error: {self.error}")]
+        llm_content: list[TextContent | ImageContent] = []
 
-        content: list[TextContent | ImageContent] = [
-            TextContent(text=maybe_truncate(self.output, MAX_BROWSER_OUTPUT_SIZE))
-        ]
+        # If is_error is true, prepend error message
+        if self.is_error:
+            llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
+
+        # Get text content and truncate if needed
+        content_text = self.text
+        if content_text:
+            llm_content.append(
+                TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
+            )
 
         if self.screenshot_data:
-            mime_type = "image/png"
-            if self.screenshot_data.startswith("/9j/"):
-                mime_type = "image/jpeg"
-            elif self.screenshot_data.startswith("iVBORw0KGgo"):
-                mime_type = "image/png"
-            elif self.screenshot_data.startswith("R0lGODlh"):
-                mime_type = "image/gif"
-            elif self.screenshot_data.startswith("UklGR"):
-                mime_type = "image/webp"
+            mime_type = detect_image_mime_type(self.screenshot_data)
             # Convert base64 to data URL format for ImageContent
             data_url = f"data:{mime_type};base64,{self.screenshot_data}"
-            content.append(ImageContent(image_urls=[data_url]))
+            llm_content.append(ImageContent(image_urls=[data_url]))
 
-        return content
+        return llm_content
+
+
+# ============================================
+# Base Browser Action
+# ============================================
+class BrowserAction(Action):
+    """Base class for all browser actions.
+
+    This base class serves as the parent for all browser-related actions,
+    enabling proper type hierarchy and eliminating the need for union types.
+    """
+
+    pass
 
 
 # ============================================
 # `go_to_url`
 # ============================================
-class BrowserNavigateAction(Action):
+class BrowserNavigateAction(BrowserAction):
     """Schema for browser navigation."""
 
     url: str = Field(description="The URL to navigate to")
@@ -85,20 +117,6 @@ Examples:
 - Open GitHub in new tab: url="https://github.com", new_tab=True
 """  # noqa: E501
 
-browser_navigate_tool = ToolDefinition(
-    name="browser_navigate",
-    action_type=BrowserNavigateAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_NAVIGATE_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_navigate",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservation]):
     """Tool for browser navigation."""
@@ -107,11 +125,16 @@ class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_navigate_tool.name,
                 description=BROWSER_NAVIGATE_DESCRIPTION,
                 action_type=BrowserNavigateAction,
                 observation_type=BrowserObservation,
-                annotations=browser_navigate_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_navigate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -120,7 +143,7 @@ class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservati
 # ============================================
 # `browser_click`
 # ============================================
-class BrowserClickAction(Action):
+class BrowserClickAction(BrowserAction):
     """Schema for clicking elements."""
 
     index: int = Field(
@@ -144,20 +167,6 @@ Parameters:
 Important: Only use indices that appear in your current browser_get_state output.
 """  # noqa: E501
 
-browser_click_tool = ToolDefinition(
-    name="browser_click",
-    action_type=BrowserClickAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_CLICK_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_click",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
     """Tool for clicking browser elements."""
@@ -166,11 +175,16 @@ class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_click_tool.name,
                 description=BROWSER_CLICK_DESCRIPTION,
                 action_type=BrowserClickAction,
                 observation_type=BrowserObservation,
-                annotations=browser_click_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_click",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -179,7 +193,7 @@ class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
 # ============================================
 # `browser_type`
 # ============================================
-class BrowserTypeAction(Action):
+class BrowserTypeAction(BrowserAction):
     """Schema for typing text into elements."""
 
     index: int = Field(
@@ -200,20 +214,6 @@ Parameters:
 Important: Only use indices that appear in your current browser_get_state output.
 """  # noqa: E501
 
-browser_type_tool = ToolDefinition(
-    name="browser_type",
-    action_type=BrowserTypeAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_TYPE_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_type",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
     """Tool for typing text into browser elements."""
@@ -222,11 +222,16 @@ class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_type_tool.name,
                 description=BROWSER_TYPE_DESCRIPTION,
                 action_type=BrowserTypeAction,
                 observation_type=BrowserObservation,
-                annotations=browser_type_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_type",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -235,7 +240,7 @@ class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
 # ============================================
 # `browser_get_state`
 # ============================================
-class BrowserGetStateAction(Action):
+class BrowserGetStateAction(BrowserAction):
     """Schema for getting browser state."""
 
     include_screenshot: bool = Field(
@@ -253,20 +258,6 @@ Parameters:
 - include_screenshot: Whether to include a screenshot (optional, default: False)
 """  # noqa: E501
 
-browser_get_state_tool = ToolDefinition(
-    name="browser_get_state",
-    action_type=BrowserGetStateAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_GET_STATE_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_get_state",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservation]):
     """Tool for getting browser state."""
@@ -275,11 +266,16 @@ class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_get_state_tool.name,
                 description=BROWSER_GET_STATE_DESCRIPTION,
                 action_type=BrowserGetStateAction,
                 observation_type=BrowserObservation,
-                annotations=browser_get_state_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_get_state",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -288,7 +284,7 @@ class BrowserGetStateTool(ToolDefinition[BrowserGetStateAction, BrowserObservati
 # ============================================
 # `browser_get_content`
 # ============================================
-class BrowserGetContentAction(Action):
+class BrowserGetContentAction(BrowserAction):
     """Schema for getting page content in markdown."""
 
     extract_links: bool = Field(
@@ -307,20 +303,6 @@ BROWSER_GET_CONTENT_DESCRIPTION = """Extract the main content of the current pag
 If the content was truncated and you need more information, use start_from_char parameter to continue from where truncation occurred.
 """  # noqa: E501
 
-browser_get_content_tool = ToolDefinition(
-    name="browser_get_content",
-    action_type=BrowserGetContentAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_GET_CONTENT_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_get_content",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserGetContentTool(
     ToolDefinition[BrowserGetContentAction, BrowserObservation]
@@ -331,11 +313,16 @@ class BrowserGetContentTool(
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_get_content_tool.name,
                 description=BROWSER_GET_CONTENT_DESCRIPTION,
                 action_type=BrowserGetContentAction,
                 observation_type=BrowserObservation,
-                annotations=browser_get_content_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_get_content",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -344,7 +331,7 @@ class BrowserGetContentTool(
 # ============================================
 # `browser_scroll`
 # ============================================
-class BrowserScrollAction(Action):
+class BrowserScrollAction(BrowserAction):
     """Schema for scrolling the page."""
 
     direction: Literal["up", "down"] = Field(
@@ -362,20 +349,6 @@ Parameters:
 - direction: Direction to scroll - "up" or "down" (optional, default: "down")
 """  # noqa: E501
 
-browser_scroll_tool = ToolDefinition(
-    name="browser_scroll",
-    action_type=BrowserScrollAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_SCROLL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_scroll",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation]):
     """Tool for scrolling the browser page."""
@@ -384,11 +357,16 @@ class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation])
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_scroll_tool.name,
                 description=BROWSER_SCROLL_DESCRIPTION,
                 action_type=BrowserScrollAction,
                 observation_type=BrowserObservation,
-                annotations=browser_scroll_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_scroll",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -397,7 +375,7 @@ class BrowserScrollTool(ToolDefinition[BrowserScrollAction, BrowserObservation])
 # ============================================
 # `browser_go_back`
 # ============================================
-class BrowserGoBackAction(Action):
+class BrowserGoBackAction(BrowserAction):
     """Schema for going back in browser history."""
 
     pass
@@ -409,20 +387,6 @@ Use this tool to navigate back to the previously visited page, similar to clicki
 browser's back button.
 """  # noqa: E501
 
-browser_go_back_tool = ToolDefinition(
-    name="browser_go_back",
-    action_type=BrowserGoBackAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_GO_BACK_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_go_back",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
-
 
 class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation]):
     """Tool for going back in browser history."""
@@ -431,11 +395,16 @@ class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation])
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_go_back_tool.name,
                 description=BROWSER_GO_BACK_DESCRIPTION,
                 action_type=BrowserGoBackAction,
                 observation_type=BrowserObservation,
-                annotations=browser_go_back_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_go_back",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
@@ -444,7 +413,7 @@ class BrowserGoBackTool(ToolDefinition[BrowserGoBackAction, BrowserObservation])
 # ============================================
 # `browser_list_tabs`
 # ============================================
-class BrowserListTabsAction(Action):
+class BrowserListTabsAction(BrowserAction):
     """Schema for listing browser tabs."""
 
     pass
@@ -456,20 +425,6 @@ This tool shows all currently open tabs with their IDs, titles, and URLs. Use th
 with browser_switch_tab or browser_close_tab.
 """  # noqa: E501
 
-browser_list_tabs_tool = ToolDefinition(
-    name="browser_list_tabs",
-    action_type=BrowserListTabsAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_LIST_TABS_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_list_tabs",
-        readOnlyHint=True,
-        destructiveHint=False,
-        idempotentHint=True,
-        openWorldHint=False,
-    ),
-)
-
 
 class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservation]):
     """Tool for listing browser tabs."""
@@ -478,11 +433,16 @@ class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_list_tabs_tool.name,
                 description=BROWSER_LIST_TABS_DESCRIPTION,
                 action_type=BrowserListTabsAction,
                 observation_type=BrowserObservation,
-                annotations=browser_list_tabs_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_list_tabs",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
                 executor=executor,
             )
         ]
@@ -491,7 +451,7 @@ class BrowserListTabsTool(ToolDefinition[BrowserListTabsAction, BrowserObservati
 # ============================================
 # `browser_switch_tab`
 # ============================================
-class BrowserSwitchTabAction(Action):
+class BrowserSwitchTabAction(BrowserAction):
     """Schema for switching browser tabs."""
 
     tab_id: str = Field(
@@ -508,36 +468,24 @@ Parameters:
 - tab_id: 4 Character Tab ID of the tab to switch to
 """
 
-browser_switch_tab_tool = ToolDefinition(
-    name="browser_switch_tab",
-    action_type=BrowserSwitchTabAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_SWITCH_TAB_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_switch_tab",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
-
 
 class BrowserSwitchTabTool(ToolDefinition[BrowserSwitchTabAction, BrowserObservation]):
     """Tool for switching browser tabs."""
-
-    # Override executor to be non-optional for initialized BrowserSwitchTabTool
-    # instances
 
     @classmethod
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_switch_tab_tool.name,
                 description=BROWSER_SWITCH_TAB_DESCRIPTION,
                 action_type=BrowserSwitchTabAction,
                 observation_type=BrowserObservation,
-                annotations=browser_switch_tab_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_switch_tab",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
                 executor=executor,
             )
         ]
@@ -546,7 +494,7 @@ class BrowserSwitchTabTool(ToolDefinition[BrowserSwitchTabAction, BrowserObserva
 # ============================================
 # `browser_close_tab`
 # ============================================
-class BrowserCloseTabAction(Action):
+class BrowserCloseTabAction(BrowserAction):
     """Schema for closing browser tabs."""
 
     tab_id: str = Field(
@@ -562,20 +510,6 @@ Parameters:
 - tab_id: 4 Character Tab ID of the tab to close
 """
 
-browser_close_tab_tool = ToolDefinition(
-    name="browser_close_tab",
-    action_type=BrowserCloseTabAction,
-    observation_type=BrowserObservation,
-    description=BROWSER_CLOSE_TAB_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="browser_close_tab",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
-
 
 class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservation]):
     """Tool for closing browser tabs."""
@@ -584,32 +518,22 @@ class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservati
     def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
         return [
             cls(
-                name=browser_close_tab_tool.name,
                 description=BROWSER_CLOSE_TAB_DESCRIPTION,
                 action_type=BrowserCloseTabAction,
                 observation_type=BrowserObservation,
-                annotations=browser_close_tab_tool.annotations,
+                annotations=ToolAnnotations(
+                    title="browser_close_tab",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
                 executor=executor,
             )
         ]
 
 
-# Union type for all browser actions
-BrowserAction = (
-    BrowserNavigateAction
-    | BrowserClickAction
-    | BrowserTypeAction
-    | BrowserGetStateAction
-    | BrowserGetContentAction
-    | BrowserScrollAction
-    | BrowserGoBackAction
-    | BrowserListTabsAction
-    | BrowserSwitchTabAction
-    | BrowserCloseTabAction
-)
-
-
-class BrowserToolSet(ToolBase[BrowserAction, BrowserObservation]):
+class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
     This tool set includes all available browser-related tools
@@ -623,21 +547,28 @@ class BrowserToolSet(ToolBase[BrowserAction, BrowserObservation]):
     def create(
         cls,
         **executor_config,
-    ) -> list[ToolBase[BrowserAction, BrowserObservation]]:
+    ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
         # Import executor only when actually needed to
         # avoid hanging during module import
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
         executor = BrowserToolExecutor(**executor_config)
-        return [
-            browser_navigate_tool.set_executor(executor),
-            browser_click_tool.set_executor(executor),
-            browser_get_state_tool.set_executor(executor),
-            browser_get_content_tool.set_executor(executor),
-            browser_type_tool.set_executor(executor),
-            browser_scroll_tool.set_executor(executor),
-            browser_go_back_tool.set_executor(executor),
-            browser_list_tabs_tool.set_executor(executor),
-            browser_switch_tab_tool.set_executor(executor),
-            browser_close_tab_tool.set_executor(executor),
-        ]
+        # Each tool.create() returns a Sequence[Self], so we flatten the results
+        tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
+        for tool_class in [
+            BrowserNavigateTool,
+            BrowserClickTool,
+            BrowserGetStateTool,
+            BrowserGetContentTool,
+            BrowserTypeTool,
+            BrowserScrollTool,
+            BrowserGoBackTool,
+            BrowserListTabsTool,
+            BrowserSwitchTabTool,
+            BrowserCloseTabTool,
+        ]:
+            tools.extend(tool_class.create(executor))
+        return tools
+
+
+register_tool(BrowserToolSet.name, BrowserToolSet)

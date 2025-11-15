@@ -1,5 +1,7 @@
 """Tests for LLM completion functionality, configuration, and metrics tracking."""
 
+from collections.abc import Sequence
+from typing import ClassVar
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +21,7 @@ from openhands.sdk.llm import (
     TextContent,
 )
 from openhands.sdk.tool.schema import Action
-from openhands.sdk.tool.tool import ToolBase, ToolDefinition
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -39,6 +41,23 @@ def create_mock_response(content: str = "Test response", response_id: str = "tes
         system_fingerprint="test",
         usage=Usage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
     )
+
+
+# Helper tool classes for testing
+class _ArgsBasic(Action):
+    """Basic action for testing."""
+
+    param: str
+
+
+class _MockTool(ToolDefinition[_ArgsBasic, None]):
+    """Mock tool for LLM completion testing."""
+
+    name: ClassVar[str] = "test_tool"
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_MockTool"]:
+        return [cls(description="A test tool", action_type=_ArgsBasic)]
 
 
 @pytest.fixture
@@ -127,13 +146,7 @@ def test_llm_completion_with_tools(mock_completion):
     # Test completion with tools
     messages = [Message(role="user", content=[TextContent(text="Use the test tool")])]
 
-    class _ArgsBasic(Action):
-        param: str
-
-    tool: ToolBase = ToolDefinition(
-        name="test_tool", description="A test tool", action_type=_ArgsBasic
-    )
-    tools_list: list[ToolBase] = [tool]
+    tools_list = list(_MockTool.create())
 
     response = llm.completion(messages=messages, tools=tools_list)
 
@@ -333,16 +346,7 @@ def test_llm_completion_non_function_call_mode(mock_completion):
         )
     ]
 
-    class TestNonFCArgs(Action):
-        param: str
-
-    tools: list[ToolBase] = [
-        ToolDefinition(
-            name="test_tool",
-            description="A test tool for non-function call mode",
-            action_type=TestNonFCArgs,
-        )
-    ]
+    tools = list(_MockTool.create())
 
     # Verify that tools should be mocked (non-function call path)
     cc_tools = [t.to_openai_tool(add_security_risk_prediction=False) for t in tools]
@@ -390,14 +394,7 @@ def test_llm_completion_function_call_vs_non_function_call_mode(mock_completion)
     mock_response = create_mock_response("Test response")
     mock_completion.return_value = mock_response
 
-    class TestFCArgs(Action):
-        param: str | None = None
-
-    tools: list[ToolBase] = [
-        ToolDefinition(
-            name="test_tool", description="A test tool", action_type=TestFCArgs
-        )
-    ]
+    tools = list(_MockTool.create())
     messages = [Message(role="user", content=[TextContent(text="Use the test tool")])]
 
     # Test with native function calling enabled (default behavior for gpt-4o)

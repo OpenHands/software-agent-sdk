@@ -126,7 +126,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -169,7 +169,6 @@ with ManagedAPIServer(port=8001) as server:
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 
@@ -190,7 +189,7 @@ with ManagedAPIServer(port=8001) as server:
         conversation.run()
 
         logger.info("✅ First task completed!")
-        logger.info(f"Agent status: {conversation.state.agent_status}")
+        logger.info(f"Agent status: {conversation.state.execution_status}")
 
         # Wait for events to stop coming (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
@@ -236,6 +235,13 @@ with ManagedAPIServer(port=8001) as server:
         for event in conversation.state.events:
             if isinstance(event, ConversationStateUpdateEvent):
                 logger.info(f"  - {event}")
+
+        # Report cost (must be before conversation.close())
+        conversation.state._cached_state = (
+            None  # Invalidate cache to fetch latest stats
+        )
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
 
     finally:
         # Clean up

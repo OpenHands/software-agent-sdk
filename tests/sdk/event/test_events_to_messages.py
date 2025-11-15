@@ -104,7 +104,7 @@ class TestEventsToMessages:
         """Test conversion of single ActionEvent."""
         action_event = create_action_event(
             thought_text="I need to run a command",
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id="call_123",
             llm_response_id="response_1",
             action_args={"command": "ls -la"},
@@ -121,7 +121,7 @@ class TestEventsToMessages:
         assert messages[0].tool_calls is not None
         assert len(messages[0].tool_calls) == 1
         assert messages[0].tool_calls[0].id == "call_123"
-        assert messages[0].tool_calls[0].name == "execute_bash"
+        assert messages[0].tool_calls[0].name == "terminal"
 
     def test_parallel_function_calling_same_response_id(self):
         """Test parallel function calling with multiple ActionEvents having same ID.
@@ -200,7 +200,7 @@ class TestEventsToMessages:
         """Test multiple ActionEvents with different response_ids (separate calls)."""
         action1 = create_action_event(
             thought_text="First command",
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id="call_1",
             llm_response_id="response_1",
             action_args={"command": "ls"},
@@ -208,7 +208,7 @@ class TestEventsToMessages:
 
         action2 = create_action_event(
             thought_text="Second command",
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id="call_2",
             llm_response_id="response_2",
             action_args={"command": "pwd"},
@@ -291,7 +291,7 @@ class TestEventsToMessages:
         error_event = AgentErrorEvent(
             error="Command failed with exit code 1",
             tool_call_id="call_err",
-            tool_name="execute_bash",
+            tool_name="terminal",
         )
 
         events = [error_event]
@@ -355,7 +355,7 @@ class TestEventsToMessages:
         # Fourth: Separate file listing call (different response_id)
         list_files = create_action_event(
             thought_text="Now I'll list the files",
-            tool_name="execute_bash",
+            tool_name="terminal",
             tool_call_id="call_ls",
             llm_response_id="list_files_response",
             action_args={"command": "ls -la"},

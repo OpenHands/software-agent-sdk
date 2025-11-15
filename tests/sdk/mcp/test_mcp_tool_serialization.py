@@ -13,7 +13,7 @@ from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.tool import MCPToolDefinition
 from openhands.sdk.tool.schema import Action
-from openhands.sdk.tool.tool import ToolBase
+from openhands.sdk.tool.tool import ToolDefinition
 
 
 def create_mock_mcp_tool(name: str) -> mcp.types.Tool:
@@ -57,8 +57,8 @@ def test_mcp_tool_polymorphic_behavior() -> None:
     tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
     mcp_tool = tools[0]  # Extract single tool from sequence
 
-    # Should be instance of ToolBase
-    assert isinstance(mcp_tool, ToolBase)
+    # Should be instance of ToolDefinition
+    assert isinstance(mcp_tool, ToolDefinition)
     assert isinstance(mcp_tool, MCPToolDefinition)
 
     # Check basic properties
@@ -99,8 +99,8 @@ def test_mcp_tool_fallback_behavior() -> None:
         },
     }
 
-    deserialized_tool = ToolBase.model_validate(tool_data)
-    assert isinstance(deserialized_tool, ToolBase)
+    deserialized_tool = ToolDefinition.model_validate(tool_data)
+    assert isinstance(deserialized_tool, ToolDefinition)
     assert deserialized_tool.name == "fallback-tool"
     assert issubclass(deserialized_tool.action_type, Action)
     assert deserialized_tool.observation_type and issubclass(
