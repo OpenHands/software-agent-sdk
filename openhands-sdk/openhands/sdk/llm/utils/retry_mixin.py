@@ -1,6 +1,7 @@
 from collections.abc import Callable, Iterable
 from typing import Any, cast
 
+from litellm.exceptions import InternalServerError
 from tenacity import (
     RetryCallState,
     retry,
@@ -17,6 +18,14 @@ logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
 RetryListener = Callable[[int, int], None]
+
+
+def _looks_like_choices_none_error(msg: str) -> bool:
+    m = msg.lower()
+    if "choices" not in m:
+        return False
+    # Heuristics matching LiteLLM response conversion assertions/validation
+    return any(k in m for k in ("none", "assert", "invalid"))
 
 
 class RetryMixin:
@@ -50,24 +59,28 @@ class RetryMixin:
             if exc is None:
                 return
 
-            # Only adjust temperature for LLMNoResponseError
-            if isinstance(exc, LLMNoResponseError):
+            # Adjust temperature for LLMNoResponseError or certain InternalServerError
+            should_bump = isinstance(exc, LLMNoResponseError) or (
+                isinstance(exc, InternalServerError)
+                and _looks_like_choices_none_error(str(exc))
+            )
+            if should_bump:
                 kwargs = getattr(retry_state, "kwargs", None)
                 if isinstance(kwargs, dict):
                     current_temp = kwargs.get("temperature", 0)
                     if current_temp == 0:
                         kwargs["temperature"] = 1.0
                         logger.warning(
-                            "LLMNoResponseError with temperature=0, "
+                            "LLMNoResponse-like error with temperature=0, "
                             "setting temperature to 1.0 for next attempt."
                         )
                     else:
                         logger.warning(
-                            f"LLMNoResponseError with temperature={current_temp}, "
-                            "keeping original temperature"
+                            "LLMNoResponse-like error with temperature="
+                            f"{current_temp}, keeping original temperature"
                         )
 
-        retry_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
+        tenacity_decorator: Callable[[Callable[..., Any]], Callable[..., Any]] = retry(
             before_sleep=before_sleep,
             stop=stop_after_attempt(num_retries),
             reraise=True,
@@ -78,7 +91,21 @@ class RetryMixin:
                 max=retry_max_wait,
             ),
         )
-        return retry_decorator
+
+        def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+            def wrapped(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return func(*args, **kwargs)
+                except InternalServerError as e:
+                    if _looks_like_choices_none_error(str(e)):
+                        raise LLMNoResponseError(
+                            f"Provider returned malformed response: {e}"
+                        ) from e
+                    raise
+
+            return tenacity_decorator(wrapped)
+
+        return decorator
 
     def log_retry_attempt(self, retry_state: RetryCallState) -> None:
         """Log retry attempts."""

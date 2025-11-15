@@ -538,6 +538,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(messages=formatted_messages, **final_kwargs)
+
             raw_resp: ModelResponse | None = None
             if use_mock_tools:
                 raw_resp = copy.deepcopy(resp)
