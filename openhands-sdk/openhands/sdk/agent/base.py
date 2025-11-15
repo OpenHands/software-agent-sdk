@@ -1,7 +1,6 @@
 import os
 import re
 import sys
-import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
 from typing import TYPE_CHECKING, Any
@@ -16,6 +15,9 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.security import analyzer
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
+from openhands.sdk.utils.deprecation import (
+    warn_deprecated,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
@@ -27,9 +29,8 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
-AGENT_SECURITY_ANALYZER_DEPRECATION_WARNING = (
-    "Agent.security_analyzer is deprecated and will be removed "
-    "in a future release.\n\n use `conversation = Conversation();"
+AGENT_SECURITY_ANALYZER_DEPRECATION_DETAILS = (
+    "Use `conversation = Conversation(); "
     "conversation.set_security_analyzer(...)` instead."
 )
 
@@ -164,9 +165,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         d = dict(data)
 
         if "security_analyzer" in d and d["security_analyzer"]:
-            warnings.warn(
-                AGENT_SECURITY_ANALYZER_DEPRECATION_WARNING,
-                DeprecationWarning,
+            warn_deprecated(
+                "Agent.security_analyzer",
+                deprecated_in="1.1.0",
+                removed_in="1.3.0",
+                details=AGENT_SECURITY_ANALYZER_DEPRECATION_DETAILS,
                 stacklevel=3,
             )
 
