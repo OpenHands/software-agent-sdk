@@ -50,7 +50,24 @@ class Telemetry(BaseModel):
     # ---------- Lifecycle ----------
     def on_request(self, log_ctx: dict | None) -> None:
         self._req_start = time.time()
-        self._req_ctx = log_ctx or {}
+        # Trim heavy fields in request context for readability
+        ctx = log_ctx or {}
+        # Compact tools into minimal metadata if present
+        tools = ctx.get("tools")
+        if isinstance(tools, (list, tuple)):
+            compact_tools = []
+            for t in tools:
+                try:
+                    compact_tools.append(
+                        {
+                            "name": getattr(t, "name", getattr(t, "title", "")),
+                            "kind": t.__class__.__name__,
+                        }
+                    )
+                except Exception:
+                    compact_tools.append(str(t))
+            ctx["tools"] = compact_tools
+        self._req_ctx = ctx
 
     def on_response(
         self,
@@ -239,6 +256,18 @@ class Telemetry(BaseModel):
                 resp  # ModelResponse | ResponsesAPIResponse;
                 # serialized via _safe_json
             )
+            # Omit extremely large system instructions from logs for readability
+            try:
+                if (
+                    isinstance(data["response"], dict)
+                    and "instructions" in data["response"]
+                ):
+                    # Replace with trimmed preview and length
+                    instr = data["response"].get("instructions") or ""
+                    data["response"]["instructions_len"] = len(instr)
+                    data["response"]["instructions"] = "[omitted]"
+            except Exception:
+                pass
             data["cost"] = float(cost or 0.0)
             data["timestamp"] = time.time()
             data["latency_sec"] = self._last_latency
