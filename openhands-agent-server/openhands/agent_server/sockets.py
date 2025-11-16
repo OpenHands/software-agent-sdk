@@ -11,26 +11,27 @@ from dataclasses import dataclass
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import (
-    APIRouter,
-    Query,
-    WebSocket,
-    WebSocketDisconnect,
-)
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
-from openhands.agent_server.config import get_default_config
-from openhands.agent_server.conversation_service import (
-    get_default_conversation_service,
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.dependencies import (
+    get_bash_event_service_ws,
+    get_conversation_service_ws,
+    websocket_session_api_key_dependency_ws,
 )
 from openhands.agent_server.models import BashEventBase, ExecuteBashRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event, Message
 
 
+# Back-compat shim for older tests that patch this symbol
+get_conversation_service = get_conversation_service_ws
+
+# Pure DI: rely exclusively on FastAPI dependencies
+
+
 sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
-conversation_service = get_default_conversation_service()
-bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
 
 
@@ -38,20 +39,14 @@ logger = logging.getLogger(__name__)
 async def events_socket(
     conversation_id: UUID,
     websocket: WebSocket,
-    session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
     resend_all: Annotated[bool, Query()] = False,
+    conv_svc: ConversationService = Depends(get_conversation_service_ws),
+    _auth: None = Depends(websocket_session_api_key_dependency_ws),
 ):
     """WebSocket endpoint for conversation events."""
-    # Perform authentication check before accepting the WebSocket connection
-    config = get_default_config()
-    if config.session_api_keys and session_api_key not in config.session_api_keys:
-        # Close the WebSocket connection with an authentication error code
-        await websocket.close(code=4001, reason="Authentication failed")
-        return
-
     await websocket.accept()
     logger.info(f"Event Websocket Connected: {conversation_id}")
-    event_service = await conversation_service.get_event_service(conversation_id)
+    event_service = await conv_svc.get_event_service(conversation_id)
     if event_service is None:
         logger.warning(f"Converation not found: {conversation_id}")
         await websocket.close(code=4004, reason="Conversation not found")
@@ -87,10 +82,8 @@ async def events_socket(
                 return
             except Exception as e:
                 logger.exception("error_in_subscription", stack_info=True)
-                # For critical errors that indicate the websocket is broken, exit
                 if isinstance(e, (RuntimeError, ConnectionError)):
                     raise
-                # For other exceptions, continue the loop
     finally:
         await event_service.unsubscribe_from_events(subscriber_id)
 
@@ -98,17 +91,11 @@ async def events_socket(
 @sockets_router.websocket("/bash-events")
 async def bash_events_socket(
     websocket: WebSocket,
-    session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
     resend_all: Annotated[bool, Query()] = False,
+    bash_event_service: BashEventService = Depends(get_bash_event_service_ws),
+    _auth: None = Depends(websocket_session_api_key_dependency_ws),
 ):
     """WebSocket endpoint for bash events."""
-    # Perform authentication check before accepting the WebSocket connection
-    config = get_default_config()
-    if config.session_api_keys and session_api_key not in config.session_api_keys:
-        # Close the WebSocket connection with an authentication error code
-        await websocket.close(code=4001, reason="Authentication failed")
-        return
-
     await websocket.accept()
     logger.info("Bash Websocket Connected")
     subscriber_id = await bash_event_service.subscribe_to_events(
@@ -140,10 +127,8 @@ async def bash_events_socket(
                 return
             except Exception as e:
                 logger.exception("error_in_bash_event_subscription", stack_info=True)
-                # For critical errors that indicate the websocket is broken, exit
                 if isinstance(e, (RuntimeError, ConnectionError)):
                     raise
-                # For other exceptions, continue the loop
     finally:
         await bash_event_service.unsubscribe_from_events(subscriber_id)
 

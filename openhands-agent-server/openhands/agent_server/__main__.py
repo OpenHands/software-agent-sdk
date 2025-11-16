@@ -39,7 +39,7 @@ def main():
     log_level = "debug" if DEBUG else "info"
 
     uvicorn.run(
-        "openhands.agent_server.api:api",
+        "openhands.agent_server.api:build_app",
         host=args.host,
         port=args.port,
         reload=args.reload,
@@ -47,6 +47,7 @@ def main():
         log_level=log_level,
         log_config=LOGGING_CONFIG,
         ws="wsproto",  # Use wsproto instead of deprecated websockets implementation
+        factory=True,
     )
 
 

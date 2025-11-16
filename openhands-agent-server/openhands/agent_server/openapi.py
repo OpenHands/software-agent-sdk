@@ -5,12 +5,13 @@ import os
 from pathlib import Path
 from typing import Any
 
-from openhands.agent_server.api import api
+from openhands.agent_server import build_app
 
 
 def generate_openapi_schema() -> dict[str, Any]:
     """Generate an OpenAPI schema"""
-    openapi = api.openapi()
+    app = build_app()
+    openapi = app.openapi()
     return openapi
 
 

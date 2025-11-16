@@ -4,27 +4,26 @@ from uuid import UUID
 
 from fastapi import (
     APIRouter,
+    Depends,
     File,
     HTTPException,
     Path as FastApiPath,
+    Query,
     UploadFile,
     status,
 )
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
-from openhands.agent_server.bash_service import get_default_bash_event_service
-from openhands.agent_server.config import get_default_config
-from openhands.agent_server.conversation_service import get_default_conversation_service
+from openhands.agent_server.bash_service import BashEventService
+from openhands.agent_server.config import Config
+from openhands.agent_server.dependencies import get_bash_event_service, get_config
 from openhands.agent_server.models import ExecuteBashRequest, Success
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
 file_router = APIRouter(prefix="/file", tags=["Files"])
-config = get_default_config()
-conversation_service = get_default_conversation_service()
-bash_event_service = get_default_bash_event_service()
 
 
 @file_router.post("/upload/{path:path}")
@@ -101,12 +100,23 @@ async def download_file(
         )
 
 
+@file_router.get("/download")
+async def download_file_legacy(
+    file_path: Annotated[
+        str, Query(description="Absolute file path (legacy query param).")
+    ],
+) -> FileResponse:
+    # Back-compat for SDK clients that call /api/file/download?file_path=...
+    return await download_file(file_path)
+
+
 @file_router.get("/download-trajectory/{conversation_id}")
 async def download_trajectory(
     conversation_id: UUID,
+    config: Config = Depends(get_config),
+    bash_event_service: BashEventService = Depends(get_bash_event_service),
 ) -> FileResponse:
     """Download a file from the workspace."""
-    config = get_default_config()
     temp_file = config.conversations_path / f"{conversation_id.hex}.zip"
     conversation_dir = config.conversations_path / conversation_id.hex
     _, task = await bash_event_service.start_bash_command(
