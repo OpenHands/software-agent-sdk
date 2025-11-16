@@ -1,4 +1,5 @@
 import warnings
+from collections.abc import Callable
 
 from pydantic import AliasChoices, BaseModel, Field, PrivateAttr
 
@@ -29,6 +30,7 @@ class ConversationStats(BaseModel):
     )
 
     _restored_usage_ids: set[str] = PrivateAttr(default_factory=set)
+    _on_stats_change: Callable[[], None] | None = PrivateAttr(default=None)
 
     @property
     def service_to_metrics(
@@ -83,10 +85,24 @@ class ConversationStats(BaseModel):
         )
         return self.get_metrics_for_usage(service_id)
 
+    def set_on_stats_change(self, callback: Callable[[], None] | None) -> None:
+        """Set a callback to be called when stats change.
+
+        Args:
+            callback: A function to call when stats are updated, or None to remove
+        """
+        self._on_stats_change = callback
+
+        # Wire up the callback to all already-registered metrics
+        for metrics in self.usage_to_metrics.values():
+            metrics.set_on_change(callback)
+
     def register_llm(self, event: RegistryEvent):
         # Listen for LLM creations and track their metrics
         llm = event.llm
         usage_id = llm.usage_id
+
+        stats_changed = False
 
         # Usage costs exist but have not been restored yet
         if (
@@ -99,3 +115,15 @@ class ConversationStats(BaseModel):
         # Usage is new, track its metrics
         if usage_id not in self.usage_to_metrics and llm.metrics:
             self.usage_to_metrics[usage_id] = llm.metrics
+            stats_changed = True
+
+        # Set up callback on the metrics object to get notified of updates
+        if llm.metrics and self._on_stats_change is not None:
+            llm.metrics.set_on_change(self._on_stats_change)
+
+        # Notify of stats change if callback is set and stats changed
+        if stats_changed and self._on_stats_change is not None:
+            try:
+                self._on_stats_change()
+            except Exception:
+                logger.exception("Stats change callback failed", exc_info=True)

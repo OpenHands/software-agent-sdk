@@ -382,3 +382,34 @@ def test_service_shims_expose_usage_data(conversation_stats):
         restored = conversation_stats._restored_services
 
     assert "legacy-service" in restored
+
+
+def test_stats_change_callback_triggered():
+    """Test that stats change callback is triggered when new LLM is registered."""
+    stats = ConversationStats()
+    callback_called = []
+
+    def callback():
+        callback_called.append(True)
+
+    stats.set_on_stats_change(callback)
+
+    # Create and register a new LLM
+    with patch("openhands.sdk.llm.llm.litellm_completion"):
+        llm = LLM(
+            usage_id="test-service",
+            model="gpt-4o",
+            api_key=SecretStr("test_key"),
+            num_retries=2,
+            retry_min_wait=1,
+            retry_max_wait=2,
+        )
+        event = RegistryEvent(llm=llm)
+        stats.register_llm(event)
+
+    # Verify callback was called
+    assert len(callback_called) == 1
+
+    # Register the same LLM again - callback should not be called
+    stats.register_llm(event)
+    assert len(callback_called) == 1  # Still 1, not 2

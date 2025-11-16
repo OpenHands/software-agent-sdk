@@ -1,8 +1,9 @@
 import copy
 import time
+from collections.abc import Callable
 from typing import final
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 
 class Cost(BaseModel):
@@ -111,6 +112,8 @@ class Metrics(MetricsSnapshot):
         default_factory=list, description="List of token usage records"
     )
 
+    _on_change: Callable[[], None] | None = PrivateAttr(default=None)
+
     @field_validator("accumulated_cost")
     @classmethod
     def validate_accumulated_cost(cls, v: float) -> float:
@@ -133,6 +136,23 @@ class Metrics(MetricsSnapshot):
             )
         return self
 
+    def set_on_change(self, callback: Callable[[], None] | None) -> None:
+        """Set a callback to be called when metrics change.
+
+        Args:
+            callback: A function to call when metrics are updated, or None to remove
+        """
+        self._on_change = callback
+
+    def _notify_change(self) -> None:
+        """Notify the callback that metrics have changed."""
+        if self._on_change is not None:
+            try:
+                self._on_change()
+            except Exception:
+                # Avoid breaking metrics updates if callback fails
+                pass
+
     def get_snapshot(self) -> MetricsSnapshot:
         """Get a snapshot of the current metrics without the detailed lists."""
         return MetricsSnapshot(
@@ -149,6 +169,7 @@ class Metrics(MetricsSnapshot):
             raise ValueError("Added cost cannot be negative.")
         self.accumulated_cost += value
         self.costs.append(Cost(cost=value, model=self.model_name))
+        self._notify_change()
 
     def add_response_latency(self, value: float, response_id: str) -> None:
         self.response_latencies.append(
@@ -156,6 +177,7 @@ class Metrics(MetricsSnapshot):
                 latency=max(0.0, value), model=self.model_name, response_id=response_id
             )
         )
+        self._notify_change()
 
     def add_token_usage(
         self,
@@ -201,6 +223,8 @@ class Metrics(MetricsSnapshot):
         else:
             self.accumulated_token_usage = self.accumulated_token_usage + new_usage
 
+        self._notify_change()
+
     def merge(self, other: "Metrics") -> None:
         """Merge 'other' metrics into this one."""
         self.accumulated_cost += other.accumulated_cost
@@ -220,6 +244,8 @@ class Metrics(MetricsSnapshot):
             self.accumulated_token_usage = (
                 self.accumulated_token_usage + other.accumulated_token_usage
             )
+
+        self._notify_change()
 
     def get(self) -> dict:
         """Return the metrics in a dictionary."""

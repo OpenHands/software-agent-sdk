@@ -1,11 +1,12 @@
 """Tests for ConversationState callback mechanism."""
 
 import uuid
+from unittest.mock import patch
 
 import pytest
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent
+from openhands.sdk import LLM, Agent, RegistryEvent
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -175,3 +176,34 @@ def test_callback_receives_correct_new_value(state):
     assert len(callback_calls) == 1
     assert callback_calls[0].key == "max_iterations"
     assert callback_calls[0].value == 100
+
+
+def test_stats_change_triggers_callback(state):
+    """Test that stats changes trigger the state change callback."""
+    callback_calls = []
+
+    def callback(event: ConversationStateUpdateEvent):
+        callback_calls.append(event)
+
+    # Set the callback - this also sets up stats callback
+    state.set_on_state_change(callback)
+
+    # Register a new LLM which will update stats
+    with patch("openhands.sdk.llm.llm.litellm_completion"):
+        llm = LLM(
+            usage_id="new-service",
+            model="gpt-4o",
+            api_key=SecretStr("test_key"),
+            num_retries=2,
+            retry_min_wait=1,
+            retry_max_wait=2,
+        )
+        event = RegistryEvent(llm=llm)
+        state.stats.register_llm(event)
+
+    # Verify callback was called for stats change
+    assert len(callback_calls) == 1
+    assert callback_calls[0].key == "stats"
+    assert isinstance(callback_calls[0].value, dict)
+    assert "usage_to_metrics" in callback_calls[0].value
+    assert "new-service" in callback_calls[0].value["usage_to_metrics"]

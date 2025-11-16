@@ -132,6 +132,28 @@ class ConversationState(OpenHandsModel):
                      or None to remove the callback
         """
         self._on_state_change = callback
+        # Also set up stats change callback to notify when stats are mutated
+        if callback is not None:
+            self.stats.set_on_stats_change(self._notify_stats_change)
+        else:
+            self.stats.set_on_stats_change(None)
+
+    def _notify_stats_change(self) -> None:
+        """Notify state change callback about stats update."""
+        if self._on_state_change is not None:
+            try:
+                from openhands.sdk.event.conversation_state import (
+                    ConversationStateUpdateEvent,
+                )
+
+                # Create a ConversationStateUpdateEvent with the updated stats
+                stats_data = self.stats.model_dump(mode="json")
+                state_update_event = ConversationStateUpdateEvent(
+                    key="stats", value=stats_data
+                )
+                self._on_state_change(state_update_event)
+            except Exception:
+                logger.exception("Stats change notification failed", exc_info=True)
 
     # ===== Base snapshot helpers (same FileStore usage you had) =====
     def _save_base_state(self, fs: FileStore) -> None:
