@@ -89,3 +89,69 @@ def test_bash_executor_with_conversation_secrets():
         finally:
             executor.close()
             conversation.close()
+
+
+def test_bash_executor_metadata_available_secrets():
+    """Test that available secrets are populated in observation metadata."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a conversation with secrets
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+
+        test_secrets = {
+            "SECRET_TOKEN": "secret-value-123",
+            "API_KEY": "another-secret-456",
+            "DATABASE_URL": "postgres://localhost",
+        }
+
+        conversation = Conversation(
+            agent=agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            secrets=test_secrets,
+        )
+
+        # Create executor
+        executor = BashExecutor(working_dir=temp_dir)
+
+        try:
+            # Mock the session to avoid subprocess issues in tests
+            mock_session = Mock()
+            mock_observation = ExecuteBashObservation.from_text(
+                text="Test output",
+                command="echo 'Test command'",
+                exit_code=0,
+            )
+            mock_session.execute.return_value = mock_observation
+            mock_session._closed = False
+            executor.session = mock_session
+
+            # Execute command with conversation
+            action = ExecuteBashAction(command="echo 'Test command'")
+            result = executor(action, conversation=conversation)
+
+            # Verify that available_secrets is populated in metadata
+            assert result.metadata.available_secrets is not None
+            assert len(result.metadata.available_secrets) == 3
+            assert "SECRET_TOKEN" in result.metadata.available_secrets
+            assert "API_KEY" in result.metadata.available_secrets
+            assert "DATABASE_URL" in result.metadata.available_secrets
+
+            # Verify that to_llm_content includes the available secrets
+            llm_content = result.to_llm_content
+            assert len(llm_content) == 1
+            from openhands.sdk.llm import TextContent
+
+            first_content = llm_content[0]
+            assert isinstance(first_content, TextContent)
+            content_text = first_content.text
+            assert "Available secrets:" in content_text
+            assert "$SECRET_TOKEN" in content_text
+            assert "$API_KEY" in content_text
+            assert "$DATABASE_URL" in content_text
+
+        finally:
+            executor.close()
+            conversation.close()
