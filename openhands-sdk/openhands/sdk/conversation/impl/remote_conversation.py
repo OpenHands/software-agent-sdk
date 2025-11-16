@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import threading
 import uuid
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
 )
+from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -423,6 +425,7 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
+    _log_completion_folders: dict[str, str]
 
     def __init__(
         self,
@@ -460,6 +463,13 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
+
+        # Build map of log directories for all LLMs in the agent
+        self._log_completion_folders = {}
+        for llm in agent.get_all_llms():
+            if llm.log_completions:
+                # Map usage_id to log folder
+                self._log_completion_folders[llm.usage_id] = llm.log_completions_folder
 
         if conversation_id is None:
             payload = {
@@ -502,6 +512,11 @@ class RemoteConversation(BaseConversation):
         state_update_callback = self._state.create_state_update_callback()
         self._callbacks.append(state_update_callback)
 
+        # Add callback to handle LLM completion logs
+        if self._log_completion_folders:
+            llm_log_callback = self._create_llm_completion_log_callback()
+            self._callbacks.append(llm_log_callback)
+
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -540,6 +555,48 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
+
+    def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
+        """Create a callback that writes LLM completion logs to client filesystem."""
+
+        def callback(event: Event) -> None:
+            if not isinstance(event, LLMCompletionLogEvent):
+                return
+
+            # Try to find the appropriate log directory based on model name
+            # The model_name might have been extracted from filename, so we need
+            # to match it against configured LLMs
+            log_dir = None
+
+            # Prefer usage_id provided by the event to select the correct folder
+            if isinstance(event, LLMCompletionLogEvent) and event.usage_id:
+                log_dir = self._log_completion_folders.get(event.usage_id)
+
+            # Fallback to the first configured log folder if usage_id unavailable
+            if not log_dir and self._log_completion_folders:
+                log_dir = next(iter(self._log_completion_folders.values()))
+
+            if not log_dir:
+                # No LLMs with logging enabled, skip
+                logger.debug(
+                    "Received LLMCompletionLogEvent but no log directory configured"
+                )
+                return
+
+            try:
+                # Create log directory if it doesn't exist
+                os.makedirs(log_dir, exist_ok=True)
+
+                # Write the log file
+                log_path = os.path.join(log_dir, event.filename)
+                with open(log_path, "w") as f:
+                    f.write(event.log_data)
+
+                logger.debug(f"Wrote LLM completion log to {log_path}")
+            except Exception as e:
+                logger.warning(f"Failed to write LLM completion log: {e}")
+
+        return callback
 
     @property
     def id(self) -> ConversationID:
