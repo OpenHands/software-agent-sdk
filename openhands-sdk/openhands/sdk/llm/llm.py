@@ -522,6 +522,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             }
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
+            # Copy correlation context from litellm_extra_body if present
+            try:
+                ctx = self.litellm_extra_body.get("openhands_context", {})
+                if isinstance(ctx, dict):
+                    cid = ctx.get("conversation_id")
+                    cpath = ctx.get("conversation_path")
+                    if isinstance(cid, str):
+                        log_ctx["conversation_id"] = cid
+                    if isinstance(cpath, str) or cpath is None:
+                        log_ctx["conversation_path"] = cpath
+            except Exception:
+                pass
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -637,6 +649,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 "kwargs": {k: v for k, v in call_kwargs.items()},
                 "context_window": self.max_input_tokens or 0,
             }
+            # Copy correlation context from litellm_extra_body if present
+            try:
+                ctx = self.litellm_extra_body.get("openhands_context", {})
+                if isinstance(ctx, dict):
+                    cid = ctx.get("conversation_id")
+                    cpath = ctx.get("conversation_path")
+                    if isinstance(cid, str):
+                        log_ctx["conversation_id"] = cid
+                    if isinstance(cpath, str) or cpath is None:
+                        log_ctx["conversation_path"] = cpath
+            except Exception:
+                pass
         self._telemetry.on_request(log_ctx=log_ctx)
 
         # Perform call with retries
