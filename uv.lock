@@ -32,6 +32,18 @@ dev = [
 ]
 
 [[package]]
+name = "agent-client-protocol"
+version = "0.6.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/c6/fe/147187918c5ba695db537b3088c441bcace4ac9365fae532bf36b1494769/agent_client_protocol-0.6.3.tar.gz", hash = "sha256:ea01a51d5b55864c606401694dad429d83c5bedb476807d81b8208031d6cf3d8", size = 152382, upload-time = "2025-11-03T20:09:19.027Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/9c/2e/62d1770a489d3356cd75e19cd61583e7e411f1b00ab9859c73048621e4c2/agent_client_protocol-0.6.3-py3-none-any.whl", hash = "sha256:184264bd6988731613a49c9eb89d7ecd23c6afffe905c64f1b604a42a9b20aef", size = 47613, upload-time = "2025-11-03T20:09:17.427Z" },
+]
+
+[[package]]
 name = "aiofiles"
 version = "25.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1985,12 +1997,16 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+acp = [
+    { name = "agent-client-protocol" },
+]
 boto3 = [
     { name = "boto3" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "agent-client-protocol", marker = "extra == 'acp'", specifier = ">=0.4.9" },
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.35.0" },
     { name = "fastmcp", specifier = ">=2.11.3" },
     { name = "httpx", specifier = ">=0.27.0" },
@@ -2002,7 +2018,7 @@ requires-dist = [
     { name = "tenacity", specifier = ">=9.1.2" },
     { name = "websockets", specifier = ">=12" },
 ]
-provides-extras = ["boto3"]
+provides-extras = ["boto3", "acp"]
 
 [[package]]
 name = "openhands-tools"

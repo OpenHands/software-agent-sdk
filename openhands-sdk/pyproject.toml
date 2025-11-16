@@ -18,6 +18,7 @@ dependencies = [
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+acp = ["agent-client-protocol>=0.4.9"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
