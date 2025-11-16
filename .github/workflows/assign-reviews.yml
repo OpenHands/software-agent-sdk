@@ -90,12 +90,21 @@ jobs:
                 2. Were created more than 1 day ago
                 3. CI is passing and there are no merge conflicts
 
-                For each PR that truly has NO reviewers, read the git blame information for the files,
-                and find the most recent and active contributors to the file/location of the changes.
-                Assign one of these people as a reviewer, but try not to assign too many reviews to
-                any single person. Add this message:
+                For each PR that truly has NO reviewers:
+                1) Read git blame for changed files to identify recent, active contributors.
+                2) From those candidates, ONLY consider maintainers — repository collaborators with write access or higher. Verify via the GitHub API before
+                requesting review:
+                   - Preferred: GET /repos/{owner}/{repo}/collaborators/{username}/permission
+                   - Alternative: GET /repos/{owner}/{repo}/collaborators?permission=push and filter results
+                   Treat users as valid only if permission is one of: "push", "maintain", or "admin".
+                   Do NOT assign external contributors without write access; their reviews will not satisfy required approvals.
+                3) If multiple maintainers qualify, balance load by preferring the least-recently assigned reviewer across recent PRs and avoid assigning
+                more than ~3 open reviews to any single maintainer.
+                4) If no maintainer for the touched area is found, fall back to CODEOWNERS, otherwise pick a repo maintainer/admin. Never assign anyone
+                without write access.
+                5) Request review from exactly one maintainer and add this message:
 
-                [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame information.
+                [Automatic Post]: I have assigned {reviewer} as a reviewer based on recent file changes and verified maintainer permissions.
                 Thanks in advance for the help!
 
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
