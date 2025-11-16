@@ -21,6 +21,7 @@ logger = get_logger(__name__)
 
 class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
     session: TerminalSession
+    shell_path: str | None
 
     def __init__(
         self,
@@ -28,6 +29,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
+        shell_path: str | None = None,
     ):
         """Initialize BashExecutor with auto-detected or specified session type.
 
@@ -38,12 +40,16 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             terminal_type: Force a specific session type:
                          ('tmux', 'subprocess').
                          If None, auto-detect based on system capabilities
+            shell_path: Path to the shell binary (for subprocess terminal type only).
+                       If None, will auto-detect bash from PATH.
         """
+        self.shell_path = shell_path
         self.session = create_terminal_session(
             work_dir=working_dir,
             username=username,
             no_change_timeout_seconds=no_change_timeout_seconds,
             terminal_type=terminal_type,
+            shell_path=shell_path,
         )
         self.session.initialize()
         logger.info(
@@ -105,6 +111,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             username=original_username,
             no_change_timeout_seconds=original_no_change_timeout,
             terminal_type=None,  # Let it auto-detect like before
+            shell_path=self.shell_path,
         )
         self.session.initialize()
 

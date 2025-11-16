@@ -229,6 +229,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
+        shell_path: str | None = None,
         executor: ToolExecutor | None = None,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
@@ -244,6 +245,8 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                          If None, auto-detect based on system capabilities:
                          - On Windows: PowerShell if available, otherwise subprocess
                          - On Unix-like: tmux if available, otherwise subprocess
+            shell_path: Path to the shell binary (for subprocess terminal type only).
+                       If None, will auto-detect bash from PATH.
         """
         # Import here to avoid circular imports
         from openhands.tools.terminal.impl import BashExecutor
@@ -259,6 +262,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                 username=username,
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
+                shell_path=shell_path,
             )
 
         # Initialize the parent ToolDefinition with the executor
