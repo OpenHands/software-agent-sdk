@@ -98,7 +98,7 @@ jobs:
                    - Alternative: GET /repos/{owner}/{repo}/collaborators?permission=push and filter results
                    Treat users as valid only if permission is one of: "push", "maintain", or "admin".
                 3) If multiple maintainers qualify, avoid assigning too many reviews to any single one.
-                5) Request review from exactly one maintainer and add this message:
+                4) Request review from exactly one maintainer and add this message:
 
                 [Automatic Post]: I have assigned {reviewer} as a reviewer based on recent file changes and verified maintainer permissions.
                 Thanks in advance for the help!
