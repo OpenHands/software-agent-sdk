@@ -196,7 +196,6 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 * Persistent session: Commands execute in a persistent shell session where environment variables, virtual environments, and working directory persist between commands.
 * Soft timeout: Commands have a soft timeout of 10 seconds, once that's reached, you have the option to continue or interrupt the command (see section below for details)
 * Shell options: Do NOT use `set -e`, `set -eu`, or `set -euo pipefail` in shell scripts or commands in this environment. The runtime may not support them and can cause unusable shell sessions. If you want to run multi-line bash commands, write the commands to a file and then run it, instead.
-* Shell configuration: By default, the tool auto-detects bash from PATH. You can customize the shell binary by passing the `shell_path` parameter when creating the TerminalTool
 
 ### Long-running Commands
 * For commands that may run indefinitely, run them in the background and redirect output to a file, e.g. `python3 app.py > server.log 2>&1 &`.
