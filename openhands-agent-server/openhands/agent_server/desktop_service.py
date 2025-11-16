@@ -17,9 +17,11 @@ logger = get_logger(__name__)
 class DesktopService:
     """Simple desktop service that launches desktop_launch.sh script."""
 
-    def __init__(self):
+    def __init__(self, connection_token: str | None = None):
         self._proc: asyncio.subprocess.Process | None = None
         self.novnc_port: int = int(os.getenv("NOVNC_PORT", "8002"))
+        self.connection_token: str | None = connection_token
+        self.token_file: Path | None = None
 
     async def start(self) -> bool:
         """Start the VNC desktop stack."""
@@ -42,6 +44,23 @@ class DesktopService:
                 p.mkdir(parents=True, exist_ok=True)
         except Exception as e:
             logger.error("Failed preparing directories/ownership: %s", e)
+            return False
+
+        # --- Generate connection token if not set ---
+        if self.connection_token is None:
+            self.connection_token = os.urandom(32).hex()
+            logger.info("Generated VNC connection token")
+
+        # --- Create token file for websockify authentication ---
+        try:
+            self.token_file = home / ".vnc" / "websockify-tokens.conf"
+            # Token file format: <token>: <host>:<port>
+            # Note: space after colon is important
+            self.token_file.write_text(f"{self.connection_token}: 127.0.0.1:5901\n")
+            self.token_file.chmod(0o600)
+            logger.info("Created websockify token file at %s", self.token_file)
+        except Exception as e:
+            logger.error("Failed creating websockify token file: %s", e)
             return False
 
         # --- xstartup for XFCE (create once) ---
@@ -77,6 +96,8 @@ class DesktopService:
         if not xvnc_running:
             logger.info("Starting TigerVNC on %s (%s)...", display, vnc_geometry)
             # vncserver <DISPLAY> -geometry <geom> -depth 24 -localhost yes
+            # Note: We use -localhost yes to ensure VNC only listens on localhost
+            # Authentication is handled by websockify token plugin
             rc = subprocess.run(
                 [
                     "vncserver",
@@ -119,19 +140,27 @@ class DesktopService:
                 logger.error("noVNC proxy not found at %s", novnc_proxy)
                 return False
             logger.info(
-                "Starting noVNC proxy on 0.0.0.0:%d -> 127.0.0.1:5901 ...",
+                (
+                    "Starting noVNC proxy on 0.0.0.0:%d with token authentication "
+                    "(token file: %s) ..."
+                ),
                 self.novnc_port,
+                self.token_file,
             )
             try:
                 # Store this as the managed long-running process
+                # Use token-based authentication with TokenFile plugin
+                # Don't specify --vnc target; it comes from the token file
                 self._proc = await asyncio.create_subprocess_exec(
                     str(novnc_proxy),
                     "--listen",
                     f"0.0.0.0:{self.novnc_port}",
-                    "--vnc",
-                    "127.0.0.1:5901",
                     "--web",
                     str(novnc_web),
+                    "--token-plugin",
+                    "TokenFile",
+                    "--token-source",
+                    str(self.token_file),
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.STDOUT,
                     env=env,
@@ -187,10 +216,24 @@ class DesktopService:
             return False
 
     def get_vnc_url(self, base: str = "http://localhost:8003") -> str | None:
-        """Get the noVNC URL for desktop access."""
+        """Get the noVNC URL for desktop access with authentication token.
+
+        Args:
+            base: Base URL for the noVNC server
+
+        Returns:
+            noVNC URL with token if available, None otherwise
+        """
         if not self.is_running():
             return None
-        return f"{base}/vnc.html?autoconnect=1&resize=remote"
+        if self.connection_token is None:
+            return None
+        return (
+            f"{base}/vnc.html?"
+            f"path={base.split('://', 1)[-1]}/websockify&"
+            f"token={self.connection_token}&"
+            f"autoconnect=1&resize=remote"
+        )
 
 
 # ------- module-level accessor -------
@@ -208,5 +251,8 @@ def get_desktop_service() -> DesktopService | None:
         return None
 
     if _desktop_service is None:
-        _desktop_service = DesktopService()
+        connection_token = None
+        if config.session_api_keys:
+            connection_token = config.session_api_keys[0]
+        _desktop_service = DesktopService(connection_token=connection_token)
     return _desktop_service
