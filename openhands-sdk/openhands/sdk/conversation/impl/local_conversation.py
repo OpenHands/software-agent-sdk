@@ -13,7 +13,11 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -21,10 +25,11 @@ from openhands.sdk.conversation.visualizer import (
 from openhands.sdk.event import (
     MessageEvent,
     PauseEvent,
+    StreamingDeltaEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
-from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.llm import LLM, LLMStreamChunk, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
@@ -49,6 +54,8 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
 
+    _on_token: ConversationTokenCallbackType | None
+
     def __init__(
         self,
         agent: AgentBase,
@@ -56,6 +63,7 @@ class LocalConversation(BaseConversation):
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
@@ -76,6 +84,7 @@ class LocalConversation(BaseConversation):
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
+            token_callbacks: Optional list of callbacks invoked for streaming deltas
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -154,6 +163,43 @@ class LocalConversation(BaseConversation):
         self.llm_registry.subscribe(self._state.stats.register_llm)
         for llm in list(self.agent.get_all_llms()):
             self.llm_registry.add(llm)
+
+        def _compose_token_callbacks(
+            callbacks: list[ConversationTokenCallbackType],
+        ) -> ConversationTokenCallbackType:
+            def _composed(event):
+                for cb in callbacks:
+                    cb(event)
+
+            return _composed
+
+        user_token_callback = (
+            _compose_token_callbacks(token_callbacks) if token_callbacks else None
+        )
+
+        def _handle_stream_event(stream_chunk: LLMStreamChunk) -> None:
+            try:
+                self._on_event(
+                    StreamingDeltaEvent(source="agent", stream_chunk=stream_chunk)
+                )
+            except Exception:
+                logger.exception("stream_event_processing_error", exc_info=True)
+            if user_token_callback:
+                user_token_callback(stream_chunk)
+
+        streaming_enabled = user_token_callback is not None
+
+        if callbacks:
+            for cb in callbacks:
+                owner = getattr(cb, "__self__", None)
+                if owner is not None and getattr(owner, "requires_streaming", False):
+                    streaming_enabled = True
+                    break
+
+        if self._visualizer and getattr(self._visualizer, "requires_streaming", False):
+            streaming_enabled = True
+
+        self._on_token = _handle_stream_event if streaming_enabled else None
 
         # Initialize secrets if provided
         if secrets:
@@ -303,8 +349,17 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    # step must mutate the SAME state object
-                    self.agent.step(self, on_event=self._on_event)
+                    if self._on_token is not None:
+                        self.agent.step(
+                            self,
+                            on_event=self._on_event,
+                            on_token=self._on_token,
+                        )
+                    else:
+                        self.agent.step(
+                            self,
+                            on_event=self._on_event,
+                        )
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -429,12 +484,15 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        for tool in self.agent.tools_map.values():
+        try:
+            tools = list(self.agent.tools_map.values())
+        except RuntimeError:
+            tools = []
+        for tool in tools:
             try:
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
             except NotImplementedError:
-                # Tool has no executor, skip it
                 continue
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")

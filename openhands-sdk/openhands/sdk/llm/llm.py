@@ -50,7 +50,11 @@ from litellm.exceptions import (
     Timeout as LiteLLMTimeout,
 )
 from litellm.responses.main import responses as litellm_responses
-from litellm.types.llms.openai import ResponsesAPIResponse
+from litellm.types.llms.openai import (
+    ResponsesAPIResponse,
+    ResponsesAPIStreamEvents,
+    ResponsesAPIStreamingResponse,
+)
 from litellm.types.utils import ModelResponse
 from litellm.utils import (
     create_pretrained_tokenizer,
@@ -71,6 +75,11 @@ from openhands.sdk.llm.message import (
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
+from openhands.sdk.llm.streaming import (
+    LLMStreamChunk,
+    StreamPartKind,
+    TokenCallbackType,
+)
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
@@ -97,6 +106,22 @@ SERVICE_ID_DEPRECATION_MSG = (
     "LLM.service_id is deprecated and will be removed in a future release; "
     "use LLM.usage_id instead."
 )
+
+RESPONSES_COMPLETION_EVENT_TYPES = {
+    ResponsesAPIStreamEvents.RESPONSE_COMPLETED.value,
+    ResponsesAPIStreamEvents.RESPONSE_FAILED.value,
+    ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE.value,
+}
+RESPONSES_FINAL_EVENT_TYPES = RESPONSES_COMPLETION_EVENT_TYPES | {
+    ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE.value,
+    ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DONE.value,
+    ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE.value,
+    ResponsesAPIStreamEvents.REFUSAL_DONE.value,
+    ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE.value,
+    ResponsesAPIStreamEvents.MCP_CALL_COMPLETED.value,
+    ResponsesAPIStreamEvents.MCP_CALL_FAILED.value,
+    ResponsesAPIStreamEvents.ERROR.value,
+}
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -256,6 +281,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description=(
             "Unique usage identifier for the LLM. Used for registry lookups, "
             "telemetry, and spend tracking."
+        ),
+    )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Additional metadata for the LLM instance. "
+            "Example structure: "
+            "{'trace_version': '1.0.0', 'tags': ['model:gpt-4', 'agent:my-agent'], "
+            "'session_id': 'session-123', 'trace_user_id': 'user-456'}"
         ),
     )
     litellm_extra_body: dict[str, Any] = Field(
@@ -453,6 +487,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate a completion from the language model.
@@ -473,8 +508,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> print(response.content)
         """
         # Check if streaming is requested
-        if kwargs.get("stream", False):
-            raise ValueError("Streaming is not supported")
+        if on_token is not None or kwargs.get("stream", False):
+            raise ValueError("Streaming is not supported for completion API yet")
 
         # 1) serialize messages
         formatted_messages = self.format_messages_for_llm(messages)
@@ -594,16 +629,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
 
         Maps Message[] -> (instructions, input[]) and returns LLMResponse.
-        Non-stream only for v1.
+        Streaming is enabled when ``on_token`` is provided.
         """
-        # Streaming not yet supported
-        if kwargs.get("stream", False):
-            raise ValueError("Streaming is not supported for Responses API yet")
+        user_requested_stream = bool(kwargs.get("stream", False))
+        if user_requested_stream and on_token is None:
+            raise ValueError(
+                "Streaming for Responses API requires an on_token callback"
+            )
+
+        if on_token is not None:
+            kwargs["stream"] = True
+        else:
+            kwargs.pop("stream", None)
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
@@ -648,7 +691,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_multiplier=self.retry_multiplier,
             retry_listener=self.retry_listener,
         )
-        def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+        def _one_attempt(**retry_kwargs):
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
@@ -675,16 +718,24 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         seed=self.seed,
                         **final_kwargs,
                     )
+                    if self._is_responses_stream_result(ret):
+                        return ret
+
                     assert isinstance(ret, ResponsesAPIResponse), (
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
                     # telemetry (latency, cost). Token usage mapping we handle after.
                     assert self._telemetry is not None
+
                     self._telemetry.on_response(ret)
                     return ret
 
         try:
-            resp: ResponsesAPIResponse = _one_attempt()
+            raw_resp = _one_attempt()
+            if self._is_responses_stream_result(raw_resp):
+                resp = self._consume_responses_stream(raw_resp, on_token=on_token)
+            else:
+                resp = cast(ResponsesAPIResponse, raw_resp)
 
             # Parse output -> Message (typed)
             # Cast to a typed sequence
@@ -709,9 +760,172 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 raise mapped from e
             raise
 
+    @staticmethod
+    def _is_responses_stream_result(candidate: Any) -> bool:
+        if isinstance(candidate, ResponsesAPIResponse):
+            return False
+        return (
+            hasattr(candidate, "__iter__")
+            and (hasattr(candidate, "__next__") or hasattr(candidate, "__aiter__"))
+            and hasattr(candidate, "finished")
+        )
+
+    def _consume_responses_stream(
+        self,
+        stream: Any,
+        *,
+        on_token: TokenCallbackType | None,
+    ) -> ResponsesAPIResponse:
+        final_response: ResponsesAPIResponse | None = None
+        for chunk in stream:
+            event = self._stream_event_from_responses_chunk(chunk)
+            if event is not None and on_token is not None:
+                on_token(event)
+
+            if event is not None and event.type in RESPONSES_COMPLETION_EVENT_TYPES:
+                response_candidate = self._get_chunk_attr(chunk, "response")
+                if isinstance(response_candidate, ResponsesAPIResponse):
+                    final_response = response_candidate
+
+        if final_response is None:
+            completion_event = getattr(stream, "completed_response", None)
+            if completion_event is not None:
+                response_candidate = self._get_chunk_attr(completion_event, "response")
+                if isinstance(response_candidate, ResponsesAPIResponse):
+                    final_response = response_candidate
+
+        if final_response is None:
+            raise LLMNoResponseError(
+                "Streaming ended without a completion event from the provider."
+            )
+
+        assert self._telemetry is not None
+        self._telemetry.on_response(final_response)
+        return final_response
+
+    def _stream_event_from_responses_chunk(
+        self, chunk: ResponsesAPIStreamingResponse | Any
+    ) -> LLMStreamChunk | None:
+        event_type_obj = self._get_chunk_attr(chunk, "type")
+        if event_type_obj is None:
+            return None
+
+        if isinstance(event_type_obj, ResponsesAPIStreamEvents):
+            event_value = event_type_obj.value
+        else:
+            event_value = str(event_type_obj)
+
+        stream_chunk = LLMStreamChunk(
+            type=event_value,
+            output_index=self._get_chunk_attr(chunk, "output_index"),
+            content_index=self._get_chunk_attr(chunk, "content_index"),
+            item_id=self._get_chunk_attr(chunk, "item_id"),
+            raw_chunk=chunk,
+            response_id=self._get_chunk_response_id(chunk),
+        )
+
+        if event_value in RESPONSES_FINAL_EVENT_TYPES:
+            stream_chunk.is_final = True
+
+        text_value = self._get_chunk_text(chunk)
+        arguments_value = self._get_chunk_arguments(chunk)
+        part_kind: StreamPartKind = "unknown"
+
+        if event_value in {
+            ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA.value,
+            ResponsesAPIStreamEvents.OUTPUT_TEXT_DONE.value,
+        }:
+            part_kind = "assistant_message"
+        elif event_value in {
+            ResponsesAPIStreamEvents.REASONING_SUMMARY_TEXT_DELTA.value,
+        }:
+            part_kind = "reasoning_summary"
+        elif event_value in {
+            ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DELTA.value,
+            ResponsesAPIStreamEvents.FUNCTION_CALL_ARGUMENTS_DONE.value,
+            ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DELTA.value,
+            ResponsesAPIStreamEvents.MCP_CALL_ARGUMENTS_DONE.value,
+        }:
+            part_kind = "function_call_arguments"
+        elif event_value in {
+            ResponsesAPIStreamEvents.REFUSAL_DELTA.value,
+            ResponsesAPIStreamEvents.REFUSAL_DONE.value,
+        }:
+            part_kind = "refusal"
+        elif event_value in {
+            ResponsesAPIStreamEvents.RESPONSE_CREATED.value,
+            ResponsesAPIStreamEvents.RESPONSE_IN_PROGRESS.value,
+            ResponsesAPIStreamEvents.RESPONSE_COMPLETED.value,
+            ResponsesAPIStreamEvents.RESPONSE_FAILED.value,
+            ResponsesAPIStreamEvents.RESPONSE_INCOMPLETE.value,
+            ResponsesAPIStreamEvents.OUTPUT_ITEM_ADDED.value,
+            ResponsesAPIStreamEvents.OUTPUT_ITEM_DONE.value,
+            ResponsesAPIStreamEvents.RESPONSE_PART_ADDED.value,
+            ResponsesAPIStreamEvents.CONTENT_PART_ADDED.value,
+            ResponsesAPIStreamEvents.CONTENT_PART_DONE.value,
+            ResponsesAPIStreamEvents.FILE_SEARCH_CALL_IN_PROGRESS.value,
+            ResponsesAPIStreamEvents.FILE_SEARCH_CALL_SEARCHING.value,
+            ResponsesAPIStreamEvents.FILE_SEARCH_CALL_COMPLETED.value,
+            ResponsesAPIStreamEvents.MCP_CALL_IN_PROGRESS.value,
+            ResponsesAPIStreamEvents.MCP_CALL_COMPLETED.value,
+            ResponsesAPIStreamEvents.MCP_CALL_FAILED.value,
+            ResponsesAPIStreamEvents.WEB_SEARCH_CALL_IN_PROGRESS.value,
+            ResponsesAPIStreamEvents.WEB_SEARCH_CALL_SEARCHING.value,
+            ResponsesAPIStreamEvents.WEB_SEARCH_CALL_COMPLETED.value,
+            ResponsesAPIStreamEvents.ERROR.value,
+            "response.reasoning_summary_part.added",
+        }:
+            part_kind = "status"
+
+        stream_chunk.part_kind = part_kind
+
+        if part_kind in {"assistant_message", "reasoning_summary", "refusal"}:
+            if text_value:
+                stream_chunk.text_delta = text_value
+        if part_kind == "function_call_arguments" and arguments_value:
+            stream_chunk.arguments_delta = arguments_value
+
+        return stream_chunk
+
+    def _get_chunk_response_id(self, chunk: Any) -> str | None:
+        response = self._get_chunk_attr(chunk, "response")
+        response_id = getattr(response, "id", None) if response is not None else None
+        if isinstance(response_id, str) and response_id:
+            return response_id
+        response_id = self._get_chunk_attr(chunk, "response_id")
+        if isinstance(response_id, str) and response_id:
+            return response_id
+        return None
+
+    @staticmethod
+    def _get_chunk_attr(chunk: Any, attr: str, default: Any = None) -> Any:
+        if hasattr(chunk, attr):
+            return getattr(chunk, attr)
+        if isinstance(chunk, dict):
+            return chunk.get(attr, default)
+        return default
+
+    def _get_chunk_text(self, chunk: Any) -> str | None:
+        text = self._get_chunk_attr(chunk, "delta")
+        if not isinstance(text, str) or text == "":
+            text = self._get_chunk_attr(chunk, "text")
+        if (text is None or text == "") and self._get_chunk_attr(chunk, "part"):
+            part = self._get_chunk_attr(chunk, "part")
+            text = self._get_chunk_attr(part, "text")
+        if isinstance(text, str) and text:
+            return text
+        return None
+
+    def _get_chunk_arguments(self, chunk: Any) -> str | None:
+        arguments = self._get_chunk_attr(chunk, "arguments")
+        if not isinstance(arguments, str) or arguments == "":
+            arguments = self._get_chunk_attr(chunk, "delta")
+        if isinstance(arguments, str) and arguments:
+            return arguments
+        return None
+
     # =========================================================================
     # Transport + helpers
-    # =========================================================================
     def _transport_call(
         self, *, messages: list[dict[str, Any]], **kwargs
     ) -> ModelResponse:

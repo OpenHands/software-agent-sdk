@@ -10,6 +10,7 @@ from openhands.sdk.context.view import View
 from openhands.sdk.conversation import (
     ConversationCallbackType,
     ConversationState,
+    ConversationTokenCallbackType,
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -87,6 +88,10 @@ class Agent(AgentBase):
         data["system_prompt_kwargs"] = kwargs
         return data
 
+    @property
+    def _add_security_risk_prediction(self) -> bool:
+        return isinstance(self.security_analyzer, LLMSecurityAnalyzer)
+
     def init_state(
         self,
         state: ConversationState,
@@ -132,6 +137,7 @@ class Agent(AgentBase):
         self,
         conversation: LocalConversation,
         on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
@@ -180,13 +186,17 @@ class Agent(AgentBase):
                     tools=list(self.tools_map.values()),
                     include=None,
                     store=False,
-                    add_security_risk_prediction=True,
+                    add_security_risk_prediction=self._add_security_risk_prediction,
+                    metadata=self.llm.metadata,
+                    on_token=on_token,
                 )
             else:
                 llm_response = self.llm.completion(
                     messages=_messages,
                     tools=list(self.tools_map.values()),
-                    add_security_risk_prediction=True,
+                    extra_body={"metadata": self.llm.metadata},
+                    add_security_risk_prediction=self._add_security_risk_prediction,
+                    on_token=on_token,
                 )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
