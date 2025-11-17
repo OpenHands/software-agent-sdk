@@ -25,9 +25,9 @@ on:
                     - '50'
                     - '200'
             models:
-                description: Comma-separated model configurations to evaluate (e.g. "claude_sonnet_4_5,haiku_4_5")
+                description: Comma-separated model configurations to evaluate (e.g. "claude-sonnet-4-5-20250929,claude-haiku-4-5-20251001")
                 required: true
-                default: claude_sonnet_4_5
+                default: claude-sonnet-4-5-20250929
                 type: string
             reason:
                 description: Reason for manual trigger
@@ -38,14 +38,14 @@ env:
     # Environment variable for the master GitHub issue number where all evaluation results will be commented
     # This should be set to the issue number where you want all evaluation results to be posted
     MASTER_EVAL_ISSUE_NUMBER: ${{ vars.MASTER_EVAL_ISSUE_NUMBER || '0' }}
-    DEFAULT_MODEL_ID: claude_sonnet_4_5
+    DEFAULT_MODEL_ID: claude-sonnet-4-5-20250929
     MODELS_JSON: >-
         [
-          {"id":"claude_sonnet_4_5","display_name":"Claude Sonnet 4.5","llm_config":{"model":"litellm_proxy/claude-sonnet-4-5-20250929","temperature":0.0}},
-          {"id":"haiku_4_5","display_name":"Claude Haiku 4.5","llm_config":{"model":"litellm_proxy/claude-haiku-4-5-20251001","temperature":0.0}},
-          {"id":"gpt_5_mini","display_name":"GPT-5 Mini","llm_config":{"model":"litellm_proxy/gpt-5-mini-2025-08-07","temperature":1.0}},
-          {"id":"deepseek_chat","display_name":"DeepSeek Chat","llm_config":{"model":"litellm_proxy/deepseek/deepseek-chat"}},
-          {"id":"kimi_k2_thinking","display_name":"Kimi K2 Thinking","llm_config":{"model":"litellm_proxy/moonshot/kimi-k2-thinking"}}
+          {"id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","llm_config":{"model":"litellm_proxy/claude-sonnet-4-5-20250929","temperature":0.0}},
+          {"id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5","llm_config":{"model":"litellm_proxy/claude-haiku-4-5-20251001","temperature":0.0}},
+          {"id":"gpt-5-mini-2025-08-07","display_name":"GPT-5 Mini","llm_config":{"model":"litellm_proxy/gpt-5-mini-2025-08-07","temperature":1.0}},
+          {"id":"deepseek-chat","display_name":"DeepSeek Chat","llm_config":{"model":"litellm_proxy/deepseek/deepseek-chat"}},
+          {"id":"kimi-k2-thinking","display_name":"Kimi K2 Thinking","llm_config":{"model":"litellm_proxy/moonshot/kimi-k2-thinking"}}
         ]
 
 jobs:
