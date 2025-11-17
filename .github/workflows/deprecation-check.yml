@@ -20,4 +20,4 @@ jobs:
                   enable-cache: true
 
             - name: Verify deprecation removals
-              run: uv run python scripts/check_deprecations.py
+              run: uv run --with packaging python scripts/check_deprecations.py

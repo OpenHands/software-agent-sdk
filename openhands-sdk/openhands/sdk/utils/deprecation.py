@@ -109,7 +109,7 @@ def warn_deprecated(
 
     warning_cls = UnsupportedWarning if is_unsupported else DeprecatedWarning
     warning = warning_cls(feature, deprecated_in, removed_in, details)
-    warnings.warn(warning, category=DeprecationWarning, stacklevel=stacklevel)
+    warnings.warn(warning, stacklevel=stacklevel)
 
 
 __all__ = [
