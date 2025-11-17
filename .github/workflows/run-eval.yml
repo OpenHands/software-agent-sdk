@@ -1,7 +1,8 @@
 ---
-# Run evaluation on SDK PRs, releases, or manually (mirrors v0 flow)
-name: Run SDK Eval
+# Run evaluation on a PR, after releases, or manually
+name: Run Eval
 
+# Runs when a PR is labeled with one of the "run-eval-" labels, after releases, or manually triggered
 on:
     pull_request:
         types: [labeled]
@@ -10,11 +11,11 @@ on:
     workflow_dispatch:
         inputs:
             branch:
-                description: Branch or tag to evaluate
+                description: Branch to evaluate
                 required: true
                 default: main
             eval_instances:
-                description: Number of SWE-bench instances
+                description: Number of evaluation instances
                 required: true
                 default: '50'
                 type: choice
@@ -23,29 +24,28 @@ on:
                     - '5'
                     - '50'
                     - '200'
-            model:
-                description: Model configuration to evaluate
+            models:
+                description: Comma-separated model configurations to evaluate (e.g. "claude_sonnet_4_5,haiku_4_5")
                 required: true
-                default: sonnet-4-5
-                type: choice
-                options:
-                    - sonnet-4-5
-                    - haiku-4-5
+                default: claude_sonnet_4_5
+                type: string
             reason:
                 description: Reason for manual trigger
                 required: false
                 default: ''
 
 env:
+    # Environment variable for the master GitHub issue number where all evaluation results will be commented
+    # This should be set to the issue number where you want all evaluation results to be posted
     MASTER_EVAL_ISSUE_NUMBER: ${{ vars.MASTER_EVAL_ISSUE_NUMBER || '0' }}
-    BENCHMARKS_REPO: https://github.com/OpenHands/benchmarks.git
-    BENCHMARKS_REF: main
     MODELS_JSON: >-
         [
-          {"id":"sonnet-4-5","llm_model":"litellm_proxy/anthropic/claude-sonnet-4-5-20250929","display_name":"Claude 3.5 Sonnet"},
-          {"id":"haiku-4-5","llm_model":"litellm_proxy/anthropic/claude-haiku-4-5-20251001","display_name":"Claude 3.5 Haiku"}
+          {"id":"claude_sonnet_4_5","display_name":"Claude Sonnet 4.5","llm_config":{"model":"litellm_proxy/claude-sonnet-4-5-20250929","temperature":0.0}},
+          {"id":"haiku_4_5","display_name":"Claude Haiku 4.5","llm_config":{"model":"litellm_proxy/claude-haiku-4-5-20251001","temperature":0.0}},
+          {"id":"gpt_5_mini","display_name":"GPT-5 Mini","llm_config":{"model":"litellm_proxy/gpt-5-mini-2025-08-07","temperature":1.0}},
+          {"id":"deepseek_chat","display_name":"DeepSeek Chat","llm_config":{"model":"litellm_proxy/deepseek/deepseek-chat"}},
+          {"id":"kimi_k2_thinking","display_name":"Kimi K2 Thinking","llm_config":{"model":"litellm_proxy/moonshot/kimi-k2-thinking"}}
         ]
-    RELEASE_INSTANCE_COUNT: '200'
 
 jobs:
     trigger-eval:
@@ -74,7 +74,6 @@ jobs:
                   REPO: ${{ github.repository }}
                   RUN_ID: ${{ github.run_id }}
                   MODELS_JSON: ${{ env.MODELS_JSON }}
-                  RELEASE_INSTANCE_COUNT: ${{ env.RELEASE_INSTANCE_COUNT }}
               run: |
                   python <<'PY'
                   import json
@@ -102,7 +101,7 @@ jobs:
                       model = models[model_id]
                       return {
                           "model_id": model_id,
-                          "llm_model": model["llm_model"],
+                          "llm_config": model["llm_config"],
                           "display_name": model["display_name"],
                           "eval_instances": eval_instances,
                       }
@@ -125,11 +124,17 @@ jobs:
                       trigger_type = "pull_request_label"
                   elif event_name == "workflow_dispatch":
                       inputs = event.get("inputs", {})
-                      model_id = inputs.get("model") or "sonnet-4-5"
+                      raw_models = inputs.get("models") or "claude_sonnet_4_5"
                       eval_instances = inputs.get("eval_instances") or "50"
-                      if model_id not in models:
-                          raise SystemExit(f"Unsupported model '{model_id}'")
-                      targets = [build_target(model_id, eval_instances)]
+                      requested_models = [
+                          m.strip() for m in raw_models.split(",") if m.strip()
+                      ]
+                      if not requested_models:
+                          raise SystemExit("No valid models provided in 'models' input")
+                      invalid = [m for m in requested_models if m not in models]
+                      if invalid:
+                          raise SystemExit(f"Unsupported model(s) {invalid!r}")
+                      targets = [build_target(model_id, eval_instances) for model_id in requested_models]
                       sdk_ref = inputs.get("branch") or "main"
                       reason = inputs.get("reason") or "Manual trigger"
                       trigger_desc = f"Manual trigger ({reason})"
@@ -140,7 +145,7 @@ jobs:
                       if not sdk_ref:
                           sdk_ref = event.get("ref", "main")
                       targets = [
-                          build_target(model_id, os.environ["RELEASE_INSTANCE_COUNT"])
+                          build_target(model_id, "200")
                           for model_id in models
                       ]
                       trigger_desc = f"Release {sdk_ref}"
@@ -169,8 +174,6 @@ jobs:
                   SDK_REF: ${{ steps.params.outputs.sdk_ref }}
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
                   TARGETS: ${{ steps.params.outputs.targets }}
-                  BENCHMARKS_REPO: ${{ env.BENCHMARKS_REPO }}
-                  BENCHMARKS_REF: ${{ env.BENCHMARKS_REF }}
                   TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
                   TRIGGER_TYPE: ${{ steps.params.outputs.trigger_type }}
               run: |
@@ -181,18 +184,16 @@ jobs:
 
                   echo "$TARGETS" | jq -c '.[]' | while read -r target; do
                     model_id=$(echo "$target" | jq -r '.model_id')
-                    llm_model=$(echo "$target" | jq -r '.llm_model')
+                    llm_config=$(echo "$target" | jq -c '.llm_config')
                     eval_instances=$(echo "$target" | jq -r '.eval_instances')
 
                     payload=$(jq -n \
                       --arg repo "$SDK_REPO" \
                       --arg sdk_ref "$SDK_REF" \
-                      --arg benchmarks_repo "$BENCHMARKS_REPO" \
-                      --arg benchmarks_ref "$BENCHMARKS_REF" \
                       --arg pr "$PR_NUMBER" \
                       --arg instances "$eval_instances" \
                       --arg model_id "$model_id" \
-                      --arg llm_model "$llm_model" \
+                      --arg llm_config "$llm_config" \
                       --arg trigger_desc "$TRIGGER_DESC" \
                       --arg trigger_type "$TRIGGER_TYPE" \
                       '{
@@ -200,12 +201,12 @@ jobs:
                         "inputs": {
                           "sdk-repo": $repo,
                           "sdk-ref": $sdk_ref,
-                          "benchmarks-repo": $benchmarks_repo,
-                          "benchmarks-ref": $benchmarks_ref,
+                          "benchmarks-repo": "https://github.com/OpenHands/benchmarks.git",
+                          "benchmarks-ref": "main",
                           "pr-number": $pr,
                           "eval-instances": $instances,
                           "llm-model-id": $model_id,
-                          "llm-model": $llm_model,
+                          "llm-config": $llm_config,
                           "trigger-description": $trigger_desc,
                           "trigger_type": $trigger_type
                         }
