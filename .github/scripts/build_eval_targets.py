@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Helper for run-eval workflow to compute target model configs."""
+"""Emit the model targets JSON for the run-eval workflow.
+
+The workflow needs to loop over models differently depending on trigger type:
+release triggers run every configured model, workflow_dispatch accepts a
+comma-separated selection, and PR labels fall back to a single default model.
+This helper centralizes that logic, validates model IDs, and writes the
+`targets` / `models_text` outputs for later steps.
+"""
 
 from __future__ import annotations
 
