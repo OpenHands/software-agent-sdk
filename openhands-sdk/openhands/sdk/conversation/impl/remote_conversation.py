@@ -27,7 +27,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.logger import get_logger
+from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -67,7 +67,7 @@ def _send_request(
         )
         raise e
     except httpx.RequestError as e:
-        logger.error(f"Request failed: {e}", exc_info=True)
+        logger.error(f"Request failed: {e}", exc_info=DEBUG)
         raise e
 
 
