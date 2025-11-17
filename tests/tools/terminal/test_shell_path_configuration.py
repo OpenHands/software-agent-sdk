@@ -42,6 +42,7 @@ def test_shell_path_auto_detection():
         # Should use auto-detected bash
         assert session.terminal.shell_path is None  # Not set until initialize
         session.initialize()
+        assert session.terminal.shell_path is not None
         session.close()
 
 
