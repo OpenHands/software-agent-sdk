@@ -156,7 +156,7 @@ jobs:
                         }
                       }')
 
-                    curl -sS -X POST \
+                    curl -X POST \
                       -H "Authorization: Bearer $PAT_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
                       -d "$payload" \
@@ -175,7 +175,7 @@ jobs:
                       TRIGGER_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
                       slack_text="Manual trigger ($reason) has triggered evaluation on $EVAL_INSTANCES instances with models: $MODELS_TEXT for branch $EVAL_BRANCH."
                     fi
-                    curl -sS -X POST -H 'Content-type: application/json' --data "{\"text\":\"$slack_text\"}" \
+                    curl -X POST -H 'Content-type: application/json' --data '{"text":"'"$slack_text"'"}' \
                       https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}
                   fi
 
