@@ -75,6 +75,7 @@ def test_custom_security_policy_in_system_message():
         system_prompt_path = Path(temp_dir) / "system_prompt.j2"
         original_prompt_dir = (
             Path(__file__).parent.parent.parent.parent
+            / "openhands-sdk"
             / "openhands"
             / "sdk"
             / "agent"
