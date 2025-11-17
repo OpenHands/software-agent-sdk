@@ -60,6 +60,9 @@ jobs:
         steps:
             - name: Checkout repository
               uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.event_name == 'pull_request' && github.head_ref || (github.event_name == 'workflow_dispatch' && 
+                      github.event.inputs.branch) || github.ref }}
 
             - name: Determine evaluation parameters
               id: params
