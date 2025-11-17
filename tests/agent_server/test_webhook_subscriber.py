@@ -32,7 +32,7 @@ def mock_event_service():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         # Mock httpx.get to prevent HTTP calls to staging server during LLM init
-        with patch("openhands.sdk.llm.llm.httpx.get") as mock_get:
+        with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
             mock_get.return_value = MagicMock(json=lambda: {"data": []})
             service = EventService(
                 stored=StoredConversation(
