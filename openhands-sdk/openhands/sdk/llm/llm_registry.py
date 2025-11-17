@@ -110,7 +110,7 @@ class LLMRegistry:
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))
-        logger.info(
+        logger.debug(
             f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )
 
