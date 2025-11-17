@@ -52,8 +52,8 @@ class LocalConversation(BaseConversation):
     def __init__(
         self,
         agent: AgentBase,
-        workspace: str | LocalWorkspace,
-        persistence_dir: str | None = None,
+        workspace: str | Path | LocalWorkspace,
+        persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
@@ -68,8 +68,10 @@ class LocalConversation(BaseConversation):
 
         Args:
             agent: The agent to use for the conversation
-            workspace: Working directory for agent operations and tool execution
-            persistence_dir: Directory for persisting conversation state and events
+            workspace: Working directory for agent operations and tool execution.
+                Can be a string path, Path object, or LocalWorkspace instance.
+            persistence_dir: Directory for persisting conversation state and events.
+                Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
@@ -88,14 +90,16 @@ class LocalConversation(BaseConversation):
         self._cleanup_initiated = False
 
         self.agent = agent
-        if isinstance(workspace, str):
+        if isinstance(workspace, (str, Path)):
+            # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
         assert isinstance(workspace, LocalWorkspace), (
             "workspace must be a LocalWorkspace instance"
         )
         self.workspace = workspace
-        if not Path(self.workspace.working_dir).exists():
-            Path(self.workspace.working_dir).mkdir(parents=True, exist_ok=True)
+        ws_path = Path(self.workspace.working_dir)
+        if not ws_path.exists():
+            ws_path.mkdir(parents=True, exist_ok=True)
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()

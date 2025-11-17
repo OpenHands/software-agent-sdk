@@ -321,7 +321,7 @@ class Telemetry(BaseModel):
             ):
                 data["kwargs"].pop("tools")
 
-            log_data = json.dumps(data, default=_safe_json)
+            log_data = json.dumps(data, default=_safe_json, ensure_ascii=False)
 
             # Use callback if set (for remote execution), otherwise write to file
             if self._log_callback:
@@ -333,7 +333,7 @@ class Telemetry(BaseModel):
                     raise PermissionError(f"log_dir is not writable: {self.log_dir}")
 
                 fname = os.path.join(self.log_dir, filename)
-                with open(fname, "w") as f:
+                with open(fname, "w", encoding="utf-8") as f:
                     f.write(log_data)
         except Exception as e:
             warnings.warn(f"Telemetry logging failed: {e}")
