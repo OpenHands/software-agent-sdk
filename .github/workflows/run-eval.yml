@@ -38,6 +38,7 @@ env:
     # Environment variable for the master GitHub issue number where all evaluation results will be commented
     # This should be set to the issue number where you want all evaluation results to be posted
     MASTER_EVAL_ISSUE_NUMBER: ${{ vars.MASTER_EVAL_ISSUE_NUMBER || '0' }}
+    DEFAULT_MODEL_ID: claude_sonnet_4_5
     MODELS_JSON: >-
         [
           {"id":"claude_sonnet_4_5","display_name":"Claude Sonnet 4.5","llm_config":{"model":"litellm_proxy/claude-sonnet-4-5-20250929","temperature":0.0}},
@@ -50,11 +51,9 @@ env:
 jobs:
     trigger-eval:
         name: Trigger remote eval
-        if: >
-            (github.event_name == 'pull_request' &&
-             startsWith(github.event.label.name, 'run-eval-')) ||
-            github.event_name == 'release' ||
-            github.event_name == 'workflow_dispatch'
+        if: ${{ (github.event_name == 'pull_request' && (github.event.label.name == 'run-eval-1' || github.event.label.name == 'run-eval-2' || 
+            github.event.label.name == 'run-eval-50' || github.event.label.name == 'run-eval-100')) || github.event_name == 'release' || 
+            github.event_name == 'workflow_dispatch' }}
         runs-on: blacksmith-4vcpu-ubuntu-2204
 
         steps:
@@ -67,94 +66,49 @@ jobs:
             - name: Set evaluation parameters
               id: eval_params
               env:
-                  EVENT_NAME: ${{ github.event_name }}
-                  EVENT_PATH: ${{ github.event_path }}
-                  MASTER_ISSUE: ${{ env.MASTER_EVAL_ISSUE_NUMBER }}
-                  REPO: ${{ github.repository }}
-                  RUN_ID: ${{ github.run_id }}
                   MODELS_JSON: ${{ env.MODELS_JSON }}
+                  MODELS_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.models || '' }}
+                  DEFAULT_MODEL_ID: ${{ env.DEFAULT_MODEL_ID }}
               run: |
-                  python <<'PY'
-                  import json
-                  import os
-                  import re
-                  import sys
+                  REPO_URL="https://github.com/${{ github.repository }}"
+                  echo "Repository URL: $REPO_URL"
 
-                  def emit(key: str, value: str) -> None:
-                      with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as fh:
-                          fh.write(f"{key}={value}\n")
+                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+                    EVAL_BRANCH="${{ github.head_ref }}"
+                    echo "PR Branch: $EVAL_BRANCH"
+                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+                    EVAL_BRANCH="${{ github.event.inputs.branch }}"
+                    echo "Manual Branch: $EVAL_BRANCH"
+                  else
+                    EVAL_BRANCH="${{ github.ref_name }}"
+                    echo "Release Branch/Tag: $EVAL_BRANCH"
+                  fi
 
-                  models = {m["id"]: m for m in json.loads(os.environ["MODELS_JSON"])}
-                  event_name = os.environ["EVENT_NAME"]
-                  master_issue = os.environ["MASTER_ISSUE"]
-                  event = json.load(open(os.environ["EVENT_PATH"], "r", encoding="utf-8"))
+                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+                    if [[ "${{ github.event.label.name }}" == "run-eval-1" ]]; then
+                      EVAL_INSTANCES="1"
+                    elif [[ "${{ github.event.label.name }}" == "run-eval-2" ]]; then
+                      EVAL_INSTANCES="2"
+                    elif [[ "${{ github.event.label.name }}" == "run-eval-50" ]]; then
+                      EVAL_INSTANCES="50"
+                    elif [[ "${{ github.event.label.name }}" == "run-eval-100" ]]; then
+                      EVAL_INSTANCES="100"
+                    fi
+                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+                    EVAL_INSTANCES="${{ github.event.inputs.eval_instances }}"
+                  else
+                    EVAL_INSTANCES="50"
+                  fi
 
-                  targets: list[dict] = []
-                  pr_number = master_issue
-                  eval_branch = ""
-                  eval_instances = "50"
+                  echo "Evaluation instances: $EVAL_INSTANCES"
+                  echo "repo_url=$REPO_URL" >> "$GITHUB_OUTPUT"
+                  echo "eval_branch=$EVAL_BRANCH" >> "$GITHUB_OUTPUT"
+                  echo "eval_instances=$EVAL_INSTANCES" >> "$GITHUB_OUTPUT"
 
-                  def build_target(model_id: str, eval_instances: str) -> dict:
-                      model = models[model_id]
-                      return {
-                          "model_id": model_id,
-                          "llm_config": model["llm_config"],
-                          "display_name": model["display_name"],
-                          "eval_instances": eval_instances,
-                      }
-
-                  if event_name == "pull_request":
-                      label = event.get("label", {}).get("name") or ""
-                      match = re.match(r"^run-eval-([a-z0-9\-]+)-([0-9]+)$", label)
-                      if not match:
-                          emit("should_run", "false")
-                          print(f"::warning::Label '{label}' does not match run-eval-<model>-<count> pattern; skipping eval trigger")
-                          sys.exit(0)
-                      model_id, eval_instances = match.groups()
-                      if model_id not in models:
-                          raise SystemExit(f"Unsupported model '{model_id}'")
-                      targets = [build_target(model_id, eval_instances)]
-                      eval_branch = event["pull_request"]["head"]["ref"]
-                      pr_number = str(event["pull_request"]["number"])
-                  elif event_name == "workflow_dispatch":
-                      inputs = event.get("inputs", {})
-                      raw_models = inputs.get("models") or "claude_sonnet_4_5"
-                      eval_instances = inputs.get("eval_instances") or "50"
-                      requested_models = [
-                          m.strip() for m in raw_models.split(",") if m.strip()
-                      ]
-                      if not requested_models:
-                          raise SystemExit("No valid models provided in 'models' input")
-                      invalid = [m for m in requested_models if m not in models]
-                      if invalid:
-                          raise SystemExit(f"Unsupported model(s) {invalid!r}")
-                      targets = [build_target(model_id, eval_instances) for model_id in requested_models]
-                      eval_branch = inputs.get("branch") or "main"
-                  elif event_name == "release":
-                      eval_branch = str(event.get("release", {}).get("tag_name") or "")
-                      if not eval_branch:
-                          eval_branch = event.get("ref", "main")
-                      eval_instances = "200"
-                      targets = [
-                          build_target(model_id, eval_instances)
-                          for model_id in models
-                      ]
-                  else:
-                      emit("should_run", "false")
-                      print(f"::warning::Unsupported event '{event_name}' for this workflow")
-                      sys.exit(0)
-
-                  emit("should_run", "true")
-                  repo_url = f"https://github.com/{os.environ['REPO']}"
-                  emit("repo_url", repo_url)
-                  emit("eval_branch", eval_branch)
-                  emit("eval_instances", eval_instances)
-                  emit("targets", json.dumps(targets))
-                  emit("models_text", ", ".join(f"{t['display_name']} ({t['eval_instances']})" for t in targets))
-                  PY
+                  export EVAL_INSTANCES
+                  python .github/scripts/build_eval_targets.py
 
             - name: Trigger remote job
-              if: steps.eval_params.outputs.should_run == 'true'
               env:
                   PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   TARGETS: ${{ steps.eval_params.outputs.targets }}
@@ -166,6 +120,12 @@ jobs:
                   if [ -z "$PAT_TOKEN" ]; then
                     echo "PAT_TOKEN is required to dispatch remote workflow"
                     exit 1
+                  fi
+
+                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+                    PR_NUMBER="${{ github.event.pull_request.number }}"
+                  else
+                    PR_NUMBER="${{ env.MASTER_EVAL_ISSUE_NUMBER }}"
                   fi
 
                   echo "$TARGETS" | jq -c '.[]' | while read -r target; do
@@ -220,7 +180,6 @@ jobs:
                   fi
 
             - name: Comment on issue/PR
-              if: steps.eval_params.outputs.should_run == 'true'
               uses: KeisukeYamashita/create-comment@v1
               with:
                   number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || env.MASTER_EVAL_ISSUE_NUMBER }}
