@@ -50,12 +50,8 @@ def select_responses_options(
         if llm.reasoning_summary:
             out["reasoning"]["summary"] = llm.reasoning_summary
 
-    # Only forward extra_body for litellm_proxy models
-    is_proxy = "litellm_proxy" in llm.model
-    if is_proxy:
-        if llm.litellm_extra_body:
-            out["extra_body"] = llm.litellm_extra_body
-    else:
-        out.pop("extra_body", None)
+    # Always forward extra_body if provided; let the LLM provider validate
+    if llm.litellm_extra_body:
+        out["extra_body"] = llm.litellm_extra_body
 
     return out
