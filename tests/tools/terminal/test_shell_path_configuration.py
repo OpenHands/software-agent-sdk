@@ -40,6 +40,7 @@ def test_shell_path_auto_detection():
         )
 
         # Should use auto-detected bash
+        assert isinstance(session.terminal, SubprocessTerminal)
         assert session.terminal.shell_path is None  # Not set until initialize
         session.initialize()
         assert session.terminal.shell_path is not None
@@ -161,13 +162,21 @@ def test_shell_path_precedence_explicit_over_auto():
                 terminal_type="subprocess",
                 shell_path=bash_path,
             )
+            assert isinstance(session.terminal, SubprocessTerminal)
             assert session.terminal.shell_path == bash_path
             session.close()
 
 
 def test_terminal_tool_shell_path_parameter():
     """Test that TerminalTool.create accepts and passes shell_path."""
-    from openhands.sdk.conversation import LocalConversation
+    import uuid
+
+    from pydantic import SecretStr
+
+    from openhands.sdk.agent import Agent
+    from openhands.sdk.conversation.state import ConversationState
+    from openhands.sdk.llm import LLM
+    from openhands.sdk.workspace import LocalWorkspace
     from openhands.tools.terminal.definition import TerminalTool
 
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -175,16 +184,27 @@ def test_terminal_tool_shell_path_parameter():
         if not bash_path:
             pytest.skip("bash not found in PATH")
 
-        conversation = LocalConversation(workspace_path=temp_dir)
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_state = ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=LocalWorkspace(working_dir=temp_dir),
+        )
 
         tools = TerminalTool.create(
-            conv_state=conversation.state,
+            conv_state=conv_state,
             terminal_type="subprocess",
             shell_path=bash_path,
         )
 
         terminal = tools[0]
         # Verify the executor has the shell_path
+        from openhands.tools.terminal.impl import BashExecutor
+
+        assert isinstance(terminal.executor, BashExecutor)
         assert terminal.executor.shell_path == bash_path
 
         terminal.executor.close()

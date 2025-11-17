@@ -86,7 +86,8 @@ class SubprocessTerminal(TerminalInterface):
             if resolved_shell_path is None:
                 raise RuntimeError(
                     "Could not find bash in PATH. "
-                    "Please provide an explicit shell_path parameter when creating the terminal."
+                    "Please provide an explicit shell_path parameter "
+                    "when creating the terminal."
                 )
 
         # Validate the shell path exists and is executable
@@ -101,6 +102,8 @@ class SubprocessTerminal(TerminalInterface):
                 "Please check file permissions."
             )
 
+        # Store the resolved shell path for later access
+        self.shell_path = resolved_shell_path
         logger.info(f"Using shell: {resolved_shell_path}")
 
         # Inherit environment variables from the parent process
