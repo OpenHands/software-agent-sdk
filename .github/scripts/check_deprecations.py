@@ -16,11 +16,12 @@ from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 from packaging import version as pkg_version
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 @dataclass(frozen=True, slots=True)
@@ -63,7 +64,7 @@ class DeprecationRecord:
     deprecated_in: str | None
     path: Path
     line: int
-    kind: str  # "decorator" | "warn_call"
+    kind: Literal["decorator", "warn_call"]
     package: str
 
 
