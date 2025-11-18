@@ -329,7 +329,12 @@ class ConversationService:
                 if not meta_file.exists():
                     continue
                 json_str = meta_file.read_text()
-                stored = StoredConversation.model_validate_json(json_str)
+                stored = StoredConversation.model_validate_json(
+                    json_str,
+                    context={
+                        "cipher": self.cipher,
+                    },
+                )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
