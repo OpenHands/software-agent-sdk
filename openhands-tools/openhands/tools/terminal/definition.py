@@ -300,7 +300,7 @@ class ExecuteBashAction(TerminalAction):
 
         warn_deprecated(
             "ExecuteBashAction",
-            deprecated_in="0.17.0",
+            deprecated_in="1.2.0",
             removed_in="1.5.0",
             details=(
                 "Use TerminalAction instead. ExecuteBashAction is an "
@@ -323,7 +323,7 @@ class ExecuteBashObservation(TerminalObservation):
 
         warn_deprecated(
             "ExecuteBashObservation",
-            deprecated_in="0.17.0",
+            deprecated_in="1.2.0",
             removed_in="1.5.0",
             details=(
                 "Use TerminalObservation instead. ExecuteBashObservation is an "

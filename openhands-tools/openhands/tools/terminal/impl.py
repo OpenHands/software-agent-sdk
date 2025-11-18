@@ -204,7 +204,7 @@ class BashExecutor(TerminalExecutor):
 
         warn_deprecated(
             "BashExecutor",
-            deprecated_in="0.17.0",
+            deprecated_in="1.2.0",
             removed_in="1.5.0",
             details=(
                 "Use TerminalExecutor instead. BashExecutor is an "
