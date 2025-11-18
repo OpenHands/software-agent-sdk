@@ -12,7 +12,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction
-from openhands.tools.terminal.impl import BashExecutor
+from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal import (
     SubprocessTerminal,
     TerminalSession,
@@ -40,7 +40,7 @@ def test_default_auto_detection():
         # TerminalTool always has an executor
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
 
         # Should always use TerminalSession now
         assert isinstance(executor.session, TerminalSession)
@@ -65,7 +65,7 @@ def test_forced_terminal_types():
         tool = tools[0]
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
         assert isinstance(executor.session, TerminalSession)
         assert isinstance(executor.session.terminal, SubprocessTerminal)
 
@@ -90,7 +90,7 @@ def test_unix_auto_detection(mock_system):
             tool = tools[0]
             assert tool.executor is not None
             executor = tool.executor
-            assert isinstance(executor, BashExecutor)
+            assert isinstance(executor, TerminalExecutor)
             assert isinstance(executor.session, TerminalSession)
             assert isinstance(executor.session.terminal, TmuxTerminal)
 
@@ -103,7 +103,7 @@ def test_unix_auto_detection(mock_system):
             tool = tools[0]
             assert tool.executor is not None
             executor = tool.executor
-            assert isinstance(executor, BashExecutor)
+            assert isinstance(executor, TerminalExecutor)
             assert isinstance(executor.session, TerminalSession)
             assert isinstance(executor.session.terminal, SubprocessTerminal)
 
@@ -121,7 +121,7 @@ def test_session_parameters():
 
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
         session = executor.session
         assert session.work_dir == temp_dir
         assert session.username == "testuser"
@@ -165,7 +165,7 @@ def test_session_lifecycle():
         # Session should be initialized
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
         assert executor.session._initialized
 
         # Should be able to execute commands

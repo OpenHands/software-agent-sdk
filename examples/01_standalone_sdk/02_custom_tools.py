@@ -26,8 +26,8 @@ from openhands.sdk.tool import (
 )
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import (
-    BashExecutor,
     TerminalAction,
+    TerminalExecutor,
     TerminalTool,
 )
 
@@ -71,8 +71,8 @@ class GrepObservation(Observation):
 
 
 class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
-    def __init__(self, bash: BashExecutor):
-        self.bash: BashExecutor = bash
+    def __init__(self, bash: TerminalExecutor):
+        self.bash: TerminalExecutor = bash
 
     def __call__(self, action: GrepAction, conversation=None) -> GrepObservation:  # noqa: ARG002
         root = os.path.abspath(action.path)
@@ -125,7 +125,7 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
 
     @classmethod
     def create(
-        cls, conv_state, bash_executor: BashExecutor | None = None
+        cls, conv_state, bash_executor: TerminalExecutor | None = None
     ) -> Sequence[ToolDefinition]:
         """Create GrepTool instance with a GrepExecutor.
 
@@ -138,7 +138,9 @@ class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
             A sequence containing a single GrepTool instance.
         """
         if bash_executor is None:
-            bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
+            bash_executor = TerminalExecutor(
+                working_dir=conv_state.workspace.working_dir
+            )
         grep_executor = GrepExecutor(bash_executor)
 
         return [
@@ -170,7 +172,7 @@ cwd = os.getcwd()
 def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
     """Create terminal and custom grep tools sharing one executor."""
 
-    bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
+    bash_executor = TerminalExecutor(working_dir=conv_state.workspace.working_dir)
     # bash_tool = terminal_tool.set_executor(executor=bash_executor)
     bash_tool = TerminalTool.create(conv_state, executor=bash_executor)[0]
 

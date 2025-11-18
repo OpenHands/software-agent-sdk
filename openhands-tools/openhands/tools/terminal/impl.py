@@ -19,7 +19,7 @@ from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 logger = get_logger(__name__)
 
 
-class BashExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
+class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     session: TerminalSession
     shell_path: str | None
 
@@ -31,7 +31,7 @@ class BashExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
     ):
-        """Initialize BashExecutor with auto-detected or specified session type.
+        """Initialize TerminalExecutor with auto-detected or specified session type.
 
         Args:
             working_dir: Working directory for bash commands
@@ -53,7 +53,7 @@ class BashExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         )
         self.session.initialize()
         logger.info(
-            f"BashExecutor initialized with working_dir: {working_dir}, "
+            f"TerminalExecutor initialized with working_dir: {working_dir}, "
             f"username: {username}, "
             f"terminal_type: {terminal_type or self.session.__class__.__name__}"
         )
@@ -189,3 +189,27 @@ class BashExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Close the terminal session and clean up resources."""
         if hasattr(self, "session"):
             self.session.close()
+
+
+# Deprecated aliases for backward compatibility
+class BashExecutor(TerminalExecutor):
+    """Deprecated: Use TerminalExecutor instead.
+
+    This class is deprecated and will be removed in version 1.5.0.
+    Please use TerminalExecutor instead.
+    """
+
+    def __init__(self, *args, **kwargs):
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "BashExecutor",
+            deprecated_in="0.17.0",
+            removed_in="1.5.0",
+            details=(
+                "Use TerminalExecutor instead. BashExecutor is an "
+                "alias that will be removed in the future."
+            ),
+            stacklevel=3,
+        )
+        super().__init__(*args, **kwargs)

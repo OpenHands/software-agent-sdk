@@ -169,7 +169,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 TerminalObservation]):
                 @classmethod
                 def create(cls, conv_state, **params):
-                    executor = BashExecutor(
+                    executor = TerminalExecutor(
                         working_dir=conv_state.workspace.working_dir,
                         **params,
                     )

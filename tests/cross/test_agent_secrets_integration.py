@@ -14,7 +14,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction
-from openhands.tools.terminal.impl import BashExecutor
+from openhands.tools.terminal.impl import TerminalExecutor
 
 
 # -----------------------
@@ -44,10 +44,10 @@ def conversation(agent: Agent, tmp_path) -> LocalConversation:
 
 
 @pytest.fixture
-def bash_executor(conversation: LocalConversation) -> BashExecutor:
+def bash_executor(conversation: LocalConversation) -> TerminalExecutor:
     tools_map = conversation.agent.tools_map
     bash_tool = tools_map["terminal"]
-    return cast(BashExecutor, bash_tool.executor)
+    return cast(TerminalExecutor, bash_tool.executor)
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def conversation_no_bash(agent_no_bash: Agent, tmp_path) -> LocalConversation:
 
 
 def test_agent_configures_bash_tools_env_provider(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, bash_executor: TerminalExecutor, agent: Agent
 ):
     """Test that bash executor works with conversation secrets."""
     # Add secrets to conversation
@@ -88,7 +88,7 @@ def test_agent_configures_bash_tools_env_provider(
 
 
 def test_agent_env_provider_with_callable_secrets(
-    conversation: LocalConversation, bash_executor: BashExecutor
+    conversation: LocalConversation, bash_executor: TerminalExecutor
 ):
     """Test that conversation secrets work with callable secrets."""
 
@@ -112,7 +112,7 @@ def test_agent_env_provider_with_callable_secrets(
 
 
 def test_agent_env_provider_handles_exceptions(
-    conversation: LocalConversation, bash_executor: BashExecutor
+    conversation: LocalConversation, bash_executor: TerminalExecutor
 ):
     """Test that conversation secrets handle exceptions gracefully."""
 
@@ -144,7 +144,7 @@ def test_agent_env_provider_handles_exceptions(
 
 
 def test_agent_env_provider_no_matches(
-    conversation: LocalConversation, bash_executor: BashExecutor
+    conversation: LocalConversation, bash_executor: TerminalExecutor
 ):
     """Test conversation secrets when command has no secret matches."""
 
@@ -169,7 +169,7 @@ def test_agent_without_bash_throws_warning(llm):
 
 
 def test_agent_secrets_integration_workflow(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, bash_executor: TerminalExecutor, agent: Agent
 ):
     """Test complete workflow of conversation secrets integration."""
 
@@ -215,7 +215,7 @@ def test_agent_secrets_integration_workflow(
 
 
 def test_mask_secrets(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, bash_executor: TerminalExecutor, agent: Agent
 ):
     """Test that bash executor masks secrets when conversation is passed."""
 
@@ -247,7 +247,7 @@ def test_mask_secrets(
 
 
 def test_mask_changing_secrets(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, bash_executor: TerminalExecutor, agent: Agent
 ):
     class MyChangingDynamicSecretSource(SecretSource):
         counter: int = 0
@@ -278,7 +278,7 @@ def test_mask_changing_secrets(
 
 
 def test_masking_persists(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, bash_executor: TerminalExecutor, agent: Agent
 ):
     class MyChangingFailingDynamicSecretSource(SecretSource):
         counter: int = 0

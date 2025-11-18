@@ -220,7 +220,7 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 
 
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
-    """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
+    """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
 
     @classmethod
     def create(
@@ -249,7 +249,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                        If None, will auto-detect bash from PATH.
         """
         # Import here to avoid circular imports
-        from openhands.tools.terminal.impl import BashExecutor
+        from openhands.tools.terminal.impl import TerminalExecutor
 
         working_dir = conv_state.workspace.working_dir
         if not os.path.isdir(working_dir):
@@ -257,7 +257,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
 
         # Initialize the executor
         if executor is None:
-            executor = BashExecutor(
+            executor = TerminalExecutor(
                 working_dir=working_dir,
                 username=username,
                 no_change_timeout_seconds=no_change_timeout_seconds,

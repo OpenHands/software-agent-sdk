@@ -1,4 +1,4 @@
-"""Tests for automatic secrets masking in BashExecutor."""
+"""Tests for automatic secrets masking in TerminalExecutor."""
 
 import tempfile
 from unittest.mock import Mock
@@ -10,14 +10,14 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool.schema import TextContent
 from openhands.tools.terminal import TerminalAction, TerminalObservation
-from openhands.tools.terminal.impl import BashExecutor
+from openhands.tools.terminal.impl import TerminalExecutor
 
 
 def test_bash_executor_without_conversation():
-    """Test that BashExecutor works normally without conversation (no masking)."""
+    """Test that TerminalExecutor works normally without conversation (no masking)."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create executor without conversation
-        executor = BashExecutor(working_dir=temp_dir)
+        executor = TerminalExecutor(working_dir=temp_dir)
 
         try:
             # Execute a command that outputs a secret value
@@ -33,7 +33,7 @@ def test_bash_executor_without_conversation():
 
 
 def test_bash_executor_with_conversation_secrets():
-    """Test that BashExecutor uses secrets from conversation.state.secret_registry."""
+    """Test TerminalExecutor uses secrets from conversation.state.secret_registry."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a conversation with secrets
         llm = LLM(
@@ -54,7 +54,7 @@ def test_bash_executor_with_conversation_secrets():
         )
 
         # Create executor without env_provider
-        executor = BashExecutor(working_dir=temp_dir)
+        executor = TerminalExecutor(working_dir=temp_dir)
 
         try:
             # Mock the session to avoid subprocess issues in tests
