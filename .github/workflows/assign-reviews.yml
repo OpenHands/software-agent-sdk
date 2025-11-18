@@ -96,7 +96,7 @@ jobs:
                 requesting review:
                    - Preferred: GET /repos/{owner}/{repo}/collaborators (no permission filter). Filter client-side using either:
                      role_name in ["write", "maintain", "admin"] OR permissions.push || permissions.admin. Note: paginate if > 30 collaborators.
-                   - Alternative: GET /repos/{owner}/{repo}/collaborators/{username}/permission and accept if permission ∈ {push, maintain, admin}.
+                   - Alternative: GET /repos/{owner}/{repo}/collaborators/{username}/permission and accept if permission in {push, maintain, admin}.
                 3) If multiple maintainers qualify, avoid assigning too many reviews to any single one.
                 4) Request review from exactly one maintainer and add this message:
 
