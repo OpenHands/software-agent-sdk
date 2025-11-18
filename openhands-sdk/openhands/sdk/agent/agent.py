@@ -41,6 +41,7 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
+from openhands.sdk.security.security_service import DefaultSecurityService
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -89,6 +90,8 @@ class Agent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         super().init_state(state, on_event=on_event)
+        # Build the security service based on the state.
+        self._security_service = DefaultSecurityService(state)
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 

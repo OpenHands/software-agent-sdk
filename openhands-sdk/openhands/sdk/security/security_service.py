@@ -1,4 +1,7 @@
+from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
+
+from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 if TYPE_CHECKING:
@@ -11,7 +14,23 @@ from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
 
 
-class SecurityService:
+class SecurityService(DiscriminatedUnionMixin, ABC):
+    """
+    Security service interface defining core security-related methods.
+    """
+
+    @abstractmethod
+    def requires_confirmation(self, action_events: list[ActionEvent]) -> bool:
+        """
+        Determine whether user confirmation is required to proceed with actions.
+
+        :param action_events: List of pending action events
+        :return: True if confirmation is needed, False otherwise
+        """
+        pass
+
+
+class SecurityServiceBase(SecurityService):
     def __init__(
         self,
         state: "ConversationState",
@@ -53,6 +72,11 @@ class SecurityService:
             risks = (risk.SecurityRisk.UNKNOWN for _ in action_events)
 
         return any(self._state.confirmation_policy.should_confirm(r) for r in risks)
+
+
+class DefaultSecurityService(SecurityServiceBase):
+    def __init__(self, state: "ConversationState"):
+        super().__init__(state)
 
     def extract_security_risk(
         self,
