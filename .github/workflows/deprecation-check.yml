@@ -1,0 +1,23 @@
+---
+name: Deprecation deadlines
+
+on:
+    push:
+        branches: [main]
+    pull_request:
+        branches: ['**']
+
+jobs:
+    check:
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Verify deprecation removals
+              run: uv run --with packaging python .github/scripts/check_deprecations.py
