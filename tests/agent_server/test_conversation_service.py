@@ -16,6 +16,7 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.secret_source import SecretSource, StaticSecret
 from openhands.sdk.conversation.state import (
@@ -859,3 +860,286 @@ class TestConversationServiceUpdateConversation:
 
         # Verify save_meta was called three times
         assert mock_service.save_meta.call_count == 3
+
+
+class TestConversationServiceDeleteConversation:
+    """Test cases for ConversationService.delete_conversation method."""
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_inactive_service(self, conversation_service):
+        """Test that delete_conversation raises ValueError when service is inactive."""
+        conversation_service._event_services = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await conversation_service.delete_conversation(uuid4())
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_not_found(self, conversation_service):
+        """Test delete_conversation with non-existent conversation ID."""
+        result = await conversation_service.delete_conversation(uuid4())
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_success(self, conversation_service):
+        """Test successful conversation deletion."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock the directory removal to avoid actual filesystem operations
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify event service was closed
+            mock_service.close.assert_called_once()
+
+            # Verify directories were removed
+            assert mock_rmtree.call_count == 1
+            mock_rmtree.assert_any_call(
+                "/tmp/test_conversation",
+                "conversation directory for " + str(conversation_id),
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_webhook_failure(self, conversation_service):
+        """Test delete_conversation continues when webhook notification fails."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+
+        # Make get_state raise an exception to simulate webhook failure
+        mock_service.get_state.side_effect = Exception("Webhook notification failed")
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock the directory removal
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            # Should still succeed despite webhook failure
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify event service was still closed
+            mock_service.close.assert_called_once()
+
+            # Verify directories were still removed
+            assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_close_failure(self, conversation_service):
+        """Test delete_conversation continues when event service close fails."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        # Make close raise an exception
+        mock_service.close.side_effect = Exception("Close failed")
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock the directory removal
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            # Should still succeed despite close failure
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify directories were still removed
+            assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_directory_removal_failure(
+        self, conversation_service
+    ):
+        """Test delete_conversation succeeds even when directory removal fails."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock directory removal to fail (simulating permission errors)
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = False  # Simulate removal failure
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            # Should still succeed - conversation is removed from tracking
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify event service was closed
+            mock_service.close.assert_called_once()
+
+            # Verify removal was attempted
+            assert mock_rmtree.call_count == 1
+
+
+class TestSafeRmtree:
+    """Test cases for the _safe_rmtree helper function."""
+
+    def test_safe_rmtree_nonexistent_path(self):
+        """Test _safe_rmtree with non-existent path."""
+        result = _safe_rmtree("/nonexistent/path", "test directory")
+        assert result is True
+
+    def test_safe_rmtree_empty_path(self):
+        """Test _safe_rmtree with empty path."""
+        result = _safe_rmtree("", "test directory")
+        assert result is True
+
+        result = _safe_rmtree(None, "test directory")
+        assert result is True
+
+    def test_safe_rmtree_success(self):
+        """Test successful directory removal."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_dir = Path(temp_dir) / "test_subdir"
+            test_dir.mkdir()
+
+            # Create a test file
+            test_file = test_dir / "test.txt"
+            test_file.write_text("test content")
+
+            result = _safe_rmtree(str(test_dir), "test directory")
+            assert result is True
+            assert not test_dir.exists()
+
+    def test_safe_rmtree_permission_error(self):
+        """Test _safe_rmtree handles permission errors gracefully."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            mock_rmtree.side_effect = PermissionError("Permission denied")
+
+            with patch("os.path.exists", return_value=True):
+                result = _safe_rmtree("/test/path", "test directory")
+                assert result is False
+
+    def test_safe_rmtree_os_error(self):
+        """Test _safe_rmtree handles OS errors gracefully."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            mock_rmtree.side_effect = OSError("OS error")
+
+            with patch("os.path.exists", return_value=True):
+                result = _safe_rmtree("/test/path", "test directory")
+                assert result is False
+
+    def test_safe_rmtree_unexpected_error(self):
+        """Test _safe_rmtree handles unexpected errors gracefully."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            mock_rmtree.side_effect = ValueError("Unexpected error")
+
+            with patch("os.path.exists", return_value=True):
+                result = _safe_rmtree("/test/path", "test directory")
+                assert result is False
+
+    def test_safe_rmtree_readonly_file_handling(self):
+        """Test _safe_rmtree handles read-only files."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_dir = Path(temp_dir) / "test_subdir"
+            test_dir.mkdir()
+
+            # Create a test file and make it read-only
+            test_file = test_dir / "readonly.txt"
+            test_file.write_text("readonly content")
+            test_file.chmod(0o444)  # Read-only
+
+            result = _safe_rmtree(str(test_dir), "test directory")
+            assert result is True
+            assert not test_dir.exists()
