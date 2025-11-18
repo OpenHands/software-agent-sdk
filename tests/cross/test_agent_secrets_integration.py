@@ -13,7 +13,7 @@ from openhands.sdk.conversation.secret_source import LookupSecret, SecretSource
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
-from openhands.tools.terminal.definition import ExecuteBashAction
+from openhands.tools.terminal.definition import TerminalAction
 from openhands.tools.terminal.impl import BashExecutor
 
 
@@ -232,12 +232,12 @@ def test_mask_secrets(
     )
 
     try:
-        action = ExecuteBashAction(command="echo $API_KEY")
+        action = TerminalAction(command="echo $API_KEY")
         result = bash_executor(action, conversation=conversation)
         assert "test-api-key" not in result.text
         assert "<secret-hidden>" in result.text
 
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
+        action = TerminalAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         assert "dynamic-secret" not in result.text
         assert "<secret-hidden>" in result.text
@@ -263,12 +263,12 @@ def test_mask_changing_secrets(
     )
 
     try:
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
+        action = TerminalAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         assert "changing-secret" not in result.text
         assert "<secret-hidden>" in result.text
 
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
+        action = TerminalAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         assert "changing-secret" not in result.text
         assert "<secret-hidden>" in result.text
@@ -300,13 +300,13 @@ def test_masking_persists(
     )
 
     try:
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
+        action = TerminalAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         print(result)
         assert "changing-secret" not in result.text
         assert "<secret-hidden>" in result.text
 
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
+        action = TerminalAction(command="echo $DB_PASSWORD")
         result = bash_executor(action, conversation=conversation)
         assert "changing-secret" not in result.text
         assert "<secret-hidden>" in result.text

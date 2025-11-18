@@ -2,6 +2,8 @@
 from openhands.tools.terminal.definition import (
     ExecuteBashAction,
     ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
     TerminalTool,
 )
 from openhands.tools.terminal.impl import BashExecutor
@@ -17,9 +19,12 @@ from openhands.tools.terminal.terminal import (
 __all__ = [
     # === Core Tool Interface ===
     "TerminalTool",
+    "TerminalAction",
+    "TerminalObservation",
+    "BashExecutor",
+    # === Deprecated Aliases (backward compatibility) ===
     "ExecuteBashAction",
     "ExecuteBashObservation",
-    "BashExecutor",
     # === Terminal Session Architecture ===
     "TerminalSession",
     "TerminalCommandStatus",

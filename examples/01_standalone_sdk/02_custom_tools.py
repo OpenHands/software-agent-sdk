@@ -27,7 +27,7 @@ from openhands.sdk.tool import (
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import (
     BashExecutor,
-    ExecuteBashAction,
+    TerminalAction,
     TerminalTool,
 )
 
@@ -86,7 +86,7 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         else:
             cmd = f"grep -rHnE {pat} {root_q} 2>/dev/null | head -100"
 
-        result = self.bash(ExecuteBashAction(command=cmd))
+        result = self.bash(TerminalAction(command=cmd))
 
         matches: list[str] = []
         files: set[str] = set()
