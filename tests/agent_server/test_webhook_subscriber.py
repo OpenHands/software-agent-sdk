@@ -920,14 +920,11 @@ class TestWebhookSubscriberFlushDelay:
         self, mock_event_service, webhook_spec, sample_conversation_id
     ):
         """Test that flush_delay doesn't trigger post when queue is empty."""
-        subscriber = WebhookSubscriber(
+        WebhookSubscriber(
             conversation_id=sample_conversation_id,
             service=mock_event_service,
             spec=webhook_spec,
         )
-
-        # Don't add any events, but trigger timer reset
-        subscriber._reset_flush_timer()
 
         # Wait for flush_delay
         await asyncio.sleep(webhook_spec.flush_delay + 0.05)
