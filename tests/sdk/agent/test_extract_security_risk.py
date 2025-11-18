@@ -17,7 +17,9 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
-from openhands.sdk.security.security_service import SecurityService
+from openhands.sdk.security.security_service import (
+    DefaultSecurityService,
+)
 from openhands.sdk.workspace.local import LocalWorkspace
 
 
@@ -50,7 +52,7 @@ class MockSecurityServiceAgent(Agent):
                 object.__setattr__(self, "security_analyzer", None)
             except Exception:
                 pass
-        self._security_service = SecurityService(state)
+        self._security_service = DefaultSecurityService(state)
 
 
 def init_agent(agent: Agent):
