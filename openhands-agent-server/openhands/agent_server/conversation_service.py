@@ -434,8 +434,9 @@ class WebhookSubscriber(Subscriber):
             self._cancel_flush_timer()
             await self._post_events()
         else:
-            # Reset the flush timer
-            self._reset_flush_timer()
+            # Only start timer if one isn't already running
+            if self._flush_timer is None:
+                self._reset_flush_timer()
 
     async def close(self):
         """Post any remaining items in the queue to the webhook."""
