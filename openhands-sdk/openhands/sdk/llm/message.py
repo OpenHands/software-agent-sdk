@@ -349,7 +349,6 @@ class Message(BaseModel):
         if thinking_blocks_dicts:
             message_dict["thinking_blocks"] = thinking_blocks_dicts
 
-        # import pdb; pdb.set_trace()
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
