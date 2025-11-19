@@ -71,9 +71,7 @@ def test_windows_terminal_pwd(windows_session, temp_dir):
     assert obs.text is not None
     assert obs.exit_code == 0
     # Normalize both paths to long format for comparison
-    expected_path = (
-        os.path.realpath(temp_dir).lower().replace("\\", "/")
-    )
+    expected_path = os.path.realpath(temp_dir).lower().replace("\\", "/")
     actual_path = os.path.realpath(obs.text.strip()).lower().replace("\\", "/")
     assert expected_path == actual_path
 
@@ -92,9 +90,7 @@ def test_windows_terminal_cd_command(windows_session, temp_dir):
     # PowerShell uses Get-Location, not pwd
     obs = windows_session.execute(ExecuteBashAction(command="(Get-Location).Path"))
     # Normalize both paths to long format for comparison
-    expected_path = (
-        os.path.realpath(test_dir).lower().replace("\\", "/")
-    )
+    expected_path = os.path.realpath(test_dir).lower().replace("\\", "/")
     actual_path = os.path.realpath(obs.text.strip()).lower().replace("\\", "/")
     assert expected_path == actual_path
 
