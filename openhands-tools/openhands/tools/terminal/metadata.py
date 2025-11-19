@@ -38,6 +38,12 @@ class CmdOutputMetadata(BaseModel):
     py_interpreter_path: str | None = Field(
         default=None, description="The path to the current Python interpreter, if any."
     )
+    available_secrets: list[str] = Field(
+        default_factory=list,
+        description=(
+            "List of available secret names that can be referenced in bash commands."
+        ),
+    )
     prefix: str = Field(default="", description="Prefix to add to command output")
     suffix: str = Field(default="", description="Suffix to add to command output")
 

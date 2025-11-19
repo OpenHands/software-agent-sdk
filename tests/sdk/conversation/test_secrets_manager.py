@@ -152,3 +152,45 @@ def test_get_secrets_as_env_vars_handles_callable_exceptions():
 
     # Only working secret should be returned
     assert env_vars == {"WORKING_SECRET": "working-value"}
+
+
+def test_find_secrets_in_shell_parameter_expansion():
+    """Test that find_secrets_in_text detects secrets in shell parameter expansion."""  # noqa: E501
+    secret_registry = SecretRegistry()
+    secret_registry.update_secrets(
+        {
+            "GITHUB_TOKEN": "ghp_1234567890abcdef",
+            "API_KEY": "sk-test-key",
+        }
+    )
+
+    # Test various shell parameter expansion forms
+    # ${var:offset:length} - substring expansion
+    found = secret_registry.find_secrets_in_text("echo ${GITHUB_TOKEN:0:8}")
+    assert found == {"GITHUB_TOKEN"}
+
+    # ${var:-default} - default value if unset
+    found = secret_registry.find_secrets_in_text("echo ${API_KEY:-default}")
+    assert found == {"API_KEY"}
+
+    # ${var:?error} - error if unset
+    found = secret_registry.find_secrets_in_text("echo ${GITHUB_TOKEN:?token required}")
+    assert found == {"GITHUB_TOKEN"}
+
+    # ${var#pattern} - remove shortest prefix match
+    found = secret_registry.find_secrets_in_text("echo ${API_KEY#sk-}")
+    assert found == {"API_KEY"}
+
+    # ${var%pattern} - remove shortest suffix match
+    found = secret_registry.find_secrets_in_text("echo ${GITHUB_TOKEN%.txt}")
+    assert found == {"GITHUB_TOKEN"}
+
+    # Multiple secrets with different expansion forms
+    found = secret_registry.find_secrets_in_text(
+        "echo ${GITHUB_TOKEN:0:8} ${API_KEY:-none}"
+    )
+    assert found == {"GITHUB_TOKEN", "API_KEY"}
+
+    # Case insensitive detection should still work
+    found = secret_registry.find_secrets_in_text("echo ${github_token:0:8}")
+    assert found == {"GITHUB_TOKEN"}
