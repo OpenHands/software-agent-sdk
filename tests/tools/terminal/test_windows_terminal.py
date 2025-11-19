@@ -357,3 +357,27 @@ def test_windows_terminal_working_directory_persistence(windows_session, temp_di
 
     # Verify file was created in dir1
     assert os.path.exists(os.path.join(dir1, "file1.txt"))
+
+
+def test_windows_terminal_command_with_pipeline(windows_session):
+    obs = windows_session.execute(
+        ExecuteBashAction(command='Write-Output "Hello" | ForEach-Object { $_ }')
+    )
+    assert obs.exit_code == 0
+    assert "Hello" in obs.text
+
+
+def test_windows_terminal_script_with_brackets(windows_session):
+    obs = windows_session.execute(
+        ExecuteBashAction(command='if ($true) { Write-Output "OK" }')
+    )
+    assert obs.exit_code == 0
+    assert "OK" in obs.text
+
+
+def test_windows_terminal_command_containing_backtick(windows_session):
+    obs = windows_session.execute(
+        ExecuteBashAction(command='Write-Output "Hello` World"')
+    )
+    assert obs.exit_code == 0
+    assert "Hello World" in obs.text
