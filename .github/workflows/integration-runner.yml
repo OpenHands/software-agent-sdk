@@ -71,6 +71,10 @@ jobs:
                       run-suffix: kimi_k2_run
                       llm-config:
                           model: litellm_proxy/moonshot/kimi-k2-thinking
+                    - name: Gemini 3 Pro
+                      run-suffix: gemini_3_pro_run
+                      llm-config:
+                          model: litellm_proxy/vertex_ai/gemini-3-pro-preview
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
