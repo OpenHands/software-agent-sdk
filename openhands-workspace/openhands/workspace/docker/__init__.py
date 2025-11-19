@@ -1,7 +1,12 @@
 """Docker workspace implementation."""
 
+from typing import TYPE_CHECKING
+
 from .workspace import DockerWorkspace
 
+
+if TYPE_CHECKING:
+    from .dev_workspace import DockerDevWorkspace
 
 __all__ = ["DockerWorkspace", "DockerDevWorkspace"]
 

@@ -1,8 +1,13 @@
 """OpenHands Workspace - Docker and container-based workspace implementations."""
 
+from typing import TYPE_CHECKING
+
 from .docker import DockerWorkspace
 from .remote_api import APIRemoteWorkspace
 
+
+if TYPE_CHECKING:
+    from .docker import DockerDevWorkspace
 
 __all__ = [
     "DockerWorkspace",

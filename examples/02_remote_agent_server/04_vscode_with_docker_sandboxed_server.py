@@ -7,7 +7,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Conversation, get_logger
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.tools.preset.default import get_default_agent
-from openhands.workspace import DockerWorkspace
+from openhands.workspace import DockerDevWorkspace
 
 
 logger = get_logger(__name__)
@@ -35,7 +35,7 @@ def detect_platform():
     return "linux/amd64"
 
 
-with DockerWorkspace(
+with DockerDevWorkspace(
     base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     host_port=18010,
     platform=detect_platform(),
@@ -97,7 +97,7 @@ with DockerWorkspace(
     while y != "y":
         y = input(
             "\n"
-            "Because you've enabled extra_ports=True in DockerWorkspace, "
+            "Because you've enabled extra_ports=True in DockerDevWorkspace, "
             "you can open VSCode Web to see the workspace.\n\n"
             f"VSCode URL: {vscode_url}\n\n"
             "The VSCode should have the OpenHands settings extension installed:\n"
