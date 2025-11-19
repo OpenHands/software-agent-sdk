@@ -70,7 +70,10 @@ def test_windows_terminal_pwd(windows_session, temp_dir):
     # Verify the command executed and returned the working directory
     assert obs.text is not None
     assert obs.exit_code == 0
-    assert temp_dir.lower().replace("\\", "/") in obs.text.lower().replace("\\", "/")
+    # Normalize both paths to long format for comparison
+    expected_path = os.path.normpath(os.path.abspath(temp_dir)).lower().replace("\\", "/")
+    actual_path = os.path.normpath(obs.text.strip()).lower().replace("\\", "/")
+    assert expected_path == actual_path
 
 
 def test_windows_terminal_cd_command(windows_session, temp_dir):
@@ -86,10 +89,10 @@ def test_windows_terminal_cd_command(windows_session, temp_dir):
     # Verify we're in the new directory
     # PowerShell uses Get-Location, not pwd
     obs = windows_session.execute(ExecuteBashAction(command="(Get-Location).Path"))
-    # PowerShell may return path with different separators
-    normalized_output = obs.text.replace("\\", "/").lower()
-    normalized_test_dir = test_dir.replace("\\", "/").lower()
-    assert normalized_test_dir in normalized_output
+    # Normalize both paths to long format for comparison
+    expected_path = os.path.normpath(os.path.abspath(test_dir)).lower().replace("\\", "/")
+    actual_path = os.path.normpath(obs.text.strip()).lower().replace("\\", "/")
+    assert expected_path == actual_path
 
 
 def test_windows_terminal_multiline_output(windows_session):
@@ -276,7 +279,7 @@ def test_windows_terminal_consecutive_commands(windows_session, temp_dir):
     obs2 = windows_session.execute(
         ExecuteBashAction(command=f'Get-Content "{test_file}"')
     )
-    assert "1" in obs2.output
+    assert "1" in obs2.text
 
     # Update the file
     obs3 = windows_session.execute(
@@ -288,7 +291,7 @@ def test_windows_terminal_consecutive_commands(windows_session, temp_dir):
     obs4 = windows_session.execute(
         ExecuteBashAction(command=f'Get-Content "{test_file}"')
     )
-    assert "2" in obs4.output
+    assert "2" in obs4.text
 
 
 def test_windows_terminal_unicode_handling(windows_session):
