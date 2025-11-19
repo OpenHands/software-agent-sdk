@@ -13,7 +13,7 @@ from openhands.tools.terminal import TerminalAction, TerminalObservation
 from openhands.tools.terminal.impl import TerminalExecutor
 
 
-def test_bash_executor_without_conversation():
+def test_terminal_executor_without_conversation():
     """Test that TerminalExecutor works normally without conversation (no masking)."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create executor without conversation
@@ -32,7 +32,7 @@ def test_bash_executor_without_conversation():
             executor.close()
 
 
-def test_bash_executor_with_conversation_secrets():
+def test_terminal_executor_with_conversation_secrets():
     """Test TerminalExecutor uses secrets from conversation.state.secret_registry."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a conversation with secrets
