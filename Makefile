@@ -76,7 +76,7 @@ build-server: check-uv-version
 test-server-schema: check-uv-version
 	set -euo pipefail;
 	# Generate OpenAPI JSON inline (no file left in repo)
-	uv run python -c 'import os,json; from openhands.agent_server.api import api; open("openapi.json","w").write(json.dumps(api.openapi(), indent=2))'
+	uv run python -c 'import os, json; from openhands.agent_server import build_app; app = build_app(); open("openapi.json", "w").write(json.dumps(app.openapi(), indent=2))'
 	npx --yes @apidevtools/swagger-cli@^4 validate openapi.json
 	# Clean up temp schema
 	rm -f openapi.json
