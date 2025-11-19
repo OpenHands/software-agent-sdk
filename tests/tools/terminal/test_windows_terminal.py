@@ -57,8 +57,8 @@ def test_windows_terminal_basic_command(windows_session):
     """Test executing a basic command."""
     obs = windows_session.execute(ExecuteBashAction(command="echo Hello"))
 
-    assert obs.output is not None
-    assert "Hello" in obs.output
+    assert obs.text is not None
+    assert "Hello" in obs.text
     assert obs.exit_code == 0
 
 
@@ -68,9 +68,9 @@ def test_windows_terminal_pwd(windows_session, temp_dir):
 
     # PowerShell may show the path in different format
     # Verify the command executed and returned the working directory
-    assert obs.output is not None
+    assert obs.text is not None
     assert obs.exit_code == 0
-    assert temp_dir.lower().replace("\\", "/") in obs.output.lower().replace("\\", "/")
+    assert temp_dir.lower().replace("\\", "/") in obs.text.lower().replace("\\", "/")
 
 
 def test_windows_terminal_cd_command(windows_session, temp_dir):
@@ -87,7 +87,7 @@ def test_windows_terminal_cd_command(windows_session, temp_dir):
     # PowerShell uses Get-Location, not pwd
     obs = windows_session.execute(ExecuteBashAction(command="(Get-Location).Path"))
     # PowerShell may return path with different separators
-    normalized_output = obs.output.replace("\\", "/").lower()
+    normalized_output = obs.text.replace("\\", "/").lower()
     normalized_test_dir = test_dir.replace("\\", "/").lower()
     assert normalized_test_dir in normalized_output
 
@@ -98,10 +98,10 @@ def test_windows_terminal_multiline_output(windows_session):
         ExecuteBashAction(command='echo "Line1"; echo "Line2"; echo "Line3"')
     )
 
-    assert obs.output is not None
-    assert "Line1" in obs.output
-    assert "Line2" in obs.output
-    assert "Line3" in obs.output
+    assert obs.text is not None
+    assert "Line1" in obs.text
+    assert "Line2" in obs.text
+    assert "Line3" in obs.text
 
 
 def test_windows_terminal_file_operations(windows_session, temp_dir):
@@ -121,7 +121,7 @@ def test_windows_terminal_file_operations(windows_session, temp_dir):
     obs = windows_session.execute(
         ExecuteBashAction(command=f'Get-Content "{test_file}"')
     )
-    assert "Test content" in obs.output
+    assert "Test content" in obs.text
 
 
 def test_windows_terminal_error_handling(windows_session):
@@ -132,7 +132,7 @@ def test_windows_terminal_error_handling(windows_session):
     )
 
     # Command should fail (non-zero exit code or error in output)
-    assert obs.exit_code != 0 or "cannot find" in obs.output.lower()
+    assert obs.exit_code != 0 or "cannot find" in obs.text.lower()
 
 
 def test_windows_terminal_environment_variables(windows_session):
@@ -145,7 +145,7 @@ def test_windows_terminal_environment_variables(windows_session):
 
     # Read the environment variable
     obs = windows_session.execute(ExecuteBashAction(command="echo $env:TEST_VAR"))
-    assert "test_value" in obs.output
+    assert "test_value" in obs.text
 
 
 def test_windows_terminal_long_running_command(windows_session):
@@ -155,7 +155,7 @@ def test_windows_terminal_long_running_command(windows_session):
         ExecuteBashAction(command="Start-Sleep -Seconds 2; echo Done")
     )
 
-    assert "Done" in obs.output
+    assert "Done" in obs.text
     assert obs.exit_code == 0
 
 
@@ -165,7 +165,7 @@ def test_windows_terminal_special_characters(windows_session):
         ExecuteBashAction(command='echo "Test@#$%^&*()_+-=[]{}|;:,.<>?"')
     )
 
-    assert obs.output is not None
+    assert obs.text is not None
     assert obs.exit_code == 0
 
 
@@ -209,7 +209,7 @@ def test_windows_terminal_clear_screen(windows_session):
 
     # Execute another command
     obs = windows_session.execute(ExecuteBashAction(command="echo Test3"))
-    assert "Test3" in obs.output
+    assert "Test3" in obs.text
 
 
 def test_windows_terminal_is_running(windows_session):
@@ -259,7 +259,7 @@ def test_windows_terminal_timeout_handling(windows_session):
     )
 
     # Should complete within reasonable time
-    assert obs.output is not None
+    assert obs.text is not None
 
 
 def test_windows_terminal_consecutive_commands(windows_session, temp_dir):
@@ -296,7 +296,7 @@ def test_windows_terminal_unicode_handling(windows_session):
     obs = windows_session.execute(ExecuteBashAction(command='echo "Hello 世界 🌍"'))
 
     # Just verify the command executes without crashing
-    assert obs.output is not None
+    assert obs.text is not None
 
 
 def test_windows_terminal_path_with_spaces(windows_session, temp_dir):
@@ -322,7 +322,7 @@ def test_windows_terminal_command_with_quotes(windows_session):
         ExecuteBashAction(command="echo \"Double quotes\" ; echo 'Single quotes'")
     )
 
-    assert obs.output is not None
+    assert obs.text is not None
     assert obs.exit_code == 0
 
 
@@ -331,7 +331,7 @@ def test_windows_terminal_empty_command(windows_session):
     obs = windows_session.execute(ExecuteBashAction(command=""))
 
     # Empty command should execute without error
-    assert obs.output is not None
+    assert obs.text is not None
 
 
 def test_windows_terminal_working_directory_persistence(windows_session, temp_dir):
