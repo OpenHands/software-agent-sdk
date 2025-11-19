@@ -9,8 +9,8 @@ from openhands.sdk.tool import ToolExecutor
 if TYPE_CHECKING:
     from openhands.sdk.conversation import LocalConversation
 from openhands.tools.terminal.definition import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
 )
 from openhands.tools.terminal.terminal.factory import create_terminal_session
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
@@ -19,7 +19,7 @@ from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 logger = get_logger(__name__)
 
 
-class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
+class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     session: TerminalSession
     shell_path: str | None
 
@@ -31,7 +31,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
     ):
-        """Initialize BashExecutor with auto-detected or specified session type.
+        """Initialize TerminalExecutor with auto-detected or specified session type.
 
         Args:
             working_dir: Working directory for bash commands
@@ -53,13 +53,13 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         )
         self.session.initialize()
         logger.info(
-            f"BashExecutor initialized with working_dir: {working_dir}, "
+            f"TerminalExecutor initialized with working_dir: {working_dir}, "
             f"username: {username}, "
             f"terminal_type: {terminal_type or self.session.__class__.__name__}"
         )
 
     def _export_envs(
-        self, action: ExecuteBashAction, conversation: "LocalConversation | None" = None
+        self, action: TerminalAction, conversation: "LocalConversation | None" = None
     ) -> None:
         if not action.command.strip():
             return
@@ -88,18 +88,18 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
 
         # Execute the export command separately to persist env in the session
         _ = self.session.execute(
-            ExecuteBashAction(
+            TerminalAction(
                 command=exports_cmd,
                 is_input=False,
                 timeout=action.timeout,
             )
         )
 
-    def reset(self) -> ExecuteBashObservation:
+    def reset(self) -> TerminalObservation:
         """Reset the terminal session by creating a new instance.
 
         Returns:
-            ExecuteBashObservation with reset confirmation message
+            TerminalObservation with reset confirmation message
         """
         original_work_dir = self.session.work_dir
         original_username = self.session.username
@@ -119,7 +119,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
             f"Terminal session reset successfully with working_dir: {original_work_dir}"
         )
 
-        return ExecuteBashObservation.from_text(
+        return TerminalObservation.from_text(
             text=(
                 "Terminal session has been reset. All previous environment "
                 "variables and session state have been cleared."
@@ -130,9 +130,9 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
 
     def __call__(
         self,
-        action: ExecuteBashAction,
+        action: TerminalAction,
         conversation: "LocalConversation | None" = None,
-    ) -> ExecuteBashObservation:
+    ) -> TerminalObservation:
         # Validate field combinations
         if action.reset and action.is_input:
             raise ValueError("Cannot use reset=True with is_input=True")
@@ -142,7 +142,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
 
             # Handle command execution after reset
             if action.command.strip():
-                command_action = ExecuteBashAction(
+                command_action = TerminalAction(
                     command=action.command,
                     timeout=action.timeout,
                     is_input=False,  # is_input validated to be False when reset=True
@@ -179,7 +179,7 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
                 masked_content = secret_registry.mask_secrets_in_output(content_text)
                 if masked_content:
                     data = observation.model_dump(exclude={"content"})
-                    return ExecuteBashObservation.from_text(text=masked_content, **data)
+                    return TerminalObservation.from_text(text=masked_content, **data)
             except Exception:
                 pass
 
@@ -189,3 +189,27 @@ class BashExecutor(ToolExecutor[ExecuteBashAction, ExecuteBashObservation]):
         """Close the terminal session and clean up resources."""
         if hasattr(self, "session"):
             self.session.close()
+
+
+# Deprecated aliases for backward compatibility
+class BashExecutor(TerminalExecutor):
+    """Deprecated: Use TerminalExecutor instead.
+
+    This class is deprecated and will be removed in version 1.5.0.
+    Please use TerminalExecutor instead.
+    """
+
+    def __init__(self, *args, **kwargs):
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "BashExecutor",
+            deprecated_in="1.2.0",
+            removed_in="1.5.0",
+            details=(
+                "Use TerminalExecutor instead. BashExecutor is an "
+                "alias that will be removed in the future."
+            ),
+            stacklevel=3,
+        )
+        super().__init__(*args, **kwargs)
