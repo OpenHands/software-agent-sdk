@@ -563,35 +563,19 @@ class RemoteConversation(BaseConversation):
             if not isinstance(event, LLMCompletionLogEvent):
                 return
 
-            # Try to find the appropriate log directory based on model name
-            # The model_name might have been extracted from filename, so we need
-            # to match it against configured LLMs
-            log_dir = None
-
-            # Prefer usage_id provided by the event to select the correct folder
-            if isinstance(event, LLMCompletionLogEvent) and event.usage_id:
-                log_dir = self._log_completion_folders.get(event.usage_id)
-
-            # Fallback to the first configured log folder if usage_id unavailable
-            if not log_dir and self._log_completion_folders:
-                log_dir = next(iter(self._log_completion_folders.values()))
-
+            # Get the log directory for this LLM's usage_id
+            log_dir = self._log_completion_folders.get(event.usage_id)
             if not log_dir:
-                # No LLMs with logging enabled, skip
                 logger.debug(
-                    "Received LLMCompletionLogEvent but no log directory configured"
+                    f"No log directory configured for usage_id={event.usage_id}"
                 )
                 return
 
             try:
-                # Create log directory if it doesn't exist
                 os.makedirs(log_dir, exist_ok=True)
-
-                # Write the log file
                 log_path = os.path.join(log_dir, event.filename)
                 with open(log_path, "w") as f:
                     f.write(event.log_data)
-
                 logger.debug(f"Wrote LLM completion log to {log_path}")
             except Exception as e:
                 logger.warning(f"Failed to write LLM completion log: {e}")

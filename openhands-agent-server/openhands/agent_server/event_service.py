@@ -232,47 +232,54 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    def _emit_event_from_thread(self, event: Event) -> None:
+        """Helper to safely emit events from non-async contexts (e.g., callbacks).
+
+        This schedules event emission in the main event loop, making it safe to call
+        from callbacks that may run in different threads.
+        """
+        if self._main_loop and self._main_loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+
     def _setup_llm_log_streaming(self, agent: Agent) -> None:
         """Configure LLM log callbacks to stream logs via events."""
+        for llm in agent.get_all_llms():
+            if not llm.log_completions:
+                continue
 
-        def make_log_callback(usage_id: str, model_name: str):
-            def log_callback(filename: str, log_data: str) -> None:
+            # Capture variables for closure
+            usage_id = llm.usage_id
+            model_name = llm.model
+
+            def log_callback(
+                filename: str, log_data: str, uid=usage_id, model=model_name
+            ) -> None:
                 """Callback to emit LLM completion logs as events."""
                 event = LLMCompletionLogEvent(
                     filename=filename,
                     log_data=log_data,
-                    model_name=model_name,
-                    usage_id=usage_id,
+                    model_name=model,
+                    usage_id=uid,
                 )
-                # Publish to all subscribers - schedule in the main event loop
-                if self._main_loop and self._main_loop.is_running():
-                    asyncio.run_coroutine_threadsafe(
-                        self._pub_sub(event), self._main_loop
-                    )
+                self._emit_event_from_thread(event)
 
-            return log_callback
-
-        # Set callback for all LLMs in the agent that have logging enabled
-        for llm in agent.get_all_llms():
-            if llm.log_completions:
-                llm.telemetry.set_log_callback(
-                    make_log_callback(llm.usage_id, llm.model)
-                )
+            llm.telemetry.set_log_callback(log_callback)
 
     def _setup_stats_streaming(self, agent: Agent) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
 
-        def stats_update_callback() -> None:
-            """Callback to emit stats updates as ConversationStateUpdateEvent."""
-            # Schedule state update in the main event loop
-            if self._main_loop and self._main_loop.is_running():
-                asyncio.run_coroutine_threadsafe(
-                    self._publish_state_update(keys=["stats"]), self._main_loop
-                )
+        def stats_callback() -> None:
+            """Callback to emit stats updates."""
+            # Publish only the stats field to avoid sending entire state
+            if not self._conversation:
+                return
+            state = self._conversation._state
+            with state:
+                event = ConversationStateUpdateEvent(key="stats", value=state.stats)
+            self._emit_event_from_thread(event)
 
-        # Set callback for all LLMs in the agent
         for llm in agent.get_all_llms():
-            llm.telemetry.set_stats_update_callback(stats_update_callback)
+            llm.telemetry.set_stats_update_callback(stats_callback)
 
     async def start(self):
         # Store the main event loop for cross-thread communication
@@ -401,35 +408,16 @@ class EventService:
             raise ValueError("inactive_service")
         return self._conversation._state
 
-    async def _publish_state_update(self, keys: list[str] | None = None):
-        """Publish a ConversationStateUpdateEvent with the current state.
-
-        Args:
-            keys: Optional list of field keys to include in the update.
-                 If None, publishes the full state. If provided, only publishes
-                 the specified fields.
-        """
+    async def _publish_state_update(self):
+        """Publish a ConversationStateUpdateEvent with the current state."""
         if not self._conversation:
             return
 
         state = self._conversation._state
         with state:
-            if keys is None:
-                # Full state update
-                state_update_event = (
-                    ConversationStateUpdateEvent.from_conversation_state(state)
-                )
-            else:
-                # Selective field update - create events for each key
-                for key in keys:
-                    value = getattr(state, key, None)
-                    state_update_event = ConversationStateUpdateEvent(
-                        key=key, value=value
-                    )
-                    await self._pub_sub(state_update_event)
-                return
-
-            # Publish the state update event
+            state_update_event = ConversationStateUpdateEvent.from_conversation_state(
+                state
+            )
             await self._pub_sub(state_update_event)
 
     async def __aenter__(self):
