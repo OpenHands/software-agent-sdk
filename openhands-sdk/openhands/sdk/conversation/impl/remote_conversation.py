@@ -14,7 +14,7 @@ from openhands.sdk.conversation.base import BaseConversation, ConversationStateP
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
-from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.secret_registry import SecretValue, _wrap_secret
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
@@ -633,16 +633,22 @@ class RemoteConversation(BaseConversation):
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/pause")
 
     def update_secrets(self, secrets: Mapping[str, SecretValue]) -> None:
-        # Convert SecretValue to strings for JSON serialization
+        # Convert SecretValue to proper SecretSource objects for the server
         # SecretValue can be str or callable, we need to handle both
         serializable_secrets = {}
         for key, value in secrets.items():
             if callable(value):
                 # If it's a callable, call it to get the actual secret
-                serializable_secrets[key] = value()
+                secret_value = value()
             else:
                 # If it's already a string, use it directly
-                serializable_secrets[key] = value
+                secret_value = value
+
+            # Wrap the secret value in a StaticSecret and serialize it properly
+            secret_source = _wrap_secret(secret_value)
+            serializable_secrets[key] = secret_source.model_dump(
+                context={"expose_secrets": True}
+            )
 
         payload = {"secrets": serializable_secrets}
         _send_request(
