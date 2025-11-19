@@ -329,7 +329,12 @@ class ConversationService:
                 if not meta_file.exists():
                     continue
                 json_str = meta_file.read_text()
-                stored = StoredConversation.model_validate_json(json_str)
+                stored = StoredConversation.model_validate_json(
+                    json_str,
+                    context={
+                        "cipher": self.cipher,
+                    },
+                )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
@@ -428,9 +433,8 @@ class WebhookSubscriber(Subscriber):
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
             await self._post_events()
-        else:
-            # Reset the flush timer
-            self._reset_flush_timer()
+        elif not self._flush_timer:
+            self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     async def close(self):
         """Post any remaining items in the queue to the webhook."""
@@ -498,14 +502,6 @@ class WebhookSubscriber(Subscriber):
         if self._flush_timer and not self._flush_timer.done():
             self._flush_timer.cancel()
         self._flush_timer = None
-
-    def _reset_flush_timer(self):
-        """Reset the flush timer to trigger after flush_delay seconds."""
-        # Cancel existing timer
-        self._cancel_flush_timer()
-
-        # Create new timer
-        self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     async def _flush_after_delay(self):
         """Wait for flush_delay seconds then flush events if any exist."""
