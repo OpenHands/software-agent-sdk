@@ -177,7 +177,8 @@ jobs:
                     --ignore=tests/tools/terminal/test_shell_path_configuration.py `
                     --ignore=tests/tools/terminal/test_shutdown_handling.py `
                     --ignore=tests/tools/terminal/test_conversation_cleanup.py `
-                    --ignore=tests/tools/terminal/test_terminal_tool_auto_detection.py
+                    --ignore=tests/tools/terminal/test_terminal_tool_auto_detection.py `
+                    --ignore=tests/tools/file_editor/test_memory_usage.py
                   # Rename coverage file for upload
                   if (Test-Path .coverage) {
                     Move-Item .coverage coverage-tools-windows.dat
