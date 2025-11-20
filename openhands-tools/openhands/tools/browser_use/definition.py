@@ -95,7 +95,7 @@ class BrowserAction(Action):
 # ============================================
 # `go_to_url`
 # ============================================
-class BrowserNavigateAction(BrowserAction):
+class BrowserNavigateURLAction(BrowserAction):
     """Schema for browser navigation."""
 
     url: str = Field(description="The URL to navigate to")
@@ -118,7 +118,7 @@ Examples:
 """  # noqa: E501
 
 
-class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservation]):
+class BrowserNavigateTool(ToolDefinition[BrowserNavigateURLAction, BrowserObservation]):
     """Tool for browser navigation."""
 
     @classmethod
@@ -126,7 +126,7 @@ class BrowserNavigateTool(ToolDefinition[BrowserNavigateAction, BrowserObservati
         return [
             cls(
                 description=BROWSER_NAVIGATE_DESCRIPTION,
-                action_type=BrowserNavigateAction,
+                action_type=BrowserNavigateURLAction,
                 observation_type=BrowserObservation,
                 annotations=ToolAnnotations(
                     title="browser_navigate",
@@ -193,7 +193,7 @@ class BrowserClickTool(ToolDefinition[BrowserClickAction, BrowserObservation]):
 # ============================================
 # `browser_type`
 # ============================================
-class BrowserTypeAction(BrowserAction):
+class BrowserTypeTextAction(BrowserAction):
     """Schema for typing text into elements."""
 
     index: int = Field(
@@ -215,7 +215,7 @@ Important: Only use indices that appear in your current browser_get_state output
 """  # noqa: E501
 
 
-class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
+class BrowserTypeTool(ToolDefinition[BrowserTypeTextAction, BrowserObservation]):
     """Tool for typing text into browser elements."""
 
     @classmethod
@@ -223,7 +223,7 @@ class BrowserTypeTool(ToolDefinition[BrowserTypeAction, BrowserObservation]):
         return [
             cls(
                 description=BROWSER_TYPE_DESCRIPTION,
-                action_type=BrowserTypeAction,
+                action_type=BrowserTypeTextAction,
                 observation_type=BrowserObservation,
                 annotations=ToolAnnotations(
                     title="browser_type",
