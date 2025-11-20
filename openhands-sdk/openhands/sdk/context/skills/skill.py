@@ -35,17 +35,17 @@ class Skill(BaseModel):
         default=None,
         description=(
             "Skills use triggers to determine when they should be activated. "
-            "None implies skill is always active."
+            "None implies skill is always active. "
+            "Other implementations include KeywordTrigger (activated by a "
+            "keyword in a Message) and TaskTrigger (activated by specific tasks "
+            "and may require user input)"
         ),
     )
     source: str | None = Field(
         default=None,
         description=(
             "The source path or identifier of the skill. "
-            "When it is None, it is treated as a programmatically defined skill. "
-            "Other implementations include KeywordTrigger (activated by a "
-            "keyword in a Message) and TaskTrigger (activated by specific tasks "
-            "and may require user input)"
+            "When it is None, it is treated as a programmatically defined skill."
         ),
     )
     mcp_tools: dict | None = Field(
