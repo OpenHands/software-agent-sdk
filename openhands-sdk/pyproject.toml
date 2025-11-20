@@ -12,7 +12,6 @@ dependencies = [
     "pydantic>=2.11.7",
     "python-frontmatter>=1.1.0",
     "python-json-logger>=3.3.0",
-    "transformers>=4.30.0",
     "requests>=2.31.0",
     "tenacity>=9.1.2",
     "websockets>=12",
@@ -21,6 +20,7 @@ dependencies = [
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+critic = ["transformers>=4.30.0",]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

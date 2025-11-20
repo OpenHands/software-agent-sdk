@@ -1995,13 +1995,15 @@ dependencies = [
     { name = "python-json-logger" },
     { name = "requests" },
     { name = "tenacity" },
-    { name = "transformers" },
     { name = "websockets" },
 ]
 
 [package.optional-dependencies]
 boto3 = [
     { name = "boto3" },
+]
+critic = [
+    { name = "transformers" },
 ]
 
 [package.metadata]
@@ -2017,10 +2019,10 @@ requires-dist = [
     { name = "python-json-logger", specifier = ">=3.3.0" },
     { name = "requests", specifier = ">=2.31.0" },
     { name = "tenacity", specifier = ">=9.1.2" },
-    { name = "transformers", specifier = ">=4.30.0" },
+    { name = "transformers", marker = "extra == 'critic'", specifier = ">=4.30.0" },
     { name = "websockets", specifier = ">=12" },
 ]
-provides-extras = ["boto3"]
+provides-extras = ["boto3", "critic"]
 
 [[package]]
 name = "openhands-tools"
