@@ -504,6 +504,81 @@ def test_llm_function_calling_can_be_disabled():
     assert llm_unknown_disabled.native_tool_calling is False
 
 
+def test_llm_force_string_serializer_auto_detect():
+    """Test that force_string_serializer auto-detects based on model when None."""
+    # Test with a model that requires string serialization (DeepSeek)
+    llm_deepseek = LLM(
+        model="deepseek-v3",
+        api_key=SecretStr("test_key"),
+        usage_id="test-deepseek",
+    )
+    # Should be None at LLM level (auto-detect)
+    assert llm_deepseek.force_string_serializer is None
+    # When formatting messages, it should be set to True based on model features
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    formatted = llm_deepseek.format_messages_for_llm(messages)
+    # The formatted messages should have force_string_serializer applied
+    # For DeepSeek models, content should be a string (not list)
+    assert len(formatted) == 1
+    assert isinstance(formatted[0]["content"], str)
+
+    # Test with a model that doesn't require string serialization
+    llm_gpt = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        usage_id="test-gpt",
+        caching_prompt=False,  # Disable caching
+        native_tool_calling=False,  # Disable tool calling
+        disable_vision=True,  # Disable vision to test simple string case
+    )
+    assert llm_gpt.force_string_serializer is None
+    # When formatting messages for GPT without special features, uses string by default
+    formatted_gpt = llm_gpt.format_messages_for_llm(messages)
+    assert len(formatted_gpt) == 1
+    assert isinstance(formatted_gpt[0]["content"], str)
+
+
+def test_llm_force_string_serializer_override():
+    """Test force_string_serializer can be explicitly set to override auto-detect."""
+    # Set force_string_serializer=True for a model that normally doesn't need it
+    llm_force_true = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        force_string_serializer=True,
+        usage_id="test-force-true",
+    )
+    assert llm_force_true.force_string_serializer is True
+    # Even with vision or cache enabled, should force string serialization
+    messages = [
+        Message(
+            role="user",
+            content=[TextContent(text="Test")],
+            cache_enabled=True,  # Would normally trigger list serialization
+        )
+    ]
+    formatted = llm_force_true.format_messages_for_llm(messages)
+    assert isinstance(formatted[0]["content"], str)
+
+    # Explicitly set force_string_serializer=False for a model that normally needs it
+    llm_force_false = LLM(
+        model="deepseek-v3",
+        api_key=SecretStr("test_key"),
+        force_string_serializer=False,
+        usage_id="test-force-false",
+    )
+    assert llm_force_false.force_string_serializer is False
+    # With cache enabled and force_string_serializer=False, should use list
+    messages_cache = [
+        Message(
+            role="user",
+            content=[TextContent(text="Test")],
+            cache_enabled=True,
+        )
+    ]
+    formatted_cache = llm_force_false.format_messages_for_llm(messages_cache)
+    assert isinstance(formatted_cache[0]["content"], list)
+
+
 def test_llm_caching_support(default_llm):
     """Test LLM prompt caching support detection."""
     llm = default_llm

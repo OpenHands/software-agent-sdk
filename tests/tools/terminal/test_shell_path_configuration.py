@@ -123,14 +123,14 @@ def test_shell_path_with_tmux_terminal():
 
 def test_shell_path_reset_preserves_config():
     """Test that terminal reset preserves the shell_path configuration."""
-    from openhands.tools.terminal.impl import BashExecutor
+    from openhands.tools.terminal.impl import TerminalExecutor
 
     with tempfile.TemporaryDirectory() as temp_dir:
         bash_path = shutil.which("bash")
         if not bash_path:
             pytest.skip("bash not found in PATH")
 
-        executor = BashExecutor(
+        executor = TerminalExecutor(
             working_dir=temp_dir,
             terminal_type="subprocess",
             shell_path=bash_path,
@@ -202,9 +202,9 @@ def test_terminal_tool_shell_path_parameter():
 
         terminal = tools[0]
         # Verify the executor has the shell_path
-        from openhands.tools.terminal.impl import BashExecutor
+        from openhands.tools.terminal.impl import TerminalExecutor
 
-        assert isinstance(terminal.executor, BashExecutor)
+        assert isinstance(terminal.executor, TerminalExecutor)
         assert terminal.executor.shell_path == bash_path
 
         terminal.executor.close()
