@@ -42,7 +42,10 @@ class Skill(BaseModel):
         default=None,
         description=(
             "The source path or identifier of the skill. "
-            "When it is None, it is treated as a programmatically defined skill."
+            "When it is None, it is treated as a programmatically defined skill. "
+            "Other implementations include KeywordTrigger (activated by a "
+            "keyword in a Message) and TaskTrigger (activated by specific tasks "
+            "and may require user input)"
         ),
     )
     mcp_tools: dict | None = Field(
