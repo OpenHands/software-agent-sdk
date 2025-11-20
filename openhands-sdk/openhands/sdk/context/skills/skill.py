@@ -27,17 +27,17 @@ TriggerType = Annotated[
 
 
 class Skill(BaseModel):
-    """A skill provides specialized knowledge or functionality.
-
-    Skills use triggers to determine when they should be activated:
-    - None: Always active, for repository-specific guidelines
-    - KeywordTrigger: Activated when keywords appear in user messages
-    - TaskTrigger: Activated for specific tasks, may require user input
-    """
+    """A skill provides specialized knowledge or functionality."""
 
     name: str
     content: str
-    trigger: TriggerType | None
+    trigger: TriggerType | None = Field(
+        default=None,
+        description=(
+            "Skills use triggers to determine when they should be activated. "
+            "None implies skill is always active."
+        ),
+    )
     source: str | None = Field(
         default=None,
         description=(
