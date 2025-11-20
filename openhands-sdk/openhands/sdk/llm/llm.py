@@ -290,7 +290,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
-    retry_listener: SkipJsonSchema[Callable[[int, int], None] | None] = Field(
+    retry_listener: SkipJsonSchema[
+        Callable[[int, int, BaseException | None], None] | None
+    ] = Field(
         default=None,
         exclude=True,
     )
@@ -403,6 +405,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.temperature is None:
             self.temperature = get_default_temperature(self.model)
 
+        self.retry_listener = self.retry_listen_wrapper
+
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
             f"reasoning_effort={self.reasoning_effort} "
@@ -455,6 +459,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Metrics should be initialized after model validation"
         )
         return self._metrics
+
+    def retry_listen_wrapper(
+        self, attempt_number: int, num_retries: int, _err: BaseException | None
+    ) -> None:
+        user_listener = self.retry_listener
+        if user_listener is not None:
+            user_listener(attempt_number, num_retries, _err)
+        if self._telemetry is not None and _err is not None:
+            self._telemetry.on_error(_err)  # type: ignore
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
@@ -650,7 +663,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 "kwargs": {k: v for k, v in call_kwargs.items()},
                 "context_window": self.max_input_tokens or 0,
             }
-        self._telemetry.on_request(log_ctx=log_ctx)
 
         # Perform call with retries
         @self.retry_decorator(
@@ -662,6 +674,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_listener=self.retry_listener,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+            assert self._telemetry is not None
+            self._telemetry.on_request(log_ctx=log_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
@@ -692,7 +706,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
                     # telemetry (latency, cost). Token usage mapping we handle after.
-                    assert self._telemetry is not None
                     self._telemetry.on_response(ret)
                     return ret
 
