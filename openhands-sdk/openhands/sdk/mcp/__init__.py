@@ -2,6 +2,7 @@
 
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.sdk.mcp.tool import (
     MCPToolDefinition,
     MCPToolExecutor,
@@ -18,4 +19,6 @@ __all__ = [
     "MCPToolObservation",
     "MCPToolExecutor",
     "create_mcp_tools",
+    "MCPError",
+    "MCPTimeoutError",
 ]

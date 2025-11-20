@@ -1,4 +1,3 @@
-import warnings
 from collections.abc import Callable
 from typing import ClassVar
 from uuid import uuid4
@@ -7,20 +6,17 @@ from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils.deprecation import (
+    deprecated,
+)
 
 
 logger = get_logger(__name__)
 
 
-SERVICE_TO_LLM_DEPRECATION_MSG = (
-    "LLMRegistry.service_to_llm is deprecated and will be removed in a future "
-    "release; use usage_to_llm instead."
-)
+SERVICE_TO_LLM_DEPRECATION_DETAILS = "Use usage_to_llm instead of service_to_llm."
 
-LIST_SERVICES_DEPRECATION_MSG = (
-    "LLMRegistry.list_services is deprecated and will be removed in a future "
-    "release; use list_usage_ids instead."
-)
+LIST_SERVICES_DEPRECATION_DETAILS = "Use list_usage_ids instead of list_services."
 
 
 class RegistryEvent(BaseModel):
@@ -82,12 +78,12 @@ class LLMRegistry:
         return self._usage_to_llm
 
     @property
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_TO_LLM_DEPRECATION_DETAILS,
+    )
     def service_to_llm(self) -> dict[str, LLM]:  # pragma: no cover - compatibility shim
-        warnings.warn(
-            SERVICE_TO_LLM_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return self._usage_to_llm
 
     def add(self, llm: LLM) -> None:
@@ -110,7 +106,7 @@ class LLMRegistry:
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))
-        logger.info(
+        logger.debug(
             f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )
 
@@ -142,12 +138,12 @@ class LLMRegistry:
 
         return list(self._usage_to_llm.keys())
 
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=LIST_SERVICES_DEPRECATION_DETAILS,
+    )
     def list_services(self) -> list[str]:  # pragma: no cover - compatibility shim
         """Deprecated alias for :meth:`list_usage_ids`."""
 
-        warnings.warn(
-            LIST_SERVICES_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return list(self._usage_to_llm.keys())

@@ -44,11 +44,11 @@ def test_delegation_visualizer_user_message_without_sender():
 
     user_message = Message(role="user", content=[TextContent(text="Hello")])
     user_event = MessageEvent(source="user", llm_message=user_message)
-    panel = visualizer._create_message_event_panel(user_event)
+    block = visualizer._create_message_event_block(user_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "User Message to Main Agent Agent" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "User Message to Main Agent Agent" in str(block.renderables[0])
 
 
 def test_delegation_visualizer_user_message_with_sender():
@@ -65,11 +65,13 @@ def test_delegation_visualizer_user_message_with_sender():
     delegated_event = MessageEvent(
         source="user", llm_message=delegated_message, sender="Delegator"
     )
-    panel = visualizer._create_message_event_panel(delegated_event)
+    block = visualizer._create_message_event_block(delegated_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "Delegator Agent Message to Lodging Expert Agent" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Delegator Agent Message to Lodging Expert Agent" in str(
+        block.renderables[0]
+    )
 
 
 def test_delegation_visualizer_agent_response_to_user():
@@ -84,11 +86,11 @@ def test_delegation_visualizer_agent_response_to_user():
         role="assistant", content=[TextContent(text="Response to user")]
     )
     response_event = MessageEvent(source="agent", llm_message=agent_message)
-    panel = visualizer._create_message_event_panel(response_event)
+    block = visualizer._create_message_event_block(response_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "Message from Main Agent Agent to User" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Message from Main Agent Agent to User" in str(block.renderables[0])
 
 
 def test_delegation_visualizer_agent_response_to_delegator():
@@ -112,11 +114,13 @@ def test_delegation_visualizer_agent_response_to_delegator():
         role="assistant", content=[TextContent(text="Response to delegator")]
     )
     response_event = MessageEvent(source="agent", llm_message=agent_message)
-    panel = visualizer._create_message_event_panel(response_event)
+    block = visualizer._create_message_event_block(response_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "Lodging Expert Agent Message to Delegator Agent" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Lodging Expert Agent Message to Delegator Agent" in str(
+        block.renderables[0]
+    )
 
 
 def test_delegation_visualizer_formats_agent_names():
@@ -135,22 +139,26 @@ def test_delegation_visualizer_formats_agent_names():
     mock_state.events = [delegated_event]
     visualizer.initialize(mock_state)
 
-    # Create panel for delegated message
-    panel = visualizer._create_message_event_panel(delegated_event)
-    assert panel is not None
-    title = str(panel.title)
-    assert "Main Delegator Agent Message to Lodging Expert Agent" in title
+    # Create block for delegated message
+    block = visualizer._create_message_event_block(delegated_event)
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Main Delegator Agent Message to Lodging Expert Agent" in str(
+        block.renderables[0]
+    )
 
     # Sub-agent responds
     agent_message = Message(
         role="assistant", content=[TextContent(text="Response to delegator")]
     )
     response_event = MessageEvent(source="agent", llm_message=agent_message)
-    panel = visualizer._create_message_event_panel(response_event)
+    block = visualizer._create_message_event_block(response_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "Lodging Expert Agent Message to Main Delegator Agent" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Lodging Expert Agent Message to Main Delegator Agent" in str(
+        block.renderables[0]
+    )
 
 
 def test_delegation_visualizer_action_event():
@@ -173,11 +181,11 @@ def test_delegation_visualizer_action_event():
         llm_response_id="response_456",
     )
 
-    panel = visualizer._create_event_panel(action_event)
+    block = visualizer._create_event_block(action_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "Lodging Expert Agent Action" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Lodging Expert Agent Action" in str(block.renderables[0])
 
 
 def test_delegation_visualizer_observation_event():
@@ -198,8 +206,8 @@ def test_delegation_visualizer_observation_event():
         action_id="action_789",
     )
 
-    panel = visualizer._create_event_panel(observation_event)
+    block = visualizer._create_event_block(observation_event)
 
-    assert panel is not None
-    title = str(panel.title)
-    assert "Main Delegator Agent Observation" in title
+    assert block is not None
+    # The block contains the Rule as the first element with the title
+    assert "Main Delegator Agent Observation" in str(block.renderables[0])

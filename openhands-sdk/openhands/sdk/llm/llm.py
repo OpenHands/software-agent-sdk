@@ -8,7 +8,7 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
-import httpx
+import httpx  # noqa: F401
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -22,12 +22,17 @@ from pydantic import (
 )
 from pydantic.json_schema import SkipJsonSchema
 
+from openhands.sdk.llm.utils.model_info import get_litellm_model_info
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
+from openhands.sdk.utils.deprecation import (
+    deprecated,
+    warn_deprecated,
+)
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
@@ -54,7 +59,6 @@ from litellm.types.llms.openai import ResponsesAPIResponse
 from litellm.types.utils import ModelResponse
 from litellm.utils import (
     create_pretrained_tokenizer,
-    get_model_info,
     supports_vision,
     token_counter,
 )
@@ -94,10 +98,7 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     LLMNoResponseError,
 )
 
-SERVICE_ID_DEPRECATION_MSG = (
-    "LLM.service_id is deprecated and will be removed in a future release; "
-    "use LLM.usage_id instead."
-)
+SERVICE_ID_DEPRECATION_DETAILS = "Use LLM.usage_id instead of LLM.service_id."
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -323,9 +324,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         d = dict(data)
 
         if "service_id" in d and "usage_id" not in d:
-            warnings.warn(
-                SERVICE_ID_DEPRECATION_MSG,
-                DeprecationWarning,
+            warn_deprecated(
+                "LLM.service_id",
+                deprecated_in="1.1.0",
+                removed_in="1.3.0",
+                details=SERVICE_ID_DEPRECATION_DETAILS,
                 stacklevel=3,
             )
             d["usage_id"] = d.pop("service_id")
@@ -411,21 +414,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Public API
     # =========================================================================
     @property
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_ID_DEPRECATION_DETAILS,
+    )
     def service_id(self) -> str:
-        warnings.warn(
-            SERVICE_ID_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return self.usage_id
 
     @service_id.setter
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_ID_DEPRECATION_DETAILS,
+    )
     def service_id(self, value: str) -> None:
-        warnings.warn(
-            SERVICE_ID_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         self.usage_id = value
 
     @property
@@ -772,65 +775,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Capabilities, formatting, and info
     # =========================================================================
     def _init_model_info_and_caps(self) -> None:
-        # Try to get model info via openrouter or litellm proxy first
-        tried = False
-        try:
-            if self.model.startswith("openrouter"):
-                self._model_info = get_model_info(self.model)
-                tried = True
-        except Exception as e:
-            logger.debug(f"get_model_info(openrouter) failed: {e}")
-
-        if not tried and self.model.startswith("litellm_proxy/"):
-            # IF we are using LiteLLM proxy, get model info from LiteLLM proxy
-            # GET {base_url}/v1/model/info with litellm_model_id as path param
-            base_url = self.base_url.strip() if self.base_url else ""
-            if not base_url.startswith(("http://", "https://")):
-                base_url = "http://" + base_url
-            try:
-                headers = {}
-                # Extract api_key value with type assertion for type checker
-                api_key = ""
-                if self.api_key:
-                    assert isinstance(self.api_key, SecretStr)
-                    api_key = self.api_key.get_secret_value()
-                if api_key:
-                    headers["Authorization"] = f"Bearer {api_key}"
-
-                response = httpx.get(f"{base_url}/v1/model/info", headers=headers)
-                data = response.json().get("data", [])
-                current = next(
-                    (
-                        info
-                        for info in data
-                        if info["model_name"]
-                        == self.model.removeprefix("litellm_proxy/")
-                    ),
-                    None,
-                )
-                if current:
-                    self._model_info = current.get("model_info")
-                    logger.debug(
-                        f"Got model info from litellm proxy: {self._model_info}"
-                    )
-            except Exception as e:
-                logger.debug(
-                    f"Error fetching model info from proxy: {e}",
-                    exc_info=True,
-                    stack_info=True,
-                )
-
-        # Fallbacks: try base name variants
-        if not self._model_info:
-            try:
-                self._model_info = get_model_info(self.model.split(":")[0])
-            except Exception:
-                pass
-        if not self._model_info:
-            try:
-                self._model_info = get_model_info(self.model.split("/")[-1])
-            except Exception:
-                pass
+        self._model_info = get_litellm_model_info(
+            secret_api_key=self.api_key,
+            base_url=self.base_url,
+            model=self.model,
+        )
 
         # Context window and max_output_tokens
         if (
