@@ -308,12 +308,12 @@ def _safe_json(obj: Any) -> Any:
     # Prefer robust serialization for Pydantic models first to avoid cycles.
     # Typed LiteLLM responses
     if isinstance(obj, ModelResponse) or isinstance(obj, ResponsesAPIResponse):
-        return obj.model_dump(mode="json")
+        return obj.model_dump(mode="json", exclude_none=True)
 
     # Any Pydantic BaseModel (e.g., ToolDefinition, ChatCompletionToolParam, etc.)
     if isinstance(obj, BaseModel):
         # Use Pydantic's serializer which respects field exclusions (e.g., executors)
-        return obj.model_dump(mode="json")
+        return obj.model_dump(mode="json", exclude_none=True)
 
     # Fallbacks for other non-serializable objects used elsewhere in the log payload
     try:
