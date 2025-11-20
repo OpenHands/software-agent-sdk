@@ -314,14 +314,14 @@ class Message(BaseModel):
 
         # Add thinking blocks first (for Anthropic extended thinking)
         # Only add thinking blocks for assistant messages
+        thinking_blocks_dicts = []
         if self.role == "assistant":
             thinking_blocks = list(
                 self.thinking_blocks
             )  # Copy to avoid modifying original
-
             for thinking_block in thinking_blocks:
                 thinking_dict = thinking_block.model_dump()
-                content.append(thinking_dict)
+                thinking_blocks_dicts.append(thinking_dict)
 
         for item in self.content:
             # All content types now return list[dict[str, Any]]
@@ -345,6 +345,9 @@ class Message(BaseModel):
         message_dict: dict[str, Any] = {"content": content, "role": self.role}
         if role_tool_with_prompt_caching:
             message_dict["cache_control"] = {"type": "ephemeral"}
+
+        if thinking_blocks_dicts:
+            message_dict["thinking_blocks"] = thinking_blocks_dicts
 
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict

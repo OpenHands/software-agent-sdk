@@ -1,5 +1,6 @@
 import shutil
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_diff import get_git_diff
@@ -26,6 +27,11 @@ class LocalWorkspace(BaseWorkspace):
         ...     result = workspace.execute_command("ls -la")
         ...     content = workspace.read_file("README.md")
     """
+
+    def __init__(self, *, working_dir: str | Path, **kwargs: Any):
+        # Accept Path in signature for ergonomics and type checkers,
+        # but normalize to str for the underlying model field.
+        super().__init__(working_dir=str(working_dir), **kwargs)
 
     def execute_command(
         self,

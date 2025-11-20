@@ -27,7 +27,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.logger import get_logger
+from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -67,7 +67,7 @@ def _send_request(
         )
         raise e
     except httpx.RequestError as e:
-        logger.error(f"Request failed: {e}", exc_info=True)
+        logger.error(f"Request failed: {e}", exc_info=DEBUG)
         raise e
 
 
@@ -564,7 +564,7 @@ class RemoteConversation(BaseConversation):
         )
 
     @observe(name="conversation.send_message")
-    def send_message(self, message: str | Message) -> None:
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
         assert message.role == "user", (
@@ -575,6 +575,8 @@ class RemoteConversation(BaseConversation):
             "content": [c.model_dump() for c in message.content],
             "run": False,  # Mirror local semantics; explicit run() must be called
         }
+        if sender is not None:
+            payload["sender"] = sender
         _send_request(
             self._client, "POST", f"/api/conversations/{self._id}/events", json=payload
         )

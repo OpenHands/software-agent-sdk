@@ -181,13 +181,11 @@ class Agent(AgentBase):
                     include=None,
                     store=False,
                     add_security_risk_prediction=True,
-                    extra_body=self.llm.litellm_extra_body,
                 )
             else:
                 llm_response = self.llm.completion(
                     messages=_messages,
                     tools=list(self.tools_map.values()),
-                    extra_body=self.llm.litellm_extra_body,
                     add_security_risk_prediction=True,
                 )
         except FunctionCallValidationError as e:
