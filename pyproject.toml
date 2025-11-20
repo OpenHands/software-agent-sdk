@@ -114,21 +114,5 @@ explicit = true
 source = ["openhands"]
 relative_files = true
 
-[tool.coverage.paths]
-source = [
-    "openhands-sdk/",
-    "openhands-tools/",
-    "openhands-workspace/",
-    "openhands-agent-server/",
-    "/home/runner/_work/software-agent-sdk/software-agent-sdk/openhands-sdk/",
-    "/home/runner/_work/software-agent-sdk/software-agent-sdk/openhands-tools/",
-    "/home/runner/_work/software-agent-sdk/software-agent-sdk/openhands-workspace/",
-    "/home/runner/_work/software-agent-sdk/software-agent-sdk/openhands-agent-server/",
-    "D:\\a\\software-agent-sdk\\software-agent-sdk\\openhands-sdk\\",
-    "D:\\a\\software-agent-sdk\\software-agent-sdk\\openhands-tools\\",
-    "D:\\a\\software-agent-sdk\\software-agent-sdk\\openhands-workspace\\",
-    "D:\\a\\software-agent-sdk\\software-agent-sdk\\openhands-agent-server\\",
-]
-
 [tool.coverage.report]
 ignore_errors = true
