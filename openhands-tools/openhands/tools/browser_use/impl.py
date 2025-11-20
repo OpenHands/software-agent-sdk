@@ -46,7 +46,7 @@ def _check_chromium_available() -> str | None:
         ("Google", "Chrome", "Application", "chrome.exe"),
         ("Microsoft", "Edge", "Application", "msedge.exe"),
     ]
-    
+
     for env_var, default in env_vars:
         for vendor, browser, app_dir, executable in browsers:
             # Skip LOCALAPPDATA for Edge
