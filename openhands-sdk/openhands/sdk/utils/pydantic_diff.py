@@ -6,7 +6,7 @@ from pydantic import BaseModel
 def _normalize(x):
     # Convert Pydantic models to dicts
     if isinstance(x, BaseModel):
-        return x.model_dump(exclude_none=True)
+        return x.model_dump()
     # Recurse mappings and sequences (but not strings/bytes)
     if isinstance(x, Mapping):
         return {k: _normalize(v) for k, v in x.items()}

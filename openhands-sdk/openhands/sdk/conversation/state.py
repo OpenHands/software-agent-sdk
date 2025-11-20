@@ -138,7 +138,7 @@ class ConversationState(OpenHandsModel):
         """
         Persist base state snapshot (no events; events are file-backed).
         """
-        payload = self.model_dump_json(exclude_none=True)
+        payload = self.model_dump_json()
         fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====

@@ -87,7 +87,7 @@ class ConversationStateUpdateEvent(Event):
         """
         # Create a snapshot with all important state fields
         # Use mode='json' to ensure proper serialization including SecretStr
-        state_snapshot = state.model_dump(mode="json", exclude_none=True)
+        state_snapshot = state.model_dump(mode="json")
 
         # Use a special key "full_state" to indicate this is a full snapshot
         return cls(key=FULL_STATE_KEY, value=state_snapshot)

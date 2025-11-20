@@ -350,9 +350,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             raise ValueError(error_msg)
 
         reconciled = persisted.model_copy(update=updates)
-        if self.model_dump(exclude_none=True) != reconciled.model_dump(
-            exclude_none=True
-        ):
+        if self.model_dump() != reconciled.model_dump():
             raise ValueError(
                 "The Agent provided is different from the one in persisted state.\n"
                 f"Diff: {pretty_pydantic_diff(self, reconciled)}"

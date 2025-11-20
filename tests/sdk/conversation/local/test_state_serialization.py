@@ -44,7 +44,7 @@ def test_conversation_state_basic_serialization():
     state.events.append(event2)
 
     # Test serialization - note that events are not included in base state
-    serialized = state.model_dump_json(exclude_none=True)
+    serialized = state.model_dump_json()
     assert isinstance(serialized, str)
 
     # Test deserialization - events won't be included in base state
@@ -216,9 +216,7 @@ def test_conversation_state_event_file_scanning():
             system_prompt=TextContent(text="system1"),
             tools=[],
         )
-        (events_dir / "event-00000-abcdef01.json").write_text(
-            event1.model_dump_json(exclude_none=True)
-        )
+        (events_dir / "event-00000-abcdef01.json").write_text(event1.model_dump_json())
 
         event2 = SystemPromptEvent(
             id="abcdef02",
@@ -226,9 +224,7 @@ def test_conversation_state_event_file_scanning():
             system_prompt=TextContent(text="system2"),
             tools=[],
         )
-        (events_dir / "event-00001-abcdef02.json").write_text(
-            event2.model_dump_json(exclude_none=True)
-        )
+        (events_dir / "event-00001-abcdef02.json").write_text(event2.model_dump_json())
 
         # Invalid file should be ignored
         (events_dir / "invalid-file.json").write_text('{"type": "test"}')
@@ -279,7 +275,7 @@ def test_conversation_state_corrupted_event_handling():
             tools=[],
         )
         (events_dir / "event-00000-abcdef01.json").write_text(
-            valid_event.model_dump_json(exclude_none=True)
+            valid_event.model_dump_json()
         )
 
         # Corrupted JSON - will be ignored by EventLog
@@ -295,7 +291,7 @@ def test_conversation_state_corrupted_event_handling():
             llm_message=Message(role="user", content=[TextContent(text="hello")]),
         )
         (events_dir / "event-00003-abcdef04.json").write_text(
-            valid_event2.model_dump_json(exclude_none=True)
+            valid_event2.model_dump_json()
         )
 
         # Load conversation - EventLog will fail on corrupted files
@@ -347,9 +343,7 @@ def test_conversation_state_missing_base_state():
             system_prompt=TextContent(text="system"),
             tools=[],
         )
-        (events_dir / "event-00000-abcdef01.json").write_text(
-            event.model_dump_json(exclude_none=True)
-        )
+        (events_dir / "event-00000-abcdef01.json").write_text(event.model_dump_json())
 
         # Current implementation creates new conversation and ignores orphaned
         # event files

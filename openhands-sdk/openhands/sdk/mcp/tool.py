@@ -184,11 +184,10 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         # Validate against the dynamically created action type (from MCP schema)
         mcp_action_type = _create_mcp_action_type(self.mcp_tool)
         validated = mcp_action_type.model_validate(prefiltered_args)
-        # Use exclude_none to avoid injecting nulls back to the call
         # Exclude DiscriminatedUnionMixin fields (e.g., 'kind') as they're
         # internal to OpenHands and not part of the MCP tool schema
         exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys())
-        sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
+        sanitized = validated.model_dump(exclude=exclude_fields)
         return MCPToolAction(data=sanitized)
 
     @classmethod
@@ -199,9 +198,7 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     ) -> Sequence["MCPToolDefinition"]:
         try:
             annotations = (
-                ToolAnnotations.model_validate(
-                    mcp_tool.annotations.model_dump(exclude_none=True)
-                )
+                ToolAnnotations.model_validate(mcp_tool.annotations.model_dump())
                 if mcp_tool.annotations
                 else None
             )
