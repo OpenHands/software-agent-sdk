@@ -113,6 +113,3 @@ explicit = true
 [tool.coverage.run]
 source = ["openhands"]
 relative_files = true
-
-[tool.coverage.report]
-ignore_errors = true
