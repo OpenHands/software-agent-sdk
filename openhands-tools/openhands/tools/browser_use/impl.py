@@ -36,33 +36,27 @@ def _check_chromium_available() -> str | None:
             return path
 
     # Check common Windows installation paths
-    windows_chrome_paths = [
-        Path(os.environ.get("PROGRAMFILES", "C:\\Program Files"))
-        / "Google"
-        / "Chrome"
-        / "Application"
-        / "chrome.exe",
-        Path(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"))
-        / "Google"
-        / "Chrome"
-        / "Application"
-        / "chrome.exe",
-        Path(os.environ.get("LOCALAPPDATA", ""))
-        / "Google"
-        / "Chrome"
-        / "Application"
-        / "chrome.exe",
-        Path(os.environ.get("PROGRAMFILES", "C:\\Program Files"))
-        / "Microsoft"
-        / "Edge"
-        / "Application"
-        / "msedge.exe",
-        Path(os.environ.get("PROGRAMFILES(X86)", "C:\\Program Files (x86)"))
-        / "Microsoft"
-        / "Edge"
-        / "Application"
-        / "msedge.exe",
+    windows_chrome_paths = []
+    env_vars = [
+        ("PROGRAMFILES", "C:\\Program Files"),
+        ("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
+        ("LOCALAPPDATA", ""),
     ]
+    browsers = [
+        ("Google", "Chrome", "Application", "chrome.exe"),
+        ("Microsoft", "Edge", "Application", "msedge.exe"),
+    ]
+    
+    for env_var, default in env_vars:
+        for vendor, browser, app_dir, executable in browsers:
+            # Skip LOCALAPPDATA for Edge
+            if env_var == "LOCALAPPDATA" and vendor == "Microsoft":
+                continue
+            base_path = Path(os.environ.get(env_var, default))
+            if base_path:
+                windows_chrome_paths.append(
+                    base_path / vendor / browser / app_dir / executable
+                )
     for chrome_path in windows_chrome_paths:
         if chrome_path.exists():
             return str(chrome_path)
