@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.view import View
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -462,11 +463,12 @@ class LocalConversation(BaseConversation):
             state, events, or execution status.
         """
         # Get the agent's current view of the conversation context
-        context_strings = self.agent.current_view(self)
+        view = View.from_events(self.state.events)
+        visible_events = view.events
 
         # Build the context-aware question
-        if context_strings:
-            context_text = "\n".join(context_strings)
+        if visible_events:
+            context_text = "\n".join(str(visible_events))
             full_question = (
                 f"Based on the current conversation context:\n\n{context_text}\n\n"
                 f"Question: {question}"
