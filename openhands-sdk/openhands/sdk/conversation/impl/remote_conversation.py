@@ -649,6 +649,36 @@ class RemoteConversation(BaseConversation):
             self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
         )
 
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple question and get a response without affecting state.
+
+        This method provides a way to get quick responses from the agent's LLM
+        without going through the normal conversation flow. It's useful for
+        getting simple answers or clarifications while a conversation is running.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+
+        Note:
+            This method is thread-safe and can be called while conversation.run()
+            is executing in another thread. It does not affect the conversation
+            state, events, or execution status.
+        """
+        # For remote conversations, delegate to the server endpoint
+        payload = {"question": question}
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/ask_agent",
+            json=payload,
+        )
+        data = resp.json()
+        return data["response"]
+
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.

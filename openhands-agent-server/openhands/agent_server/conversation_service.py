@@ -320,6 +320,18 @@ class ConversationService:
         title = await event_service.generate_title(llm=llm, max_length=max_length)
         return title
 
+    async def ask_agent(self, conversation_id: UUID, question: str) -> str | None:
+        """Ask the agent a simple question without affecting conversation state."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        response = await event_service.ask_agent(question)
+        return response
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}

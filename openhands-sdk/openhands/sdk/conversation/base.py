@@ -216,6 +216,27 @@ class BaseConversation(ABC):
         """
         return str(Path(persistence_base_dir) / conversation_id.hex)
 
+    @abstractmethod
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple question and get a response without affecting state.
+
+        This method provides a way to get quick responses from the agent's LLM
+        without going through the normal conversation flow. It's useful for
+        getting simple answers or clarifications while a conversation is running.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+
+        Note:
+            This method is thread-safe and can be called while conversation.run()
+            is executing in another thread. It does not affect the conversation
+            state, events, or execution status.
+        """
+        ...
+
     @staticmethod
     def compose_callbacks(
         callbacks: Iterable[ConversationCallbackType],
