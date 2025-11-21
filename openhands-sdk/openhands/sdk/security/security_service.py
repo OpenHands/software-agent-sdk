@@ -1,15 +1,18 @@
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
 
+from openhands.sdk.utils.models import DiscriminatedUnionMixin
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
 from groq import BaseModel
 
 from openhands.sdk.event.llm_convertible.action import ActionEvent
 from openhands.sdk.security import risk
-from openhands.sdk.security.analyzer import SecurityAnalyzerBase
-from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.builtins.think import ThinkAction
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
 class AccessConfirmRes(BaseModel):
@@ -41,11 +44,9 @@ class SecurityServiceBase(DiscriminatedUnionMixin, ABC):
 class DefaultSecurityService(SecurityServiceBase):
     def __init__(
         self,
-        security_analyzer: SecurityAnalyzerBase | None,
-        confirmation_policy: ConfirmationPolicyBase,
+        state: "ConversationState",
     ):
-        self._security_analyzer = security_analyzer
-        self._confirmation_policy = confirmation_policy
+        self._state = state
 
     def access_confirm(
         self,
@@ -72,10 +73,10 @@ class DefaultSecurityService(SecurityServiceBase):
         # If a security analyzer is registered, use it to grab the risks of the actions
         # involved. If not, we'll set the risks to UNKNOWN.
         non_unknown_risks = []
-        if self._security_analyzer is not None:
+        if self._state.security_analyzer is not None:
             risks = [
                 r
-                for _, r in self._security_analyzer.analyze_pending_actions(
+                for _, r in self._state.security_analyzer.analyze_pending_actions(
                     action_events
                 )
             ]
@@ -83,7 +84,9 @@ class DefaultSecurityService(SecurityServiceBase):
         else:
             risks = [risk.SecurityRisk.UNKNOWN for _ in action_events]
 
-        access_confirm = any(self._confirmation_policy.should_confirm(r) for r in risks)
+        access_confirm = any(
+            self._state.confirmation_policy.should_confirm(r) for r in risks
+        )
         # Return the highest risk level.
         if non_unknown_risks:
             security_level = max(
@@ -107,7 +110,7 @@ class DefaultSecurityService(SecurityServiceBase):
         tool_name: str,
         read_only_tool: bool,
     ) -> risk.SecurityRisk:
-        requires_sr = isinstance(self._security_analyzer, LLMSecurityAnalyzer)
+        requires_sr = isinstance(self._state.security_analyzer, LLMSecurityAnalyzer)
         raw = arguments.pop("security_risk", None)
 
         # Default risk value for action event

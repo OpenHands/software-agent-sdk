@@ -73,8 +73,9 @@ class Agent(AgentBase):
 
     security_service: DefaultSecurityService | None = Field(
         default=None,
-        description="Based on the Security Analyzer and Confirmation Policy,"
-        " we conduct a security analysis of the relevant actions.",
+        description="Based on the Security Analyzer and Confirmation Policy "
+        " from conversationState, we conduct a security analysis of the "
+        "relevant actions.",
         examples=[{"kind": "DefaultSecurityService"}],
     )
 
@@ -100,14 +101,12 @@ class Agent(AgentBase):
     ) -> None:
         super().init_state(state, on_event=on_event)
         # Build the security service based on the security analyzer and
-        # confirmation policy.
+        # confirmation policy from conversationState.
         try:
             object.__setattr__(
                 self,
                 "security_service",
-                DefaultSecurityService(
-                    state.security_analyzer, state.confirmation_policy
-                ),
+                DefaultSecurityService(state),
             )
         except Exception as e:
             raise ValueError(f"Could not set Agent.security_service:{e}")
