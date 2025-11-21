@@ -148,14 +148,21 @@ def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
     assert "reasoning" not in out
 
 
-def test_chat_and_responses_options_prompt_cache_retention_gpt_5_1_and_non_gpt():
-    # GPT-5.1 should include prompt_cache_retention as a top-level arg
+def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gpt():
+    # GPT-5+ should include prompt_cache_retention as a top-level arg
     llm_51 = LLM(model="openai/gpt-5.1-codex-mini")
     opts_51_chat = select_chat_options(llm_51, {}, has_tools=False)
     assert opts_51_chat.get("prompt_cache_retention") == "24h"
 
     opts_51_resp = select_responses_options(llm_51, {}, include=None, store=None)
     assert opts_51_resp.get("prompt_cache_retention") == "24h"
+
+    llm_5 = LLM(model="openai/gpt-5-mini")
+    opts_5_chat = select_chat_options(llm_5, {}, has_tools=False)
+    assert opts_5_chat.get("prompt_cache_retention") == "24h"
+
+    opts_5_resp = select_responses_options(llm_5, {}, include=None, store=None)
+    assert opts_5_resp.get("prompt_cache_retention") == "24h"
 
     # Non-GPT-5.1 should not include it at all
     llm_other = LLM(model="gpt-4o")

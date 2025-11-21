@@ -72,8 +72,8 @@ PROMPT_CACHE_PATTERNS: list[str] = [
 
 # Models that support a top-level prompt_cache_retention parameter
 PROMPT_CACHE_RETENTION_PATTERNS: list[str] = [
-    # OpenAI GPT-5.1 family
-    "gpt-5.1",
+    # OpenAI GPT-5+ family
+    "gpt-5",
 ]
 
 SUPPORTS_STOP_WORDS_FALSE_PATTERNS: list[str] = [
