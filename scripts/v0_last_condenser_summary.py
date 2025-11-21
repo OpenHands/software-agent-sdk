@@ -351,7 +351,9 @@ def format_bootstrap_prompt(payload: dict[str, Any]) -> str:
     prompt_lines.append("")
 
     prompt_lines.append("<V0_RECENT_EVENTS_JSON>")
+    prompt_lines.append("```json")
     prompt_lines.append(json.dumps(recent_events, indent=2, ensure_ascii=False))
+    prompt_lines.append("```")
     prompt_lines.append("</V0_RECENT_EVENTS_JSON>")
     prompt_lines.append("")
 
@@ -432,7 +434,7 @@ def main() -> None:
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 
     prompt_text = format_bootstrap_prompt(payload)
-    out_filename = f"bootstrap_prompt_{payload['identifier']}.txt"
+    out_filename = f"bootstrap_prompt_{payload['identifier']}.md"
     out_path = Path.cwd() / out_filename
     out_path.write_text(prompt_text, encoding="utf-8")
 
