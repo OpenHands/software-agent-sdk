@@ -481,7 +481,12 @@ class LocalConversation(BaseConversation):
 
         # Use the agent's LLM to get a direct completion
         # This bypasses the conversation state and agent step cycle
-        response = self.agent.llm.completion([user_message])
+        question_llm = self.agent.llm.model_copy(
+            update={"usage_id": "my-new-usage-id"}, deep=True
+        )
+
+        self.llm_registry.add(question_llm)
+        response = question_llm.completion([user_message])
 
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
