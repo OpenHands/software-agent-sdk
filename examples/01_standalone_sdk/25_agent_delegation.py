@@ -1,25 +1,26 @@
 """
-Agent Delegation Example: London Travel Planning
+Agent Delegation Example
 
-This example shows how a main agent can spawn specialized sub-agents and
-delegate focused tasks. It keeps things simple:
-- One lodging expert for London hotel recommendations
-- One activities expert for London itinerary planning
-- No extra tools; each sub-agent uses its Skill for subject-matter focus
+This example demonstrates the agent delegation feature where a main agent
+delegates tasks to sub-agents for parallel processing.
+Each sub-agent runs independently and returns its results to the main agent,
+which then merges both analyses into a single consolidated report.
 """
 
 import os
 
 from pydantic import SecretStr
 
-from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool, get_logger
-from openhands.sdk.context import Skill
-from openhands.sdk.tool import register_tool
-from openhands.tools.delegate import (
-    DelegateTool,
-    DelegationVisualizer,
-    register_agent,
+from openhands.sdk import (
+    LLM,
+    Agent,
+    Conversation,
+    Tool,
+    get_logger,
 )
+from openhands.sdk.tool import register_tool
+from openhands.tools.delegate import DelegateTool, DelegationVisualizer
+from openhands.tools.preset.default import get_default_tools
 
 
 logger = get_logger(__name__)
@@ -38,73 +39,13 @@ llm = LLM(
 
 cwd = os.getcwd()
 
-
-def create_lodging_planner(llm: LLM) -> Agent:
-    """Create a lodging planner focused on London stays."""
-    skills = [
-        Skill(
-            name="lodging_planning",
-            content=(
-                "You specialize in finding great places to stay in London. "
-                "Provide 3-4 hotel recommendations with neighborhoods, quick "
-                "pros/cons, "
-                "and notes on transit convenience. Keep options varied by budget."
-            ),
-            trigger=None,
-        )
-    ]
-    return Agent(
-        llm=llm,
-        tools=[],
-        agent_context=AgentContext(
-            skills=skills,
-            system_message_suffix="Focus only on London lodging recommendations.",
-        ),
-    )
-
-
-def create_activities_planner(llm: LLM) -> Agent:
-    """Create an activities planner focused on London itineraries."""
-    skills = [
-        Skill(
-            name="activities_planning",
-            content=(
-                "You design concise London itineraries. Suggest 2-3 daily "
-                "highlights, grouped by proximity to minimize travel time. "
-                "Include food/coffee stops "
-                "and note required tickets/reservations."
-            ),
-            trigger=None,
-        )
-    ]
-    return Agent(
-        llm=llm,
-        tools=[],
-        agent_context=AgentContext(
-            skills=skills,
-            system_message_suffix="Plan practical, time-efficient days in London.",
-        ),
-    )
-
-
-# Register user-defined agent types (default agent type is always available)
-register_agent(
-    name="lodging_planner",
-    factory_func=create_lodging_planner,
-    description="Finds London lodging options with transit-friendly picks.",
-)
-register_agent(
-    name="activities_planner",
-    factory_func=create_activities_planner,
-    description="Creates time-efficient London activity itineraries.",
-)
-
-# Make the delegation tool available to the main agent
 register_tool("DelegateTool", DelegateTool)
+tools = get_default_tools(enable_browser=False)
+tools.append(Tool(name="DelegateTool"))
 
 main_agent = Agent(
     llm=llm,
-    tools=[Tool(name="DelegateTool")],
+    tools=tools,
 )
 conversation = Conversation(
     agent=main_agent,
@@ -113,20 +54,16 @@ conversation = Conversation(
 )
 
 task_message = (
-    "Plan a 3-day London trip. "
-    "1) Spawn two sub-agents: lodging_planner (hotel options) and "
-    "activities_planner (itinerary). "
-    "2) Ask lodging_planner for 3-4 central London hotel recommendations with "
-    "neighborhoods, quick pros/cons, and transit notes by budget. "
-    "3) Ask activities_planner for a concise 3-day itinerary with nearby stops, "
-    "   food/coffee suggestions, and any ticket/reservation notes. "
-    "4) Share both sub-agent results and propose a combined plan."
+    "Forget about coding. Let's switch to travel planning. "
+    "Let's plan a trip to London. I have two issues I need to solve: "
+    "Lodging: what are the best areas to stay at while keeping budget in mind? "
+    "Activities: what are the top 5 must-see attractions and hidden gems? "
+    "Please use the delegation tools to handle these two tasks in parallel. "
+    "Make sure the sub-agents use their own knowledge "
+    "and dont rely on internet access. "
+    "They should keep it short. After getting the results, merge both analyses "
+    "into a single consolidated report.\n\n"
 )
-
-print("=" * 100)
-print("Demonstrating London trip delegation (lodging + activities)...")
-print("=" * 100)
-
 conversation.send_message(task_message)
 conversation.run()
 
