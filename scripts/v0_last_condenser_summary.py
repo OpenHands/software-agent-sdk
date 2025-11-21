@@ -138,13 +138,24 @@ def build_payload(conv: ConversationEvents) -> dict[str, Any]:
         raise RuntimeError("No events found in conversation")
 
     last_idx = find_last_condensation_event_index(conv.events)
+
+    # If there is no condensation event, fall back to treating the entire
+    # event history as "recent". This still gives the V1 agent something
+    # usable, just without a prior summary.
     if last_idx is None:
-        raise SystemExit(
-            "No condensation events (CondensationAction) found in this conversation.\n"
-            "This likely means the V0 run never triggered memory condensation.\n"
-            "You can still migrate manually by summarizing the history yourself,\n"
-            "or by re-running the task and ensuring condensation is enabled."
-        )
+        return {
+            "identifier": conv.identifier,
+            "conversation_path": str(conv.path),
+            "total_events": len(conv.events),
+            "last_condensation_event_index": None,
+            "forgotten_events_start_id": None,
+            "forgotten_events_end_id": None,
+            "forgotten_until_index": None,
+            "summary": None,
+            "summary_offset": None,
+            "condensation_event": None,
+            "recent_events": conv.events,
+        }
 
     condensation_event = conv.events[last_idx]
     args = extract_condensation_args(condensation_event)
@@ -194,7 +205,7 @@ def format_bootstrap_prompt(payload: dict[str, Any]) -> str:
     """Create a plain-text prompt for a V1 agent from the condensation payload."""
 
     identifier = payload["identifier"]
-    forgotten_end_id = payload["forgotten_events_end_id"]
+    forgotten_end_id = payload.get("forgotten_events_end_id")
     summary = payload.get("summary") or ""
     recent_events = payload.get("recent_events", [])
 
@@ -211,23 +222,32 @@ def format_bootstrap_prompt(payload: dict[str, Any]) -> str:
     prompt_lines.append("")
 
     prompt_lines.append(f"Conversation ID (V0): {identifier}")
-    prompt_lines.append(
-        "All events with id <= "
-        f"{forgotten_end_id} have been summarized into the "
-        "following text. Assume that summary accurately reflects everything that "
-        "happened earlier in the project."
-    )
-    prompt_lines.append("")
 
-    prompt_lines.append("<V0_CONDENSER_SUMMARY>")
-    prompt_lines.append(summary.strip())
-    prompt_lines.append("</V0_CONDENSER_SUMMARY>")
-    prompt_lines.append("")
+    if forgotten_end_id is not None and summary.strip():
+        prompt_lines.append(
+            "All events with id <= "
+            f"{forgotten_end_id} have been summarized into the "
+            "following text. Assume that summary accurately reflects everything "
+            "that happened earlier in the project."
+        )
+        prompt_lines.append("")
+
+        prompt_lines.append("<V0_CONDENSER_SUMMARY>")
+        prompt_lines.append(summary.strip())
+        prompt_lines.append("</V0_CONDENSER_SUMMARY>")
+        prompt_lines.append("")
+    else:
+        prompt_lines.append(
+            "No prior condensation summary was found. The following events "
+            "represent the full available history of the V0 conversation."
+        )
+        prompt_lines.append("")
 
     prompt_lines.append(
-        "After that summary, here are the subsequent events from the old V0 "
-        "conversation, in chronological order. These are provided as raw JSON "
-        "and represent the detailed recent history."
+        "After that summary (or, if none, from the beginning), here are the "
+        "events from the old V0 conversation in chronological order. These are "
+        "provided as raw JSON and represent the detailed history available to "
+        "you."
     )
     prompt_lines.append("")
 
