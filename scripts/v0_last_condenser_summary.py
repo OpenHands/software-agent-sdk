@@ -67,6 +67,9 @@ DEFAULT_CONVERSATIONS_ROOT = (
     else Path(__file__).resolve().parents[1] / ".conversations"
 )
 
+DEFAULT_CONDENSER_MAX_SIZE = int(os.getenv("CONDENSER_MAX_SIZE", "250"))
+DEFAULT_CONDENSER_KEEP_FIRST = int(os.getenv("CONDENSER_KEEP_FIRST", "0"))
+
 
 @dataclass
 class ConversationEvents:
@@ -81,7 +84,11 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
-def load_events(conversation_path: Path, max_size: int = 250) -> ConversationEvents:
+def load_events(
+    conversation_path: Path,
+    max_size: int = DEFAULT_CONDENSER_MAX_SIZE,
+    keep_first: int = DEFAULT_CONDENSER_KEEP_FIRST,
+) -> ConversationEvents:
     identifier = conversation_path.name
     events_dir = conversation_path / "events"
     if not events_dir.exists() or not events_dir.is_dir():
@@ -98,13 +105,19 @@ def load_events(conversation_path: Path, max_size: int = 250) -> ConversationEve
 
     recent_events: list[dict[str, Any]] = []
     last_condensation_args: dict[str, Any] | None = None
-    forgotten_end_id: int | None = None
 
     event_files = sorted(
         events_dir.glob("*.json"), key=lambda p: int(p.stem), reverse=True
     )
 
+    # First pass: walk from newest to oldest to build a bounded recent tail and
+    # identify the last condensation metadata.
+    counted_tail_events = 0
     for event_file in event_files:
+        # Skip the legacy system prompt event stored in 0.json.
+        if event_file.stem == "0":
+            continue
+
         try:
             event = load_json(event_file)
             event.setdefault("_filename", event_file.name)
@@ -117,37 +130,64 @@ def load_events(conversation_path: Path, max_size: int = 250) -> ConversationEve
         # Try to extract a numeric id from the filename; if that fails, we
         # still keep the event, but we won't use it for boundary checks.
         try:
-            ev_id = int(event_file.stem)
+            _ = int(event_file.stem)
         except ValueError:
-            ev_id = None
+            _ = None
 
         args = extract_condensation_args(event)
         if args is not None and last_condensation_args is None:
             # First (i.e. last-in-time) condensation event we encounter.
             last_condensation_args = args
-            try:
-                forgotten_end_id = int(args["forgotten_events_end_id"])
-            except Exception:
-                forgotten_end_id = None
             # We do not include the condensation event itself in recent_events;
             # its summary represents earlier history.
-        else:
-            recent_events.append(event)
+            continue
 
-        # Enforce a hard cap on how many events we keep, regardless of ids.
-        if len(recent_events) >= max_size:
-            break
+        recent_events.append(event)
 
-        # If we have a valid forgotten_end_id and event id, stop once we
-        # cross into the summarized region.
-        if (
-            forgotten_end_id is not None
-            and ev_id is not None
-            and ev_id <= forgotten_end_id
-        ):
-            break
+        if is_counted_event(event):
+            counted_tail_events += 1
+            # Enforce a hard cap on how many counted events we keep.
+            if counted_tail_events >= max_size:
+                break
 
-    # We walked from newest to oldest; reverse so callers see ascending order.
+    # Second pass (optional): if requested, always keep the earliest
+    # `keep_first` events from the entire conversation, then merge those with
+    # the bounded recent tail so that the total does not exceed `max_size`.
+    if keep_first > 0 and max_size > 0:
+        earliest_events: list[dict[str, Any]] = []
+
+        ascending_files = sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem))
+        for event_file in ascending_files:
+            if len(earliest_events) >= keep_first:
+                break
+
+            try:
+                ev = load_json(event_file)
+                ev.setdefault("_filename", event_file.name)
+            except json.JSONDecodeError as exc:
+                ev = {
+                    "_filename": event_file.name,
+                    "error": f"Invalid JSON: {exc}",
+                }
+
+            earliest_events.append(ev)
+
+        # Merge earliest events and the recent tail while respecting max_size.
+        if earliest_events:
+            # Avoid duplicates if ranges overlap by checking filenames.
+            existing_filenames = {e.get("_filename") for e in earliest_events}
+            tail_without_dups = [
+                e for e in recent_events if e.get("_filename") not in existing_filenames
+            ]
+
+            available_for_tail = max(max_size - len(earliest_events), 0)
+            if available_for_tail < len(tail_without_dups):
+                tail_without_dups = tail_without_dups[-available_for_tail:]
+
+            recent_events = earliest_events + tail_without_dups
+
+    # We walked from newest to oldest for the tail; reverse so callers see
+    # ascending order before we potentially merge in earliest events.
     recent_events.reverse()
 
     return ConversationEvents(
@@ -156,6 +196,22 @@ def load_events(conversation_path: Path, max_size: int = 250) -> ConversationEve
         events=recent_events,
         condensation_args=last_condensation_args,
     )
+
+
+def is_counted_event(event: dict[str, Any]) -> bool:
+    """Return True if this event should count against size budgets.
+
+    We currently exclude environment-originated agent_state_changed observations,
+    which are frequent on disk but were not part of V0's state.history and thus
+    were invisible to the original condenser.
+    """
+
+    if (
+        event.get("source") == "environment"
+        and event.get("observation") == "agent_state_changed"
+    ):
+        return False
+    return True
 
 
 def extract_condensation_args(ev: dict[str, Any]) -> dict[str, Any] | None:
@@ -333,6 +389,24 @@ def parse_args() -> argparse.Namespace:
             "default root (OPENHANDS_CONVERSATIONS_ROOT or .conversations)."
         ),
     )
+    parser.add_argument(
+        "--max-size",
+        type=int,
+        default=DEFAULT_CONDENSER_MAX_SIZE,
+        help=(
+            "Maximum number of events to include from the V0 conversation. "
+            "Defaults to CONDENSER_MAX_SIZE env var or 250."
+        ),
+    )
+    parser.add_argument(
+        "--keep-first",
+        type=int,
+        default=DEFAULT_CONDENSER_KEEP_FIRST,
+        help=(
+            "Number of earliest events (from the beginning of the conversation) "
+            "to always keep. Defaults to CONDENSER_KEEP_FIRST env var or 0."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -359,7 +433,11 @@ def main() -> None:
     if not conv_path.exists() or not conv_path.is_dir():
         raise SystemExit(f"Conversation directory not found: {conv_path}")
 
-    conv = load_events(conv_path)
+    conv = load_events(
+        conv_path,
+        max_size=args.max_size,
+        keep_first=args.keep_first,
+    )
     payload = build_payload(conv)
 
     # Write JSON payload to stdout for tooling, and a bootstrap prompt file
