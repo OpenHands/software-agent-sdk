@@ -56,7 +56,6 @@ import argparse
 import json
 import os
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -88,52 +87,102 @@ def load_events(conversation_path: Path) -> ConversationEvents:
         raise FileNotFoundError(f"No events directory found at: {events_dir}")
 
     events: list[dict[str, Any]] = []
-    for event_file in sorted(events_dir.glob("*.json")):
+
+    # We don't need to slurp thousands of events into memory if we're only
+    # going to use the tail of the stream. Since V0 names files by integer
+    # event id (e.g. 1.json, 2.json, ... 5202.json), we can:
+    #
+    # 1. Find the last condensation event by streaming files in ascending id
+    #    order.
+    # 2. Once we know the boundary (forgotten_events_end_id), only read the
+    #    events after that id into `events`.
+    #
+    # To keep the rest of the script simple, we *still* materialize a
+    # ConversationEvents object, but with only the suffix of the history we
+    # actually care about.
+
+    # First pass: scan for the last condensation event's args.
+    last_condensation_args: dict[str, Any] | None = None
+
+    for event_file in sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem)):
         try:
             event = load_json(event_file)
-            event.setdefault("_filename", event_file.name)
-            events.append(event)
-        except json.JSONDecodeError as exc:
-            # We keep invalid events as markers but tag them clearly
-            events.append(
-                {
-                    "_filename": event_file.name,
-                    "error": f"Invalid JSON: {exc}",
-                }
-            )
+        except json.JSONDecodeError:
+            continue
 
-    # Sort by timestamp if present; fall back to filename order
-    def sort_key(ev: dict[str, Any]) -> tuple[bool, str]:
-        ts = ev.get("timestamp")
-        if not ts:
-            return True, ev.get("_filename", "")
+        args = extract_condensation_args(event)
+        if args is not None:
+            last_condensation_args = args
+
+    # Second pass: depending on whether we found a condenser, decide what
+    # portion of the history to load.
+    if last_condensation_args is None:
+        # No condenser: load *all* events, but still stream in id order and
+        # keep invalid JSON as markers.
+        for event_file in sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem)):
+            try:
+                event = load_json(event_file)
+                event.setdefault("_filename", event_file.name)
+                events.append(event)
+            except json.JSONDecodeError as exc:
+                events.append(
+                    {
+                        "_filename": event_file.name,
+                        "error": f"Invalid JSON: {exc}",
+                    }
+                )
+    else:
+        # We know the condenser's `forgotten_events_end_id`; anything after
+        # that id is "recent" for our purposes. The filenames are exactly
+        # those ids, so we can load only those files.
         try:
-            if "T" in ts:
-                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            else:
-                dt = datetime.fromisoformat(ts)
-            return False, dt.isoformat()
+            forgotten_end_id = int(last_condensation_args["forgotten_events_end_id"])
         except Exception:
-            return False, str(ts)
+            forgotten_end_id = None
 
-    events.sort(key=sort_key)
+        for event_file in sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem)):
+            try:
+                event_id = int(event_file.stem)
+            except ValueError:
+                continue
+
+            if forgotten_end_id is not None and event_id <= forgotten_end_id:
+                # This event is covered by the summary; we don't need to load it.
+                continue
+
+            try:
+                event = load_json(event_file)
+                event.setdefault("_filename", event_file.name)
+                events.append(event)
+            except json.JSONDecodeError as exc:
+                events.append(
+                    {
+                        "_filename": event_file.name,
+                        "error": f"Invalid JSON: {exc}",
+                    }
+                )
+
     return ConversationEvents(
         identifier=identifier, path=conversation_path, events=events
     )
 
 
 def extract_condensation_args(ev: dict[str, Any]) -> dict[str, Any] | None:
-    """Return action.args if this looks like a CondensationAction event.
+    """Return args if this looks like a V0 condensation event.
 
-    We don't try to fully reconstruct the V0 action model; we only care that
-    `forgotten_events_end_id` exists in the serialized json under
-    `event["action"]["args"]`.
+    In V0 on-disk format, condensation events are serialized with
+
+    - `action` as the string "condensation"
+    - the condenser arguments directly under top-level `args`
+
+    We only care that `forgotten_events_end_id` and `summary` exist in
+    `event["args"]`.
     """
 
-    action = ev.get("action")
-    if not isinstance(action, dict):
+    if ev.get("action") != "condensation":
         return None
-    args = action.get("args")
+
+    args = ev.get("args")
     if not isinstance(args, dict):
         return None
     if "forgotten_events_end_id" not in args:
