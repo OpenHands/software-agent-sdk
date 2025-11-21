@@ -747,3 +747,43 @@ class TestEventServiceSendMessage:
             mock_loop.run_in_executor.assert_any_call(
                 None, conversation.send_message, system_message
             )
+
+
+class TestEventServiceIsOpen:
+    """Test cases for EventService.is_open method."""
+
+    def test_is_open_when_conversation_is_none(self, event_service):
+        """Test is_open returns False when _conversation is None."""
+        event_service._conversation = None
+        assert not event_service.is_open()
+
+    def test_is_open_when_conversation_exists(self, event_service):
+        """Test is_open returns True when _conversation exists."""
+        conversation = MagicMock(spec=Conversation)
+        event_service._conversation = conversation
+        assert event_service.is_open()
+
+    def test_is_open_when_conversation_is_falsy(self, event_service):
+        """Test is_open returns False when _conversation is falsy."""
+        # Test with various falsy values
+        falsy_values = [None, False, 0, "", [], {}]
+
+        for falsy_value in falsy_values:
+            event_service._conversation = falsy_value
+            assert not event_service.is_open(), f"Expected False for {falsy_value}"
+
+    def test_is_open_when_conversation_is_truthy(self, event_service):
+        """Test is_open returns True when _conversation is truthy."""
+        # Test with various truthy values
+        truthy_values = [
+            MagicMock(spec=Conversation),
+            "some_string",
+            1,
+            [1, 2, 3],
+            {"key": "value"},
+            True,
+        ]
+
+        for truthy_value in truthy_values:
+            event_service._conversation = truthy_value
+            assert event_service.is_open(), f"Expected True for {truthy_value}"

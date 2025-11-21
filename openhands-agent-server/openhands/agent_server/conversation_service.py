@@ -402,7 +402,13 @@ class ConversationService:
             ]
         )
 
-        await event_service.start()
+        try:
+            await event_service.start()
+        except Exception:
+            # Clean up the event service if startup fails
+            await event_service.close()
+            raise
+
         event_services[stored.id] = event_service
         return event_service
 
