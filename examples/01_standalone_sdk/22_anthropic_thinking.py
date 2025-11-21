@@ -13,14 +13,14 @@ from openhands.sdk import (
     RedactedThinkingBlock,
     ThinkingBlock,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
+from openhands.tools.terminal import TerminalTool
 
 
 # Configure LLM for Anthropic Claude with extended thinking
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 
 llm = LLM(
@@ -31,8 +31,7 @@ llm = LLM(
 )
 
 # Setup agent with bash tool
-register_tool("BashTool", BashTool)
-agent = Agent(llm=llm, tools=[Tool(name="BashTool")])
+agent = Agent(llm=llm, tools=[Tool(name=TerminalTool.name)])
 
 
 # Callback to display thinking blocks
@@ -63,3 +62,7 @@ conversation.send_message(
 )
 conversation.run()
 print("✅ Done!")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

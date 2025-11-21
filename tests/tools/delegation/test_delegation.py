@@ -5,8 +5,8 @@ from unittest.mock import MagicMock, patch
 
 from pydantic import SecretStr
 
-from openhands.sdk.conversation.state import AgentExecutionStatus
-from openhands.sdk.llm import LLM
+from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.llm import LLM, TextContent
 from openhands.tools.delegate import (
     DelegateAction,
     DelegateExecutor,
@@ -38,7 +38,7 @@ def create_mock_conversation():
     """Helper to create a mock conversation."""
     mock_conv = MagicMock()
     mock_conv.id = str(uuid.uuid4())
-    mock_conv.state.agent_status = AgentExecutionStatus.FINISHED
+    mock_conv.state.execution_status = ConversationExecutionStatus.FINISHED
     return mock_conv
 
 
@@ -65,24 +65,36 @@ def test_delegate_action_creation():
 
 def test_delegate_observation_creation():
     """Test creating DelegateObservation instances."""
-    # Test spawn observation
-    spawn_observation = DelegateObservation(
+    # Test spawn observation with string output
+    spawn_observation = DelegateObservation.from_text(
+        text="spawn: Sub-agents created successfully",
         command="spawn",
-        message="Sub-agents created successfully",
     )
-    assert spawn_observation.command == "spawn"
-    assert spawn_observation.message == "Sub-agents created successfully"
-    # spawn observation doesn't have results field anymore
+    assert isinstance(spawn_observation.content, list)
+    assert spawn_observation.text == "spawn: Sub-agents created successfully"
+    # Verify to_llm_content returns TextContent
+    llm_content = spawn_observation.to_llm_content
+    assert len(llm_content) == 1
+    assert isinstance(llm_content[0], TextContent)
+    assert llm_content[0].text == "spawn: Sub-agents created successfully"
 
-    # Test delegate observation
-    delegate_observation = DelegateObservation(
+    # Test delegate observation with string output
+    delegate_observation = DelegateObservation.from_text(
+        text=(
+            "delegate: Tasks completed successfully\n\nResults:\n"
+            "1. Result 1\n2. Result 2"
+        ),
         command="delegate",
-        message="Tasks completed successfully\n\nResults:\n1. Result 1\n2. Result 2",
     )
-    assert delegate_observation.command == "delegate"
-    assert "Tasks completed successfully" in delegate_observation.message
-    assert "Result 1" in delegate_observation.message
-    assert "Result 2" in delegate_observation.message
+    assert isinstance(delegate_observation.content, list)
+    assert "Tasks completed successfully" in delegate_observation.text
+    assert "Result 1" in delegate_observation.text
+    assert "Result 2" in delegate_observation.text
+    # Verify to_llm_content
+    llm_content = delegate_observation.to_llm_content
+    assert len(llm_content) == 1
+    assert isinstance(llm_content[0], TextContent)
+    assert "Tasks completed successfully" in llm_content[0].text
 
 
 def test_delegate_executor_delegate():
@@ -92,7 +104,8 @@ def test_delegate_executor_delegate():
     # First spawn some agents
     spawn_action = DelegateAction(command="spawn", ids=["agent1", "agent2"])
     spawn_observation = executor(spawn_action, parent_conversation)
-    assert "Successfully spawned" in spawn_observation.message
+    assert isinstance(spawn_observation.content, list)
+    assert "Successfully spawned" in spawn_observation.text
 
     # Then delegate tasks to them
     delegate_action = DelegateAction(
@@ -101,22 +114,23 @@ def test_delegate_executor_delegate():
     )
 
     with patch.object(executor, "_delegate_tasks") as mock_delegate:
-        mock_observation = DelegateObservation(
-            command="delegate",
-            message=(
-                "Tasks completed successfully\n\nResults:\n"
+        mock_observation = DelegateObservation.from_text(
+            text=(
+                "delegate: Tasks completed successfully\n\nResults:\n"
                 "1. Agent agent1: Code analysis complete\n"
                 "2. Agent agent2: Tests written"
             ),
+            command="delegate",
         )
         mock_delegate.return_value = mock_observation
 
         observation = executor(delegate_action, parent_conversation)
 
     assert isinstance(observation, DelegateObservation)
-    assert observation.command == "delegate"
-    assert "Agent agent1: Code analysis complete" in observation.message
-    assert "Agent agent2: Tests written" in observation.message
+    assert isinstance(observation.content, list)
+    text_content = observation.text
+    assert "Agent agent1: Code analysis complete" in text_content
+    assert "Agent agent2: Tests written" in text_content
 
 
 def test_delegate_executor_missing_task():
@@ -129,10 +143,13 @@ def test_delegate_executor_missing_task():
     observation = executor(action, parent_conversation)
 
     assert isinstance(observation, DelegateObservation)
-    assert observation.command == "delegate"
+    # Error message should be in the error field
+    assert observation.is_error
+    assert observation.is_error is True
+    content_text = observation.text
     assert (
-        "task is required" in observation.message.lower()
-        or "at least one task" in observation.message.lower()
+        "task is required" in content_text.lower()
+        or "at least one task" in content_text.lower()
     )
 
 

@@ -28,6 +28,10 @@ def select_chat_options(
         if "max_completion_tokens" in out:
             out["max_tokens"] = out.pop("max_completion_tokens")
 
+    # If user didn't set extra_headers, propagate from llm config
+    if llm.extra_headers is not None and "extra_headers" not in out:
+        out["extra_headers"] = dict(llm.extra_headers)
+
     # Reasoning-model quirks
     if get_features(llm.model).supports_reasoning_effort:
         # Preferred: use reasoning_effort
@@ -49,7 +53,12 @@ def select_chat_options(
                 "budget_tokens": llm.extended_thinking_budget,
             }
             # Enable interleaved thinking
-            out["extra_headers"] = {"anthropic-beta": "interleaved-thinking-2025-05-14"}
+            # Merge default header with any user-provided headers; user wins on conflict
+            existing = out.get("extra_headers") or {}
+            out["extra_headers"] = {
+                "anthropic-beta": "interleaved-thinking-2025-05-14",
+                **existing,
+            }
             # Fix litellm behavior
             out["max_tokens"] = llm.max_output_tokens
         # Anthropic models ignore temp/top_p
@@ -67,8 +76,8 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # non litellm proxy special-case: keep `extra_body` off unless model requires it
-    if "litellm_proxy" not in llm.model:
-        out.pop("extra_body", None)
+    # Always forward extra_body if provided; let the LLM provider validate
+    if llm.litellm_extra_body:
+        out["extra_body"] = llm.litellm_extra_body
 
     return out

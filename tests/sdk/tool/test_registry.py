@@ -26,7 +26,7 @@ class _HelloAction(Action):
 
 
 class _HelloObservation(Observation):
-    message: str
+    message: str = ""
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
@@ -60,7 +60,6 @@ class _ConfigurableHelloTool(ToolDefinition):
 
         return [
             cls(
-                name="say_configurable_hello",
                 description=f"{greeting}{punctuation}",
                 action_type=_HelloAction,
                 observation_type=_HelloObservation,
@@ -69,16 +68,23 @@ class _ConfigurableHelloTool(ToolDefinition):
         ]
 
 
+class _SimpleHelloTool(ToolDefinition[_HelloAction, _HelloObservation]):
+    """Simple concrete tool for registry testing."""
+
+    @classmethod
+    def create(cls, conv_state=None, **params) -> Sequence["_SimpleHelloTool"]:
+        return [
+            cls(
+                description="Says hello",
+                action_type=_HelloAction,
+                observation_type=_HelloObservation,
+                executor=_HelloExec(),
+            )
+        ]
+
+
 def _hello_tool_factory(conv_state=None, **params) -> list[ToolDefinition]:
-    return [
-        ToolDefinition(
-            name="say_hello",
-            description="Says hello",
-            action_type=_HelloAction,
-            observation_type=_HelloObservation,
-            executor=_HelloExec(),
-        )
-    ]
+    return list(_SimpleHelloTool.create(conv_state, **params))
 
 
 def test_register_and_resolve_callable_factory():
@@ -86,7 +92,7 @@ def test_register_and_resolve_callable_factory():
     tools = resolve_tool(Tool(name="say_hello"), _create_mock_conv_state())
     assert len(tools) == 1
     assert isinstance(tools[0], ToolDefinition)
-    assert tools[0].name == "say_hello"
+    assert tools[0].name == "__simple_hello"
 
 
 def test_register_tool_instance_rejects_params():

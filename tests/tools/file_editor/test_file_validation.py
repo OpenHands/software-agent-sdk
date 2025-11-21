@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from binaryornot.check import is_binary
 
+from openhands.sdk import ImageContent
 from openhands.tools.file_editor.editor import FileEditor
 from openhands.tools.file_editor.exceptions import (
     FileValidationError,
@@ -96,8 +97,39 @@ def test_validate_image_file(tmp_path):
 
     assert is_binary(str(image_file))
 
-    # Images are not supported and should be detected as binary
-    with pytest.raises(FileValidationError) as exc_info:
-        editor.validate_file(image_file)
+    # Images are not supported, so no exception should be raised
+    editor.validate_file(image_file)
 
-    assert "file appears to be binary" in str(exc_info.value).lower()
+
+def test_view_image_file_returns_image_content(tmp_path):
+    """Test that viewing an image file returns ImageContent without error."""
+    editor = FileEditor()
+    image_file = tmp_path / "test.png"
+
+    # Create a minimal valid 1x1 PNG image (red pixel)
+    # This is a complete, valid PNG file
+    png_data = (
+        b"\x89PNG\r\n\x1a\n"  # PNG signature
+        b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"  # IHDR chunk (1x1)
+        b"\x08\x02\x00\x00\x00\x90wS\xde"  # IHDR data + CRC
+        b"\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0\x00\x00\x00\x03\x00\x01"  # IDAT chunk
+        b"\x00\x18\xdd\x8d\xb4"  # IDAT CRC
+        b"\x00\x00\x00\x00IEND\xaeB`\x82"  # IEND chunk
+    )
+
+    with open(image_file, "wb") as f:
+        f.write(png_data)
+
+    # View the image file - should return ImageContent
+    result = editor(command="view", path=str(image_file))
+
+    # Verify result contains ImageContent
+    assert result is not None
+    assert hasattr(result, "content")
+    assert len(result.content) == 2  # TextContent with message + ImageContent
+    assert any(isinstance(c, ImageContent) for c in result.content)
+
+    # Get the ImageContent and verify it has image_urls
+    image_content = [c for c in result.content if isinstance(c, ImageContent)][0]
+    assert len(image_content.image_urls) == 1
+    assert image_content.image_urls[0].startswith("data:image/png;base64,")

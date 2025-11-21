@@ -9,8 +9,12 @@ from pydantic import BaseModel, Field
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
 from openhands.sdk.conversation.secret_source import SecretSource
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -129,7 +133,7 @@ class ConversationPage(BaseModel):
 
 class ConversationResponse(BaseModel):
     conversation_id: str
-    state: AgentExecutionStatus
+    state: ConversationExecutionStatus
 
 
 class ConfirmationResponseRequest(BaseModel):
@@ -160,6 +164,14 @@ class SetConfirmationPolicyRequest(BaseModel):
     """Payload to set confirmation policy for a conversation."""
 
     policy: ConfirmationPolicyBase = Field(description="The confirmation policy to set")
+
+
+class SetSecurityAnalyzerRequest(BaseModel):
+    "Payload to set security analyzer for a conversation"
+
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        description="The security analyzer to set"
+    )
 
 
 class UpdateConversationRequest(BaseModel):

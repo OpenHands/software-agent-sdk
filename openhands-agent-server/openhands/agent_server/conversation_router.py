@@ -16,13 +16,14 @@ from openhands.agent_server.models import (
     GenerateTitleResponse,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
+    SetSecurityAnalyzerRequest,
     StartConversationRequest,
     Success,
     UpdateConversationRequest,
     UpdateSecretsRequest,
 )
 from openhands.sdk import LLM, Agent, TextContent, Tool
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -39,7 +40,7 @@ START_CONVERSATION_EXAMPLES = [
                 api_key=SecretStr("your-api-key-here"),
             ),
             tools=[
-                Tool(name="BashTool"),
+                Tool(name="TerminalTool"),
                 Tool(name="FileEditorTool"),
                 Tool(name="TaskTrackerTool"),
             ],
@@ -66,8 +67,8 @@ async def search_conversations(
         Query(title="The max number of results in the page", gt=0, lte=100),
     ] = 100,
     status: Annotated[
-        AgentExecutionStatus | None,
-        Query(title="Optional filter by agent execution status"),
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
     ] = None,
     sort_order: Annotated[
         ConversationSortOrder,
@@ -86,8 +87,8 @@ async def search_conversations(
 @conversation_router.get("/count")
 async def count_conversations(
     status: Annotated[
-        AgentExecutionStatus | None,
-        Query(title="Optional filter by agent execution status"),
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
@@ -234,6 +235,23 @@ async def set_conversation_confirmation_policy(
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
     await event_service.set_confirmation_policy(request.policy)
+    return Success()
+
+
+@conversation_router.post(
+    "/{conversation_id}/security_analyzer",
+    responses={404: {"description": "Item not found"}},
+)
+async def set_conversation_security_analyzer(
+    conversation_id: UUID,
+    request: SetSecurityAnalyzerRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Set the security analyzer for a conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.set_security_analyzer(request.security_analyzer)
     return Success()
 
 

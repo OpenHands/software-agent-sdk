@@ -32,7 +32,7 @@ def mock_event_service():
     with tempfile.TemporaryDirectory() as temp_dir:
         temp_path = Path(temp_dir)
         # Mock httpx.get to prevent HTTP calls to staging server during LLM init
-        with patch("openhands.sdk.llm.llm.httpx.get") as mock_get:
+        with patch("openhands.sdk.llm.utils.model_info.httpx.get") as mock_get:
             mock_get.return_value = MagicMock(json=lambda: {"data": []})
             service = EventService(
                 stored=StoredConversation(
@@ -792,7 +792,7 @@ class TestWebhookSubscriberFlushDelay:
 
     @pytest.mark.asyncio
     @patch("httpx.AsyncClient")
-    async def test_flush_delay_reset_on_new_event(
+    async def test_flush_delay_not_reset_on_new_event(
         self,
         mock_client_class,
         mock_event_service,
@@ -800,7 +800,7 @@ class TestWebhookSubscriberFlushDelay:
         sample_events,
         sample_conversation_id,
     ):
-        """Test that flush_delay timer is reset when new events are added."""
+        """Test that flush_delay timer is NOT reset when new events are added."""
         # Setup mock client
         mock_client = AsyncMock()
         mock_response = AsyncMock()
@@ -821,21 +821,14 @@ class TestWebhookSubscriberFlushDelay:
         # Wait half the flush delay
         await asyncio.sleep(webhook_spec.flush_delay / 2)
 
-        # Add second event (should reset timer)
+        # Add second event (should NOT reset timer)
         await subscriber(sample_events[1])
         assert len(subscriber.queue) == 2
 
-        # Wait another half delay (total time = flush_delay, but timer was reset)
-        await asyncio.sleep(webhook_spec.flush_delay / 2)
-
-        # Should not have posted yet since timer was reset
-        mock_client.request.assert_not_called()
-        assert len(subscriber.queue) == 2
-
-        # Wait for the full delay from the second event
+        # Wait another half delay (total time = flush_delay from first event)
         await asyncio.sleep(webhook_spec.flush_delay / 2 + 0.05)
 
-        # Now it should have posted
+        # Should have posted since timer was not reset
         mock_client.request.assert_called_once()
         assert len(subscriber.queue) == 0
 
@@ -927,14 +920,11 @@ class TestWebhookSubscriberFlushDelay:
         self, mock_event_service, webhook_spec, sample_conversation_id
     ):
         """Test that flush_delay doesn't trigger post when queue is empty."""
-        subscriber = WebhookSubscriber(
+        WebhookSubscriber(
             conversation_id=sample_conversation_id,
             service=mock_event_service,
             spec=webhook_spec,
         )
-
-        # Don't add any events, but trigger timer reset
-        subscriber._reset_flush_timer()
 
         # Wait for flush_delay
         await asyncio.sleep(webhook_spec.flush_delay + 0.05)
@@ -992,7 +982,7 @@ class TestConversationWebhookSubscriber:
             ConversationWebhookSubscriber,
         )
         from openhands.agent_server.models import ConversationInfo
-        from openhands.sdk.conversation.state import AgentExecutionStatus
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
 
         # Setup mock client
         mock_client = AsyncMock()
@@ -1012,7 +1002,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=AgentExecutionStatus.RUNNING,
+            execution_status=ConversationExecutionStatus.RUNNING,
         )
 
         await subscriber.post_conversation_info(conversation_info)
@@ -1039,7 +1029,7 @@ class TestConversationWebhookSubscriber:
             ConversationWebhookSubscriber,
         )
         from openhands.agent_server.models import ConversationInfo
-        from openhands.sdk.conversation.state import AgentExecutionStatus
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
 
         # Setup mock client
         mock_client = AsyncMock()
@@ -1060,7 +1050,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=AgentExecutionStatus.PAUSED,
+            execution_status=ConversationExecutionStatus.PAUSED,
         )
 
         await subscriber.post_conversation_info(conversation_info)
@@ -1088,7 +1078,7 @@ class TestConversationWebhookSubscriber:
             ConversationWebhookSubscriber,
         )
         from openhands.agent_server.models import ConversationInfo
-        from openhands.sdk.conversation.state import AgentExecutionStatus
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
 
         subscriber = ConversationWebhookSubscriber(
             spec=webhook_spec,
@@ -1101,7 +1091,7 @@ class TestConversationWebhookSubscriber:
             workspace=mock_event_service.stored.workspace,
             created_at=utc_now(),
             updated_at=utc_now(),
-            agent_status=AgentExecutionStatus.FINISHED,
+            execution_status=ConversationExecutionStatus.FINISHED,
         )
 
         # Track retry attempts
@@ -1135,3 +1125,125 @@ class TestConversationWebhookSubscriber:
         assert len(retry_attempts) == 3
         assert len(sleep_calls) == 2  # Sleep between retries
         assert all(delay == webhook_spec.retry_delay for delay in sleep_calls)
+
+
+class TestWebhookSubscriberTimerBehavior:
+    """Test cases for WebhookSubscriber timer behavior."""
+
+    @pytest.mark.asyncio
+    async def test_timer_not_reset_on_subsequent_events(
+        self, mock_event_service, webhook_spec, sample_events, sample_conversation_id
+    ):
+        """Test that timer is not reset when new events are received."""
+        # Use a longer flush delay for this test
+        webhook_spec.flush_delay = 0.2
+
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=webhook_spec,
+        )
+
+        # Mock _post_events to track when it's called
+        post_events_calls = []
+        original_post_events = subscriber._post_events
+
+        async def mock_post_events():
+            post_events_calls.append(len(subscriber.queue))
+            await original_post_events()
+
+        subscriber._post_events = mock_post_events
+
+        # Add first event - this should start the timer
+        await subscriber(sample_events[0])
+        assert subscriber._flush_timer is not None
+        first_timer = subscriber._flush_timer
+
+        # Add second event shortly after - timer should NOT be reset
+        await asyncio.sleep(0.05)  # Small delay
+        await subscriber(sample_events[1])
+
+        # Timer should be the same instance (not reset)
+        assert subscriber._flush_timer is first_timer
+        assert len(subscriber.queue) == 2
+
+        # Wait for timer to fire
+        await asyncio.sleep(0.2)
+
+        # Events should have been posted via timer
+        assert len(post_events_calls) == 1
+        assert post_events_calls[0] == 2  # Both events were posted
+
+    @pytest.mark.asyncio
+    async def test_timer_only_started_once_until_flush(
+        self, mock_event_service, webhook_spec, sample_events, sample_conversation_id
+    ):
+        """Test that timer is only started once until events are flushed."""
+        webhook_spec.flush_delay = 0.2
+
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=webhook_spec,
+        )
+
+        # Mock _post_events to prevent actual HTTP calls but clear the queue
+        async def mock_post_events():
+            subscriber.queue.clear()
+
+        subscriber._post_events = mock_post_events
+
+        # Add first event - should start timer
+        await subscriber(sample_events[0])
+        assert subscriber._flush_timer is not None
+        first_timer = subscriber._flush_timer
+
+        # Add more events - timer should remain the same
+        await subscriber(sample_events[1])
+        assert subscriber._flush_timer is first_timer
+
+        # Wait for timer to complete and a bit more for cleanup
+        await asyncio.sleep(0.3)
+
+        # Timer should be cleared after flush
+        assert subscriber._flush_timer is None
+
+        # Add another event - should start a new timer
+        await subscriber(sample_events[2])
+        assert subscriber._flush_timer is not None
+        assert subscriber._flush_timer is not first_timer  # New timer instance
+
+    @pytest.mark.asyncio
+    async def test_timer_cancelled_when_buffer_full(
+        self, mock_event_service, webhook_spec, sample_events, sample_conversation_id
+    ):
+        """Test that timer is cancelled when buffer becomes full."""
+        webhook_spec.flush_delay = 1.0  # Long delay
+        webhook_spec.event_buffer_size = 2  # Small buffer
+
+        subscriber = WebhookSubscriber(
+            conversation_id=sample_conversation_id,
+            service=mock_event_service,
+            spec=webhook_spec,
+        )
+
+        # Mock _post_events to prevent actual HTTP calls
+        subscriber._post_events = AsyncMock()
+
+        # Add first event - should start timer
+        await subscriber(sample_events[0])
+        assert subscriber._flush_timer is not None
+        timer = subscriber._flush_timer
+
+        # Add second event to fill buffer - should cancel timer and post immediately
+        await subscriber(sample_events[1])
+
+        # Give a small delay for the cancellation to complete
+        await asyncio.sleep(0.01)
+
+        # Timer should be cancelled
+        assert subscriber._flush_timer is None
+        assert timer.cancelled()
+
+        # _post_events should have been called immediately
+        subscriber._post_events.assert_called_once()

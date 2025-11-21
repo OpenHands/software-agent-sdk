@@ -9,9 +9,7 @@ from jinja2 import Environment, FileSystemBytecodeCache, FileSystemLoader, Templ
 
 def refine(text: str) -> str:
     if sys.platform == "win32":
-        text = re.sub(
-            r"\bexecute_bash\b", "execute_powershell", text, flags=re.IGNORECASE
-        )
+        text = re.sub(r"\bterminal\b", "execute_powershell", text, flags=re.IGNORECASE)
         text = re.sub(
             r"(?<!execute_)(?<!_)\bbash\b", "powershell", text, flags=re.IGNORECASE
         )
@@ -23,7 +21,9 @@ def _get_env(prompt_dir: str) -> Environment:
     if not prompt_dir:
         raise ValueError("prompt_dir is required")
     # BytecodeCache avoids reparsing templates across processes
-    cache_folder = os.path.join(prompt_dir, ".jinja_cache")
+    # Use user-specific cache directory to avoid permission issues
+    # in multi-user environments
+    cache_folder = os.path.join(os.path.expanduser("~"), ".openhands", "cache", "jinja")
     os.makedirs(cache_folder, exist_ok=True)
     bcc = FileSystemBytecodeCache(directory=cache_folder)
     env = Environment(

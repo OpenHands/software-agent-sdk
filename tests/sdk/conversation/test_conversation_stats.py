@@ -3,6 +3,7 @@ import uuid
 from unittest.mock import patch
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, ConversationStats, LLMRegistry, RegistryEvent
@@ -366,19 +367,19 @@ def test_service_shims_expose_usage_data(conversation_stats):
     """Ensure legacy service-based APIs remain functional with deprecation warnings."""
     metrics = Metrics(model_name="gpt-4")
 
-    with pytest.deprecated_call():
+    with pytest.warns(DeprecatedWarning):
         conversation_stats.service_to_metrics = {"legacy-service": metrics}
 
     assert "legacy-service" in conversation_stats.usage_to_metrics
 
-    with pytest.deprecated_call():
+    with pytest.warns(DeprecatedWarning):
         retrieved = conversation_stats.get_metrics_for_service("legacy-service")
 
     assert retrieved is metrics
 
     conversation_stats._restored_usage_ids.add("legacy-service")
 
-    with pytest.deprecated_call():
+    with pytest.warns(DeprecatedWarning):
         restored = conversation_stats._restored_services
 
     assert "legacy-service" in restored

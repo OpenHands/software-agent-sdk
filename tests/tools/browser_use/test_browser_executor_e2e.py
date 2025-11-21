@@ -13,11 +13,11 @@ from openhands.tools.browser_use.definition import (
     BrowserGetStateAction,
     BrowserGoBackAction,
     BrowserListTabsAction,
-    BrowserNavigateAction,
+    BrowserNavigateURLAction,
     BrowserObservation,
     BrowserScrollAction,
     BrowserSwitchTabAction,
-    BrowserTypeAction,
+    BrowserTypeTextAction,
 )
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
@@ -167,22 +167,20 @@ class TestBrowserExecutorE2E:
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test browser navigation action."""
-        action = BrowserNavigateAction(url=test_server)
+        action = BrowserNavigateURLAction(url=test_server)
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
-        assert (
-            "successfully" in result.output.lower()
-            or "navigated" in result.output.lower()
-        )
+        assert not result.is_error
+        output_text = result.text.lower()
+        assert "successfully" in output_text or "navigated" in output_text
 
     def test_get_state_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test getting browser state."""
         # First navigate to the test page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Then get the state
@@ -190,15 +188,15 @@ class TestBrowserExecutorE2E:
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
-        assert "Browser Test Page" in result.output
+        assert not result.is_error
+        assert "Browser Test Page" in result.text
 
     def test_get_state_with_screenshot(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test getting browser state with screenshot."""
         # Navigate to test page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Get state with screenshot
@@ -206,7 +204,7 @@ class TestBrowserExecutorE2E:
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         assert result.screenshot_data is not None
         assert len(result.screenshot_data) > 0
 
@@ -215,7 +213,7 @@ class TestBrowserExecutorE2E:
     ):
         """Test clicking an element."""
         # Navigate to test page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Get state to find clickable elements
@@ -224,19 +222,19 @@ class TestBrowserExecutorE2E:
 
         # Parse the state to find button index
         # The test button should be indexed in the interactive elements
-        assert "Click Me" in state_result.output
+        assert "Click Me" in state_result.text
 
         # Try to click the first interactive element (likely the button)
         click_action = BrowserClickAction(index=0)
         result = browser_executor(click_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_type_action(self, browser_executor: BrowserToolExecutor, test_server: str):
         """Test typing text into an input field."""
         # Navigate to test page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Get state to find input elements
@@ -244,22 +242,23 @@ class TestBrowserExecutorE2E:
         state_result = browser_executor(get_state_action)
 
         # Look for input field in the state
-        assert "test-input" in state_result.output or "Type here" in state_result.output
+        state_output = state_result.text
+        assert "test-input" in state_output or "Type here" in state_output
 
         # Find the input field index and type into it
         # This assumes the input field is one of the interactive elements
-        type_action = BrowserTypeAction(index=1, text="Hello World")
+        type_action = BrowserTypeTextAction(index=1, text="Hello World")
         result = browser_executor(type_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_scroll_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test scrolling the page."""
         # Navigate to test page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Scroll down
@@ -267,21 +266,21 @@ class TestBrowserExecutorE2E:
         result = browser_executor(scroll_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
         # Scroll back up
         scroll_up_action = BrowserScrollAction(direction="up")
         result = browser_executor(scroll_up_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_get_content_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test extracting page content."""
         # Navigate to test page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Get content without links
@@ -289,8 +288,8 @@ class TestBrowserExecutorE2E:
         result = browser_executor(content_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
-        assert "Browser Test Page" in result.output
+        assert not result.is_error
+        assert "Browser Test Page" in result.text
 
         # Get content with links
         content_with_links_action = BrowserGetContentAction(
@@ -299,26 +298,26 @@ class TestBrowserExecutorE2E:
         result = browser_executor(content_with_links_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
-        assert "Browser Test Page" in result.output
+        assert not result.is_error
+        assert "Browser Test Page" in result.text
 
     def test_navigate_new_tab(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test opening a new tab."""
         # Navigate to test page in new tab
-        action = BrowserNavigateAction(url=test_server, new_tab=True)
+        action = BrowserNavigateURLAction(url=test_server, new_tab=True)
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_list_tabs_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test listing browser tabs."""
         # Navigate to create at least one tab
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # List tabs
@@ -326,21 +325,21 @@ class TestBrowserExecutorE2E:
         result = browser_executor(list_tabs_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
         # Should contain tab information
-        assert len(result.output) > 0
+        assert len(result.text) > 0
 
     def test_go_back_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test browser back navigation."""
         # Navigate to first page
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Navigate to second page
         page2_url = f"{test_server}/page2.html"
-        navigate_action2 = BrowserNavigateAction(url=page2_url)
+        navigate_action2 = BrowserNavigateURLAction(url=page2_url)
         browser_executor(navigate_action2)
 
         # Go back
@@ -348,18 +347,18 @@ class TestBrowserExecutorE2E:
         result = browser_executor(back_action)
 
         assert isinstance(result, BrowserObservation)
-        assert result.error is None
+        assert not result.is_error
 
     def test_switch_tab_action(
         self, browser_executor: BrowserToolExecutor, test_server: str
     ):
         """Test switching between tabs."""
         # Create first tab
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Create second tab
-        navigate_new_tab_action = BrowserNavigateAction(
+        navigate_new_tab_action = BrowserNavigateURLAction(
             url=f"{test_server}/page2.html", new_tab=True
         )
         browser_executor(navigate_new_tab_action)
@@ -370,7 +369,7 @@ class TestBrowserExecutorE2E:
 
         # Parse tab information to get a tab ID
         # This is a simplified approach - in practice you'd parse the JSON response
-        if "tab" in tabs_result.output.lower():
+        if "tab" in tabs_result.text.lower():
             # Try to switch to first tab (assuming tab ID format)
             switch_action = BrowserSwitchTabAction(tab_id="0")
             result = browser_executor(switch_action)
@@ -383,11 +382,11 @@ class TestBrowserExecutorE2E:
     ):
         """Test closing a browser tab."""
         # Create first tab
-        navigate_action = BrowserNavigateAction(url=test_server)
+        navigate_action = BrowserNavigateURLAction(url=test_server)
         browser_executor(navigate_action)
 
         # Create second tab
-        navigate_new_tab_action = BrowserNavigateAction(
+        navigate_new_tab_action = BrowserNavigateURLAction(
             url=f"{test_server}/page2.html", new_tab=True
         )
         browser_executor(navigate_new_tab_action)
@@ -402,7 +401,7 @@ class TestBrowserExecutorE2E:
     def test_error_handling(self, browser_executor: BrowserToolExecutor):
         """Test error handling for invalid operations."""
         # Try to navigate to invalid URL
-        action = BrowserNavigateAction(url="invalid-url")
+        action = BrowserNavigateURLAction(url="invalid-url")
         result = browser_executor(action)
 
         assert isinstance(result, BrowserObservation)
@@ -427,25 +426,25 @@ class TestBrowserExecutorE2E:
     ):
         """Test that multiple actions can be executed in sequence."""
         # Navigate
-        navigate_result = browser_executor(BrowserNavigateAction(url=test_server))
-        assert navigate_result.error is None
+        navigate_result = browser_executor(BrowserNavigateURLAction(url=test_server))
+        assert not navigate_result.is_error
 
         # Get state
         state_result = browser_executor(BrowserGetStateAction(include_screenshot=False))
-        assert state_result.error is None
+        assert not state_result.is_error
 
         # Scroll
         scroll_result = browser_executor(BrowserScrollAction(direction="down"))
-        assert scroll_result.error is None
+        assert not scroll_result.is_error
 
         # Get content
         content_result = browser_executor(
             BrowserGetContentAction(extract_links=False, start_from_char=0)
         )
-        assert content_result.error is None
+        assert not content_result.is_error
 
         # All actions should complete successfully
         assert all(
-            result.error is None
+            not result.is_error
             for result in [navigate_result, state_result, scroll_result, content_result]
         )

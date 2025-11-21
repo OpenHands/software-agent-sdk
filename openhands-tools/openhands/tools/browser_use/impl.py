@@ -192,21 +192,21 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserGetStateAction,
             BrowserGoBackAction,
             BrowserListTabsAction,
-            BrowserNavigateAction,
+            BrowserNavigateURLAction,
             BrowserObservation,
             BrowserScrollAction,
             BrowserSwitchTabAction,
-            BrowserTypeAction,
+            BrowserTypeTextAction,
         )
 
         try:
             result = ""
             # Route to appropriate method based on action type
-            if isinstance(action, BrowserNavigateAction):
+            if isinstance(action, BrowserNavigateURLAction):
                 result = await self.navigate(action.url, action.new_tab)
             elif isinstance(action, BrowserClickAction):
                 result = await self.click(action.index, action.new_tab)
-            elif isinstance(action, BrowserTypeAction):
+            elif isinstance(action, BrowserTypeTextAction):
                 result = await self.type_text(action.index, action.text)
             elif isinstance(action, BrowserGetStateAction):
                 return await self.get_state(action.include_screenshot)
@@ -226,21 +226,23 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.close_tab(action.tab_id)
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
-                return BrowserObservation(
-                    output="",
-                    error=error_msg,
+                return BrowserObservation.from_text(
+                    text=error_msg,
+                    is_error=True,
                     full_output_save_dir=self.full_output_save_dir,
                 )
 
-            return BrowserObservation(
-                output=result, full_output_save_dir=self.full_output_save_dir
+            return BrowserObservation.from_text(
+                text=result,
+                is_error=False,
+                full_output_save_dir=self.full_output_save_dir,
             )
         except Exception as e:
             error_msg = f"Browser operation failed: {str(e)}"
             logging.error(error_msg, exc_info=True)
-            return BrowserObservation(
-                output="",
-                error=error_msg,
+            return BrowserObservation.from_text(
+                text=error_msg,
+                is_error=True,
                 full_output_save_dir=self.full_output_save_dir,
             )
 
@@ -292,8 +294,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
                 # Return clean JSON + separate screenshot data
                 clean_json = json.dumps(result_data, indent=2)
-                return BrowserObservation(
-                    output=clean_json,
+                return BrowserObservation.from_text(
+                    text=clean_json,
+                    is_error=False,
                     screenshot_data=screenshot_data,
                     full_output_save_dir=self.full_output_save_dir,
                 )
@@ -301,8 +304,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 # If JSON parsing fails, return as-is
                 pass
 
-        return BrowserObservation(
-            output=result_json, full_output_save_dir=self.full_output_save_dir
+        return BrowserObservation.from_text(
+            text=result_json,
+            is_error=False,
+            full_output_save_dir=self.full_output_save_dir,
         )
 
     # Tab Management

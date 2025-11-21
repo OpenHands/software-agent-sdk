@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from openhands.sdk.llm.message import ImageContent, TextContent
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -44,15 +43,7 @@ class DelegateAction(Action):
 class DelegateObservation(Observation):
     """Observation from delegation operations."""
 
-    command: CommandLiteral = Field(
-        description="The command that was executed. Either `spawn` or `delegate`."
-    )
-    message: str = Field(description="Result message from the operation")
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        """Get the observation content to show to the agent."""
-        return [TextContent(text=self.message)]
+    command: CommandLiteral = Field(description="The command that was executed")
 
 
 TOOL_DESCRIPTION = """Delegation tool for spawning sub-agents and delegating tasks to them.
@@ -75,20 +66,6 @@ This tool provides two commands:
 - All operations are blocking and return comprehensive results
 - Sub-agents work in the same workspace as the main agent: {workspace_path}
 """  # noqa
-
-delegate_tool = ToolDefinition(
-    name="delegate",
-    action_type=DelegateAction,
-    observation_type=DelegateObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="delegate",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
 
 
 class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
@@ -124,11 +101,16 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name=delegate_tool.name,
-                description=tool_description,
                 action_type=DelegateAction,
                 observation_type=DelegateObservation,
-                annotations=delegate_tool.annotations,
+                description=tool_description,
+                annotations=ToolAnnotations(
+                    title="delegate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]

@@ -15,11 +15,11 @@ from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
-    create_default_visualizer,
+    ConversationVisualizerBase,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.conversation_state import (
@@ -27,7 +27,9 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.logger import get_logger
+from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.observability.laminar import observe
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -65,7 +67,7 @@ def _send_request(
         )
         raise e
     except httpx.RequestError as e:
-        logger.error(f"Request failed: {e}", exc_info=True)
+        logger.error(f"Request failed: {e}", exc_info=DEBUG)
         raise e
 
 
@@ -309,26 +311,26 @@ class RemoteState(ConversationStateProtocol):
         return uuid.UUID(self._conversation_id)
 
     @property
-    def agent_status(self) -> AgentExecutionStatus:
-        """The current agent execution status."""
+    def execution_status(self) -> ConversationExecutionStatus:
+        """The current conversation execution status."""
         info = self._get_conversation_info()
-        status_str = info.get("agent_status", None)
+        status_str = info.get("execution_status")
         if status_str is None:
             raise RuntimeError(
-                "agent_status missing in conversation info: " + str(info)
+                "execution_status missing in conversation info: " + str(info)
             )
-        return AgentExecutionStatus(status_str)
+        return ConversationExecutionStatus(status_str)
 
-    @agent_status.setter
-    def agent_status(self, value: AgentExecutionStatus) -> None:
-        """Set agent status is No-OP for RemoteConversation.
+    @execution_status.setter
+    def execution_status(self, value: ConversationExecutionStatus) -> None:
+        """Set execution status is No-OP for RemoteConversation.
 
-        # For remote conversations, agent status is managed server-side
+        # For remote conversations, execution status is managed server-side
         # This setter is provided for test compatibility but doesn't actually change remote state  # noqa: E501
         """  # noqa: E501
         raise NotImplementedError(
-            f"Setting agent_status on RemoteState has no effect. "
-            f"Remote agent status is managed server-side. Attempted to set: {value}"
+            f"Setting execution_status on RemoteState has no effect. "
+            f"Remote execution status is managed server-side. Attempted to set: {value}"
         )
 
     @property
@@ -341,6 +343,16 @@ class RemoteState(ConversationStateProtocol):
                 "confirmation_policy missing in conversation info: " + str(info)
             )
         return ConfirmationPolicyBase.model_validate(policy_data)
+
+    @property
+    def security_analyzer(self) -> SecurityAnalyzerBase | None:
+        """The security analyzer."""
+        info = self._get_conversation_info()
+        analyzer_data = info.get("security_analyzer")
+        if analyzer_data:
+            return SecurityAnalyzerBase.model_validate(analyzer_data)
+
+        return None
 
     @property
     def activated_knowledge_skills(self) -> list[str]:
@@ -377,6 +389,13 @@ class RemoteState(ConversationStateProtocol):
             )
         return persistence_dir
 
+    @property
+    def stats(self) -> ConversationStats:
+        """Get conversation stats (fetched from remote)."""
+        info = self._get_conversation_info()
+        stats_data = info.get("stats", {})
+        return ConversationStats.model_validate(stats_data)
+
     def model_dump(self, **_kwargs):
         """Get a dictionary representation of the remote state."""
         info = self._get_conversation_info()
@@ -397,7 +416,7 @@ class RemoteState(ConversationStateProtocol):
 class RemoteConversation(BaseConversation):
     _id: uuid.UUID
     _state: "RemoteState"
-    _visualizer: ConversationVisualizer | None
+    _visualizer: ConversationVisualizerBase | None
     _ws_client: "WebSocketCallbackClient | None"
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
@@ -413,8 +432,9 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = False,
-        name_for_visualization: str | None = None,
+        visualizer: (
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
     ) -> None:
@@ -427,11 +447,14 @@ class RemoteConversation(BaseConversation):
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
-            visualize: Whether to enable the default visualizer callback
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
+            visualizer: Visualization configuration. Can be:
+                       - ConversationVisualizerBase subclass: Class to instantiate
+                         (default: ConversationVisualizer)
+                       - ConversationVisualizerBase instance: Use custom visualizer
+                       - None: No visualization
             secrets: Optional secrets to initialize the conversation with
         """
+        super().__init__()  # Initialize base class with span tracking
         self.agent = agent
         self._callbacks = callbacks or []
         self.max_iteration_per_run = max_iteration_per_run
@@ -479,14 +502,23 @@ class RemoteConversation(BaseConversation):
         state_update_callback = self._state.create_state_update_callback()
         self._callbacks.append(state_update_callback)
 
-        # Add default visualizer callback if requested
-        if visualize:
-            self._visualizer = create_default_visualizer(
-                name_for_visualization=name_for_visualization,
-            )
-            if self._visualizer is not None:
-                self._callbacks.append(self._visualizer.on_event)
+        # Handle visualization configuration
+        if isinstance(visualizer, ConversationVisualizerBase):
+            # Use custom visualizer instance
+            self._visualizer = visualizer
+            # Initialize the visualizer with conversation state
+            self._visualizer.initialize(self._state)
+            self._callbacks.append(self._visualizer.on_event)
+        elif isinstance(visualizer, type) and issubclass(
+            visualizer, ConversationVisualizerBase
+        ):
+            # Instantiate the visualizer class with appropriate parameters
+            self._visualizer = visualizer()
+            # Initialize with state
+            self._visualizer.initialize(self._state)
+            self._callbacks.append(self._visualizer.on_event)
         else:
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         # Compose all callbacks into a single callback
@@ -507,6 +539,8 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
+        self._start_observability_span(str(self._id))
+
     @property
     def id(self) -> ConversationID:
         return self._id
@@ -517,11 +551,8 @@ class RemoteConversation(BaseConversation):
         return self._state
 
     @property
-    def conversation_stats(self) -> ConversationStats:
-        """Get conversation stats from remote server."""
-        info = self._state._get_conversation_info()
-        stats_data = info.get("conversation_stats", {})
-        return ConversationStats.model_validate(stats_data)
+    def conversation_stats(self):
+        return self._state.stats
 
     @property
     def stuck_detector(self):
@@ -532,7 +563,8 @@ class RemoteConversation(BaseConversation):
             " since it would be handled server-side."
         )
 
-    def send_message(self, message: str | Message) -> None:
+    @observe(name="conversation.send_message")
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
         assert message.role == "user", (
@@ -543,10 +575,13 @@ class RemoteConversation(BaseConversation):
             "content": [c.model_dump() for c in message.content],
             "run": False,  # Mirror local semantics; explicit run() must be called
         }
+        if sender is not None:
+            payload["sender"] = sender
         _send_request(
             self._client, "POST", f"/api/conversations/{self._id}/events", json=payload
         )
 
+    @observe(name="conversation.run")
     def run(self) -> None:
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -572,6 +607,16 @@ class RemoteConversation(BaseConversation):
             self._client,
             "POST",
             f"/api/conversations/{self._id}/confirmation_policy",
+            json=payload,
+        )
+
+    def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
+        """Set the security analyzer for the remote conversation."""
+        payload = {"security_analyzer": analyzer.model_dump() if analyzer else analyzer}
+        _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/security_analyzer",
             json=payload,
         )
 
@@ -604,6 +649,7 @@ class RemoteConversation(BaseConversation):
             self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
         )
 
+    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 
@@ -633,6 +679,12 @@ class RemoteConversation(BaseConversation):
         return data["title"]
 
     def close(self) -> None:
+        """Close the conversation and clean up resources.
+
+        Note: We don't close self._client here because it's shared with the workspace.
+        The workspace owns the client and will close it during its own cleanup.
+        Closing it here would prevent the workspace from making cleanup API calls.
+        """
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
@@ -641,10 +693,7 @@ class RemoteConversation(BaseConversation):
         except Exception:
             pass
 
-        try:
-            self._client.close()
-        except Exception:
-            pass
+        self._end_observability_span()
 
     def __del__(self) -> None:
         try:

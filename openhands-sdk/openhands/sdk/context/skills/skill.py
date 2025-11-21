@@ -37,7 +37,16 @@ class Skill(BaseModel):
 
     name: str
     content: str
-    trigger: TriggerType | None
+    trigger: TriggerType | None = Field(
+        default=None,
+        description=(
+            "Skills use triggers to determine when they should be activated. "
+            "None implies skill is always active. "
+            "Other implementations include KeywordTrigger (activated by a "
+            "keyword in a Message) and TaskTrigger (activated by specific tasks "
+            "and may require user input)"
+        ),
+    )
     source: str | None = Field(
         default=None,
         description=(
@@ -307,3 +316,53 @@ def load_skills_from_dir(
         f"{[*repo_skills.keys(), *knowledge_skills.keys()]}"
     )
     return repo_skills, knowledge_skills
+
+
+# Default user skills directories (in order of priority)
+USER_SKILLS_DIRS = [
+    Path.home() / ".openhands" / "skills",
+    Path.home() / ".openhands" / "microagents",  # Legacy support
+]
+
+
+def load_user_skills() -> list[Skill]:
+    """Load skills from user's home directory.
+
+    Searches for skills in ~/.openhands/skills/ and ~/.openhands/microagents/
+    (legacy). Skills from both directories are merged, with skills/ taking
+    precedence for duplicate names.
+
+    Returns:
+        List of Skill objects loaded from user directories.
+        Returns empty list if no skills found or loading fails.
+    """
+    all_skills = []
+    seen_names = set()
+
+    for skills_dir in USER_SKILLS_DIRS:
+        if not skills_dir.exists():
+            logger.debug(f"User skills directory does not exist: {skills_dir}")
+            continue
+
+        try:
+            logger.debug(f"Loading user skills from {skills_dir}")
+            repo_skills, knowledge_skills = load_skills_from_dir(skills_dir)
+
+            # Merge repo and knowledge skills
+            for skills_dict in [repo_skills, knowledge_skills]:
+                for name, skill in skills_dict.items():
+                    if name not in seen_names:
+                        all_skills.append(skill)
+                        seen_names.add(name)
+                    else:
+                        logger.warning(
+                            f"Skipping duplicate skill '{name}' from {skills_dir}"
+                        )
+
+        except Exception as e:
+            logger.warning(f"Failed to load user skills from {skills_dir}: {str(e)}")
+
+    logger.debug(
+        f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills

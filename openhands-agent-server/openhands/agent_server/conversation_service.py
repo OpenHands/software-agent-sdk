@@ -1,6 +1,5 @@
 import asyncio
 import logging
-import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -19,9 +18,13 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
-from openhands.agent_server.utils import utc_now
+from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
+from openhands.sdk.utils.cipher import Cipher
 
 
 logger = logging.getLogger(__name__)
@@ -49,6 +52,7 @@ class ConversationService:
     conversations_dir: Path = field()
     webhook_specs: list[WebhookSpec] = field(default_factory=list)
     session_api_key: str | None = field(default=None)
+    cipher: Cipher | None = None
     _event_services: dict[UUID, EventService] | None = field(default=None, init=False)
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
@@ -67,7 +71,7 @@ class ConversationService:
         self,
         page_id: str | None = None,
         limit: int = 100,
-        agent_status: AgentExecutionStatus | None = None,
+        execution_status: ConversationExecutionStatus | None = None,
         sort_order: ConversationSortOrder = ConversationSortOrder.CREATED_AT_DESC,
     ) -> ConversationPage:
         if self._event_services is None:
@@ -80,8 +84,8 @@ class ConversationService:
             conversation_info = _compose_conversation_info(event_service.stored, state)
             # Apply status filter if provided
             if (
-                agent_status is not None
-                and conversation_info.agent_status != agent_status
+                execution_status is not None
+                and conversation_info.execution_status != execution_status
             ):
                 continue
 
@@ -122,7 +126,7 @@ class ConversationService:
 
     async def count_conversations(
         self,
-        agent_status: AgentExecutionStatus | None = None,
+        execution_status: ConversationExecutionStatus | None = None,
     ) -> int:
         """Count conversations matching the given filters."""
         if self._event_services is None:
@@ -133,7 +137,10 @@ class ConversationService:
             state = await event_service.get_state()
 
             # Apply status filter if provided
-            if agent_status is not None and state.agent_status != agent_status:
+            if (
+                execution_status is not None
+                and state.execution_status != execution_status
+            ):
                 continue
 
             count += 1
@@ -145,10 +152,12 @@ class ConversationService:
     ) -> list[ConversationInfo | None]:
         """Given a list of ids, get a batch of conversation info, returning
         None for any that were not found."""
-        results = []
-        for id in conversation_ids:
-            result = await self.get_conversation(id)
-            results.append(result)
+        results = await asyncio.gather(
+            *[
+                self.get_conversation(conversation_id)
+                for conversation_id in conversation_ids
+            ]
+        )
         return results
 
     async def _notify_conversation_webhooks(self, conversation_info: ConversationInfo):
@@ -226,13 +235,35 @@ class ConversationService:
         event_service = self._event_services.pop(conversation_id, None)
         if event_service:
             # Notify conversation webhooks about the stopped conversation before closing
-            state = await event_service.get_state()
-            conversation_info = _compose_conversation_info(event_service.stored, state)
-            await self._notify_conversation_webhooks(conversation_info)
+            try:
+                state = await event_service.get_state()
+                conversation_info = _compose_conversation_info(
+                    event_service.stored, state
+                )
+                await self._notify_conversation_webhooks(conversation_info)
+            except Exception as e:
+                logger.warning(
+                    f"Failed to notify webhooks for conversation {conversation_id}: {e}"
+                )
 
-            await event_service.close()
-            shutil.rmtree(event_service.conversation_dir)
-            shutil.rmtree(event_service.stored.workspace.working_dir)
+            # Close the event service
+            try:
+                await event_service.close()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to close event service for conversation "
+                    f"{conversation_id}: {e}"
+                )
+
+            # Safely remove only the conversation directory (workspace is preserved).
+            # This operation may fail due to permission issues, but we don't want that
+            # to prevent the conversation from being marked as deleted.
+            safe_rmtree(
+                event_service.conversation_dir,
+                f"conversation directory for {conversation_id}",
+            )
+
+            logger.info(f"Successfully deleted conversation {conversation_id}")
             return True
         return False
 
@@ -298,7 +329,12 @@ class ConversationService:
                 if not meta_file.exists():
                     continue
                 json_str = meta_file.read_text()
-                stored = StoredConversation.model_validate_json(json_str)
+                stored = StoredConversation.model_validate_json(
+                    json_str,
+                    context={
+                        "cipher": self.cipher,
+                    },
+                )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
@@ -337,6 +373,7 @@ class ConversationService:
             session_api_key=(
                 config.session_api_keys[0] if config.session_api_keys else None
             ),
+            cipher=config.cipher,
         )
 
     async def _start_event_service(self, stored: StoredConversation) -> EventService:
@@ -347,6 +384,7 @@ class ConversationService:
         event_service = EventService(
             stored=stored,
             conversations_dir=self.conversations_dir,
+            cipher=self.cipher,
         )
         # Create subscribers...
         await event_service.subscribe_to_events(_EventSubscriber(service=event_service))
@@ -395,9 +433,8 @@ class WebhookSubscriber(Subscriber):
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
             await self._post_events()
-        else:
-            # Reset the flush timer
-            self._reset_flush_timer()
+        elif not self._flush_timer:
+            self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     async def close(self):
         """Post any remaining items in the queue to the webhook."""
@@ -465,14 +502,6 @@ class WebhookSubscriber(Subscriber):
         if self._flush_timer and not self._flush_timer.done():
             self._flush_timer.cancel()
         self._flush_timer = None
-
-    def _reset_flush_timer(self):
-        """Reset the flush timer to trigger after flush_delay seconds."""
-        # Cancel existing timer
-        self._cancel_flush_timer()
-
-        # Create new timer
-        self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     async def _flush_after_delay(self):
         """Wait for flush_delay seconds then flush events if any exist."""

@@ -15,9 +15,9 @@ from openhands.sdk.context import (
     KeywordTrigger,
     Skill,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -25,7 +25,7 @@ logger = get_logger(__name__)
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -36,13 +36,11 @@ llm = LLM(
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=TerminalTool.name,
     ),
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
 ]
 
 agent_context = AgentContext(
@@ -73,10 +71,8 @@ agent_context = AgentContext(
     user_message_suffix="The first character of your response should be 'I'",
 )
 
-
 # Agent
 agent = Agent(llm=llm, tools=tools, agent_context=agent_context)
-
 
 llm_messages = []  # collect raw LLM messages
 
@@ -104,3 +100,7 @@ print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

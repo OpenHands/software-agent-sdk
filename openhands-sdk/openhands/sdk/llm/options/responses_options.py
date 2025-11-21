@@ -25,6 +25,10 @@ def select_responses_options(
     out["temperature"] = 1.0
     out["tool_choice"] = "auto"
 
+    # If user didn't set extra_headers, propagate from llm config
+    if llm.extra_headers is not None and "extra_headers" not in out:
+        out["extra_headers"] = dict(llm.extra_headers)
+
     # Store defaults to False (stateless) unless explicitly provided
     if store is not None:
         out["store"] = bool(store)
@@ -39,8 +43,15 @@ def select_responses_options(
     if include_list:
         out["include"] = include_list
 
-    # Request plaintext reasoning summary
-    effort = llm.reasoning_effort or "high"
-    out["reasoning"] = {"effort": effort, "summary": "detailed"}
+    # Include reasoning effort only if explicitly set
+    if llm.reasoning_effort:
+        out["reasoning"] = {"effort": llm.reasoning_effort}
+        # Optionally include summary if explicitly set (requires verified org)
+        if llm.reasoning_summary:
+            out["reasoning"]["summary"] = llm.reasoning_summary
+
+    # Always forward extra_body if provided; let the LLM provider validate
+    if llm.litellm_extra_body:
+        out["extra_body"] = llm.litellm_extra_body
 
     return out

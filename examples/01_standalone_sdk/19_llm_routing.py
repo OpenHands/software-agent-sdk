@@ -89,8 +89,11 @@ conversation.send_message(
 )
 conversation.run()
 
-
 print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

@@ -116,6 +116,10 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to expose additional ports (VSCode, VNC).",
     )
+    enable_gpu: bool = Field(
+        default=False,
+        description="Whether to enable GPU support with --gpus all.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
@@ -172,6 +176,7 @@ class DockerWorkspace(RemoteWorkspace):
                 base_image=self.base_image,
                 target=self.target,
                 platforms=[self.platform],
+                push=False,
             )
             tags = build(opts=build_opts)
             assert tags and len(tags) > 0, "Build failed, no image tags returned"
@@ -206,6 +211,10 @@ class DockerWorkspace(RemoteWorkspace):
                 f"{self.host_port + 2}:8002",  # Desktop VNC
             ]
         flags += ports
+
+        # Add GPU support if enabled
+        if self.enable_gpu:
+            flags += ["--gpus", "all"]
 
         # Run container
         run_cmd = [
