@@ -68,7 +68,6 @@ DEFAULT_CONVERSATIONS_ROOT = (
 )
 
 DEFAULT_CONDENSER_MAX_SIZE = int(os.getenv("CONDENSER_MAX_SIZE", "250"))
-DEFAULT_CONDENSER_KEEP_FIRST = int(os.getenv("CONDENSER_KEEP_FIRST", "0"))
 
 
 @dataclass
@@ -87,7 +86,6 @@ def load_json(path: Path) -> dict[str, Any]:
 def load_events(
     conversation_path: Path,
     max_size: int = DEFAULT_CONDENSER_MAX_SIZE,
-    keep_first: int = DEFAULT_CONDENSER_KEEP_FIRST,
 ) -> ConversationEvents:
     identifier = conversation_path.name
     events_dir = conversation_path / "events"
@@ -163,45 +161,6 @@ def load_events(
             # Enforce a hard cap on how many counted events we keep.
             if counted_tail_events >= max_size:
                 break
-
-    # Second pass (optional): if requested, always keep the earliest
-    # `keep_first` events from the entire conversation, then merge those with
-    # the bounded recent tail so that the total does not exceed `max_size`.
-    if keep_first > 0 and max_size > 0:
-        earliest_events: list[dict[str, Any]] = []
-
-        ascending_files = sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem))
-        for event_file in ascending_files:
-            if len(earliest_events) >= keep_first:
-                break
-
-            try:
-                ev = load_json(event_file)
-                ev.setdefault("_filename", event_file.name)
-            except json.JSONDecodeError as exc:
-                ev = {
-                    "_filename": event_file.name,
-                    "error": f"Invalid JSON: {exc}",
-                }
-
-            if not is_visible_event(ev):
-                continue
-
-            earliest_events.append(ev)
-
-        # Merge earliest events and the recent tail while respecting max_size.
-        if earliest_events:
-            # Avoid duplicates if ranges overlap by checking filenames.
-            existing_filenames = {e.get("_filename") for e in earliest_events}
-            tail_without_dups = [
-                e for e in recent_events if e.get("_filename") not in existing_filenames
-            ]
-
-            available_for_tail = max(max_size - len(earliest_events), 0)
-            if available_for_tail < len(tail_without_dups):
-                tail_without_dups = tail_without_dups[-available_for_tail:]
-
-            recent_events = earliest_events + tail_without_dups
 
     # We walked from newest to oldest for the tail; reverse so callers see
     # ascending order before we potentially merge in earliest events.
@@ -437,15 +396,6 @@ def parse_args() -> argparse.Namespace:
             "Defaults to CONDENSER_MAX_SIZE env var or 250."
         ),
     )
-    parser.add_argument(
-        "--keep-first",
-        type=int,
-        default=DEFAULT_CONDENSER_KEEP_FIRST,
-        help=(
-            "Number of earliest events (from the beginning of the conversation) "
-            "to always keep. Defaults to CONDENSER_KEEP_FIRST env var or 0."
-        ),
-    )
     return parser.parse_args()
 
 
@@ -475,7 +425,6 @@ def main() -> None:
     conv = load_events(
         conv_path,
         max_size=args.max_size,
-        keep_first=args.keep_first,
     )
     payload = build_payload(conv)
 
