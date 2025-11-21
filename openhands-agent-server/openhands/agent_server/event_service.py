@@ -373,3 +373,6 @@ class EventService:
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.save_meta()
         await self.close()
+
+    def is_open(self) -> bool:
+        return bool(self._conversation)
