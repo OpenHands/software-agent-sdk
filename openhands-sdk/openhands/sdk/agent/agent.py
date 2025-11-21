@@ -73,7 +73,7 @@ class Agent(AgentBase):
 
     security_service: DefaultSecurityService | None = Field(
         default=None,
-        description="Based on the Security Analyzer tool and Confirmation Policy,"
+        description="Based on the Security Analyzer and Confirmation Policy,"
         " we conduct a security analysis of the relevant actions.",
         examples=[{"kind": "DefaultSecurityService"}],
     )
