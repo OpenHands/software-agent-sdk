@@ -405,7 +405,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.temperature is None:
             self.temperature = get_default_temperature(self.model)
 
-        self.retry_listener = self.retry_listen_wrapper
+        user_listener = self.retry_listener
+
+        def retry_listen_wrapper(
+            attempt_number: int, num_retries: int, _err: BaseException | None
+        ) -> None:
+            if user_listener is not None:
+                user_listener(attempt_number, num_retries, _err)
+            if self._telemetry is not None and _err is not None:
+                self._telemetry.on_error(_err)  # type: ignore
+
+        self.retry_listener = retry_listen_wrapper
 
         logger.debug(
             f"LLM ready: model={self.model} base_url={self.base_url} "
@@ -459,15 +469,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Metrics should be initialized after model validation"
         )
         return self._metrics
-
-    def retry_listen_wrapper(
-        self, attempt_number: int, num_retries: int, _err: BaseException | None
-    ) -> None:
-        user_listener = self.retry_listener
-        if user_listener is not None:
-            user_listener(attempt_number, num_retries, _err)
-        if self._telemetry is not None and _err is not None:
-            self._telemetry.on_error(_err)  # type: ignore
 
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
