@@ -43,7 +43,7 @@ Where ``<conversation-id>`` is the name of the V0 conversation directory.
 
 Usage
 -----
-Run this from the repository root:
+Run this script:
 
     python scripts/v0_last_condenser_summary.py \
         /path/to/.conversations/<conversation-id>
