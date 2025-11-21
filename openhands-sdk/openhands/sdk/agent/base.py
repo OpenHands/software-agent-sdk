@@ -448,3 +448,37 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if not self._tools:
             raise RuntimeError("Agent not initialized; call initialize() before use")
         return self._tools
+
+    def current_view(self, conversation: "LocalConversation") -> list[str]:
+        """Get the agent's current view of the conversation context.
+
+        This method returns the current context that the agent can see,
+        which is used when asking questions via ask_agent.
+
+        In the base class, this returns all events as strings.
+        Subclasses may override this to provide condensed views.
+
+        Args:
+            conversation: The conversation to get the view from
+
+        Returns:
+            List of strings representing the current context
+        """
+        from openhands.sdk.event import LLMConvertibleEvent
+
+        # Base implementation: return all LLM convertible events as strings
+        llm_events = [
+            e for e in conversation.state.events if isinstance(e, LLMConvertibleEvent)
+        ]
+
+        # Convert events to their string representation
+        context_strings = []
+        for event in llm_events:
+            try:
+                # Try to get a meaningful string representation
+                context_strings.append(str(event))
+            except Exception:
+                # Fallback to event type if string conversion fails
+                context_strings.append(f"<{type(event).__name__}>")
+
+        return context_strings

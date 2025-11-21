@@ -446,6 +446,10 @@ class LocalConversation(BaseConversation):
         without going through the normal conversation flow. It's useful for
         getting simple answers or clarifications while a conversation is running.
 
+        The question is asked with the agent's current view of the conversation
+        context, so the agent can provide informed responses based on what it
+        currently sees.
+
         Args:
             question: A simple string question to ask the agent
 
@@ -457,8 +461,21 @@ class LocalConversation(BaseConversation):
             is executing in another thread. It does not affect the conversation
             state, events, or execution status.
         """
-        # Create a simple user message for the question
-        user_message = Message(role="user", content=[TextContent(text=question)])
+        # Get the agent's current view of the conversation context
+        context_strings = self.agent.current_view(self)
+
+        # Build the context-aware question
+        if context_strings:
+            context_text = "\n".join(context_strings)
+            full_question = (
+                f"Based on the current conversation context:\n\n{context_text}\n\n"
+                f"Question: {question}"
+            )
+        else:
+            full_question = question
+
+        # Create a user message with the context-aware question
+        user_message = Message(role="user", content=[TextContent(text=full_question)])
 
         # Use the agent's LLM to get a direct completion
         # This bypasses the conversation state and agent step cycle

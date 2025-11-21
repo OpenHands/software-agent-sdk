@@ -79,7 +79,10 @@ def test_local_conversation_ask_agent(mock_completion):
         call_args = mock_completion.call_args[0][0]
         assert len(call_args) == 1
         assert call_args[0].role == "user"
-        assert call_args[0].content[0].text == "What is 2+2?"
+        # The message should include context (system prompt) and the question
+        message_text = call_args[0].content[0].text
+        assert "Based on the current conversation context:" in message_text
+        assert "Question: What is 2+2?" in message_text
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
@@ -203,3 +206,36 @@ def test_ask_agent_thread_safety(mock_completion):
         # Verify conversation state wasn't affected
         final_events_count = len(conv.state.events)
         assert final_events_count == initial_events_count
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_includes_context(mock_completion):
+    """Test that ask_agent includes conversation context when available."""
+    agent = create_test_agent()
+
+    # Mock the LLM completion response
+    mock_response = create_mock_llm_response("Context-aware response")
+    mock_completion.return_value = mock_response
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
+
+        # Add some conversation history by sending a message
+        conv.send_message("Hello, I need help with Python")
+
+        result = conv.ask_agent("What was my original question?")
+
+        assert result == "Context-aware response"
+
+        # Verify the LLM was called with context-aware message
+        mock_completion.assert_called()
+        call_args = mock_completion.call_args[0][0]
+        assert len(call_args) == 1
+        assert call_args[0].role == "user"
+
+        # The message should include context
+        message_text = call_args[0].content[0].text
+        assert "Based on the current conversation context:" in message_text
+        assert "Question: What was my original question?" in message_text
+        # Should include the user message we sent
+        assert "Hello, I need help with Python" in message_text
