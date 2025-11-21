@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, patch
 from openhands.tools.browser_use.definition import (
     BrowserClickAction,
     BrowserGetStateAction,
-    BrowserNavigateAction,
+    BrowserNavigateURLAction,
     BrowserObservation,
 )
 from openhands.tools.browser_use.impl import BrowserToolExecutor
@@ -48,7 +48,7 @@ async def test_browser_executor_action_routing_navigate(
     """Test that navigate actions are routed correctly."""
     mock_navigate.return_value = "Navigation successful"
 
-    action = BrowserNavigateAction(url="https://example.com", new_tab=False)
+    action = BrowserNavigateURLAction(url="https://example.com", new_tab=False)
     result = await mock_browser_executor._execute_action(action)
 
     mock_navigate.assert_called_once_with("https://example.com", False)
@@ -101,7 +101,7 @@ async def test_browser_executor_error_wrapping(mock_navigate, mock_browser_execu
     """Test that exceptions are properly wrapped in BrowserObservation."""
     mock_navigate.side_effect = Exception("Browser error occurred")
 
-    action = BrowserNavigateAction(url="https://example.com")
+    action = BrowserNavigateURLAction(url="https://example.com")
     result = await mock_browser_executor._execute_action(action)
 
     assert_browser_observation_error(result, "Browser operation failed")
@@ -116,7 +116,7 @@ def test_browser_executor_async_execution(mock_browser_executor):
         expected_result = BrowserObservation.from_text(text="Test result")
         mock_execute.return_value = expected_result
 
-        action = BrowserNavigateAction(url="https://example.com")
+        action = BrowserNavigateURLAction(url="https://example.com")
         result = mock_browser_executor(action)
 
         assert result is expected_result
