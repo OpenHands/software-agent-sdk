@@ -220,6 +220,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=True,
         description="Whether to use native tool calling.",
     )
+    force_string_serializer: bool | None = Field(
+        default=None,
+        description=(
+            "Force using string content serializer when sending to LLM API. "
+            "If None (default), auto-detect based on model. "
+            "Useful for providers that do not support list content, "
+            "like HuggingFace and Groq."
+        ),
+    )
     reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
         default="high",
         description="The effort to put into reasoning. "
@@ -904,7 +913,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
             model_features = get_features(self.model)
-            message.force_string_serializer = model_features.force_string_serializer
+            message.force_string_serializer = (
+                self.force_string_serializer
+                if self.force_string_serializer is not None
+                else model_features.force_string_serializer
+            )
             message.send_reasoning_content = model_features.send_reasoning_content
 
         formatted_messages = [message.to_chat_dict() for message in messages]
