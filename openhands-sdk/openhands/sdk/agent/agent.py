@@ -1,6 +1,6 @@
 import json
 
-from pydantic import ValidationError, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
@@ -41,7 +41,9 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.security.security_service import DefaultSecurityService
+from openhands.sdk.security.security_service import (
+    DefaultSecurityService,
+)
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -69,6 +71,13 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
+    security_service: DefaultSecurityService | None = Field(
+        default=None,
+        description="Based on the Security Analyzer tool and Confirmation Policy,"
+        " we conduct a security analysis of the relevant actions.",
+        examples=[{"kind": "DefaultSecurityService"}],
+    )
+
     @model_validator(mode="before")
     @classmethod
     def _add_security_prompt_as_default(cls, data):
@@ -91,7 +100,9 @@ class Agent(AgentBase):
     ) -> None:
         super().init_state(state, on_event=on_event)
         # Build the security service based on the state.
-        self._security_service = DefaultSecurityService(state)
+        self.security_service = DefaultSecurityService(
+            state.security_analyzer, state.confirmation_policy
+        )
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
@@ -246,8 +257,8 @@ class Agent(AgentBase):
                     continue
                 action_events.append(action_event)
 
-            # Handle confirmation mode - exit early if actions need confirmation
-            if self._security_service.requires_confirmation(action_events):
+            # Handle confirmation mode - exit early if actions need access_confirm
+            if self.security_service.access_confirm(action_events).access_confirm:  # type: ignore
                 state.execution_status = (
                     ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                 )
@@ -330,7 +341,7 @@ class Agent(AgentBase):
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
-            security_risk = self._security_service.extract_security_risk(
+            security_risk = self.security_service.extract_security_risk(  # type: ignore
                 arguments,
                 tool.name,
                 tool.annotations.readOnlyHint if tool.annotations else False,
