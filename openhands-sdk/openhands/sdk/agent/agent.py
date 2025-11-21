@@ -77,6 +77,7 @@ class Agent(AgentBase):
         " from conversationState, we conduct a security analysis of the "
         "relevant actions.",
         examples=[{"kind": "DefaultSecurityService"}],
+        exclude=True,
     )
 
     @model_validator(mode="before")

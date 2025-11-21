@@ -89,7 +89,6 @@ def test_conversation_state_persistence_save_load():
             agent=agent,
             id=conv_id,
         )
-        agent.init_state(state, lambda e: None)
 
         # Add events
         event1 = SystemPromptEvent(
@@ -155,8 +154,6 @@ def test_conversation_state_incremental_save():
             agent=agent,
             id=uuid.UUID("12345678-1234-5678-9abc-123456789003"),
         )
-
-        agent.init_state(state, lambda e: None)
 
         # Add first event - auto-saves
         event1 = SystemPromptEvent(
