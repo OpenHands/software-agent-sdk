@@ -191,21 +191,21 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserGetStateAction,
             BrowserGoBackAction,
             BrowserListTabsAction,
-            BrowserNavigateURLAction,
+            BrowserNavigateAction,
             BrowserObservation,
             BrowserScrollAction,
             BrowserSwitchTabAction,
-            BrowserTypeTextAction,
+            BrowserTypeAction,
         )
 
         try:
             result = ""
             # Route to appropriate method based on action type
-            if isinstance(action, BrowserNavigateURLAction):
+            if isinstance(action, BrowserNavigateAction):
                 result = await self.navigate(action.url, action.new_tab)
             elif isinstance(action, BrowserClickAction):
                 result = await self.click(action.index, action.new_tab)
-            elif isinstance(action, BrowserTypeTextAction):
+            elif isinstance(action, BrowserTypeAction):
                 result = await self.type_text(action.index, action.text)
             elif isinstance(action, BrowserGetStateAction):
                 return await self.get_state(action.include_screenshot)
