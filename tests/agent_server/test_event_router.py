@@ -1,7 +1,8 @@
 """Tests for event_router.py endpoints."""
 
+from pathlib import Path
 from typing import cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -13,6 +14,7 @@ from openhands.agent_server.event_router import event_router
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import SendMessageRequest
 from openhands.sdk import Message
+from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm.message import ImageContent, TextContent
 
 
@@ -622,108 +624,143 @@ class TestSearchEventsEndpoint:
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
-    async def test_search_events_with_body_filter(
-        self, client, sample_conversation_id, mock_event_service
+    async def test_search_events_with_source_filter_real_events(
+        self, client, sample_conversation_id
     ):
-        """Test search events with body filter."""
-        # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        """Test source filtering with real events."""
+        from openhands.agent_server.event_service import EventService
+        from openhands.sdk.llm.message import TextContent
+
+        # Create real EventService with sample events
+        event_service = EventService(
+            stored=MagicMock(), conversations_dir=Path("test_dir")
+        )
+
+        # Create events with different sources
+        events = [
+            MessageEvent(
+                id="user1",
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+            ),
+            MessageEvent(
+                id="agent1",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="Hi there")]
+                ),
+            ),
+            MessageEvent(
+                id="user2",
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Help me")]),
+            ),
+            MessageEvent(
+                id="agent2",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="Sure")]
+                ),
+            ),
+        ]
+
+        # Setup conversation mock
+        conversation = MagicMock()
+        state = MagicMock()
+        state.events = events
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        client.app.dependency_overrides[get_event_service] = lambda: event_service
 
         try:
-            # Mock the search_events method to return a sample result
-            mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
-            )
-
-            # Test with body filter
+            # Test filtering by source="user" - should return 2 events
             response = client.get(
                 f"/api/conversations/{sample_conversation_id}/events/search",
-                params={
-                    "body": "hello world",
-                    "limit": 10,
-                },
+                params={"source": "user", "limit": 10},
             )
 
             assert response.status_code == 200
-            mock_event_service.search_events.assert_called_once()
-            # Verify that the body parameter was passed correctly
-            call_args = mock_event_service.search_events.call_args
-            # Check args: (page_id, limit, kind, source, body, sort_order,
-            # timestamp__gte, timestamp__lt)
-            assert len(call_args[0]) >= 5  # Should have at least 5 positional args
-            assert call_args[0][4] == "hello world"  # body should be "hello world"
+            result = response.json()
+            assert len(result["items"]) == 2
+            returned_ids = [event["id"] for event in result["items"]]
+            assert "user1" in returned_ids
+            assert "user2" in returned_ids
+
         finally:
-            # Clean up the dependency override
             client.app.dependency_overrides.clear()
 
     @pytest.mark.asyncio
-    async def test_search_events_with_body_and_source_filters(
-        self, client, sample_conversation_id, mock_event_service
+    async def test_search_events_with_body_filter_real_events(
+        self, client, sample_conversation_id
     ):
-        """Test search events with both body and source filters."""
-        # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+        """Test body filtering with real events."""
+        from openhands.agent_server.event_service import EventService
+        from openhands.sdk.llm.message import TextContent
+
+        # Create real EventService with sample events
+        event_service = EventService(
+            stored=MagicMock(), conversations_dir=Path("test_dir")
+        )
+
+        # Create events with different message content
+        events = [
+            MessageEvent(
+                id="hello1",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Hello world")]
+                ),
+            ),
+            MessageEvent(
+                id="python1",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="Python is great")]
+                ),
+            ),
+            MessageEvent(
+                id="hello2",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Say hello to everyone")]
+                ),
+            ),
+            MessageEvent(
+                id="other1",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="JavaScript rocks")]
+                ),
+            ),
+        ]
+
+        # Setup conversation mock
+        conversation = MagicMock()
+        state = MagicMock()
+        state.events = events
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        event_service._conversation = conversation
+
+        client.app.dependency_overrides[get_event_service] = lambda: event_service
 
         try:
-            # Mock the search_events method to return a sample result
-            mock_event_service.search_events = AsyncMock(
-                return_value={"items": [], "next_page_id": None}
-            )
-
-            # Test with both body and source filters
+            # Test filtering by body="hello" (case-insensitive) - should return 2 events
             response = client.get(
                 f"/api/conversations/{sample_conversation_id}/events/search",
-                params={
-                    "kind": "MessageEvent",
-                    "source": "agent",
-                    "body": "error occurred",
-                    "limit": 15,
-                },
+                params={"body": "hello", "limit": 10},
             )
 
             assert response.status_code == 200
-            mock_event_service.search_events.assert_called_once()
-            # Verify that all parameters were passed correctly
-            call_args = mock_event_service.search_events.call_args
-            # Check args: (page_id, limit, kind, source, body, sort_order,
-            # timestamp__gte, timestamp__lt)
-            assert len(call_args[0]) >= 8  # Should have at least 8 positional args
-            assert call_args[0][1] == 15  # limit
-            assert call_args[0][2] == "MessageEvent"  # kind
-            assert call_args[0][3] == "agent"  # source
-            assert call_args[0][4] == "error occurred"  # body
+            result = response.json()
+            assert len(result["items"]) == 2
+            returned_ids = [event["id"] for event in result["items"]]
+            assert "hello1" in returned_ids
+            assert "hello2" in returned_ids
+
         finally:
-            # Clean up the dependency override
-            client.app.dependency_overrides.clear()
-
-    @pytest.mark.asyncio
-    async def test_count_events_with_body_filter(
-        self, client, sample_conversation_id, mock_event_service
-    ):
-        """Test count events with body filter."""
-        # Override the dependency to return our mock
-        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
-
-        try:
-            # Mock the count_events method to return a sample result
-            mock_event_service.count_events = AsyncMock(return_value=5)
-
-            # Test with body filter
-            response = client.get(
-                f"/api/conversations/{sample_conversation_id}/events/count",
-                params={
-                    "body": "test message",
-                },
-            )
-
-            assert response.status_code == 200
-            assert response.json() == 5
-            mock_event_service.count_events.assert_called_once()
-            # Verify that the body parameter was passed correctly
-            call_args = mock_event_service.count_events.call_args
-            # Check args: (kind, source, body, timestamp__gte, timestamp__lt)
-            assert len(call_args[0]) >= 3  # Should have at least 3 positional args
-            assert call_args[0][2] == "test message"  # body should be "test message"
-        finally:
-            # Clean up the dependency override
             client.app.dependency_overrides.clear()
