@@ -76,6 +76,7 @@ class Agent(AgentBase):
         description="Based on the Security Analyzer tool and Confirmation Policy,"
         " we conduct a security analysis of the relevant actions.",
         examples=[{"kind": "DefaultSecurityService"}],
+        frozen=False,
     )
 
     @model_validator(mode="before")
