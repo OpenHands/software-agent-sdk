@@ -80,90 +80,77 @@ def load_json(path: Path) -> dict[str, Any]:
         return json.load(handle)
 
 
-def load_events(conversation_path: Path) -> ConversationEvents:
+def load_events(conversation_path: Path, max_size: int = 250) -> ConversationEvents:
     identifier = conversation_path.name
     events_dir = conversation_path / "events"
     if not events_dir.exists() or not events_dir.is_dir():
         raise FileNotFoundError(f"No events directory found at: {events_dir}")
 
-    events: list[dict[str, Any]] = []
-
-    # We don't need to slurp thousands of events into memory if we're only
-    # going to use the tail of the stream. Since V0 names files by integer
-    # event id (e.g. 1.json, 2.json, ... 5202.json), we can:
+    # We only need a bounded tail of the event stream for bootstrapping V1.
+    # Walk backwards from the highest-id event, collect recent events, and
+    # stop once we either:
     #
-    # 1. Find the last condensation event by streaming files in ascending id
-    #    order.
-    # 2. Once we know the boundary (forgotten_events_end_id), only read the
-    #    events after that id into `events`.
-    #
-    # To keep the rest of the script simple, we *still* materialize a
-    # ConversationEvents object, but with only the suffix of the history we
-    # actually care about.
+    # - Have seen a condensation event *and* crossed its forgotten_events_end_id,
+    #   or
+    # - Have accumulated `max_size` events (safety bound, used also for
+    #   malformed / non-numeric ids).
 
-    # First pass: scan for the last condensation event's args.
+    recent_events: list[dict[str, Any]] = []
     last_condensation_args: dict[str, Any] | None = None
+    forgotten_end_id: int | None = None
 
-    for event_file in sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem)):
+    event_files = sorted(
+        events_dir.glob("*.json"), key=lambda p: int(p.stem), reverse=True
+    )
+
+    for event_file in event_files:
         try:
             event = load_json(event_file)
-        except json.JSONDecodeError:
-            continue
+            event.setdefault("_filename", event_file.name)
+        except json.JSONDecodeError as exc:
+            event = {
+                "_filename": event_file.name,
+                "error": f"Invalid JSON: {exc}",
+            }
+
+        # Try to extract a numeric id from the filename; if that fails, we
+        # still keep the event, but we won't use it for boundary checks.
+        try:
+            ev_id = int(event_file.stem)
+        except ValueError:
+            ev_id = None
 
         args = extract_condensation_args(event)
-        if args is not None:
+        if args is not None and last_condensation_args is None:
+            # First (i.e. last-in-time) condensation event we encounter.
             last_condensation_args = args
-
-    # Second pass: depending on whether we found a condenser, decide what
-    # portion of the history to load.
-    if last_condensation_args is None:
-        # No condenser: load *all* events, but still stream in id order and
-        # keep invalid JSON as markers.
-        for event_file in sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem)):
             try:
-                event = load_json(event_file)
-                event.setdefault("_filename", event_file.name)
-                events.append(event)
-            except json.JSONDecodeError as exc:
-                events.append(
-                    {
-                        "_filename": event_file.name,
-                        "error": f"Invalid JSON: {exc}",
-                    }
-                )
-    else:
-        # We know the condenser's `forgotten_events_end_id`; anything after
-        # that id is "recent" for our purposes. The filenames are exactly
-        # those ids, so we can load only those files.
-        try:
-            forgotten_end_id = int(last_condensation_args["forgotten_events_end_id"])
-        except Exception:
-            forgotten_end_id = None
+                forgotten_end_id = int(args["forgotten_events_end_id"])
+            except Exception:
+                forgotten_end_id = None
+            # We do not include the condensation event itself in recent_events;
+            # its summary represents earlier history.
+        else:
+            recent_events.append(event)
 
-        for event_file in sorted(events_dir.glob("*.json"), key=lambda p: int(p.stem)):
-            try:
-                event_id = int(event_file.stem)
-            except ValueError:
-                continue
+        # Enforce a hard cap on how many events we keep, regardless of ids.
+        if len(recent_events) >= max_size:
+            break
 
-            if forgotten_end_id is not None and event_id <= forgotten_end_id:
-                # This event is covered by the summary; we don't need to load it.
-                continue
+        # If we have a valid forgotten_end_id and event id, stop once we
+        # cross into the summarized region.
+        if (
+            forgotten_end_id is not None
+            and ev_id is not None
+            and ev_id <= forgotten_end_id
+        ):
+            break
 
-            try:
-                event = load_json(event_file)
-                event.setdefault("_filename", event_file.name)
-                events.append(event)
-            except json.JSONDecodeError as exc:
-                events.append(
-                    {
-                        "_filename": event_file.name,
-                        "error": f"Invalid JSON: {exc}",
-                    }
-                )
+    # We walked from newest to oldest; reverse so callers see ascending order.
+    recent_events.reverse()
 
     return ConversationEvents(
-        identifier=identifier, path=conversation_path, events=events
+        identifier=identifier, path=conversation_path, events=recent_events
     )
 
 
@@ -232,27 +219,9 @@ def build_payload(conv: ConversationEvents) -> dict[str, Any]:
     forgotten_start_id = args["forgotten_events_start_id"]
     forgotten_end_id = args["forgotten_events_end_id"]
 
-    # Build a map from event id -> index
-    id_to_index: dict[int, int] = {}
-    for idx, ev in enumerate(conv.events):
-        ev_id = ev.get("id")
-        if isinstance(ev_id, int):
-            # In case of duplicates, the last one wins; but IDs should be unique
-            id_to_index[ev_id] = idx
-
-    if not id_to_index:
-        raise RuntimeError(
-            "No event IDs found in conversation; cannot align with condensation range"
-        )
-
-    # We only really need the end index to know what was summarized.
-    end_index = id_to_index.get(int(forgotten_end_id))
-    if end_index is None:
-        raise RuntimeError(
-            f"forgotten_events_end_id={forgotten_end_id!r} not found among event ids"
-        )
-
-    recent_events = conv.events[end_index + 1 :]
+    # At this point `conv.events` already contains just the recent tail loaded
+    # by `load_events`, in ascending order. We don't need to re-scan ids here;
+    # we simply propagate the condenser metadata plus that tail.
 
     return {
         "identifier": conv.identifier,
@@ -261,11 +230,11 @@ def build_payload(conv: ConversationEvents) -> dict[str, Any]:
         "last_condensation_event_index": last_idx,
         "forgotten_events_start_id": int(forgotten_start_id),
         "forgotten_events_end_id": int(forgotten_end_id),
-        "forgotten_until_index": end_index,
+        "forgotten_until_index": None,
         "summary": args.get("summary"),
         "summary_offset": args.get("summary_offset"),
         "condensation_event": condensation_event,
-        "recent_events": recent_events,
+        "recent_events": conv.events,
     }
 
 
