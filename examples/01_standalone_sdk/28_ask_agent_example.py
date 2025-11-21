@@ -76,16 +76,7 @@ print("This example demonstrates asking questions during conversation execution"
 
 # Step 1: Build conversation context
 print(f"\n[{timestamp()}] Building conversation context...")
-conversation.send_message(
-    "I'm working on a Python project and need help with data analysis. "
-    "Specifically, I want to create a script that reads CSV files and generates "
-    "summary statistics. Can you help me plan this out using the task tracker?"
-)
-
-conversation.send_message(
-    "Also, I'll need the script to handle missing data and create visualizations. "
-    "Please make sure to include error handling for common issues."
-)
+conversation.send_message("Explore this project and describe the current architecture.")
 
 # Step 2: Start conversation in background thread
 print(f"[{timestamp()}] Starting conversation in background thread...")
