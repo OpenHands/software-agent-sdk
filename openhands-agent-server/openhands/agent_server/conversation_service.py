@@ -184,8 +184,8 @@ class ConversationService:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
 
-        if conversation_id in self._event_services:
-            existing_event_service = self._event_services[conversation_id]
+        existing_event_service = self._event_services.get(conversation_id)
+        if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
             conversation_info = _compose_conversation_info(
                 existing_event_service.stored, state
