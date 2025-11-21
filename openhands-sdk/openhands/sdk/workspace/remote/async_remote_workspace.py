@@ -15,21 +15,6 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
 
     _client: httpx.AsyncClient | None = PrivateAttr(default=None)
 
-    def _create_timeout(self) -> httpx.Timeout:
-        """Create the timeout configuration for HTTP requests.
-
-        Subclasses can override this method to customize timeout values.
-        Default configuration:
-        - connect: 10 seconds to establish connection
-        - read: 60 seconds to read response (for LLM operations)
-        - write: 10 seconds to send request
-        - pool: 10 seconds to get connection from pool
-
-        Returns:
-            httpx.Timeout: The timeout configuration
-        """
-        return httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-
     async def _reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
 
@@ -47,7 +32,12 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     def client(self) -> httpx.AsyncClient:
         client = self._client
         if client is None:
-            timeout = self._create_timeout()
+            # Configure reasonable timeouts for HTTP requests
+            # - connect: 10 seconds to establish connection
+            # - read: 60 seconds to read response (for LLM operations)
+            # - write: 10 seconds to send request
+            # - pool: 10 seconds to get connection from pool
+            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
             client = httpx.AsyncClient(
                 base_url=self.host, timeout=timeout, headers=self._headers
             )

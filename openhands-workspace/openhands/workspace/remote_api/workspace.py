@@ -79,18 +79,23 @@ class APIRemoteWorkspace(RemoteWorkspace):
     _runtime_url: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
 
-    def _create_timeout(self) -> httpx.Timeout:
-        """Create timeout configuration using the api_timeout field.
-
-        Uses api_timeout for the read timeout to allow longer operations
-        while keeping other timeouts at reasonable defaults.
-        """
-        return httpx.Timeout(
-            connect=10.0,
-            read=self.api_timeout,
-            write=10.0,
-            pool=10.0,
-        )
+    @property
+    def client(self) -> httpx.Client:
+        """Override client property to use api_timeout for HTTP requests."""
+        client = self._client
+        if client is None:
+            # Use api_timeout for the read timeout to allow longer operations
+            timeout = httpx.Timeout(
+                connect=10.0,
+                read=self.api_timeout,
+                write=10.0,
+                pool=10.0,
+            )
+            client = httpx.Client(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
+            self._client = client
+        return client
 
     @property
     def _api_headers(self):
