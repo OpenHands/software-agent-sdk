@@ -1,10 +1,12 @@
 """Delegate tool definitions for OpenHands agents."""
 
+import pathlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -16,6 +18,8 @@ from openhands.sdk.tool.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
+
+PROMPT_DIR = pathlib.Path(__file__).parent / "templates"
 
 CommandLiteral = Literal["spawn", "delegate"]
 
@@ -81,33 +85,12 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
 
         # Create dynamic description with workspace and agent type info
         workspace_path = conv_state.workspace.working_dir
-        tool_description = f"""Delegation tool for spawning sub-agents and delegating tasks to them.
-
-This tool provides two commands:
-
-**spawn**: Initialize sub-agents with meaningful identifiers and optional types
-- Use descriptive identifiers that make sense for your use case (e.g., 'refactoring', 'run_tests', 'research')
-- Optionally specify agent types for specialized capabilities
-- Each identifier creates a separate sub-agent conversation
-- Examples:
-  - Default agents: {{"command": "spawn", "ids": ["research", "implementation"]}}
-  - Specialized agents: {{"command": "spawn", "ids": ["research", "code"], "agent_types": ["researcher", "programmer"]}}
-  - Mixed types: {{"command": "spawn", "ids": ["research", "generic"], "agent_types": ["researcher"]}}  # unspecified entries fall back to the default agent
-
-**delegate**: Send tasks to specific sub-agents and wait for results
-- Use a dictionary mapping sub-agent identifiers to task descriptions
-- This is a blocking operation - waits for all sub-agents to complete
-- Returns a single observation containing results from all sub-agents
-- Example: {{"command": "delegate", "tasks": {{"research": "Find best practices for async code", "implementation": "Refactor the MyClass class"}}}}
-
-{agent_types_info}
-
-**Important Notes:**
-- Identifiers used in delegate must match those used in spawn
-- All operations are blocking and return comprehensive results
-- Sub-agents work in the same workspace as the main agent: {workspace_path}
-- If you omit an agent type for an ID, a default general-purpose agent is used
-"""  # noqa
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="delegate_tool_description.j2",
+            agent_types_info=agent_types_info,
+            workspace_path=workspace_path,
+        )
 
         # Initialize the executor without parent conversation
         # (will be set on first call)
