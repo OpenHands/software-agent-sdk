@@ -1,6 +1,6 @@
 import json
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import ValidationError, model_validator
 
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
@@ -71,13 +71,11 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
-    security_service: DefaultSecurityService | None = Field(
-        default=None,
-        description="Based on the Security Analyzer tool and Confirmation Policy,"
-        " we conduct a security analysis of the relevant actions.",
-        examples=[{"kind": "DefaultSecurityService"}],
-        frozen=False,
-    )
+    security_service: DefaultSecurityService | None
+    """
+    Based on the Security Analyzer and Confirmation Policy,
+    we conduct a security analysis of the relevant actions.
+    """
 
     @model_validator(mode="before")
     @classmethod
@@ -100,7 +98,8 @@ class Agent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         super().init_state(state, on_event=on_event)
-        # Build the security service based on the state.
+        # Build the security service based on the security analyzer and
+        # confirmation policy.
         self.security_service = DefaultSecurityService(
             state.security_analyzer, state.confirmation_policy
         )
