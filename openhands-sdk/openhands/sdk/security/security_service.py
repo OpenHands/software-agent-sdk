@@ -32,7 +32,8 @@ class SecurityServiceBase(DiscriminatedUnionMixin, ABC):
                  - access_confirm: bool = True (needs user confirmation)
                  / False (no confirmation needed)
                  - security_level: Optional[risk.SecurityRisk] = Security risk
-                 level of the actions (None if no risk)
+                 level of the actions (defaults to the highest risk level among all
+                 actions; None if no risk))
         """
         pass
 
