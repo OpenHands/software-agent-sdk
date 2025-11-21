@@ -189,11 +189,12 @@ def _add_exception_handlers(api: FastAPI) -> None:
     ) -> JSONResponse:
         """Handle unhandled exceptions."""
         # Always log that we're in the exception handler for debugging
-        print("TRACE!!!")
-        logger.exception(
-            "Exception handler called for {request.method} {request.url.path}",
-            exc_info=True,
-            stack_info=True,
+        logger.debug(
+            "Exception handler called for %s %s with %s: %s",
+            request.method,
+            request.url.path,
+            type(exc).__name__,
+            str(exc),
         )
 
         content = {
