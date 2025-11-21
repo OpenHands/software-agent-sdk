@@ -1,28 +1,18 @@
 """
-Agent Delegation Example with Cybersecurity Expert + Default Agent
+Agent Delegation Example: London Travel Planning
 
-This example demonstrates agent delegation where a main agent can spawn specialized
-sub-agents and delegate tasks to them. This simplified example shows:
-- A cybersecurity expert agent for security analysis and vulnerability assessment
-- A default agent for general programming and implementation tasks
-- Collaboration between specialized and general-purpose agents
-
-Each sub-agent runs independently with its own tools, skills, and system prompts,
-then returns its results to the main agent for consolidation.
+This example shows how a main agent can spawn specialized sub-agents and
+delegate focused tasks. It keeps things simple:
+- One lodging expert for London hotel recommendations
+- One activities expert for London itinerary planning
+- No extra tools; each sub-agent uses its Skill for subject-matter focus
 """
 
 import os
 
 from pydantic import SecretStr
 
-from openhands.sdk import (
-    LLM,
-    Agent,
-    AgentContext,
-    Conversation,
-    Tool,
-    get_logger,
-)
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, Tool, get_logger
 from openhands.sdk.context import Skill
 from openhands.sdk.tool import register_tool
 from openhands.tools.delegate import (
@@ -30,7 +20,6 @@ from openhands.tools.delegate import (
     DelegationVisualizer,
     register_agent,
 )
-from openhands.tools.preset.default import get_default_tools
 
 
 logger = get_logger(__name__)
@@ -50,51 +39,72 @@ llm = LLM(
 cwd = os.getcwd()
 
 
-# Register custom sub-agent types (demonstrates user extensibility)
-
-
-def create_security_expert(llm: LLM) -> Agent:
-    """Create a security expert agent with cybersecurity focus."""
-    tools = get_default_tools(enable_browser=False)
-
+def create_lodging_planner(llm: LLM) -> Agent:
+    """Create a lodging planner focused on London stays."""
     skills = [
         Skill(
-            name="security_expertise",
+            name="lodging_planning",
             content=(
-                "You are a cybersecurity expert. You always consider security "
-                "implications, identify potential vulnerabilities, and recommend "
-                "security best practices. You prioritize secure coding practices "
-                "and threat mitigation."
+                "You specialize in finding great places to stay in London. "
+                "Provide 3-4 hotel recommendations with neighborhoods, quick "
+                "pros/cons, "
+                "and notes on transit convenience. Keep options varied by budget."
             ),
             trigger=None,
         )
     ]
-
-    agent_context = AgentContext(
-        skills=skills,
-        system_message_suffix=(
-            "Always prioritize security in your analysis and recommendations."
+    return Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            skills=skills,
+            system_message_suffix="Focus only on London lodging recommendations.",
         ),
     )
 
-    return Agent(llm=llm, tools=tools, agent_context=agent_context)
+
+def create_activities_planner(llm: LLM) -> Agent:
+    """Create an activities planner focused on London itineraries."""
+    skills = [
+        Skill(
+            name="activities_planning",
+            content=(
+                "You design concise London itineraries. Suggest 2-3 daily "
+                "highlights, grouped by proximity to minimize travel time. "
+                "Include food/coffee stops "
+                "and note required tickets/reservations."
+            ),
+            trigger=None,
+        )
+    ]
+    return Agent(
+        llm=llm,
+        tools=[],
+        agent_context=AgentContext(
+            skills=skills,
+            system_message_suffix="Plan practical, time-efficient days in London.",
+        ),
+    )
 
 
-# Note: The default agent is automatically registered by the delegation system
-# Register the cybersecurity expert sub-agent
+# Register user-defined agent types (default agent type is always available)
 register_agent(
-    name="security_expert",
-    factory_func=create_security_expert,
-    description="Expert in security analysis and vulnerability assessment",
+    name="lodging_planner",
+    factory_func=create_lodging_planner,
+    description="Finds London lodging options with transit-friendly picks.",
+)
+register_agent(
+    name="activities_planner",
+    factory_func=create_activities_planner,
+    description="Creates time-efficient London activity itineraries.",
 )
 
+# Make the delegation tool available to the main agent
 register_tool("DelegateTool", DelegateTool)
-tools = get_default_tools(enable_browser=False)
-tools.append(Tool(name="DelegateTool"))
 
 main_agent = Agent(
     llm=llm,
-    tools=tools,
+    tools=[Tool(name="DelegateTool")],
 )
 conversation = Conversation(
     agent=main_agent,
@@ -102,40 +112,21 @@ conversation = Conversation(
     visualizer=DelegationVisualizer(name="Delegator"),
 )
 
-# Task requiring both cybersecurity expert and default agent
 task_message = (
-    "I need to create a secure web application authentication system. "
-    "Please spawn two agents to help: "
-    "1. A security expert to analyze the authentication requirements and "
-    "   identify security vulnerabilities "
-    "2. A default agent to implement the actual authentication code and "
-    "   handle the programming work "
-    "Use the delegation tools to spawn these agents (security_expert and default), "
-    "then delegate appropriate tasks to each. "
-    "The security expert should focus on: password hashing best practices, "
-    "session security, CSRF protection, and authentication flow vulnerabilities. "
-    "The default agent should implement: user registration, login/logout "
-    "functionality, password reset, and secure session management based on "
-    "the security expert's recommendations. "
-    "After getting their results, provide a complete implementation that follows "
-    "security best practices."
+    "Plan a 3-day London trip. "
+    "1) Spawn two sub-agents: lodging_planner (hotel options) and "
+    "activities_planner (itinerary). "
+    "2) Ask lodging_planner for 3-4 central London hotel recommendations with "
+    "neighborhoods, quick pros/cons, and transit notes by budget. "
+    "3) Ask activities_planner for a concise 3-day itinerary with nearby stops, "
+    "   food/coffee suggestions, and any ticket/reservation notes. "
+    "4) Share both sub-agent results and propose a combined plan."
 )
 
 print("=" * 100)
-print("Demonstrating cybersecurity expert + default agent collaboration...")
+print("Demonstrating London trip delegation (lodging + activities)...")
 print("=" * 100)
 
 conversation.send_message(task_message)
-conversation.run()
-
-print("=" * 100)
-print("Testing follow-up interaction with specific sub-agents...")
-print("=" * 100)
-
-conversation.send_message(
-    "Ask the security expert sub-agent about password hashing best practices, "
-    "and have the default agent implement a secure login function based on "
-    "those recommendations."
-)
 conversation.run()
 print("All done!")

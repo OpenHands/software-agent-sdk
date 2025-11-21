@@ -31,13 +31,12 @@ class DelegateAction(Action):
         description="Required parameter of `spawn` command. "
         "List of identifiers to initialize sub-agents with.",
     )
-    agent_types: list[str | None] | None = Field(
+    agent_types: list[str] | None = Field(
         default=None,
         description=(
             "Optional parameter of `spawn` command. "
-            "List of agent types for each ID "
-            "(e.g., ['researcher', 'programmer', 'default']). "
-            "Use 'default' for default agent. Length must match ids if provided."
+            "List of agent types for each ID (e.g., ['researcher', 'programmer']). "
+            "If omitted or blank for an ID, the default general-purpose agent is used."
         ),
     )
     tasks: dict[str, str] | None = Field(
@@ -93,7 +92,7 @@ This tool provides two commands:
 - Examples:
   - Default agents: {{"command": "spawn", "ids": ["research", "implementation"]}}
   - Specialized agents: {{"command": "spawn", "ids": ["research", "code"], "agent_types": ["researcher", "programmer"]}}
-  - Mixed types: {{"command": "spawn", "ids": ["research", "generic"], "agent_types": ["researcher", null]}}
+  - Mixed types: {{"command": "spawn", "ids": ["research", "generic"], "agent_types": ["researcher"]}}  # unspecified entries fall back to the default agent
 
 **delegate**: Send tasks to specific sub-agents and wait for results
 - Use a dictionary mapping sub-agent identifiers to task descriptions
@@ -107,6 +106,7 @@ This tool provides two commands:
 - Identifiers used in delegate must match those used in spawn
 - All operations are blocking and return comprehensive results
 - Sub-agents work in the same workspace as the main agent: {workspace_path}
+- If you omit an agent type for an ID, a default general-purpose agent is used
 """  # noqa
 
         # Initialize the executor without parent conversation

@@ -68,6 +68,22 @@ class DelegateExecutor(ToolExecutor):
                 is_error=True,
             )
 
+    @staticmethod
+    def _format_agent_label(agent_id: str, agent_type: str | None) -> str:
+        """Compose a friendly label for logging and user messages."""
+        type_suffix = f" ({agent_type})" if agent_type else " (default)"
+        return f"{agent_id}{type_suffix}"
+
+    def _resolve_agent_type(self, action: "DelegateAction", index: int) -> str | None:
+        """Get the agent type for a given index, defaulting to the general agent."""
+        if not action.agent_types:
+            return None
+        if index >= len(action.agent_types):
+            return None
+
+        agent_type = action.agent_types[index].strip()
+        return agent_type or None
+
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
         """Spawn sub-agents with optional agent types."""
         if not action.ids:
@@ -79,11 +95,11 @@ class DelegateExecutor(ToolExecutor):
 
         # Validate agent_types if provided
         if action.agent_types is not None:
-            if len(action.agent_types) != len(action.ids):
+            if len(action.agent_types) > len(action.ids):
                 return DelegateObservation.from_text(
                     text=(
                         f"agent_types length ({len(action.agent_types)}) "
-                        f"must match ids length ({len(action.ids)})"
+                        f"cannot exceed ids length ({len(action.ids)})"
                     ),
                     command=action.command,
                     is_error=True,
@@ -106,12 +122,13 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
-            for i, agent_id in enumerate(action.ids):
-                agent_type = "default"
-                if action.agent_types is not None and i < len(action.agent_types):
-                    agent_type = action.agent_types[i] or "default"
+            resolved_agent_types = [
+                self._resolve_agent_type(action, i) for i in range(len(action.ids))
+            ]
 
-                worker_agent = get_agent_factory(agent_type).factory_func(parent_llm)
+            for agent_id, agent_type in zip(action.ids, resolved_agent_types):
+                factory = get_agent_factory(agent_type)
+                worker_agent = factory.factory_func(parent_llm)
 
                 if isinstance(parent_visualizer, DelegationVisualizer):
                     sub_visualizer = DelegationVisualizer(
@@ -131,17 +148,15 @@ class DelegateExecutor(ToolExecutor):
                 self._sub_agents[agent_id] = sub_conversation
 
                 # Log what type of agent was created
-                agent_type_desc = f" ({agent_type})" if agent_type else " (default)"
-                logger.info(f"Spawned sub-agent '{agent_id}'{agent_type_desc}")
+                logger.info(
+                    f"Spawned sub-agent '{self._format_agent_label(agent_id, agent_type)}'"  # noqa: E501
+                )
 
             # Create success message with details
-            agent_details = []
-            for i, agent_id in enumerate(action.ids):
-                agent_type = None
-                if action.agent_types is not None and i < len(action.agent_types):
-                    agent_type = action.agent_types[i]
-                type_desc = f" ({agent_type})" if agent_type else " (default)"
-                agent_details.append(f"{agent_id}{type_desc}")
+            agent_details = [
+                self._format_agent_label(agent_id, agent_type)
+                for agent_id, agent_type in zip(action.ids, resolved_agent_types)
+            ]
 
             message = (
                 f"Successfully spawned {len(action.ids)} sub-agents: "
