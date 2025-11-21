@@ -309,6 +309,8 @@ class LocalConversation(BaseConversation):
                     self.agent.step(self, on_event=self._on_event)
                     iteration += 1
 
+                    print("current iteration is", iteration)
+
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
                     # This allows concurrent user messages to be processed:

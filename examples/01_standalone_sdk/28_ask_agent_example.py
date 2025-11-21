@@ -68,14 +68,19 @@ tools = [
 class MinimalVisualizer(ConversationVisualizerBase):
     """A minimal visualizer that print the raw events as they occur."""
 
+    count = 0
+
     def on_event(self, event: Event) -> None:
         """Handle events for minimal progress visualization."""
-        print(f"\n\n[EVENT] {type(event).__name__}")
+        print(f"\n\n[EVENT {self.count}] {type(event).__name__}")
+        self.count += 1
 
 
 # Agent
 agent = Agent(llm=llm, tools=tools)
-conversation = Conversation(agent=agent, workspace=cwd, visualizer=MinimalVisualizer)
+conversation = Conversation(
+    agent=agent, workspace=cwd, visualizer=MinimalVisualizer, max_iteration_per_run=5
+)
 
 
 def timestamp() -> str:
@@ -99,10 +104,6 @@ time.sleep(2)
 
 # Step 3: Use ask_agent while conversation is running
 print(f"\n[{timestamp()}] Using ask_agent while conversation is processing...")
-
-# Store initial event count to verify state isn't affected
-initial_event_count = len(conversation.state.events)
-print(f"Initial event count: {initial_event_count}")
 
 # Ask context-aware questions
 questions_and_responses = []
@@ -132,15 +133,6 @@ thread.join()
 
 # Step 5: Verify conversation state wasn't affected
 final_event_count = len(conversation.state.events)
-print(f"\n[{timestamp()}] Conversation completed!")
-print(f"Final event count: {final_event_count}")
-print(f"Events added by ask_agent: {final_event_count - initial_event_count}")
-
-if final_event_count == initial_event_count:
-    print("✅ SUCCESS: ask_agent didn't affect conversation state!")
-else:
-    print("⚠️  WARNING: Conversation state may have been affected")
-
 # Step 6: Ask a final question after conversation completion
 print(f"\n[{timestamp()}] Asking final question after completion...")
 final_response = conversation.ask_agent(
@@ -153,9 +145,10 @@ print("\n" + "=" * 60)
 print("SUMMARY OF ASK_AGENT DEMONSTRATION")
 print("=" * 60)
 print(f"Total questions asked: {len(questions_and_responses) + 1}")
-print(f"Conversation events before ask_agent: {initial_event_count}")
 print(f"Conversation events after ask_agent: {final_event_count}")
-state_status = "✅ PASSED" if final_event_count == initial_event_count else "❌ FAILED"
+state_status = (
+    "✅ PASSED" if final_event_count == len(conversation.state.events) else "❌ FAILED"
+)
 print(f"State preservation: {state_status}")
 
 print("\nQuestions and Responses:")
@@ -165,15 +158,3 @@ for i, (question, response) in enumerate(questions_and_responses, 1):
 
 final_truncated = final_response[:100] + ("..." if len(final_response) > 100 else "")
 print(f"\nFinal Question Response: {final_truncated}")
-
-# Report cost
-cost = llm.metrics.accumulated_cost
-print(f"\nEXAMPLE_COST: {cost}")
-
-print("\n" + "=" * 60)
-print("Key Takeaways:")
-print("- ask_agent works concurrently with conversation.run()")
-print("- Responses are context-aware based on conversation history")
-print("- Conversation state and events remain unaffected")
-print("- Simple string-in, string-out interface for quick questions")
-print("=" * 60)
