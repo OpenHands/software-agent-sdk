@@ -339,11 +339,11 @@ class TestSearchEventsEndpoint:
             mock_event_service.search_events.assert_called_once()
             # Verify that the datetime was normalized (converted to datetime object)
             call_args = mock_event_service.search_events.call_args
-            # Check positional arguments: (page_id, limit, kind, sort_order,
+            # Check positional arguments: (page_id, limit, kind, source, sort_order,
             # timestamp__gte, timestamp__lt)
-            assert len(call_args[0]) >= 5  # Should have at least 5 positional args
-            assert call_args[0][4] is not None  # timestamp__gte should be normalized
-            assert call_args[0][5] is None  # timestamp__lt should be None
+            assert len(call_args[0]) >= 6  # Should have at least 6 positional args
+            assert call_args[0][5] is not None  # timestamp__gte should be normalized
+            assert call_args[0][6] is None  # timestamp__lt should be None
         finally:
             # Clean up the dependency override
             client.app.dependency_overrides.clear()
@@ -375,11 +375,11 @@ class TestSearchEventsEndpoint:
             mock_event_service.search_events.assert_called_once()
             # Verify that the datetime was normalized
             call_args = mock_event_service.search_events.call_args
-            # Check positional arguments: (page_id, limit, kind, sort_order,
+            # Check positional arguments: (page_id, limit, kind, source, sort_order,
             # timestamp__gte, timestamp__lt)
-            assert len(call_args[0]) >= 5  # Should have at least 5 positional args
-            assert call_args[0][4] is not None  # timestamp__gte should be normalized
-            assert call_args[0][5] is None  # timestamp__lt should be None
+            assert len(call_args[0]) >= 6  # Should have at least 6 positional args
+            assert call_args[0][5] is not None  # timestamp__gte should be normalized
+            assert call_args[0][6] is None  # timestamp__lt should be None
         finally:
             # Clean up the dependency override
             client.app.dependency_overrides.clear()
@@ -447,10 +447,43 @@ class TestSearchEventsEndpoint:
             mock_event_service.count_events.assert_called_once()
             # Verify that the datetime was normalized
             call_args = mock_event_service.count_events.call_args
-            # Check positional arguments: (kind, timestamp__gte, timestamp__lt)
+            # Check positional arguments: (kind, source, timestamp__gte, timestamp__lt)
+            assert len(call_args[0]) >= 3  # Should have at least 3 positional args
+            assert call_args[0][2] is not None  # timestamp__gte should be normalized
+            assert call_args[0][3] is None  # timestamp__lt should be None
+        finally:
+            # Clean up the dependency override
+            client.app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_count_events_with_source_filter(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        """Test count events with source filter."""
+        # Override the dependency to return our mock
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        try:
+            # Mock the count_events method to return a sample result
+            mock_event_service.count_events = AsyncMock(return_value=3)
+
+            # Test with source filter
+            response = client.get(
+                f"/api/conversations/{sample_conversation_id}/events/count",
+                params={
+                    "source": "environment",
+                },
+            )
+
+            assert response.status_code == 200
+            assert response.json() == 3
+            mock_event_service.count_events.assert_called_once()
+            # Verify that the source parameter was passed correctly
+            call_args = mock_event_service.count_events.call_args
+            # Check positional arguments: (kind, source, timestamp__gte, timestamp__lt)
             assert len(call_args[0]) >= 2  # Should have at least 2 positional args
-            assert call_args[0][1] is not None  # timestamp__gte should be normalized
-            assert call_args[0][2] is None  # timestamp__lt should be None
+            assert call_args[0][0] is None  # kind should be None
+            assert call_args[0][1] == "environment"  # source should be "environment"
         finally:
             # Clean up the dependency override
             client.app.dependency_overrides.clear()
@@ -500,13 +533,89 @@ class TestSearchEventsEndpoint:
             call2_args = mock_event_service.search_events.call_args_list[1]
 
             # Both should normalize to the same server time
-            # Check positional arguments: (page_id, limit, kind, sort_order,
+            # Check positional arguments: (page_id, limit, kind, source, sort_order,
             # timestamp__gte, timestamp__lt)
-            normalized_time1 = call1_args[0][4]  # timestamp__gte from first call
-            normalized_time2 = call2_args[0][4]  # timestamp__gte from second call
+            normalized_time1 = call1_args[0][5]  # timestamp__gte from first call
+            normalized_time2 = call2_args[0][5]  # timestamp__gte from second call
 
             # They should be the same after normalization
             assert normalized_time1 == normalized_time2
+        finally:
+            # Clean up the dependency override
+            client.app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_search_events_with_source_filter(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        """Test search events with source filter."""
+        # Override the dependency to return our mock
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        try:
+            # Mock the search_events method to return a sample result
+            mock_event_service.search_events = AsyncMock(
+                return_value={"items": [], "next_page_id": None}
+            )
+
+            # Test with source filter
+            response = client.get(
+                f"/api/conversations/{sample_conversation_id}/events/search",
+                params={
+                    "source": "agent",
+                    "limit": 10,
+                },
+            )
+
+            assert response.status_code == 200
+            mock_event_service.search_events.assert_called_once()
+            # Verify that the source parameter was passed correctly
+            call_args = mock_event_service.search_events.call_args
+            # Check positional arguments: (page_id, limit, kind, source, sort_order,
+            # timestamp__gte, timestamp__lt)
+            assert len(call_args[0]) >= 4  # Should have at least 4 positional args
+            assert call_args[0][3] == "agent"  # source should be "agent"
+        finally:
+            # Clean up the dependency override
+            client.app.dependency_overrides.clear()
+
+    @pytest.mark.asyncio
+    async def test_search_events_with_multiple_filters(
+        self, client, sample_conversation_id, mock_event_service
+    ):
+        """Test search events with multiple filters including source."""
+        # Override the dependency to return our mock
+        client.app.dependency_overrides[get_event_service] = lambda: mock_event_service
+
+        try:
+            # Mock the search_events method to return a sample result
+            mock_event_service.search_events = AsyncMock(
+                return_value={"items": [], "next_page_id": None}
+            )
+
+            # Test with multiple filters including source
+            response = client.get(
+                f"/api/conversations/{sample_conversation_id}/events/search",
+                params={
+                    "kind": "MessageEvent",
+                    "source": "user",
+                    "timestamp__gte": "2025-01-01T12:00:00Z",
+                    "limit": 20,
+                },
+            )
+
+            assert response.status_code == 200
+            mock_event_service.search_events.assert_called_once()
+            # Verify that all parameters were passed correctly
+            call_args = mock_event_service.search_events.call_args
+            # Check positional arguments: (page_id, limit, kind, source, sort_order,
+            # timestamp__gte, timestamp__lt)
+            assert len(call_args[0]) >= 7  # Should have at least 7 positional args
+            assert call_args[0][1] == 20  # limit
+            assert call_args[0][2] == "MessageEvent"  # kind
+            assert call_args[0][3] == "user"  # source
+            assert call_args[0][5] is not None  # timestamp__gte should be normalized
+            assert call_args[0][6] is None  # timestamp__lt should be None
         finally:
             # Clean up the dependency override
             client.app.dependency_overrides.clear()

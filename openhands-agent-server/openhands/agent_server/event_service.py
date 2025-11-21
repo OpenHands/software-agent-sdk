@@ -86,6 +86,7 @@ class EventService:
         page_id: str | None = None,
         limit: int = 100,
         kind: str | None = None,
+        source: str | None = None,
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
@@ -107,6 +108,10 @@ class EventService:
                     and f"{event.__class__.__module__}.{event.__class__.__name__}"
                     != kind
                 ):
+                    continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
                     continue
 
                 # Apply timestamp filters if provided (ISO string comparison)
@@ -152,6 +157,7 @@ class EventService:
     async def count_events(
         self,
         kind: str | None = None,
+        source: str | None = None,
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
@@ -172,6 +178,10 @@ class EventService:
                     and f"{event.__class__.__module__}.{event.__class__.__name__}"
                     != kind
                 ):
+                    continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
                     continue
 
                 # Apply timestamp filters if provided (ISO string comparison)
