@@ -42,13 +42,13 @@ def _check_chromium_available() -> str | None:
         ("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
         ("LOCALAPPDATA", ""),
     ]
-    browsers = [
+    windows_browsers = [
         ("Google", "Chrome", "Application", "chrome.exe"),
         ("Microsoft", "Edge", "Application", "msedge.exe"),
     ]
 
     for env_var, default in env_vars:
-        for vendor, browser, app_dir, executable in browsers:
+        for vendor, browser, app_dir, executable in windows_browsers:
             base_path = Path(os.environ.get(env_var, default))
             if base_path:
                 windows_chrome_paths.append(
