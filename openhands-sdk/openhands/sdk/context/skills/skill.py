@@ -37,7 +37,16 @@ class Skill(BaseModel):
 
     name: str
     content: str
-    trigger: TriggerType | None
+    trigger: TriggerType | None = Field(
+        default=None,
+        description=(
+            "Skills use triggers to determine when they should be activated. "
+            "None implies skill is always active. "
+            "Other implementations include KeywordTrigger (activated by a "
+            "keyword in a Message) and TaskTrigger (activated by specific tasks "
+            "and may require user input)"
+        ),
+    )
     source: str | None = Field(
         default=None,
         description=(
