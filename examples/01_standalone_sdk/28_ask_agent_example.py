@@ -36,6 +36,8 @@ from openhands.sdk import (
     Agent,
     Conversation,
 )
+from openhands.sdk.conversation import ConversationVisualizerBase
+from openhands.sdk.event import Event
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
@@ -62,9 +64,18 @@ tools = [
     Tool(name=TaskTrackerTool.name),
 ]
 
+
+class MinimalVisualizer(ConversationVisualizerBase):
+    """A minimal visualizer that print the raw events as they occur."""
+
+    def on_event(self, event: Event) -> None:
+        """Handle events for minimal progress visualization."""
+        print(f"\n\n[EVENT] {type(event).__name__}")
+
+
 # Agent
 agent = Agent(llm=llm, tools=tools)
-conversation = Conversation(agent=agent, workspace=cwd)
+conversation = Conversation(agent=agent, workspace=cwd, visualizer=MinimalVisualizer)
 
 
 def timestamp() -> str:

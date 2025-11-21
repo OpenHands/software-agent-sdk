@@ -24,6 +24,7 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -462,35 +463,34 @@ class LocalConversation(BaseConversation):
             is executing in another thread. It does not affect the conversation
             state, events, or execution status.
         """
+
         # Get the agent's current view of the conversation context
         view = View.from_events(self.state.events)
-        visible_events = view.events
-
-        # Build the context-aware question
-        if visible_events:
-            context_text = "\n".join(str(visible_events))
-            full_question = (
-                f"Based on the current conversation context:\n\n{context_text}\n\n"
-                f"Question: {question}"
-            )
-        else:
-            full_question = question
+        visible_events: list = view.events
+        visible_events = LLMConvertibleEvent.events_to_messages(visible_events)
 
         # Create a user message with the context-aware question
-        user_message = Message(role="user", content=[TextContent(text=full_question)])
-
+        user_message = Message(
+            role="user",
+            content=[TextContent(text=f"Answer the following question: {question}")],
+        )
+        visible_events.append(user_message)
         # Use the agent's LLM to get a direct completion
         # This bypasses the conversation state and agent step cycle
         try:
             question_llm = self.llm_registry.get("ask-agent-llm")
         except KeyError:
             question_llm = self.agent.llm.model_copy(
-                update={"usage_id": "ask-agent-llm"}, deep=True
+                update={
+                    "usage_id": "ask-agent-llm",
+                    # One off responses take longer with caching
+                    "caching_prompt": False,
+                },
+                deep=True,
             )
             self.llm_registry.add(question_llm)
 
-        response = question_llm.completion([user_message])
-
+        response = question_llm.completion(visible_events)
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
             # Look for the first TextContent in the response
