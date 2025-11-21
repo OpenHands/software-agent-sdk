@@ -69,20 +69,16 @@ class DelegateExecutor(ToolExecutor):
             )
 
     @staticmethod
-    def _format_agent_label(agent_id: str, agent_type: str | None) -> str:
+    def _format_agent_label(agent_id: str, agent_type: str) -> str:
         """Compose a friendly label for logging and user messages."""
-        type_suffix = f" ({agent_type})" if agent_type else " (default)"
+        type_suffix = " (default)" if agent_type == "default" else f" ({agent_type})"
         return f"{agent_id}{type_suffix}"
 
-    def _resolve_agent_type(self, action: "DelegateAction", index: int) -> str | None:
+    def _resolve_agent_type(self, action: "DelegateAction", index: int) -> str:
         """Get the agent type for a given index, defaulting to the general agent."""
-        if not action.agent_types:
-            return None
-        if index >= len(action.agent_types):
-            return None
-
-        agent_type = action.agent_types[index].strip()
-        return agent_type or None
+        if not action.agent_types or index >= len(action.agent_types):
+            return "default"
+        return action.agent_types[index].strip() or "default"
 
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
         """Spawn sub-agents with optional agent types."""

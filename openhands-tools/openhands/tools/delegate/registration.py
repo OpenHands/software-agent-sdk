@@ -45,13 +45,8 @@ _agent_factories: dict[str, AgentFactory] = {}
 _registry_lock = RLock()
 
 
-def create_default_agent(llm: LLM) -> Agent:
-    """Create a default general-purpose agent."""
-    return get_default_agent(llm)
-
-
 _DEFAULT_FACTORY = AgentFactory(
-    factory_func=create_default_agent,
+    factory_func=get_default_agent,
     description="Default general-purpose agent",
 )
 
