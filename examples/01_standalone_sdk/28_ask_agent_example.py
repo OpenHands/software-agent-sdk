@@ -144,12 +144,6 @@ print(f"Final response: {final_response}")
 print("\n" + "=" * 60)
 print("SUMMARY OF ASK_AGENT DEMONSTRATION")
 print("=" * 60)
-print(f"Total questions asked: {len(questions_and_responses) + 1}")
-print(f"Conversation events after ask_agent: {final_event_count}")
-state_status = (
-    "✅ PASSED" if final_event_count == len(conversation.state.events) else "❌ FAILED"
-)
-print(f"State preservation: {state_status}")
 
 print("\nQuestions and Responses:")
 for i, (question, response) in enumerate(questions_and_responses, 1):
