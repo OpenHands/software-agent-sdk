@@ -1,5 +1,6 @@
 import time
 from importlib.metadata import version
+from logging import getLogger
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -41,3 +42,11 @@ async def get_server_info() -> ServerInfo:
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
     )
+
+
+@server_details_router.get("/test_logging")
+async def test_logging(msg: str, level: int) -> str:
+    logger = getLogger(__name__)
+    print(f"PRINT_IT:{level}:{msg}")
+    logger.log(level, msg)
+    return msg
