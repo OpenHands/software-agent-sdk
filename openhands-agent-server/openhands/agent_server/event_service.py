@@ -236,10 +236,13 @@ class EventService:
         """Helper to safely emit events from non-async contexts (e.g., callbacks).
 
         This schedules event emission in the main event loop, making it safe to call
-        from callbacks that may run in different threads.
+        from callbacks that may run in different threads. Events are emitted through
+        the conversation's normal event flow to ensure they are persisted.
         """
-        if self._main_loop and self._main_loop.is_running():
-            asyncio.run_coroutine_threadsafe(self._pub_sub(event), self._main_loop)
+        if self._main_loop and self._main_loop.is_running() and self._conversation:
+            # Run the synchronous _on_event callback in an executor to ensure
+            # the event is both persisted and sent to WebSocket subscribers
+            self._main_loop.run_in_executor(None, self._conversation._on_event, event)
 
     def _setup_llm_log_streaming(self, agent: Agent) -> None:
         """Configure LLM log callbacks to stream logs via events."""
