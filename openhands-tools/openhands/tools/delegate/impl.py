@@ -8,8 +8,8 @@ from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
+from openhands.tools.delegate.registration import get_agent_factory
 from openhands.tools.delegate.visualizer import DelegationVisualizer
-from openhands.tools.preset.default import get_default_agent
 
 
 if TYPE_CHECKING:
@@ -69,21 +69,25 @@ class DelegateExecutor(ToolExecutor):
             )
 
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
-        """Spawn sub-agents with user-friendly identifiers.
-
-        Args:
-            action: DelegateAction with command="spawn" containing list of string
-                   identifiers (e.g., ['lodging', 'activities'])
-
-        Returns:
-            DelegateObservation indicating success/failure and which agents were spawned
-        """
+        """Spawn sub-agents with optional agent types."""
         if not action.ids:
             return DelegateObservation.from_text(
                 text="At least one ID is required for spawn action",
                 command=action.command,
                 is_error=True,
             )
+
+        # Validate agent_types if provided
+        if action.agent_types is not None:
+            if len(action.agent_types) != len(action.ids):
+                return DelegateObservation.from_text(
+                    text=(
+                        f"agent_types length ({len(action.agent_types)}) "
+                        f"must match ids length ({len(action.ids)})"
+                    ),
+                    command=action.command,
+                    is_error=True,
+                )
 
         if len(self._sub_agents) + len(action.ids) > self._max_children:
             return DelegateObservation.from_text(
@@ -100,19 +104,15 @@ class DelegateExecutor(ToolExecutor):
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
             parent_visualizer = parent_conversation._visualizer
-
             workspace_path = parent_conversation.state.workspace.working_dir
 
-            for agent_id in action.ids:
-                # Create a sub-agent with the specified ID
-                worker_agent = get_default_agent(
-                    llm=parent_llm.model_copy(
-                        update={"service_id": f"sub_agent_{agent_id}"}
-                    ),
-                )
+            for i, agent_id in enumerate(action.ids):
+                agent_type = "default"
+                if action.agent_types is not None and i < len(action.agent_types):
+                    agent_type = action.agent_types[i] or "default"
 
-                # If parent uses DelegationVisualizer, create sub-agent visualizer
-                # Pass raw agent_id - visualizer handles formatting
+                worker_agent = get_agent_factory(agent_type).factory_func(parent_llm)
+
                 if isinstance(parent_visualizer, DelegationVisualizer):
                     sub_visualizer = DelegationVisualizer(
                         name=agent_id,
@@ -120,7 +120,6 @@ class DelegateExecutor(ToolExecutor):
                         skip_user_messages=parent_visualizer._skip_user_messages,
                     )
                 else:
-                    # No visualizer for sub-agents if parent doesn't use one
                     sub_visualizer = None
 
                 sub_conversation = LocalConversation(
@@ -130,10 +129,24 @@ class DelegateExecutor(ToolExecutor):
                 )
 
                 self._sub_agents[agent_id] = sub_conversation
-                logger.info(f"Spawned sub-agent with ID: {agent_id}")
 
-            agent_list = ", ".join(action.ids)
-            message = f"Successfully spawned {len(action.ids)} sub-agents: {agent_list}"
+                # Log what type of agent was created
+                agent_type_desc = f" ({agent_type})" if agent_type else " (default)"
+                logger.info(f"Spawned sub-agent '{agent_id}'{agent_type_desc}")
+
+            # Create success message with details
+            agent_details = []
+            for i, agent_id in enumerate(action.ids):
+                agent_type = None
+                if action.agent_types is not None and i < len(action.agent_types):
+                    agent_type = action.agent_types[i]
+                type_desc = f" ({agent_type})" if agent_type else " (default)"
+                agent_details.append(f"{agent_id}{type_desc}")
+
+            message = (
+                f"Successfully spawned {len(action.ids)} sub-agents: "
+                f"{', '.join(agent_details)}"
+            )
             return DelegateObservation.from_text(
                 text=message,
                 command=action.command,
