@@ -71,7 +71,7 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
-    security_service: DefaultSecurityService | None
+    security_service: DefaultSecurityService | None = None
     """
     Based on the Security Analyzer and Confirmation Policy,
     we conduct a security analysis of the relevant actions.
