@@ -54,8 +54,8 @@ tools = [
 #   agent = Agent(
 #       llm=llm,
 #       tools=tools,
-#       system_prompt_filename="/path/to/custom_prompt.j2",  # absolute or relative path
-#       system_prompt_kwargs={"cli_mode": True, "repo": "my-project"},  # template variables
+#       system_prompt_filename="/path/to/custom_prompt.j2",
+#       system_prompt_kwargs={"cli_mode": True, "repo": "my-project"},
 #   )
 #
 # See: https://docs.openhands.dev/sdk/guides/skill#customizing-system-prompts
