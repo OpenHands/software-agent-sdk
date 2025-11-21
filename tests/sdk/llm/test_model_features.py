@@ -246,7 +246,7 @@ def test_force_string_serializer_full_model_names():
 
 
 @pytest.mark.parametrize(
-    "model,expected",
+    "model,expected_retention",
     [
         ("gpt-5.1", True),
         ("openai/gpt-5.1-codex-mini", True),
