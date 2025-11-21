@@ -271,10 +271,7 @@ class Agent(AgentBase):
                 isinstance(c, TextContent) and c.text.strip() for c in message.content
             )
 
-            if has_reasoning:
-                logger.info(
-                    "LLM produced reasoning without tool calls - continuing agent loop"
-                )
+            if has_reasoning or has_content:
                 msg_event = MessageEvent(
                     source="agent",
                     llm_message=message,
@@ -282,15 +279,6 @@ class Agent(AgentBase):
                 )
                 on_event(msg_event)
                 # Don't set FINISHED - let the loop continue
-            elif has_content:
-                logger.info("LLM produced a message response - awaits user input")
-                state.execution_status = ConversationExecutionStatus.FINISHED
-                msg_event = MessageEvent(
-                    source="agent",
-                    llm_message=message,
-                    llm_response_id=llm_response.id,
-                )
-                on_event(msg_event)
             else:
                 # No tool calls, no reasoning, no content - this is unusual
                 logger.warning("LLM produced empty response - continuing agent loop")
