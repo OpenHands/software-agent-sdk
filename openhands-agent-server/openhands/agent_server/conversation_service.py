@@ -402,8 +402,8 @@ class ConversationService:
             ]
         )
 
-        event_services[stored.id] = event_service
         await event_service.start()
+        event_services[stored.id] = event_service
         return event_service
 
 
