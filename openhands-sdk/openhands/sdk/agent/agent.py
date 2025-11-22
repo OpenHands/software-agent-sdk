@@ -256,7 +256,7 @@ class Agent(AgentBase):
                 self._execute_actions(conversation, action_events, on_event)
 
         else:
-            logger.info("LLM produced a message response - awaits user input")
+            logger.debug("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
             msg_event = MessageEvent(
                 source="agent",

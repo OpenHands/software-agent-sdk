@@ -28,7 +28,7 @@ from openhands.tools.terminal.constants import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
-class ExecuteBashAction(Action):
+class TerminalAction(Action):
     """Schema for bash command execution."""
 
     command: str = Field(
@@ -78,7 +78,7 @@ class ExecuteBashAction(Action):
         return content
 
 
-class ExecuteBashObservation(Observation):
+class TerminalObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
     command: str | None = Field(
@@ -109,7 +109,7 @@ class ExecuteBashObservation(Observation):
         if self.is_error:
             llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
 
-        # ExecuteBashObservation always has content as a single TextContent
+        # TerminalObservation always has content as a single TextContent
         content_text = self.text
 
         ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
@@ -132,7 +132,7 @@ class ExecuteBashObservation(Observation):
             text.append("❌ ", style="red bold")
             text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
-        # ExecuteBashObservation always has content as a single TextContent
+        # TerminalObservation always has content as a single TextContent
         content_text = self.text
 
         if content_text:
@@ -219,8 +219,8 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
-    """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
+class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
+    """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
 
     @classmethod
     def create(
@@ -229,6 +229,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
         username: str | None = None,
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
+        shell_path: str | None = None,
         executor: ToolExecutor | None = None,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
@@ -244,9 +245,11 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                          If None, auto-detect based on system capabilities:
                          - On Windows: PowerShell if available, otherwise subprocess
                          - On Unix-like: tmux if available, otherwise subprocess
+            shell_path: Path to the shell binary (for subprocess terminal type only).
+                       If None, will auto-detect bash from PATH.
         """
         # Import here to avoid circular imports
-        from openhands.tools.terminal.impl import BashExecutor
+        from openhands.tools.terminal.impl import TerminalExecutor
 
         working_dir = conv_state.workspace.working_dir
         if not os.path.isdir(working_dir):
@@ -254,18 +257,19 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
         # Initialize the executor
         if executor is None:
-            executor = BashExecutor(
+            executor = TerminalExecutor(
                 working_dir=working_dir,
                 username=username,
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
+                shell_path=shell_path,
             )
 
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                action_type=ExecuteBashAction,
-                observation_type=ExecuteBashObservation,
+                action_type=TerminalAction,
+                observation_type=TerminalObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
                     title="terminal",
@@ -281,3 +285,50 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
 # Automatically register the tool when this module is imported
 register_tool(TerminalTool.name, TerminalTool)
+
+
+# Deprecated aliases for backward compatibility
+class ExecuteBashAction(TerminalAction):
+    """Deprecated: Use TerminalAction instead.
+
+    This class is deprecated and will be removed in version 1.5.0.
+    Please use TerminalAction instead.
+    """
+
+    def __init__(self, **data):  # type: ignore[no-untyped-def]
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "ExecuteBashAction",
+            deprecated_in="1.2.0",
+            removed_in="1.5.0",
+            details=(
+                "Use TerminalAction instead. ExecuteBashAction is an "
+                "alias for TerminalAction and will be removed in version 1.5.0."
+            ),
+            stacklevel=3,
+        )
+        super().__init__(**data)
+
+
+class ExecuteBashObservation(TerminalObservation):
+    """Deprecated: Use TerminalObservation instead.
+
+    This class is deprecated and will be removed in version 1.5.0.
+    Please use TerminalObservation instead.
+    """
+
+    def __init__(self, **data):  # type: ignore[no-untyped-def]
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "ExecuteBashObservation",
+            deprecated_in="1.2.0",
+            removed_in="1.5.0",
+            details=(
+                "Use TerminalObservation instead. ExecuteBashObservation is an "
+                "alias for TerminalObservation and will be removed in version 1.5.0."
+            ),
+            stacklevel=3,
+        )
+        super().__init__(**data)
