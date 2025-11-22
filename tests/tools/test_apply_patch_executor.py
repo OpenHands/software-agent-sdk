@@ -62,3 +62,69 @@ def test_reject_absolute_path(tmp_ws: Path):
     obs = run_exec(tmp_ws, patch)
     assert obs.is_error
     assert "Absolute or escaping paths" in obs.text
+
+
+def test_multi_hunk_invalid_context_error(tmp_ws: Path):
+    fp = tmp_ws / "multi.txt"
+    fp.write_text("line1\nline2\nline3\nline4\n")
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: multi.txt\n"
+        "@@\n"
+        " line1\n"
+        "-line2\n"
+        "+line2a\n"
+        " line3\n"
+        "@@\n"
+        " line3\n"
+        "+line3a\n"
+        " line4\n"
+        "*** End Patch"
+    )
+
+    obs = run_exec(tmp_ws, patch)
+    assert obs.is_error
+    assert "Invalid Context" in obs.text
+
+
+def test_fuzz_matching_trailing_spaces(tmp_ws: Path):
+    fp = tmp_ws / "fuzz.txt"
+    fp.write_text("a\ncontext line   \nend\n")
+
+    patch = (
+        "*** Begin Patch\n"
+        "*** Update File: fuzz.txt\n"
+        "@@\n"
+        " context line\n"
+        "-end\n"
+        "+END\n"
+        "*** End Patch"
+    )
+
+    obs = run_exec(tmp_ws, patch)
+    assert not obs.is_error
+    # fuzz should be > 0 because whitespace-stripped context is used
+    assert obs.fuzz > 0
+    assert fp.read_text() == "a\ncontext line   \nEND\n"
+
+
+def test_duplicate_add_file_error(tmp_ws: Path):
+    patch = (
+        "*** Begin Patch\n"
+        "*** Add File: dup.txt\n"
+        "+one\n"
+        "*** Add File: dup.txt\n"
+        "+two\n"
+        "*** End Patch"
+    )
+    obs = run_exec(tmp_ws, patch)
+    assert obs.is_error
+    assert "Add File Error: Duplicate Path" in obs.text
+
+
+def test_path_escape_with_parent_directory(tmp_ws: Path):
+    patch = "*** Begin Patch\n*** Add File: ../escape.txt\n+x\n*** End Patch"
+    obs = run_exec(tmp_ws, patch)
+    assert obs.is_error
+    assert "Absolute or escaping paths" in obs.text
