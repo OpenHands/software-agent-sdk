@@ -1265,3 +1265,117 @@ def test_security_analyzer_endpoint_with_malformed_analyzer_data(
     assert response.status_code == 422
     response_data = response.json()
     assert "detail" in response_data
+
+
+def test_update_conversation_secrets_string_conversion(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test update_conversation_secrets endpoint with plain string secrets.
+
+    This test verifies that plain string secrets are automatically converted
+    to StaticSecret objects on the server side.
+    """
+
+    # Mock the service responses
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.update_secrets.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        # Send plain string secrets (this should work with the new validator)
+        request_data = {
+            "secrets": {
+                "API_KEY": "plain-secret-value",
+                "TOKEN": "plain-token-value",
+            }
+        }
+
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/secrets", json=request_data
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+        # Verify services were called
+        mock_conversation_service.get_event_service.assert_called_once_with(
+            sample_conversation_id
+        )
+        mock_event_service.update_secrets.assert_called_once()
+
+        # Verify that the secrets were converted to proper SecretSource objects
+        call_args = mock_event_service.update_secrets.call_args[0][0]
+        assert "API_KEY" in call_args
+        assert "TOKEN" in call_args
+
+        # The values should be SecretSource objects, not plain strings
+        from openhands.sdk.conversation.secret_source import StaticSecret
+
+        assert isinstance(call_args["API_KEY"], StaticSecret)
+        assert isinstance(call_args["TOKEN"], StaticSecret)
+
+        # Verify the actual secret values
+        assert call_args["API_KEY"].get_value() == "plain-secret-value"
+        assert call_args["TOKEN"].get_value() == "plain-token-value"
+
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_update_conversation_secrets_mixed_formats(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test update_conversation_secrets endpoint with mixed secret formats.
+
+    This test verifies that the server can handle a mix of plain strings
+    and properly formatted SecretSource objects.
+    """
+
+    # Mock the service responses
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.update_secrets.return_value = None
+
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        # Mix of plain strings and proper SecretSource objects
+        request_data = {
+            "secrets": {
+                "PLAIN_SECRET": "plain-value",
+                "STATIC_SECRET": {"kind": "StaticSecret", "value": "static-value"},
+                "LOOKUP_SECRET": {
+                    "kind": "LookupSecret",
+                    "url": "https://example.com/secret",
+                },
+            }
+        }
+
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/secrets", json=request_data
+        )
+
+        assert response.status_code == 200
+        data = response.json()
+        assert data["success"] is True
+
+        # Verify services were called
+        mock_conversation_service.get_event_service.assert_called_once_with(
+            sample_conversation_id
+        )
+        mock_event_service.update_secrets.assert_called_once()
+
+        # Verify that all secrets were processed correctly
+        call_args = mock_event_service.update_secrets.call_args[0][0]
+        assert len(call_args) == 3
+        assert "PLAIN_SECRET" in call_args
+        assert "STATIC_SECRET" in call_args
+        assert "LOOKUP_SECRET" in call_args
+
+    finally:
+        client.app.dependency_overrides.clear()

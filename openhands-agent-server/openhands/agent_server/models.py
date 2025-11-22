@@ -1,10 +1,10 @@
 from abc import ABC
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
@@ -158,6 +158,40 @@ class UpdateSecretsRequest(BaseModel):
     secrets: dict[str, SecretSource] = Field(
         description="Dictionary mapping secret keys to values"
     )
+
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def convert_string_secrets(cls, v: Any) -> dict[str, Any]:
+        """Convert plain string secrets to StaticSecret objects.
+
+        This allows clients to send either:
+        - Plain strings: {"API_KEY": "secret-value"}
+        - SecretSource objects: {"API_KEY": {"kind": "StaticSecret", "value": "..."}}
+        """
+        if not isinstance(v, dict):
+            return v
+
+        result = {}
+        for key, value in v.items():
+            if isinstance(value, str):
+                # Convert plain string to StaticSecret dict format
+                result[key] = {"kind": "StaticSecret", "value": value}
+            elif isinstance(value, dict) and "kind" not in value:
+                # Handle case where client sends {"value": "secret"} without kind
+                if "value" in value:
+                    result[key] = {
+                        "kind": "StaticSecret",
+                        "value": value["value"],
+                        "description": value.get("description"),
+                    }
+                else:
+                    # Invalid dict format - add a default kind to prevent KeyError
+                    # This will still fail validation later with a better error message
+                    result[key] = {"kind": "StaticSecret", **value}
+            else:
+                # Already a SecretSource object or proper dict format
+                result[key] = value
+        return result
 
 
 class SetConfirmationPolicyRequest(BaseModel):
