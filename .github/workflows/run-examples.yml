@@ -25,6 +25,7 @@ jobs:
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
+              if: github.event_name == 'pull_request'
               uses: lewagon/wait-on-check-action@v1.4.1
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
