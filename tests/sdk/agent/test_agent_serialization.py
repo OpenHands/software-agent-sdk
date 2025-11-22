@@ -131,6 +131,98 @@ def test_agent_supports_nested_polymorphic_json_serialization() -> None:
     assert deserialized_container.agents[1].model_dump() == agent2.model_dump()
 
 
+def test_agent_system_message_selects_gpt5_prompt_when_available(tmp_path, monkeypatch):
+    """AgentBase.system_message should switch to system_prompt-gpt.j2 for GPT-5.
+
+    The switch only occurs when:
+    - system_prompt_filename is left as the default "system_prompt.j2"; and
+    - the LLM model is GPT-5 family; and
+    - a sibling system_prompt-gpt.j2 file exists in the prompts dir.
+    """
+
+    from openhands.sdk.agent import Agent
+
+    # Create a temp prompts directory with both default and GPT-5 templates
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    default_template = prompts_dir / "system_prompt.j2"
+    gpt5_template = prompts_dir / "system_prompt-gpt.j2"
+
+    default_template.write_text("DEFAULT_PROMPT", encoding="utf-8")
+    gpt5_template.write_text("GPT5_PROMPT", encoding="utf-8")
+
+    # Monkeypatch Agent.prompt_dir to point at our temp prompts_dir.
+    # We avoid subclassing Agent here, since AgentBase discriminated unions
+    # require globally unique "kind" values per concrete subclass.
+    def _prompt_dir(self) -> str:  # type: ignore[override]
+        return str(prompts_dir)
+
+    monkeypatch.setattr(Agent, "prompt_dir", property(_prompt_dir))
+
+    llm = LLM(model="gpt-5-mini", usage_id="test-gpt5-agent")
+    agent = Agent(llm=llm, tools=[])
+
+    # With GPT-5 model and both templates present, we should pick GPT5_PROMPT
+    assert agent.system_message == "GPT5_PROMPT"
+
+
+def test_agent_system_message_uses_default_prompt_when_not_gpt5(tmp_path, monkeypatch):
+    """Non-GPT-5 models should continue to use the default system prompt."""
+
+    from openhands.sdk.agent import Agent
+
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    default_template = prompts_dir / "system_prompt.j2"
+    gpt5_template = prompts_dir / "system_prompt-gpt.j2"
+
+    default_template.write_text("DEFAULT_PROMPT", encoding="utf-8")
+    gpt5_template.write_text("GPT5_PROMPT", encoding="utf-8")
+
+    def _prompt_dir(self) -> str:  # type: ignore[override]
+        return str(prompts_dir)
+
+    monkeypatch.setattr(Agent, "prompt_dir", property(_prompt_dir))
+
+    llm = LLM(model="gpt-4o", usage_id="test-gpt4-agent")
+    agent = Agent(llm=llm, tools=[])
+
+    # Non-GPT-5 model should still render from system_prompt.j2
+    assert agent.system_message == "DEFAULT_PROMPT"
+
+
+def test_agent_system_message_uses_configured_prompt_filename_even_for_gpt5(
+    tmp_path, monkeypatch
+):
+    """If system_prompt_filename is overridden, GPT-5 should not auto-switch."""
+
+    from openhands.sdk.agent import Agent
+
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    custom_template = prompts_dir / "custom_prompt.j2"
+    gpt5_template = prompts_dir / "system_prompt-gpt.j2"
+
+    custom_template.write_text("CUSTOM_PROMPT", encoding="utf-8")
+    gpt5_template.write_text("GPT5_PROMPT", encoding="utf-8")
+
+    def _prompt_dir(self) -> str:  # type: ignore[override]
+        return str(prompts_dir)
+
+    monkeypatch.setattr(Agent, "prompt_dir", property(_prompt_dir))
+
+    llm = LLM(model="gpt-5-mini", usage_id="test-gpt5-custom-prompt")
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt_filename="custom_prompt.j2",
+    )
+
+    # Because system_prompt_filename was overridden, we should respect it and not
+    # auto-swap to the GPT-5 template.
+    assert agent.system_message == "CUSTOM_PROMPT"
+
+
 def test_agent_model_validate_json_dict() -> None:
     """Test that Agent.model_validate works with dict from JSON."""
     # Create agent
