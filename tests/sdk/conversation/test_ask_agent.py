@@ -74,15 +74,18 @@ def test_local_conversation_ask_agent(mock_completion):
 
         assert result == "This is the agent's response"
 
-        # Verify the LLM was called with the correct message
+        # Verify the LLM was called with the correct messages
         mock_completion.assert_called_once()
         call_args = mock_completion.call_args[0][0]
-        assert len(call_args) == 1
-        assert call_args[0].role == "user"
-        # The message should include context (system prompt) and the question
-        message_text = call_args[0].content[0].text
-        assert "Based on the current conversation context:" in message_text
-        assert "Question: What is 2+2?" in message_text
+        # Should include system message and user question
+        assert len(call_args) >= 2
+        # Last message should be the user question
+        user_message = call_args[-1]
+        assert user_message.role == "user"
+        assert (
+            "Answer the following question: What is 2+2?"
+            in user_message.content[0].text
+        )
 
 
 @patch("openhands.sdk.llm.llm.LLM.completion")
@@ -227,15 +230,51 @@ def test_ask_agent_includes_context(mock_completion):
 
         assert result == "Context-aware response"
 
-        # Verify the LLM was called with context-aware message
+        # Verify the LLM was called with context-aware messages
         mock_completion.assert_called()
         call_args = mock_completion.call_args[0][0]
-        assert len(call_args) == 1
-        assert call_args[0].role == "user"
+        # Should include system message, previous user message, and current question
+        assert len(call_args) >= 3
+        # Last message should be the current question
+        user_message = call_args[-1]
+        assert user_message.role == "user"
+        assert (
+            "Answer the following question: What was my original question?"
+            in user_message.content[0].text
+        )
 
-        # The message should include context
-        message_text = call_args[0].content[0].text
-        assert "Based on the current conversation context:" in message_text
-        assert "Question: What was my original question?" in message_text
-        # Should include the user message we sent
-        assert "Hello, I need help with Python" in message_text
+        # Should include the previous user message in the context
+        previous_messages = [msg for msg in call_args if msg.role == "user"]
+        assert len(previous_messages) >= 2
+        # Find the original message
+        original_message_found = any(
+            "Hello, I need help with Python" in msg.content[0].text
+            for msg in previous_messages[:-1]  # Exclude the current question
+        )
+        assert original_message_found
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_disables_tool_calling(mock_completion):
+    """Test that ask_agent disables native tool calling to avoid LiteLLM errors."""
+    agent = create_test_agent()
+
+    # Mock the LLM completion response
+    mock_response = create_mock_llm_response("Agent response without tools")
+    mock_completion.return_value = mock_response
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
+
+        result = conv.ask_agent("Simple question")
+
+        assert result == "Agent response without tools"
+
+        # Verify the LLM was called
+        mock_completion.assert_called_once()
+
+        # Verify that the ask-agent-llm was created with native_tool_calling=False
+        ask_agent_llm = conv.llm_registry.get("ask-agent-llm")
+        assert ask_agent_llm.native_tool_calling is False
+        assert ask_agent_llm.usage_id == "ask-agent-llm"
+        assert ask_agent_llm.caching_prompt is False
