@@ -471,12 +471,6 @@ class LocalConversation(BaseConversation):
         visible_events: list = view.events
         visible_events = LLMConvertibleEvent.events_to_messages(visible_events)
 
-        # Strip tool calls from messages to prevent tool calling issues
-        for message in visible_events:
-            if hasattr(message, "tool_calls") and message.tool_calls:
-                # Create a new message without tool calls, preserving other content
-                message.tool_calls = None
-
         # Create a user message with the context-aware question
         user_message = Message(
             role="user",
@@ -502,7 +496,11 @@ class LocalConversation(BaseConversation):
             )
             self.llm_registry.add(question_llm)
 
-        response = question_llm.completion(visible_events, tools=[])
+        # Pass agent tools so LLM can understand tool_calls in conversation history,
+        # but native_tool_calling=False prevents new tool calls
+        response = question_llm.completion(
+            visible_events, tools=list(self.agent.tools_map.values())
+        )
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
             # Look for the first TextContent in the response
