@@ -45,6 +45,12 @@ def select_chat_options(
             if llm.reasoning_effort in {None, "none"}:
                 out["reasoning_effort"] = "low"
 
+    # Models that don't support both temperature and top_p
+    if get_features(llm.model).temperature_top_p_incompatible:
+        # Remove both temperature and top_p for these models
+        out.pop("temperature", None)
+        out.pop("top_p", None)
+
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:
         if llm.extended_thinking_budget:
