@@ -489,12 +489,14 @@ class LocalConversation(BaseConversation):
                     "caching_prompt": False,
                     # Disable native tool calling for simple completions
                     "native_tool_calling": False,
+                    # Ensure LiteLLM can modify params to avoid tool calling issues
+                    "modify_params": True,
                 },
                 deep=True,
             )
             self.llm_registry.add(question_llm)
 
-        response = question_llm.completion(visible_events)
+        response = question_llm.completion(visible_events, tools=None)
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
             # Look for the first TextContent in the response
