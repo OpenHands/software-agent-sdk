@@ -32,6 +32,11 @@ on:
                 description: Reason for manual trigger
                 required: false
                 default: ''
+            override_pat_token:
+                description: Optional PAT to override the default dispatch token (workflow_dispatch only)
+                required: false
+                default: ''
+                type: string
 
 env:
     BENCHMARKS_REPO: OpenHands/benchmarks
@@ -97,9 +102,23 @@ jobs:
               env:
                   DEFAULT_MODEL: ${{ steps.allowlists.outputs.default_model }}
                   ALLOWED_MODELS_JSON: ${{ steps.allowlists.outputs.allowed_models }}
-                  BENCHMARKS_PAT_INPUT: ''
+                  PAT_TOKEN_DEFAULT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  OVERRIDE_PAT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.override_pat_token || '' }}
               run: |
                   set -euo pipefail
+
+                  # Choose PAT token (default vs override)
+                  PAT_TOKEN="$PAT_TOKEN_DEFAULT"
+                  if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "$OVERRIDE_PAT" ]; then
+                    echo "::add-mask::$OVERRIDE_PAT"
+                    PAT_TOKEN="$OVERRIDE_PAT"
+                  fi
+                  if [ -z "$PAT_TOKEN" ]; then
+                    echo "Missing PAT token (default or override)" >&2
+                    exit 1
+                  fi
+                  echo "PAT_TOKEN=$PAT_TOKEN" >> "$GITHUB_ENV"
+                  echo "pat_token_source=$([ "$PAT_TOKEN" = "$PAT_TOKEN_DEFAULT" ] && echo default || echo override)" >> "$GITHUB_OUTPUT"
 
                   # Determine eval limit based on trigger
                   if [ "${{ github.event_name }}" = "pull_request_target" ]; then
@@ -162,7 +181,6 @@ jobs:
             - name: Dispatch benchmarks image build
               id: build-dispatch
               env:
-                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   DATASET: ${{ env.DATASET }}
                   SPLIT: ${{ env.SPLIT }}
@@ -192,8 +210,6 @@ jobs:
                   echo "bench_build_dispatched=true" >> "$GITHUB_OUTPUT"
 
             - name: Wait for benchmarks build completion
-              env:
-                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
               run: |
                   set -euo pipefail
                   if [ -z "$PAT_TOKEN" ]; then
@@ -228,7 +244,6 @@ jobs:
 
             - name: Dispatch evaluation workflow
               env:
-                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   SDK_SHA: ${{ steps.params.outputs.sdk_ref }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
