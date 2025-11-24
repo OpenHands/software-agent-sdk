@@ -426,8 +426,8 @@ def load_public_skills(
 
         owner, repo = parts[0], parts[1].replace(".git", "")
 
-        # Use GitHub API to list files in the repository
-        api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+        # Use GitHub API to list files in the skills/ subdirectory
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}:skills?recursive=1"
 
         logger.debug(f"Fetching skills from {repo_url} (branch: {branch})")
 
@@ -436,9 +436,9 @@ def load_public_skills(
             response.raise_for_status()
             tree_data = response.json()
 
-            # Find all .md files
+            # Find all .md files in the skills/ directory
             md_files = [
-                item["path"]
+                f"skills/{item['path']}"
                 for item in tree_data.get("tree", [])
                 if item["type"] == "blob"
                 and item["path"].endswith(".md")

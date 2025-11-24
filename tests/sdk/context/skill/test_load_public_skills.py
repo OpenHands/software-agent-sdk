@@ -16,14 +16,13 @@ from openhands.sdk.context.skills import (
 
 @pytest.fixture
 def mock_github_api_response():
-    """Create a mock GitHub API tree response."""
+    """Create a mock GitHub API tree response for skills/ subdirectory."""
     return {
         "tree": [
             {"path": "README.md", "type": "blob"},
             {"path": "git.md", "type": "blob"},
             {"path": "docker.md", "type": "blob"},
             {"path": "testing.md", "type": "blob"},
-            {"path": ".github", "type": "tree"},
         ]
     }
 
@@ -64,19 +63,19 @@ def test_load_public_skills_success(mock_github_api_response, mock_skill_content
                 json=mock_github_api_response,
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("git.md"):
+        elif url.endswith("skills/git.md"):
             return Response(
                 200,
                 text=mock_skill_content["git.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("docker.md"):
+        elif url.endswith("skills/docker.md"):
             return Response(
                 200,
                 text=mock_skill_content["docker.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("testing.md"):
+        elif url.endswith("skills/testing.md"):
             return Response(
                 200,
                 text=mock_skill_content["testing.md"],
@@ -162,7 +161,7 @@ def test_load_public_skills_custom_repo():
                 json={"tree": [{"path": "custom.md", "type": "blob"}]},
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("custom.md"):
+        elif url.endswith("skills/custom.md"):
             return Response(
                 200,
                 text="---\nname: custom\n---\nCustom skill content.",
@@ -193,19 +192,19 @@ def test_load_public_skills_custom_branch(mock_github_api_response, mock_skill_c
                 json=mock_github_api_response,
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("git.md"):
+        elif url.endswith("skills/git.md"):
             return Response(
                 200,
                 text=mock_skill_content["git.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("docker.md"):
+        elif url.endswith("skills/docker.md"):
             return Response(
                 200,
                 text=mock_skill_content["docker.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("testing.md"):
+        elif url.endswith("skills/testing.md"):
             return Response(
                 200,
                 text=mock_skill_content["testing.md"],
@@ -239,14 +238,14 @@ def test_load_public_skills_with_invalid_skill():
                 },
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("/valid.md"):
+        elif url.endswith("skills/valid.md"):
             call_count["valid"] += 1
             return Response(
                 200,
                 text="---\nname: valid\n---\nValid skill content.",
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("/invalid.md"):
+        elif url.endswith("skills/invalid.md"):
             call_count["invalid"] += 1
             # Invalid: triggers must be a list, not a string
             return Response(
@@ -284,19 +283,19 @@ def test_agent_context_loads_public_skills(
                 json=mock_github_api_response,
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("git.md"):
+        elif url.endswith("skills/git.md"):
             return Response(
                 200,
                 text=mock_skill_content["git.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("docker.md"):
+        elif url.endswith("skills/docker.md"):
             return Response(
                 200,
                 text=mock_skill_content["docker.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("testing.md"):
+        elif url.endswith("skills/testing.md"):
             return Response(
                 200,
                 text=mock_skill_content["testing.md"],
@@ -335,19 +334,19 @@ def test_agent_context_merges_explicit_and_public_skills(
                 json=mock_github_api_response,
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("git.md"):
+        elif url.endswith("skills/git.md"):
             return Response(
                 200,
                 text=mock_skill_content["git.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("docker.md"):
+        elif url.endswith("skills/docker.md"):
             return Response(
                 200,
                 text=mock_skill_content["docker.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("testing.md"):
+        elif url.endswith("skills/testing.md"):
             return Response(
                 200,
                 text=mock_skill_content["testing.md"],
@@ -387,19 +386,19 @@ def test_agent_context_explicit_skill_takes_precedence(
                 json=mock_github_api_response,
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("git.md"):
+        elif url.endswith("skills/git.md"):
             return Response(
                 200,
                 text=mock_skill_content["git.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("docker.md"):
+        elif url.endswith("skills/docker.md"):
             return Response(
                 200,
                 text=mock_skill_content["docker.md"],
                 request=httpx.Request("GET", url),
             )
-        elif url.endswith("testing.md"):
+        elif url.endswith("skills/testing.md"):
             return Response(
                 200,
                 text=mock_skill_content["testing.md"],
