@@ -36,6 +36,10 @@ on:
                 description: Reason for manual trigger
                 required: false
                 default: ''
+            benchmarks_pat:
+                description: PAT with access to dispatch benchmarks workflow (optional if secret is configured)
+                required: false
+                default: ''
 
 env:
     BENCHMARKS_REPO: OpenHands/benchmarks
@@ -101,8 +105,8 @@ jobs:
               env:
                   DEFAULT_MODEL: ${{ steps.allowlists.outputs.default_model }}
                   ALLOWED_MODELS_JSON: ${{ steps.allowlists.outputs.allowed_models }}
-                  BENCHMARKS_PAT_INPUT: ''
-                  SDK_REF_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.branch || '' }}
+                  BENCHMARKS_PAT_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.benchmarks_pat || '' }}
+                  SDK_REF_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sdk_ref || github.event.inputs.branch || '' }}
               run: |
                   set -euo pipefail
 
