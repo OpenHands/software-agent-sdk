@@ -34,22 +34,28 @@ def select_chat_options(
 
     # Reasoning-model quirks
     if get_features(llm.model).supports_reasoning_effort:
-        # Preferred: use reasoning_effort
-        if llm.reasoning_effort is not None:
-            out["reasoning_effort"] = llm.reasoning_effort
-        # Anthropic/OpenAI reasoning models ignore temp/top_p
+        # Claude models use different parameter format
+        if "claude-opus-4" in llm.model.lower():
+            # Claude uses output_config.effort instead of reasoning_effort
+            if llm.reasoning_effort is not None:
+                out["output_config"] = {"effort": llm.reasoning_effort}
+            # Claude requires beta header for effort parameter
+            if "extra_headers" not in out:
+                out["extra_headers"] = {}
+            out["extra_headers"]["anthropic-beta"] = "effort-2025-11-24"
+        else:
+            # OpenAI/other models use reasoning_effort parameter
+            if llm.reasoning_effort is not None:
+                out["reasoning_effort"] = llm.reasoning_effort
+
+        # All reasoning models ignore temp/top_p
         out.pop("temperature", None)
         out.pop("top_p", None)
+
         # Gemini 2.5-pro default to low if not set
         if "gemini-2.5-pro" in llm.model:
             if llm.reasoning_effort in {None, "none"}:
                 out["reasoning_effort"] = "low"
-
-    # Models that don't support both temperature and top_p
-    if get_features(llm.model).temperature_top_p_incompatible:
-        # Remove both temperature and top_p for these models
-        out.pop("temperature", None)
-        out.pop("top_p", None)
 
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:

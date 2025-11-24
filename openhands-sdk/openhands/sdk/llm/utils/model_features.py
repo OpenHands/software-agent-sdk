@@ -24,7 +24,6 @@ class ModelFeatures:
     supports_responses_api: bool
     force_string_serializer: bool
     send_reasoning_content: bool
-    temperature_top_p_incompatible: bool
 
 
 # Pattern tables capturing current behavior. Keep patterns lowercase.
@@ -43,11 +42,7 @@ REASONING_EFFORT_PATTERNS: list[str] = [
     "gemini-2.5-pro",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
-]
-
-# Models that need temperature/top_p removed but don't support reasoning_effort
-TEMPERATURE_TOP_P_INCOMPATIBLE_PATTERNS: list[str] = [
-    # Anthropic Claude Opus 4.5 family
+    # Anthropic Claude Opus 4.5 family (uses effort parameter)
     "claude-opus-4.5",
     "claude-opus-4-5",
 ]
@@ -130,9 +125,6 @@ def get_features(model: str) -> ModelFeatures:
         supports_responses_api=model_matches(model, RESPONSES_API_PATTERNS),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_PATTERNS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_PATTERNS),
-        temperature_top_p_incompatible=model_matches(
-            model, TEMPERATURE_TOP_P_INCOMPATIBLE_PATTERNS
-        ),
     )
 
 
