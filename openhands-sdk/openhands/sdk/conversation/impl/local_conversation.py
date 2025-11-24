@@ -467,7 +467,9 @@ class LocalConversation(BaseConversation):
         """
 
         # Get the agent's current view of the conversation context
-        view = View.from_events(self.state.events)
+
+        with self.state:
+            view = View.from_events(self.state.events)
         visible_events: list = view.events
         visible_events = LLMConvertibleEvent.events_to_messages(visible_events)
 
@@ -487,10 +489,6 @@ class LocalConversation(BaseConversation):
                     "usage_id": "ask-agent-llm",
                     # One off responses take longer with caching
                     "caching_prompt": False,
-                    # Disable native tool calling for simple completions
-                    "native_tool_calling": False,
-                    # Ensure LiteLLM can modify params to avoid tool calling issues
-                    "modify_params": True,
                 },
                 deep=True,
             )
@@ -499,7 +497,9 @@ class LocalConversation(BaseConversation):
         # Pass agent tools so LLM can understand tool_calls in conversation history,
         # but native_tool_calling=False prevents new tool calls
         response = question_llm.completion(
-            visible_events, tools=list(self.agent.tools_map.values())
+            visible_events,
+            tools=list(self.agent.tools_map.values()),
+            add_security_risk_prediction=True,
         )
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
