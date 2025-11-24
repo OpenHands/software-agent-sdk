@@ -658,6 +658,176 @@ class TestConversationServiceStartConversation:
             assert result.id == custom_id
             assert not is_new
 
+    @pytest.mark.asyncio
+    async def test_start_conversation_reuse_checks_is_open(self, conversation_service):
+        """Test that conversation reuse checks if event service is open."""
+        custom_id = uuid4()
+
+        # Create a mock event service that exists but is not open
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = False
+        conversation_service._event_services[custom_id] = mock_event_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            # Mock the _start_event_service method to avoid actual startup
+            with patch.object(
+                conversation_service, "_start_event_service"
+            ) as mock_start:
+                mock_new_service = AsyncMock(spec=EventService)
+                mock_new_service.stored = StoredConversation(
+                    id=custom_id,
+                    agent=request.agent,
+                    workspace=request.workspace,
+                    confirmation_policy=request.confirmation_policy,
+                    initial_message=request.initial_message,
+                    metrics=None,
+                    created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+                    updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+                )
+                mock_state = ConversationState(
+                    id=custom_id,
+                    agent=request.agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                    confirmation_policy=request.confirmation_policy,
+                )
+                mock_new_service.get_state.return_value = mock_state
+                mock_start.return_value = mock_new_service
+
+                result, is_new = await conversation_service.start_conversation(request)
+
+                # Should create a new conversation since existing one is not open
+                assert result.id == custom_id
+                assert is_new
+                mock_start.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_reuse_when_open(self, conversation_service):
+        """Test that conversation is reused when event service is open."""
+        custom_id = uuid4()
+
+        # Create a mock event service that exists and is open
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = True
+        mock_event_service.stored = StoredConversation(
+            id=custom_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=custom_id,
+            agent=mock_event_service.stored.agent,
+            workspace=mock_event_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_event_service.stored.confirmation_policy,
+        )
+        mock_event_service.get_state.return_value = mock_state
+        conversation_service._event_services[custom_id] = mock_event_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            # Mock the _start_event_service method to ensure it's not called
+            with patch.object(
+                conversation_service, "_start_event_service"
+            ) as mock_start:
+                result, is_new = await conversation_service.start_conversation(request)
+
+                # Should reuse existing conversation since it's open
+                assert result.id == custom_id
+                assert not is_new
+                mock_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_event_service_failure_cleanup(self, conversation_service):
+        """Test that event service is cleaned up when startup fails."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stored = StoredConversation(
+                id=uuid4(),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                initial_message=None,
+                metrics=None,
+                created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+                updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+            )
+
+            # Mock EventService to simulate startup failure
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                mock_event_service = AsyncMock()
+                mock_event_service.start.side_effect = Exception("Startup failed")
+                mock_event_service.close = AsyncMock()
+                mock_event_service_class.return_value = mock_event_service
+
+                # Attempt to start event service should fail and clean up
+                with pytest.raises(Exception, match="Startup failed"):
+                    await conversation_service._start_event_service(stored)
+
+                # Verify cleanup was called
+                mock_event_service.close.assert_called_once()
+
+                # Verify event service was not stored
+                assert stored.id not in conversation_service._event_services
+
+    @pytest.mark.asyncio
+    async def test_start_event_service_success_stores_service(
+        self, conversation_service
+    ):
+        """Test that event service is stored only after successful startup."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stored = StoredConversation(
+                id=uuid4(),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                initial_message=None,
+                metrics=None,
+                created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+                updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+            )
+
+            # Mock EventService to simulate successful startup
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                mock_event_service = AsyncMock()
+                mock_event_service.start = AsyncMock()  # Successful startup
+                mock_event_service_class.return_value = mock_event_service
+
+                # Start event service should succeed
+                result = await conversation_service._start_event_service(stored)
+
+                # Verify startup was called
+                mock_event_service.start.assert_called_once()
+
+                # Verify event service was stored after successful startup
+                assert stored.id in conversation_service._event_services
+                assert (
+                    conversation_service._event_services[stored.id]
+                    == mock_event_service
+                )
+                assert result == mock_event_service
+
 
 class TestConversationServiceUpdateConversation:
     """Test cases for ConversationService.update_conversation method."""

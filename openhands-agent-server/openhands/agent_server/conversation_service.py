@@ -184,8 +184,8 @@ class ConversationService:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
 
-        if conversation_id in self._event_services:
-            existing_event_service = self._event_services[conversation_id]
+        existing_event_service = self._event_services.get(conversation_id)
+        if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
             conversation_info = _compose_conversation_info(
                 existing_event_service.stored, state
@@ -402,8 +402,14 @@ class ConversationService:
             ]
         )
 
+        try:
+            await event_service.start()
+        except Exception:
+            # Clean up the event service if startup fails
+            await event_service.close()
+            raise
+
         event_services[stored.id] = event_service
-        await event_service.start()
         return event_service
 
 
@@ -433,9 +439,8 @@ class WebhookSubscriber(Subscriber):
             # Cancel timer since we're flushing due to buffer size
             self._cancel_flush_timer()
             await self._post_events()
-        else:
-            # Reset the flush timer
-            self._reset_flush_timer()
+        elif not self._flush_timer:
+            self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     async def close(self):
         """Post any remaining items in the queue to the webhook."""
@@ -503,14 +508,6 @@ class WebhookSubscriber(Subscriber):
         if self._flush_timer and not self._flush_timer.done():
             self._flush_timer.cancel()
         self._flush_timer = None
-
-    def _reset_flush_timer(self):
-        """Reset the flush timer to trigger after flush_delay seconds."""
-        # Cancel existing timer
-        self._cancel_flush_timer()
-
-        # Create new timer
-        self._flush_timer = asyncio.create_task(self._flush_after_delay())
 
     async def _flush_after_delay(self):
         """Wait for flush_delay seconds then flush events if any exist."""
