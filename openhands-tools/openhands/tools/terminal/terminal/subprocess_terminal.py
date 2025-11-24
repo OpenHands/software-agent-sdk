@@ -5,6 +5,7 @@ import os
 import pty
 import re
 import select
+import shutil
 import signal
 import subprocess
 import threading
@@ -53,6 +54,7 @@ class SubprocessTerminal(TerminalInterface):
         self,
         work_dir: str,
         username: str | None = None,
+        shell_path: str | None = None,
     ):
         super().__init__(work_dir, username)
         self.PS1 = CmdOutputMetadata.to_ps1_prompt()
@@ -64,6 +66,7 @@ class SubprocessTerminal(TerminalInterface):
         self.output_lock = threading.Lock()
         self.reader_thread = None
         self._current_command_running = False
+        self.shell_path = shell_path
 
     # ------------------------- Lifecycle -------------------------
 
@@ -72,13 +75,44 @@ class SubprocessTerminal(TerminalInterface):
         if self._initialized:
             return
 
+        # Resolve shell path with precedence:
+        # 1. Explicit shell_path argument
+        # 2. Auto-detection via shutil.which("bash") (searches PATH like `env bash`)
+        resolved_shell_path: str | None
+        if self.shell_path:
+            resolved_shell_path = self.shell_path
+        else:
+            resolved_shell_path = shutil.which("bash")
+            if resolved_shell_path is None:
+                raise RuntimeError(
+                    "Could not find bash in PATH. "
+                    "Please provide an explicit shell_path parameter "
+                    "when creating the terminal."
+                )
+
+        # Validate the shell path exists and is executable
+        if not os.path.isfile(resolved_shell_path):
+            raise RuntimeError(
+                f"Shell binary not found at: {resolved_shell_path}. "
+                "Please provide a valid shell_path parameter."
+            )
+        if not os.access(resolved_shell_path, os.X_OK):
+            raise RuntimeError(
+                f"Shell binary is not executable: {resolved_shell_path}. "
+                "Please check file permissions."
+            )
+
+        # Store the resolved shell path for later access
+        self.shell_path = resolved_shell_path
+        logger.info(f"Using shell: {resolved_shell_path}")
+
         # Inherit environment variables from the parent process
         env = os.environ.copy()
         env["PS1"] = self.PS1
         env["PS2"] = ""
         env["TERM"] = "xterm-256color"
 
-        bash_cmd = ["/bin/bash", "-i"]
+        bash_cmd = [resolved_shell_path, "-i"]
 
         # Create a PTY; give the slave to the child, keep the master
         master_fd, slave_fd = pty.openpty()

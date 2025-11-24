@@ -165,11 +165,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                     return [cls(name="finish", ..., executor=FinishExecutor())]
 
         Complex tool with initialization parameters:
-            class TerminalTool(ToolDefinition[ExecuteBashAction,
-                ExecuteBashObservation]):
+            class TerminalTool(ToolDefinition[TerminalAction,
+                TerminalObservation]):
                 @classmethod
                 def create(cls, conv_state, **params):
-                    executor = BashExecutor(
+                    executor = TerminalExecutor(
                         working_dir=conv_state.workspace.working_dir,
                         **params,
                     )

@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
+import httpx  # noqa: F401
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -28,6 +29,10 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
+from openhands.sdk.utils.deprecation import (
+    deprecated,
+    warn_deprecated,
+)
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
@@ -93,10 +98,7 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     LLMNoResponseError,
 )
 
-SERVICE_ID_DEPRECATION_MSG = (
-    "LLM.service_id is deprecated and will be removed in a future release; "
-    "use LLM.usage_id instead."
-)
+SERVICE_ID_DEPRECATION_DETAILS = "Use LLM.usage_id instead of LLM.service_id."
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -218,6 +220,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=True,
         description="Whether to use native tool calling.",
     )
+    force_string_serializer: bool | None = Field(
+        default=None,
+        description=(
+            "Force using string content serializer when sending to LLM API. "
+            "If None (default), auto-detect based on model. "
+            "Useful for providers that do not support list content, "
+            "like HuggingFace and Groq."
+        ),
+    )
     reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
         default="high",
         description="The effort to put into reasoning. "
@@ -322,9 +333,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         d = dict(data)
 
         if "service_id" in d and "usage_id" not in d:
-            warnings.warn(
-                SERVICE_ID_DEPRECATION_MSG,
-                DeprecationWarning,
+            warn_deprecated(
+                "LLM.service_id",
+                deprecated_in="1.1.0",
+                removed_in="1.3.0",
+                details=SERVICE_ID_DEPRECATION_DETAILS,
                 stacklevel=3,
             )
             d["usage_id"] = d.pop("service_id")
@@ -410,21 +423,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Public API
     # =========================================================================
     @property
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_ID_DEPRECATION_DETAILS,
+    )
     def service_id(self) -> str:
-        warnings.warn(
-            SERVICE_ID_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return self.usage_id
 
     @service_id.setter
+    @deprecated(
+        deprecated_in="1.1.0",
+        removed_in="1.3.0",
+        details=SERVICE_ID_DEPRECATION_DETAILS,
+    )
     def service_id(self, value: str) -> None:
-        warnings.warn(
-            SERVICE_ID_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         self.usage_id = value
 
     @property
@@ -900,7 +913,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
             model_features = get_features(self.model)
-            message.force_string_serializer = model_features.force_string_serializer
+            message.force_string_serializer = (
+                self.force_string_serializer
+                if self.force_string_serializer is not None
+                else model_features.force_string_serializer
+            )
             message.send_reasoning_content = model_features.send_reasoning_content
 
         formatted_messages = [message.to_chat_dict() for message in messages]

@@ -106,6 +106,12 @@ jobs:
                       API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
                   fi
 
+                  # Function to sanitize @OpenHands mentions using the SDK utility
+                  sanitize_comment() {
+                      local text="$1"
+                      printf "%s" "$text" | uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')"
+                  }
+
                   # Function to update PR comment
                   update_comment() {
                       # Skip if not a PR event
@@ -115,6 +121,9 @@ jobs:
                       
                       local comment_body="$1"
                       local response
+                      
+                      # Sanitize @OpenHands mentions before posting
+                      comment_body=$(sanitize_comment "$comment_body")
                       
                       if [ -z "$COMMENT_ID" ]; then
                           # Create new comment
@@ -303,7 +312,8 @@ jobs:
               shell: bash
               run: |
                   if [ -f examples_report.md ]; then
-                      REPORT_CONTENT=$(cat examples_report.md)
+                      # Sanitize @OpenHands mentions before posting
+                      REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < examples_report.md)
                       echo "report<<EOF" >> $GITHUB_OUTPUT
                       echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
                       echo "EOF" >> $GITHUB_OUTPUT
