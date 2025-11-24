@@ -63,10 +63,10 @@ jobs:
             pull-requests: write
 
         steps:
-            - name: Checkout sdk code
+            - name: Checkout sdk code (base for validation)
               uses: actions/checkout@v4
               with:
-                  ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || (github.event_name == 
+                  ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || (github.event_name == \ 
                       'workflow_dispatch' && github.event.inputs.branch) || github.ref }}
                   fetch-depth: 0
 
@@ -152,6 +152,7 @@ jobs:
               if: github.event_name == 'pull_request_target'
               run: |
                   set -euo pipefail
+                  # Switch to the PR head for image build and SDK pinning.
                   REF="${{ steps.params.outputs.sdk_ref }}"
                   git fetch origin "$REF" --force
                   git checkout FETCH_HEAD
@@ -201,19 +202,14 @@ jobs:
               run: |
                   set -euo pipefail
                   echo "Building images for SDK $SDK_SHA (ref: $SDK_REF)"
-                  N_LIMIT_FLAG=""
-                  if [ -n "$EVAL_LIMIT" ]; then
-                    N_LIMIT_FLAG="--n-limit '$EVAL_LIMIT'"
-                  fi
-                  CMD="uv run benchmarks/swe_bench/build_images.py \
-                    --dataset '${DATASET}' \
-                    --split '${SPLIT}' \
-                    --image '${EVAL_AGENT_IMAGE}' \
-                    --target '${EVAL_AGENT_TARGET}' \
+                  uv run benchmarks/swe_bench/build_images.py \
+                    --dataset "${DATASET}" \
+                    --split "${SPLIT}" \
+                    --image "${EVAL_AGENT_IMAGE}" \
+                    --target "${EVAL_AGENT_TARGET}" \
                     --push \
-                    --max-workers '${MAX_BUILD_WORKERS}' ${N_LIMIT_FLAG}"
-                  echo "Running: $CMD"
-                  eval "$CMD"
+                    --max-workers "${MAX_BUILD_WORKERS}" \
+                    --n-limit "${EVAL_LIMIT}"
 
             - name: Dispatch evaluation workflow
               env:
@@ -233,11 +229,16 @@ jobs:
                     --arg eval_limit "$EVAL_LIMIT" \
                     --arg models "$MODELS" \
                     '{ref: "main", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models}}')
-                  curl -sS -X POST \
+                  RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: Bearer $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
                     -d "$PAYLOAD" \
-                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches"
+                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches")
+                  if [ "$RESPONSE" != "204" ]; then
+                    echo "Dispatch failed (status $RESPONSE):" >&2
+                    cat /tmp/dispatch.out >&2
+                    exit 1
+                  fi
 
             - name: Comment on PR
               env:
@@ -253,11 +254,10 @@ jobs:
                   PR_NUMBER="$PR_NUMBER_INPUT"
                   if [ "$EVENT_NAME" = "release" ] && [ -z "$PR_NUMBER" ]; then
                     # Attempt to find the merged PR for this commit
-                    SDK_SHA_SHORT=${SDK_SHA:0:40}
                     PR_NUMBER=$(curl -sS \
                       -H "Authorization: Bearer $GITHUB_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
-                      "https://api.github.com/repos/${{ github.repository }}/commits/${SDK_SHA_SHORT}/pulls" \
+                      "https://api.github.com/repos/${{ github.repository }}/commits/${SDK_SHA}/pulls" \
                       | jq -r '.[0].number // ""')
                   fi
 
