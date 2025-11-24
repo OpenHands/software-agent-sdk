@@ -1,10 +1,12 @@
 import io
 import re
+import tempfile
 from itertools import chain
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
 
 import frontmatter
+import httpx
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -364,5 +366,130 @@ def load_user_skills() -> list[Skill]:
 
     logger.debug(
         f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills
+
+
+# Public skills repository configuration
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_BRANCH = "main"
+
+
+def load_public_skills(
+    repo_url: str = PUBLIC_SKILLS_REPO,
+    branch: str = PUBLIC_SKILLS_BRANCH,
+) -> list[Skill]:
+    """Load skills from the public OpenHands skills repository.
+
+    This function fetches skills from the public skills registry at
+    https://github.com/OpenHands/skills. Skills are downloaded and loaded
+    dynamically, allowing users to get the latest skills without SDK updates.
+
+    Args:
+        repo_url: URL of the skills repository. Defaults to the official
+            OpenHands skills repository.
+        branch: Branch name to load skills from. Defaults to 'main'.
+
+    Returns:
+        List of Skill objects loaded from the public repository.
+        Returns empty list if loading fails.
+
+    Example:
+        >>> from openhands.sdk.context import AgentContext
+        >>> from openhands.sdk.context.skills import load_public_skills
+        >>>
+        >>> # Load public skills
+        >>> public_skills = load_public_skills()
+        >>>
+        >>> # Use with AgentContext
+        >>> context = AgentContext(skills=public_skills)
+    """
+    all_skills = []
+
+    # Extract owner and repo name from GitHub URL
+    try:
+        # Support both HTTPS and SSH URLs
+        if repo_url.startswith("https://github.com/"):
+            parts = repo_url.replace("https://github.com/", "").rstrip("/").split("/")
+        elif repo_url.startswith("git@github.com:"):
+            parts = repo_url.replace("git@github.com:", "").rstrip("/").split("/")
+        else:
+            logger.warning(
+                f"Invalid repository URL format: {repo_url}. "
+                f"Expected GitHub URL format."
+            )
+            return all_skills
+
+        if len(parts) < 2:
+            logger.warning(f"Invalid repository URL format: {repo_url}")
+            return all_skills
+
+        owner, repo = parts[0], parts[1].replace(".git", "")
+
+        # Use GitHub API to list files in the repository
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
+
+        logger.debug(f"Fetching skills from {repo_url} (branch: {branch})")
+
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(api_url)
+            response.raise_for_status()
+            tree_data = response.json()
+
+            # Find all .md files
+            md_files = [
+                item["path"]
+                for item in tree_data.get("tree", [])
+                if item["type"] == "blob"
+                and item["path"].endswith(".md")
+                and item["path"] != "README.md"
+            ]
+
+            logger.debug(f"Found {len(md_files)} skill files in repository")
+
+            # Download and load each skill file
+            for file_path in md_files:
+                try:
+                    # Use raw.githubusercontent.com for file content
+                    raw_url = (
+                        f"https://raw.githubusercontent.com/"
+                        f"{owner}/{repo}/{branch}/{file_path}"
+                    )
+                    file_response = client.get(raw_url)
+                    file_response.raise_for_status()
+                    file_content = file_response.text
+
+                    # Create a temporary directory structure for skill loading
+                    with tempfile.TemporaryDirectory() as temp_dir:
+                        temp_path = Path(temp_dir)
+                        skill_file = temp_path / file_path
+                        skill_file.parent.mkdir(parents=True, exist_ok=True)
+                        skill_file.write_text(file_content)
+
+                        # Load the skill using existing load method
+                        skill = Skill.load(
+                            path=skill_file,
+                            skill_dir=temp_path,
+                            file_content=file_content,
+                        )
+                        all_skills.append(skill)
+                        logger.debug(f"Loaded public skill: {skill.name}")
+
+                except Exception as e:
+                    logger.warning(f"Failed to load skill from {file_path}: {str(e)}")
+                    continue
+
+    except httpx.HTTPStatusError as e:
+        logger.warning(
+            f"HTTP error fetching skills from {repo_url}: "
+            f"{e.response.status_code} - {e.response.text}"
+        )
+    except httpx.RequestError as e:
+        logger.warning(f"Network error fetching skills from {repo_url}: {str(e)}")
+    except Exception as e:
+        logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
+
+    logger.debug(
+        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
     )
     return all_skills
