@@ -124,17 +124,8 @@ jobs:
 
                   if [ "${{ github.event_name }}" = "pull_request" ]; then
                       API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
-                      EXISTING_COMMENT_ID=$(curl -s \
-                          -H "Authorization: token ${GITHUB_TOKEN}" \
-                          -H "Accept: application/vnd.github.v3+json" \
-                          "${API_URL}?per_page=100" | jq -r 'map(select((.user.login=="github-actions[bot]") and (.body | contains("## 🔄 Running Examples")))) | last? | .id // ""')
-                      if [ -n "$EXISTING_COMMENT_ID" ]; then
-                          COMMENT_ID="$EXISTING_COMMENT_ID"
-                          echo "Reusing existing PR comment ID: $COMMENT_ID"
-                      else
-                          initial_comment="## 🔄 Running Examples with \`${LLM_MODEL}\`\n\n_Run in progress..._\n"
-                          update_comment "$initial_comment"
-                      fi
+                      initial_comment="## 🔄 Running Examples with \`${LLM_MODEL}\`\n\n_Run in progress..._\n"
+                      update_comment "$initial_comment"
                   fi
 
                   EXIT_CODE=0
