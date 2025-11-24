@@ -8,7 +8,7 @@ from openhands.tools.apply_patch.definition import ApplyPatchAction, ApplyPatchE
 
 @pytest.fixture()
 def tmp_ws(tmp_path: Path) -> Path:
-    # create a temp workspace root
+    # match other tool tests: use pytest tmp_path as a workspace root
     return tmp_path
 
 
