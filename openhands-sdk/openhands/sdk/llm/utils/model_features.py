@@ -42,6 +42,9 @@ REASONING_EFFORT_PATTERNS: list[str] = [
     "gemini-2.5-pro",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
+    # Anthropic Claude Opus 4.5 family
+    "claude-opus-4.5",
+    "claude-opus-4-5",
 ]
 
 EXTENDED_THINKING_PATTERNS: list[str] = [
@@ -67,6 +70,9 @@ PROMPT_CACHE_PATTERNS: list[str] = [
     # Anthropic Haiku 4.5 variants (dot and dash)
     "claude-haiku-4.5",
     "claude-haiku-4-5",
+    # Anthropic Opus 4.5 variants (dot and dash)
+    "claude-opus-4.5",
+    "claude-opus-4-5",
 ]
 
 SUPPORTS_STOP_WORDS_FALSE_PATTERNS: list[str] = [
