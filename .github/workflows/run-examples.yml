@@ -109,8 +109,8 @@ jobs:
                       EXISTING_COMMENT_ID=$(curl -s \
                           -H "Authorization: token ${GITHUB_TOKEN}" \
                           -H "Accept: application/vnd.github.v3+json" \
-                          "${API_URL}?per_page=100" | jq -r 'map(select((.user.login=="github-actions[bot]") and (.body | contains("## 🔄 Running Examples")))) | last?.id')
-                      if [ "$EXISTING_COMMENT_ID" != "null" ] && [ -n "$EXISTING_COMMENT_ID" ]; then
+                          "${API_URL}?per_page=100" | jq -r 'map(select((.user.login=="github-actions[bot]") and (.body | contains("## 🔄 Running Examples")))) | last? | .id // ""')
+                      if [ -n "$EXISTING_COMMENT_ID" ]; then
                           COMMENT_ID="$EXISTING_COMMENT_ID"
                       fi
                   fi
