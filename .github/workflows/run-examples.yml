@@ -124,7 +124,10 @@ jobs:
 
                   if [ "${{ github.event_name }}" = "pull_request" ]; then
                       API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
-                      initial_comment="## 🔄 Running Examples with \`${LLM_MODEL}\`\n\n_Run in progress..._\n"
+                      initial_comment="## 🔄 Running Examples with \`${LLM_MODEL}\`"
+                      initial_comment+=$'\n\n'
+                      initial_comment+="_Run in progress..._"
+                      initial_comment+=$'\n'
                       update_comment "$initial_comment"
                   fi
 
