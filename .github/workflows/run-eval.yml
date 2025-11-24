@@ -169,7 +169,7 @@ jobs:
             - name: Dispatch benchmarks image build
               id: build-dispatch
               env:
-                  PAT_TOKEN: ${{ secrets.OPENHANDS_AGENT_PAT }}
+                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   DATASET: ${{ env.DATASET }}
                   SPLIT: ${{ env.SPLIT }}
@@ -203,7 +203,7 @@ jobs:
 
             - name: Wait for benchmarks build completion
               env:
-                  PAT_TOKEN: ${{ secrets.OPENHANDS_AGENT_PAT }}
+                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
               run: |
                   set -euo pipefail
                   if [ -z "$PAT_TOKEN" ]; then
@@ -238,7 +238,7 @@ jobs:
 
             - name: Dispatch evaluation workflow
               env:
-                  PAT_TOKEN: ${{ secrets.OPENHANDS_AGENT_PAT }}
+                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
