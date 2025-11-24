@@ -159,6 +159,13 @@ jobs:
                   git fetch origin "$REF" --force
                   git checkout FETCH_HEAD
 
+            - name: Get current commit SHA
+              id: get-sha
+              run: |
+                  SDK_SHA=$(git rev-parse HEAD)
+                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  echo "Using SDK commit: $SDK_SHA"
+
             - name: Dispatch benchmarks image build
               id: build-dispatch
               env:
@@ -173,12 +180,15 @@ jobs:
                     echo "Missing PAT_TOKEN for dispatching benchmarks build" >&2
                     exit 1
                   fi
+                  SDK_SHA="${{ steps.get-sha.outputs.sdk_sha }}"
+                  echo "Dispatching benchmarks build with SDK commit: $SDK_SHA"
                   PAYLOAD=$(jq -n \
                     --arg dataset "$DATASET" \
                     --arg split "$SPLIT" \
                     --arg max_workers "$MAX_BUILD_WORKERS" \
                     --arg n_limit "$EVAL_LIMIT" \
-                    '{ref:"main", inputs: {dataset:$dataset, split:$split, "max-workers":$max_workers, "n-limit":$n_limit}}')
+                    --arg sdk_commit "$SDK_SHA" \
+                    '{ref:"add-sdk-commit-param", inputs: {dataset:$dataset, split:$split, "max-workers":$max_workers, "n-limit":$n_limit, "sdk-commit":$sdk_commit}}')
                   RESPONSE=$(curl -sS -o /tmp/build-dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
@@ -208,7 +218,7 @@ jobs:
                     RUNS=$(curl -sS \
                       -H "Authorization: token $PAT_TOKEN" \
                       -H "Accept: application/vnd.github+json" \
-                      "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?per_page=1&branch=main")
+                      "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?per_page=1&branch=add-sdk-commit-param")
                     STATUS=$(echo "$RUNS" | jq -r '.workflow_runs[0].status')
                     CONCL=$(echo "$RUNS" | jq -r '.workflow_runs[0].conclusion')
                     RUN_ID=$(echo "$RUNS" | jq -r '.workflow_runs[0].id')
@@ -229,7 +239,7 @@ jobs:
             - name: Dispatch evaluation workflow
               env:
                   PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  SDK_SHA: ${{ steps.params.outputs.sdk_ref }}
+                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
                   EVAL_REPO: ${{ env.EVAL_REPO }}
@@ -239,6 +249,7 @@ jobs:
                     echo "Missing PAT_TOKEN for dispatching evaluation workflow" >&2
                     exit 1
                   fi
+                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \
                     --arg eval_limit "$EVAL_LIMIT" \
@@ -258,7 +269,7 @@ jobs:
             - name: Comment on PR
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
+                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
                   TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
