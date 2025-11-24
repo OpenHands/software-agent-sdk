@@ -73,6 +73,14 @@ async def search_conversation_events(
             title="Optional filter by event kind/type (e.g., ActionEvent, MessageEvent)"
         ),
     ] = None,
+    source: Annotated[
+        str | None,
+        Query(title="Optional filter by event source (e.g., agent, user, environment)"),
+    ] = None,
+    body: Annotated[
+        str | None,
+        Query(title="Optional filter by message content (case-insensitive)"),
+    ] = None,
     sort_order: Annotated[
         EventSortOrder,
         Query(title="Sort order for events"),
@@ -102,7 +110,7 @@ async def search_conversation_events(
     )
 
     return await event_service.search_events(
-        page_id, limit, kind, sort_order, normalized_gte, normalized_lt
+        page_id, limit, kind, source, body, sort_order, normalized_gte, normalized_lt
     )
 
 
@@ -113,6 +121,14 @@ async def count_conversation_events(
         Query(
             title="Optional filter by event kind/type (e.g., ActionEvent, MessageEvent)"
         ),
+    ] = None,
+    source: Annotated[
+        str | None,
+        Query(title="Optional filter by event source (e.g., agent, user, environment)"),
+    ] = None,
+    body: Annotated[
+        str | None,
+        Query(title="Optional filter by message content (case-insensitive)"),
     ] = None,
     timestamp__gte: Annotated[
         datetime | None,
@@ -135,7 +151,9 @@ async def count_conversation_events(
         normalize_datetime_to_server_timezone(timestamp__lt) if timestamp__lt else None
     )
 
-    count = await event_service.count_events(kind, normalized_gte, normalized_lt)
+    count = await event_service.count_events(
+        kind, source, body, normalized_gte, normalized_lt
+    )
 
     return count
 

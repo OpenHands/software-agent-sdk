@@ -787,3 +787,158 @@ class TestEventServiceIsOpen:
         for truthy_value in truthy_values:
             event_service._conversation = truthy_value
             assert event_service.is_open(), f"Expected True for {truthy_value}"
+
+
+class TestEventServiceBodyFiltering:
+    """Test cases for EventService body filtering functionality."""
+
+    def test_event_matches_body_with_message_event(self, event_service):
+        """Test _event_matches_body with MessageEvent containing text content."""
+        from openhands.sdk.llm.message import TextContent
+
+        # Create a MessageEvent with text content
+        message = Message(role="user", content=[TextContent(text="Hello world")])
+        event = MessageEvent(id="test", source="user", llm_message=message)
+
+        # Test case-insensitive matching
+        assert event_service._event_matches_body(event, "hello")
+        assert event_service._event_matches_body(event, "WORLD")
+        assert event_service._event_matches_body(event, "Hello world")
+        assert event_service._event_matches_body(event, "llo wor")
+
+        # Test non-matching
+        assert not event_service._event_matches_body(event, "goodbye")
+        assert not event_service._event_matches_body(event, "xyz")
+
+    def test_event_matches_body_with_non_message_event(self, event_service):
+        """Test _event_matches_body with non-MessageEvent (should return False)."""
+        from openhands.sdk.event.user_action import PauseEvent
+
+        # Create a non-MessageEvent
+        event = PauseEvent(id="test")
+
+        # Should always return False for non-MessageEvent
+        assert not event_service._event_matches_body(event, "any text")
+        assert not event_service._event_matches_body(event, "")
+
+    def test_event_matches_body_with_empty_content(self, event_service):
+        """Test _event_matches_body with MessageEvent containing empty content."""
+        # Create a MessageEvent with empty content
+        message = Message(role="user", content=[])
+        event = MessageEvent(id="test", source="user", llm_message=message)
+
+        # Should not match any non-empty text
+        assert not event_service._event_matches_body(event, "any text")
+        # Empty string should match empty content (empty string contains empty string)
+        assert event_service._event_matches_body(event, "")
+
+    @pytest.mark.asyncio
+    async def test_search_events_with_body_filter_integration(self, event_service):
+        """Test search_events with body filter using real MessageEvents."""
+        from openhands.sdk.llm.message import TextContent
+
+        # Create a conversation with MessageEvents containing different text
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Hello world")]
+                ),
+            ),
+            MessageEvent(
+                id="event2",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="How can I help?")]
+                ),
+            ),
+            MessageEvent(
+                id="event3",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Create a Python script")]
+                ),
+            ),
+        ]
+
+        state.events = events
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        # Test filtering by "hello" (should match event1)
+        result = await event_service.search_events(body="hello")
+        assert len(result.items) == 1
+        assert result.items[0].id == "event1"
+
+        # Test filtering by "python" (should match event3)
+        result = await event_service.search_events(body="python")
+        assert len(result.items) == 1
+        assert result.items[0].id == "event3"
+
+        # Test filtering by "help" (should match event2)
+        result = await event_service.search_events(body="help")
+        assert len(result.items) == 1
+        assert result.items[0].id == "event2"
+
+        # Test filtering by non-matching text
+        result = await event_service.search_events(body="nonexistent")
+        assert len(result.items) == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_with_body_filter_integration(self, event_service):
+        """Test count_events with body filter using real MessageEvents."""
+        from openhands.sdk.llm.message import TextContent
+
+        # Create a conversation with MessageEvents containing different text
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Hello world")]
+                ),
+            ),
+            MessageEvent(
+                id="event2",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="Hello there")]
+                ),
+            ),
+            MessageEvent(
+                id="event3",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Create a Python script")]
+                ),
+            ),
+        ]
+
+        state.events = events
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        # Test counting by "hello" (should match 2 events)
+        result = await event_service.count_events(body="hello")
+        assert result == 2
+
+        # Test counting by "python" (should match 1 event)
+        result = await event_service.count_events(body="python")
+        assert result == 1
+
+        # Test counting by non-matching text
+        result = await event_service.count_events(body="nonexistent")
+        assert result == 0
