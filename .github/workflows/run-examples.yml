@@ -85,13 +85,16 @@ jobs:
 
                       comment_body=$(sanitize_comment "$comment_body")
 
+                      payload=$(jq -n --arg body "$comment_body" '{body: $body}')
+
                       if [ -z "$COMMENT_ID" ]; then
                           echo "Creating PR comment..."
                           if ! response=$(curl -sSf -X POST \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
+                              -H "Content-Type: application/json" \
                               "${API_URL}" \
-                              -d "{\"body\":$(echo \"$comment_body\" | jq -Rs .)}"); then
+                              -d "$payload"); then
                               echo "::error::Failed to create PR comment."
                               exit 1
                           fi
@@ -103,11 +106,13 @@ jobs:
                           echo "Created comment with ID: $COMMENT_ID"
                       else
                           echo "Updating PR comment (ID: $COMMENT_ID)..."
+                          payload=$(jq -n --arg body "$comment_body" '{body: $body}')
                           if ! curl -sSf -X PATCH \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
+                              -H "Content-Type: application/json" \
                               "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${COMMENT_ID}" \
-                              -d "{\"body\":$(echo \"$comment_body\" | jq -Rs .)}" > /dev/null; then
+                              -d "$payload" > /dev/null; then
                               echo "::error::Failed to update PR comment (ID: $COMMENT_ID)."
                               exit 1
                           fi
@@ -136,7 +141,7 @@ jobs:
                   uv run pytest tests/examples/test_examples.py \
                       --run-examples \
                       --examples-results-dir "$RESULTS_DIR" \
-                      -n 4 || EXIT_CODE=$?
+                      -n auto || EXIT_CODE=$?
 
                   TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
                   WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
