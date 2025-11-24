@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from pathlib import Path
 
+from openhands.sdk.utils.github import sanitize_openhands_mentions
+
 
 @dataclass(slots=True)
 class ExampleResult:
@@ -191,11 +193,11 @@ def markdown_summary(results: list[ExampleResult], workflow_url: str) -> list[st
 
     lines = ["", "---", ""]
     if failed == 0 and total > 0:
-        lines.append("### ✅ All tests passed!\n")
+        lines.append("### ✅ All tests passed!")
     elif failed == 0:
-        lines.append("### ℹ️ No examples were executed\n")
+        lines.append("### ℹ️ No examples were executed")
     else:
-        lines.append("### ❌ Some tests failed\n")
+        lines.append("### ❌ Some tests failed")
 
     summary = f"**Total:** {total} | **Passed:** {passed} | **Failed:** {failed}"
     if cost_summary:
@@ -232,11 +234,12 @@ def main() -> int:
     args = parse_args()
     results = load_results(args.results_dir)
     report = build_report(args, results)
+    sanitized = sanitize_openhands_mentions(report)
 
     if args.output is not None:
-        args.output.write_text(report)
+        args.output.write_text(sanitized)
 
-    print(report)
+    print(sanitized)
     return 0
 
 

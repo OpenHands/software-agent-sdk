@@ -66,13 +66,9 @@ jobs:
                   GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
               run: |
                   RESULTS_DIR=".example-test-results"
+                  REPORT_PATH="examples_report.md"
                   rm -rf "$RESULTS_DIR"
                   mkdir -p "$RESULTS_DIR"
-
-                  sanitize_comment() {
-                      local text="$1"
-                      printf "%s" "$text" | uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')"
-                  }
 
                   update_comment() {
                       if [ -z "$API_URL" ]; then
@@ -81,9 +77,8 @@ jobs:
                       fi
 
                       local comment_body="$1"
+                      local payload
                       local response
-
-                      comment_body=$(sanitize_comment "$comment_body")
 
                       payload=$(jq -n --arg body "$comment_body" '{body: $body}')
 
@@ -106,7 +101,6 @@ jobs:
                           echo "Created comment with ID: $COMMENT_ID"
                       else
                           echo "Updating PR comment (ID: $COMMENT_ID)..."
-                          payload=$(jq -n --arg body "$comment_body" '{body: $body}')
                           if ! curl -sSf -X PATCH \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
@@ -140,14 +134,14 @@ jobs:
                   TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
                   WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-                  COMMENT_BODY="$(uv run python scripts/render_examples_report.py \
+                  uv run python scripts/render_examples_report.py \
                       --results-dir "$RESULTS_DIR" \
                       --model "$LLM_MODEL" \
                       --workflow-url "$WORKFLOW_URL" \
                       --timestamp "$TIMESTAMP" \
-                      --output examples_report.md
-                  )"
+                      --output "$REPORT_PATH"
 
+                  COMMENT_BODY="$(cat "$REPORT_PATH")"
                   echo "$COMMENT_BODY"
 
                   if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -164,13 +158,12 @@ jobs:
               shell: bash
               run: |
                   if [ -f examples_report.md ]; then
-                      # Sanitize @OpenHands mentions before posting
-                      REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < examples_report.md)
-                      echo "report<<EOF" >> $GITHUB_OUTPUT
-                      echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
-                      echo "EOF" >> $GITHUB_OUTPUT
+                      REPORT_CONTENT=$(cat examples_report.md)
+                      echo "report<<EOF" >> "$GITHUB_OUTPUT"
+                      echo "$REPORT_CONTENT" >> "$GITHUB_OUTPUT"
+                      echo "EOF" >> "$GITHUB_OUTPUT"
                   else
-                      echo "report=Report file not found" >> $GITHUB_OUTPUT
+                      echo "report=Report file not found" >> "$GITHUB_OUTPUT"
                   fi
 
             - name: Comment with results on tracker issue
