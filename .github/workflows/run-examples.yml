@@ -76,6 +76,7 @@ jobs:
 
                   update_comment() {
                       if [ -z "$API_URL" ]; then
+                          echo "Skipping PR comment update because API_URL is unset."
                           return
                       fi
 
@@ -85,19 +86,31 @@ jobs:
                       comment_body=$(sanitize_comment "$comment_body")
 
                       if [ -z "$COMMENT_ID" ]; then
-                          response=$(curl -s -X POST \
+                          echo "Creating PR comment..."
+                          if ! response=$(curl -sSf -X POST \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
                               "${API_URL}" \
-                              -d "{\"body\":$(echo \"$comment_body\" | jq -Rs .)}")
-                          COMMENT_ID=$(echo "$response" | jq -r '.id')
+                              -d "{\"body\":$(echo \"$comment_body\" | jq -Rs .)}"); then
+                              echo "::error::Failed to create PR comment."
+                              exit 1
+                          fi
+                          COMMENT_ID=$(echo "$response" | jq -r '.id // ""')
+                          if [ -z "$COMMENT_ID" ]; then
+                              echo "::error::GitHub API response did not include a comment id: $response"
+                              exit 1
+                          fi
                           echo "Created comment with ID: $COMMENT_ID"
                       else
-                          curl -s -X PATCH \
+                          echo "Updating PR comment (ID: $COMMENT_ID)..."
+                          if ! curl -sSf -X PATCH \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
                               "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${COMMENT_ID}" \
-                              -d "{\"body\":$(echo \"$comment_body\" | jq -Rs .)}" > /dev/null
+                              -d "{\"body\":$(echo \"$comment_body\" | jq -Rs .)}" > /dev/null; then
+                              echo "::error::Failed to update PR comment (ID: $COMMENT_ID)."
+                              exit 1
+                          fi
                       fi
                   }
 
@@ -112,6 +125,10 @@ jobs:
                           "${API_URL}?per_page=100" | jq -r 'map(select((.user.login=="github-actions[bot]") and (.body | contains("## 🔄 Running Examples")))) | last? | .id // ""')
                       if [ -n "$EXISTING_COMMENT_ID" ]; then
                           COMMENT_ID="$EXISTING_COMMENT_ID"
+                          echo "Reusing existing PR comment ID: $COMMENT_ID"
+                      else
+                          initial_comment="## 🔄 Running Examples with \`${LLM_MODEL}\`\n\n_Run in progress..._\n"
+                          update_comment "$initial_comment"
                       fi
                   fi
 
