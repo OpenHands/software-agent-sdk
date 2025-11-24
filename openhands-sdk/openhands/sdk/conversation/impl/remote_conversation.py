@@ -425,7 +425,6 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
-    _log_completion_folders: dict[str, str]
 
     def __init__(
         self,
@@ -463,13 +462,6 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
-
-        # Build map of log directories for all LLMs in the agent
-        self._log_completion_folders = {}
-        for llm in agent.get_all_llms():
-            if llm.log_completions:
-                # Map usage_id to log folder
-                self._log_completion_folders[llm.usage_id] = llm.log_completions_folder
 
         if conversation_id is None:
             payload = {
@@ -513,7 +505,8 @@ class RemoteConversation(BaseConversation):
         self._callbacks.append(state_update_callback)
 
         # Add callback to handle LLM completion logs
-        if self._log_completion_folders:
+        # Register callback if any LLM has log_completions enabled
+        if any(llm.log_completions for llm in agent.get_all_llms()):
             llm_log_callback = self._create_llm_completion_log_callback()
             self._callbacks.append(llm_log_callback)
 
@@ -563,15 +556,22 @@ class RemoteConversation(BaseConversation):
             if not isinstance(event, LLMCompletionLogEvent):
                 return
 
-            # Get the log directory for this LLM's usage_id
-            log_dir = self._log_completion_folders.get(event.usage_id)
-            if not log_dir:
+            # Find the LLM with matching usage_id
+            target_llm = None
+            for llm in self.agent.get_all_llms():
+                if llm.usage_id == event.usage_id:
+                    target_llm = llm
+                    break
+
+            if not target_llm or not target_llm.log_completions:
                 logger.debug(
-                    f"No log directory configured for usage_id={event.usage_id}"
+                    f"No LLM with log_completions enabled found "
+                    f"for usage_id={event.usage_id}"
                 )
                 return
 
             try:
+                log_dir = target_llm.log_completions_folder
                 os.makedirs(log_dir, exist_ok=True)
                 log_path = os.path.join(log_dir, event.filename)
                 with open(log_path, "w") as f:
