@@ -23,6 +23,43 @@ jobs:
         if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 60
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    - group_id: standalone-a
+                      examples: |
+                          examples/01_standalone_sdk/02_custom_tools.py
+                          examples/01_standalone_sdk/03_activate_skill.py
+                          examples/01_standalone_sdk/05_use_llm_registry.py
+                          examples/01_standalone_sdk/07_mcp_integration.py
+                          examples/01_standalone_sdk/09_pause_example.py
+                          examples/01_standalone_sdk/10_persistence.py
+                    - group_id: standalone-b
+                      examples: |
+                          examples/01_standalone_sdk/11_async.py
+                          examples/01_standalone_sdk/12_custom_secrets.py
+                          examples/01_standalone_sdk/13_get_llm_metrics.py
+                          examples/01_standalone_sdk/14_context_condenser.py
+                          examples/01_standalone_sdk/17_image_input.py
+                          examples/01_standalone_sdk/18_send_message_while_processing.py
+                    - group_id: standalone-c
+                      examples: |
+                          examples/01_standalone_sdk/19_llm_routing.py
+                          examples/01_standalone_sdk/20_stuck_detector.py
+                          examples/01_standalone_sdk/21_generate_extraneous_conversation_costs.py
+                          examples/01_standalone_sdk/22_anthropic_thinking.py
+                          examples/01_standalone_sdk/23_responses_reasoning.py
+                          examples/01_standalone_sdk/24_planning_agent_workflow.py
+                    - group_id: remote
+                      examples: |
+                          examples/01_standalone_sdk/25_agent_delegation.py
+                          examples/01_standalone_sdk/26_custom_visualizer.py
+                          examples/02_remote_agent_server/01_convo_with_local_agent_server.py
+                          examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py
+                          examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py
+                          examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py
+
         steps:
             - name: Wait for agent server to finish build
               if: github.event_name == 'pull_request'
@@ -59,6 +96,9 @@ jobs:
                   LLM_MODEL: openhands/claude-haiku-4-5-20251001
                   LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
                   RUNTIME_API_KEY: ${{ secrets.RUNTIME_API_KEY }}
+                  EXAMPLE_GROUP: ${{ matrix.examples }}
+                  SKIP_COMMENT_UPDATES: '1'
+                  ALLOW_FAILURE: '1'
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PR_NUMBER: ${{ github.event.pull_request.number }}
                   REPO_OWNER: ${{ github.repository_owner }}
@@ -101,6 +141,10 @@ jobs:
                       "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py"
                       "examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py"
                   )
+
+                  if [ -n "${EXAMPLE_GROUP:-}" ]; then
+                      mapfile -t EXAMPLES <<< "${EXAMPLE_GROUP}"
+                  fi
 
                   # GitHub API setup (only for PR events)
                   if [ "${{ github.event_name }}" = "pull_request" ]; then
@@ -210,7 +254,7 @@ jobs:
                   > "$RESULTS_FILE"
 
                   # Create initial comment with all tests pending (only for PR events)
-                  if [ "${{ github.event_name }}" = "pull_request" ]; then
+                  if [ "${{ github.event_name }}" = "pull_request" ] && [ -z "${SKIP_COMMENT_UPDATES:-}" ]; then
                       echo "Creating initial PR comment..."
                       update_comment "$(generate_table)"
                   fi
@@ -277,8 +321,10 @@ jobs:
                       rm -f "$OUTPUT_FILE"
                                   
                       # Update PR comment after each test (with error handling)
-                      echo "Updating PR comment..."
-                      update_comment "$(generate_table)" || echo "Warning: Failed to update PR comment"
+                      if [ -z "${SKIP_COMMENT_UPDATES:-}" ]; then
+                          echo "Updating PR comment..."
+                          update_comment "$(generate_table)" || echo "Warning: Failed to update PR comment"
+                      fi
                   done
 
                   echo ""
@@ -301,11 +347,236 @@ jobs:
                       for failed_example in "${FAILED_EXAMPLES[@]}"; do
                           echo "  - $failed_example"
                       done
-                      exit 1
+                      if [ -z "${ALLOW_FAILURE:-}" ]; then
+                          exit 1
+                      else
+                          echo "ALLOW_FAILURE is set; skipping non-zero exit."
+                      fi
+                  else
+                      echo ""
+                      echo "All examples passed! ✓"
                   fi
 
-                  echo ""
-                  echo "All examples passed! ✓"
+            - name: Upload results artifact
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: results-${{ matrix.group_id }}
+                  path: |
+                      test-results.txt
+                      examples_report.md
+
+    aggregate-results:
+        needs: test-examples
+        if: ${{ always() && (github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || github.event_name == 
+            'schedule') }}
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        timeout-minutes: 30
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  ref: ${{ github.event.pull_request.head.ref }}
+                  repository: ${{ github.event.pull_request.head.repo.full_name }}
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install dependencies
+              run: uv sync --frozen --group dev
+
+            - name: Download results artifacts
+              if: always()
+              continue-on-error: true
+              uses: actions/download-artifact@v4
+              with:
+                  path: artifacts
+                  pattern: results-*
+                  merge-multiple: false
+
+            - name: Aggregate results
+              id: aggregate
+              shell: bash
+              env:
+                  ALL_EXAMPLES: |
+                      examples/01_standalone_sdk/02_custom_tools.py
+                      examples/01_standalone_sdk/03_activate_skill.py
+                      examples/01_standalone_sdk/05_use_llm_registry.py
+                      examples/01_standalone_sdk/07_mcp_integration.py
+                      examples/01_standalone_sdk/09_pause_example.py
+                      examples/01_standalone_sdk/10_persistence.py
+                      examples/01_standalone_sdk/11_async.py
+                      examples/01_standalone_sdk/12_custom_secrets.py
+                      examples/01_standalone_sdk/13_get_llm_metrics.py
+                      examples/01_standalone_sdk/14_context_condenser.py
+                      examples/01_standalone_sdk/17_image_input.py
+                      examples/01_standalone_sdk/18_send_message_while_processing.py
+                      examples/01_standalone_sdk/19_llm_routing.py
+                      examples/01_standalone_sdk/20_stuck_detector.py
+                      examples/01_standalone_sdk/21_generate_extraneous_conversation_costs.py
+                      examples/01_standalone_sdk/22_anthropic_thinking.py
+                      examples/01_standalone_sdk/23_responses_reasoning.py
+                      examples/01_standalone_sdk/24_planning_agent_workflow.py
+                      examples/01_standalone_sdk/25_agent_delegation.py
+                      examples/01_standalone_sdk/26_custom_visualizer.py
+                      examples/02_remote_agent_server/01_convo_with_local_agent_server.py
+                      examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py
+                      examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py
+                      examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py
+                  LLM_MODEL: openhands/claude-haiku-4-5-20251001
+              run: |
+                  python - <<'PY'
+                  import json
+                  import os
+                  from datetime import datetime, timezone
+                  from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+                  from pathlib import Path
+
+                  examples = [line.strip() for line in os.environ.get("ALL_EXAMPLES", "").splitlines() if line.strip()]
+                  results_root = Path("artifacts")
+
+                  status = {}
+                  durations = {}
+                  costs = {}
+
+                  total_cost = Decimal("0")
+                  cost_entries = 0
+                  failed_examples = []
+
+                  def maybe_decimal(raw):
+                      if not raw:
+                          return None
+                      try:
+                          return Decimal(raw)
+                      except InvalidOperation:
+                          return None
+
+                  def format_cost(value):
+                      if value is None:
+                          return "N/A"
+                      return f"${value.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)}"
+
+                  for result_file in sorted(results_root.glob("results-*/test-results.txt")):
+                      with result_file.open(encoding="utf-8") as fh:
+                          for raw_line in fh:
+                              line = raw_line.strip()
+                              if not line:
+                                  continue
+                              parts = line.split("|")
+                              if len(parts) < 4:
+                                  continue
+                              outcome, example = parts[0], parts[1]
+                              if outcome == "PASS":
+                                  try:
+                                      duration_value = int(parts[2])
+                                  except ValueError:
+                                      duration_value = 0
+                                  cost_value = maybe_decimal(parts[3] if len(parts) > 3 else "")
+                                  if cost_value is not None:
+                                      total_cost += cost_value
+                                      cost_entries += 1
+                                  status[example] = "✅ PASS"
+                                  durations[example] = f"{duration_value}s"
+                                  costs[example] = format_cost(cost_value)
+                              elif outcome == "FAIL":
+                                  exit_code = parts[2] if len(parts) > 2 else "1"
+                                  try:
+                                      duration_value = int(parts[3])
+                                  except (ValueError, IndexError):
+                                      duration_value = 0
+                                  cost_value = maybe_decimal(parts[4] if len(parts) > 4 else "")
+                                  if cost_value is not None:
+                                      total_cost += cost_value
+                                      cost_entries += 1
+                                  status[example] = f"❌ FAIL (exit: {exit_code})"
+                                  durations[example] = f"{duration_value}s"
+                                  costs[example] = format_cost(cost_value)
+                                  if example not in failed_examples:
+                                      failed_examples.append(example)
+
+                  total = len(examples)
+                  passed = sum(1 for ex in examples if status.get(ex, "").startswith("✅"))
+                  failed = sum(1 for ex in examples if status.get(ex, "").startswith("❌"))
+                  completed = passed + failed
+
+                  model = os.environ.get("LLM_MODEL", "unknown")
+                  timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+                  header = f"## 🔄 Running Examples with `{model}`\n\n"
+                  header += f"_Last updated: {timestamp}_\n\n"
+                  header += "| Example | Status | Duration | Cost |\n"
+                  header += "|---------|--------|----------|------|\n"
+
+                  rows = []
+                  for example in examples:
+                      short_name = example[9:] if example.startswith("examples/") else example
+                      rows.append(
+                          f"| {short_name} | {status.get(example, '⏳ Pending')} | {durations.get(example, '-')} | {costs.get(example, '-')} |\n"
+                      )
+
+                  summary_lines = ["\n---\n\n"]
+                  if completed == total:
+                      if failed == 0:
+                          summary_lines.append("### ✅ All tests passed!\n\n")
+                      else:
+                          summary_lines.append("### ❌ Some tests failed\n\n")
+                      summary_text = f"**Total:** {total} | **Passed:** {passed} | **Failed:** {failed}"
+                      if cost_entries:
+                          summary_text += f" | **Total Cost:** {format_cost(total_cost)}"
+                      summary_lines.append(summary_text + "\n\n")
+                      server_url = os.environ.get("GITHUB_SERVER_URL")
+                      repository = os.environ.get("GITHUB_REPOSITORY")
+                      run_id = os.environ.get("GITHUB_RUN_ID")
+                      if server_url and repository and run_id:
+                          summary_lines.append(f"[View full workflow run]({server_url}/{repository}/actions/runs/{run_id})")
+                  else:
+                      summary_lines.append(f"**Progress:** {completed}/{total} completed | **Passed:** {passed} | **Failed:** {failed}")
+
+                  report = header + "".join(rows) + "".join(summary_lines)
+                  Path("examples_report.md").write_text(report, encoding="utf-8")
+
+                  meta = {
+                      "total": total,
+                      "completed": completed,
+                      "passed": passed,
+                      "failed": failed,
+                      "failed_examples": failed_examples,
+                      "total_cost": format_cost(total_cost) if cost_entries else None,
+                  }
+                  Path("aggregate-meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+                  print(report)
+                  PY
+                  FAILED=$(jq '.failed' aggregate-meta.json)
+                  TOTAL=$(jq '.total' aggregate-meta.json)
+                  COMPLETED=$(jq '.completed' aggregate-meta.json)
+                  echo "failed=${FAILED}" >> "$GITHUB_OUTPUT"
+                  echo "total=${TOTAL}" >> "$GITHUB_OUTPUT"
+                  echo "completed=${COMPLETED}" >> "$GITHUB_OUTPUT"
+
+            - name: Post summary comment on PR
+              if: github.event_name == 'pull_request'
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  REPO_OWNER: ${{ github.repository_owner }}
+                  REPO_NAME: ${{ github.event.repository.name }}
+              run: |
+                  sanitize_comment() {
+                      local text="$1"
+                      printf "%s" "$text" | uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')"
+                  }
+
+                  COMMENT_BODY=$(cat examples_report.md)
+                  COMMENT_BODY=$(sanitize_comment "$COMMENT_BODY")
+
+                  curl -s -X POST \
+                      -H "Authorization: token ${GITHUB_TOKEN}" \
+                      -H "Accept: application/vnd.github.v3+json" \
+                      "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments" \
+                      -d "{\"body\":$(echo \"$COMMENT_BODY\" | jq -Rs .)}"
 
             - name: Read examples report for issue comment
               if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
@@ -313,7 +584,6 @@ jobs:
               shell: bash
               run: |
                   if [ -f examples_report.md ]; then
-                      # Sanitize @OpenHands mentions before posting
                       REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < examples_report.md)
                       echo "report<<EOF" >> $GITHUB_OUTPUT
                       echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
@@ -334,3 +604,14 @@ jobs:
                       **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
                       ${{ steps.read_report.outputs.report }}
+
+            - name: Fail workflow if any example failed
+              run: |
+                  FAILED=$(jq '.failed' aggregate-meta.json)
+                  TOTAL=$(jq '.total' aggregate-meta.json)
+                  COMPLETED=$(jq '.completed' aggregate-meta.json)
+                  if [ "$FAILED" -gt 0 ] || [ "$COMPLETED" -lt "$TOTAL" ]; then
+                      echo "Some examples failed or did not complete."
+                      exit 1
+                  fi
+
