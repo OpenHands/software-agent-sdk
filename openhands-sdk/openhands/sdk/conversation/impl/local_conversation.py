@@ -496,7 +496,7 @@ class LocalConversation(BaseConversation):
             )
             self.llm_registry.add(question_llm)
 
-        response = question_llm.completion(visible_events, tools=None)
+        response = question_llm.completion(visible_events, tools=[])
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
             # Look for the first TextContent in the response
