@@ -1,33 +1,32 @@
 ---
-# Run evaluation on a PR, after releases, or manually
 name: Run Eval
 
-# Runs when a PR is labeled with one of the "run-eval-" labels, after releases, or manually triggered
 on:
-    pull_request:
+    pull_request_target:
         types: [labeled]
     release:
         types: [published]
     workflow_dispatch:
         inputs:
             branch:
-                description: Branch to evaluate
+                description: Branch or tag to evaluate
                 required: true
                 default: main
-            eval_instances:
-                description: Number of evaluation instances
+            eval_limit:
+                description: Number of SWE-bench instances to run
                 required: true
-                default: '50'
+                default: '1'
                 type: choice
                 options:
                     - '1'
-                    - '5'
+                    - '2'
+                    - '10'
                     - '50'
-                    - '200'
-            models:
-                description: Comma-separated model configurations to evaluate (e.g. "claude-sonnet-4-5-20250929,claude-haiku-4-5-20251001")
-                required: true
-                default: claude-sonnet-4-5-20250929
+                    - '100'
+            model_stubs:
+                description: Comma-separated model stubs to evaluate (must be allowlisted)
+                required: false
+                default: ''
                 type: string
             reason:
                 description: Reason for manual trigger
@@ -35,162 +34,243 @@ on:
                 default: ''
 
 env:
-    # Environment variable for the master GitHub issue number where all evaluation results will be commented
-    # This should be set to the issue number where you want all evaluation results to be posted
-    MASTER_EVAL_ISSUE_NUMBER: ${{ vars.MASTER_EVAL_ISSUE_NUMBER || '0' }}
-    DEFAULT_MODEL_ID: claude-sonnet-4-5-20250929
-    MODELS_JSON: >-
-        [
-          {"id":"claude-sonnet-4-5-20250929","display_name":"Claude Sonnet 4.5","llm_config":{"model":"litellm_proxy/claude-sonnet-4-5-20250929","temperature":0.0}},
-          {"id":"claude-haiku-4-5-20251001","display_name":"Claude Haiku 4.5","llm_config":{"model":"litellm_proxy/claude-haiku-4-5-20251001","temperature":0.0}},
-          {"id":"gpt-5-mini-2025-08-07","display_name":"GPT-5 Mini","llm_config":{"model":"litellm_proxy/gpt-5-mini-2025-08-07","temperature":1.0}},
-          {"id":"deepseek-chat","display_name":"DeepSeek Chat","llm_config":{"model":"litellm_proxy/deepseek/deepseek-chat"}},
-          {"id":"kimi-k2-thinking","display_name":"Kimi K2 Thinking","llm_config":{"model":"litellm_proxy/moonshot/kimi-k2-thinking"}}
-        ]
+    BENCHMARKS_REPO: OpenHands/benchmarks
+    BENCHMARKS_REF: main
+    EVAL_REPO: OpenHands/evaluation
+    EVAL_WORKFLOW: eval-job.yml
+    DATASET: princeton-nlp/SWE-bench_Verified
+    SPLIT: test
+    MAX_BUILD_WORKERS: '32'
+    EVAL_AGENT_IMAGE: ghcr.io/openhands/eval-agent-server
+    EVAL_AGENT_TARGET: source-minimal
 
 jobs:
-    trigger-eval:
-        name: Trigger remote eval
-        if: ${{ (github.event_name == 'pull_request' && (github.event.label.name == 'run-eval-1' || github.event.label.name == 'run-eval-2' || 
-            github.event.label.name == 'run-eval-50' || github.event.label.name == 'run-eval-100')) || github.event_name == 'release' || 
-            github.event_name == 'workflow_dispatch' }}
-        runs-on: blacksmith-4vcpu-ubuntu-2204
+    build-and-evaluate:
+        if: >
+            github.event_name == 'release' ||
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'pull_request_target' &&
+             (github.event.label.name == 'run-eval-1' ||
+              github.event.label.name == 'run-eval-2' ||
+              github.event.label.name == 'run-eval-50' ||
+              github.event.label.name == 'run-eval-100'))
+        runs-on: blacksmith-32vcpu-ubuntu-2204
+        permissions:
+            contents: read
+            packages: write
+            actions: write
+            issues: write
+            pull-requests: write
 
         steps:
-            - name: Checkout branch
+            - name: Checkout sdk code
               uses: actions/checkout@v4
               with:
-                  ref: ${{ github.event_name == 'pull_request' && github.head_ref || (github.event_name == 'workflow_dispatch' && 
-                      github.event.inputs.branch) || github.ref }}
+                  ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || (github.event_name == 
+                      'workflow_dispatch' && github.event.inputs.branch) || github.ref }}
+                  fetch-depth: 0
 
-            - name: Set evaluation parameters
-              id: eval_params
-              env:
-                  MODELS_JSON: ${{ env.MODELS_JSON }}
-                  MODELS_INPUT: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.models || '' }}
-                  DEFAULT_MODEL_ID: ${{ env.DEFAULT_MODEL_ID }}
+            - name: Load allowlists
+              id: allowlists
               run: |
-                  REPO_URL="https://github.com/${{ github.repository }}"
-                  echo "Repository URL: $REPO_URL"
-
-                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-                    EVAL_BRANCH="${{ github.head_ref }}"
-                    echo "PR Branch: $EVAL_BRANCH"
-                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-                    EVAL_BRANCH="${{ github.event.inputs.branch }}"
-                    echo "Manual Branch: $EVAL_BRANCH"
-                  else
-                    EVAL_BRANCH="${{ github.ref_name }}"
-                    echo "Release Branch/Tag: $EVAL_BRANCH"
+                  ALLOWED_MODELS_JSON=$(jq -c '.' .github/run-eval/allowed-model-stubs.json)
+                  DEFAULT_MODEL=$(echo "$ALLOWED_MODELS_JSON" | jq -r '.[0]')
+                  if [ -z "$DEFAULT_MODEL" ]; then
+                    echo "No default model stub configured" >&2
+                    exit 1
                   fi
+                  echo "allowed_models=$ALLOWED_MODELS_JSON" >> "$GITHUB_OUTPUT"
+                  echo "default_model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
 
-                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-                    if [[ "${{ github.event.label.name }}" == "run-eval-1" ]]; then
-                      EVAL_INSTANCES="1"
-                    elif [[ "${{ github.event.label.name }}" == "run-eval-2" ]]; then
-                      EVAL_INSTANCES="2"
-                    elif [[ "${{ github.event.label.name }}" == "run-eval-50" ]]; then
-                      EVAL_INSTANCES="50"
-                    elif [[ "${{ github.event.label.name }}" == "run-eval-100" ]]; then
-                      EVAL_INSTANCES="100"
-                    fi
-                  elif [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-                    EVAL_INSTANCES="${{ github.event.inputs.eval_instances }}"
-                  else
-                    EVAL_INSTANCES="50"
-                  fi
-
-                  echo "Evaluation instances: $EVAL_INSTANCES"
-                  echo "repo_url=$REPO_URL" >> "$GITHUB_OUTPUT"
-                  echo "eval_branch=$EVAL_BRANCH" >> "$GITHUB_OUTPUT"
-                  echo "eval_instances=$EVAL_INSTANCES" >> "$GITHUB_OUTPUT"
-
-                  export EVAL_INSTANCES
-                  python .github/scripts/build_eval_targets.py
-
-            - name: Trigger remote job
-              env:
-                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  TARGETS: ${{ steps.eval_params.outputs.targets }}
-                  EVAL_BRANCH: ${{ steps.eval_params.outputs.eval_branch }}
-                  MODELS_TEXT: ${{ steps.eval_params.outputs.models_text }}
-                  EVAL_INSTANCES: ${{ steps.eval_params.outputs.eval_instances }}
-                  REPO_URL: ${{ steps.eval_params.outputs.repo_url }}
+            - name: Validate labeler
+              if: github.event_name == 'pull_request_target'
               run: |
-                  if [ -z "$PAT_TOKEN" ]; then
-                    echo "PAT_TOKEN is required to dispatch remote workflow"
+                  LABELER="${{ github.actor }}"
+                  if ! grep -Fx "$LABELER" .github/run-eval/authorized-labelers.txt >/dev/null; then
+                    echo "User $LABELER is not authorized to trigger eval." >&2
                     exit 1
                   fi
 
-                  if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            - name: Resolve parameters
+              id: params
+              env:
+                  DEFAULT_MODEL: ${{ steps.allowlists.outputs.default_model }}
+                  ALLOWED_MODELS_JSON: ${{ steps.allowlists.outputs.allowed_models }}
+              run: |
+                  set -euo pipefail
+
+                  # Determine eval limit based on trigger
+                  if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+                    LABEL="${{ github.event.label.name }}"
+                    case "$LABEL" in
+                      run-eval-1) EVAL_LIMIT=1 ;;
+                      run-eval-2) EVAL_LIMIT=2 ;;
+                      run-eval-50) EVAL_LIMIT=50 ;;
+                      run-eval-100) EVAL_LIMIT=100 ;;
+                      *) echo "Unsupported label $LABEL" >&2; exit 1 ;;
+                    esac
+                    SDK_REF="${{ github.event.pull_request.head.ref }}"
                     PR_NUMBER="${{ github.event.pull_request.number }}"
+                    TRIGGER_DESCRIPTION="Label '${LABEL}' on PR #${PR_NUMBER}"
+                  elif [ "${{ github.event_name }}" = "release" ]; then
+                    EVAL_LIMIT=50
+                    SDK_REF="${{ github.event.release.tag_name }}"
+                    PR_NUMBER=""
+                    TRIGGER_DESCRIPTION="Release ${{ github.event.release.tag_name }}"
                   else
-                    PR_NUMBER="${{ env.MASTER_EVAL_ISSUE_NUMBER }}"
+                    EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
+                    SDK_REF="${{ github.event.inputs.branch }}"
+                    PR_NUMBER=""
+                    REASON="${{ github.event.inputs.reason }}"
+                    if [ -z "$REASON" ]; then
+                      REASON="manual"
+                    fi
+                    TRIGGER_DESCRIPTION="Manual trigger: ${REASON}"
                   fi
 
-                  echo "$TARGETS" | jq -c '.[]' | while read -r target; do
-                    model_id=$(echo "$target" | jq -r '.model_id')
-                    llm_config=$(echo "$target" | jq -c '.llm_config')
-                    eval_instances=$(echo "$target" | jq -r '.eval_instances')
-
-                    payload=$(jq -n \
-                      --arg repo "$REPO_URL" \
-                      --arg sdk_ref "$EVAL_BRANCH" \
-                      --arg pr "$PR_NUMBER" \
-                      --arg instances "$eval_instances" \
-                      --arg model_id "$model_id" \
-                      --arg llm_config "$llm_config" \
-                      '{
-                        "ref": "main",
-                        "inputs": {
-                          "sdk-repo": $repo,
-                          "sdk-ref": $sdk_ref,
-                          "benchmarks-repo": "https://github.com/OpenHands/benchmarks.git",
-                          "benchmarks-ref": "main",
-                          "pr-number": $pr,
-                          "eval-instances": $instances,
-                          "llm-model-id": $model_id,
-                          "llm-config": $llm_config,
-                          "trigger-description": "",
-                          "trigger_type": "manual"
-                        }
-                      }')
-
-                    curl -X POST \
-                      -H "Authorization: Bearer $PAT_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      -d "$payload" \
-                      https://api.github.com/repos/OpenHands/evaluation/actions/workflows/create-branch-v1.yml/dispatches
+                  # Normalize and validate models
+                  MODELS_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_stubs || '' }}"
+                  if [ -z "$MODELS_INPUT" ]; then
+                    MODELS_INPUT="$DEFAULT_MODEL"
+                  fi
+                  MODELS=$(printf '%s' "$MODELS_INPUT" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)
+                  ALLOWED_LIST=$(echo "$ALLOWED_MODELS_JSON" | jq -r '.[]')
+                  for MODEL in ${MODELS//,/ }; do
+                    if ! echo "$ALLOWED_LIST" | grep -Fx "$MODEL" >/dev/null; then
+                      echo "Model stub '$MODEL' is not allowlisted" >&2
+                      exit 1
+                    fi
                   done
 
-                  if [ -n "${{ secrets.SLACK_TOKEN }}" ]; then
-                    if [[ "${{ github.event_name }}" == "pull_request" ]]; then
-                      TRIGGER_URL="https://github.com/${{ github.repository }}/pull/${{ github.event.pull_request.number }}"
-                      slack_text="PR $TRIGGER_URL has triggered evaluation on $EVAL_INSTANCES instances with models: $MODELS_TEXT (branch $EVAL_BRANCH)."
-                    elif [[ "${{ github.event_name }}" == "release" ]]; then
-                      TRIGGER_URL="https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}"
-                      slack_text="Release $TRIGGER_URL has triggered evaluation on $EVAL_INSTANCES instances with models: $MODELS_TEXT (branch $EVAL_BRANCH)."
-                    else
-                      reason="${{ github.event.inputs.reason || 'No reason provided' }}"
-                      TRIGGER_URL="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-                      slack_text="Manual trigger ($reason) has triggered evaluation on $EVAL_INSTANCES instances with models: $MODELS_TEXT for branch $EVAL_BRANCH."
-                    fi
-                    curl -X POST -H 'Content-type: application/json' --data '{"text":"'"$slack_text"'"}' \
-                      https://hooks.slack.com/services/${{ secrets.SLACK_TOKEN }}
+                  echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
+                  echo "sdk_ref=$SDK_REF" >> "$GITHUB_OUTPUT"
+                  echo "models=$MODELS" >> "$GITHUB_OUTPUT"
+                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
+
+            - name: Checkout evaluated ref for PRs
+              if: github.event_name == 'pull_request_target'
+              run: |
+                  set -euo pipefail
+                  REF="${{ steps.params.outputs.sdk_ref }}"
+                  git fetch origin "$REF" --force
+                  git checkout FETCH_HEAD
+
+            - name: Checkout benchmarks repo
+              uses: actions/checkout@v4
+              with:
+                  repository: ${{ env.BENCHMARKS_REPO }}
+                  ref: ${{ env.BENCHMARKS_REF }}
+                  path: benchmarks
+                  submodules: recursive
+
+            - name: Pin benchmarks SDK to evaluated ref
+              id: sdk-pin
+              run: |
+                  set -euo pipefail
+                  SDK_REF="${{ steps.params.outputs.sdk_ref }}"
+                  git -C benchmarks/vendor/software-agent-sdk fetch origin "$SDK_REF"
+                  git -C benchmarks/vendor/software-agent-sdk checkout "$SDK_REF"
+                  SDK_SHA=$(git -C benchmarks/vendor/software-agent-sdk rev-parse HEAD)
+                  echo "Using SDK ref $SDK_REF ($SDK_SHA) for image build"
+                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
+
+            - name: Set up uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Log in to GitHub Container Registry
+              uses: docker/login-action@v3
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.actor }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Build and push SWE-Bench images
+              env:
+                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
+                  SDK_REF: ${{ steps.params.outputs.sdk_ref }}
+                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
+                  DATASET: ${{ env.DATASET }}
+                  SPLIT: ${{ env.SPLIT }}
+                  MAX_BUILD_WORKERS: ${{ env.MAX_BUILD_WORKERS }}
+                  EVAL_AGENT_IMAGE: ${{ env.EVAL_AGENT_IMAGE }}
+                  EVAL_AGENT_TARGET: ${{ env.EVAL_AGENT_TARGET }}
+              working-directory: benchmarks
+              run: |
+                  set -euo pipefail
+                  echo "Building images for SDK $SDK_SHA (ref: $SDK_REF)"
+                  N_LIMIT_FLAG=""
+                  if [ -n "$EVAL_LIMIT" ]; then
+                    N_LIMIT_FLAG="--n-limit '$EVAL_LIMIT'"
+                  fi
+                  CMD="uv run benchmarks/swe_bench/build_images.py \
+                    --dataset '${DATASET}' \
+                    --split '${SPLIT}' \
+                    --image '${EVAL_AGENT_IMAGE}' \
+                    --target '${EVAL_AGENT_TARGET}' \
+                    --push \
+                    --max-workers '${MAX_BUILD_WORKERS}' ${N_LIMIT_FLAG}"
+                  echo "Running: $CMD"
+                  eval "$CMD"
+
+            - name: Dispatch evaluation workflow
+              env:
+                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT || secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
+                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
+                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
+                  MODELS: ${{ steps.params.outputs.models }}
+                  EVAL_REPO: ${{ env.EVAL_REPO }}
+                  EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
+              run: |
+                  if [ -z "$PAT_TOKEN" ]; then
+                    echo "Missing PAT_TOKEN for dispatching evaluation workflow" >&2
+                    exit 1
+                  fi
+                  PAYLOAD=$(jq -n \
+                    --arg sdk "$SDK_SHA" \
+                    --arg eval_limit "$EVAL_LIMIT" \
+                    --arg models "$MODELS" \
+                    '{ref: "main", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models}}')
+                  curl -sS -X POST \
+                    -H "Authorization: Bearer $PAT_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -d "$PAYLOAD" \
+                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches"
+
+            - name: Comment on PR
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
+                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
+                  MODELS: ${{ steps.params.outputs.models }}
+                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
+                  EVENT_NAME: ${{ github.event_name }}
+                  PR_NUMBER_INPUT: ${{ steps.params.outputs.pr_number }}
+              run: |
+                  set -euo pipefail
+                  PR_NUMBER="$PR_NUMBER_INPUT"
+                  if [ "$EVENT_NAME" = "release" ] && [ -z "$PR_NUMBER" ]; then
+                    # Attempt to find the merged PR for this commit
+                    SDK_SHA_SHORT=${SDK_SHA:0:40}
+                    PR_NUMBER=$(curl -sS \
+                      -H "Authorization: Bearer $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${{ github.repository }}/commits/${SDK_SHA_SHORT}/pulls" \
+                      | jq -r '.[0].number // ""')
                   fi
 
-            - name: Comment on issue/PR
-              uses: KeisukeYamashita/create-comment@v1
-              with:
-                  number: ${{ github.event_name == 'pull_request' && github.event.pull_request.number || env.MASTER_EVAL_ISSUE_NUMBER }}
-                  unique: false
-                  comment: |
-                      **Evaluation Triggered**
+                  if [ -z "$PR_NUMBER" ]; then
+                    echo "No PR found to comment on; skipping comment"
+                    exit 0
+                  fi
 
-                      **Trigger:** ${{ github.event_name == 'pull_request' && format('Pull Request #{0}', github.event.pull_request.number) || (github.event_name == 'release' && 'Release') || format('Manual Trigger: {0}', github.event.inputs.reason || 'No reason provided') }}
-                      **Branch:** ${{ steps.eval_params.outputs.eval_branch }}
-                      **Instances:** ${{ steps.eval_params.outputs.eval_instances }}
-                      **Models:** ${{ steps.eval_params.outputs.models_text }}
-                      **Commit:** ${{ github.sha }}
+                  COMMENT_BODY=$(printf '**Evaluation Triggered**\n\n- Trigger: %s\n- SDK: %s\n- Eval limit: %s\n- Models: %s\n' \
+                    "$TRIGGER_DESC" "$SDK_SHA" "$EVAL_LIMIT" "$MODELS")
 
-                      Running evaluation on the specified branch. Once eval is done, the results will be posted here.
+                  curl -sS -X POST \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                    -d "$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')"
