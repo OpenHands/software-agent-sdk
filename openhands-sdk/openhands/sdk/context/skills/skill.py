@@ -1,12 +1,11 @@
 import io
 import re
-import tempfile
+import subprocess
 from itertools import chain
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
 
 import frontmatter
-import httpx
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -375,15 +374,124 @@ PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
 PUBLIC_SKILLS_BRANCH = "main"
 
 
+def _get_skills_cache_dir() -> Path:
+    """Get the local cache directory for public skills repository.
+
+    Returns:
+        Path to the skills cache directory (~/.openhands/skills-cache/).
+    """
+    cache_dir = Path.home() / ".openhands" / "skills-cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _update_skills_repository(
+    repo_url: str,
+    branch: str,
+    cache_dir: Path,
+) -> Path | None:
+    """Clone or update the local skills repository.
+
+    Args:
+        repo_url: URL of the skills repository.
+        branch: Branch name to use.
+        cache_dir: Directory where the repository should be cached.
+
+    Returns:
+        Path to the local repository if successful, None otherwise.
+    """
+    # Create a safe directory name from repo URL
+    repo_name = (
+        repo_url.replace("https://", "")
+        .replace("http://", "")
+        .replace("git@", "")
+        .replace(":", "_")
+        .replace("/", "_")
+        .replace(".", "_")
+    )
+    repo_path = cache_dir / repo_name
+
+    try:
+        if repo_path.exists() and (repo_path / ".git").exists():
+            # Repository exists, try to pull latest changes
+            logger.debug(f"Updating skills repository at {repo_path}")
+            try:
+                # Fetch the latest changes
+                subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                # Reset to the target branch
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{branch}"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.debug("Skills repository updated successfully")
+            except subprocess.TimeoutExpired:
+                logger.warning("Git pull timed out, using existing cached repository")
+            except subprocess.CalledProcessError as e:
+                logger.warning(
+                    f"Failed to update repository: {e.stderr.decode()}, "
+                    f"using existing cached version"
+                )
+        else:
+            # Repository doesn't exist, clone it
+            logger.debug(f"Cloning skills repository from {repo_url}")
+            if repo_path.exists():
+                # Remove incomplete/corrupted directory
+                import shutil
+
+                shutil.rmtree(repo_path)
+
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    branch,
+                    repo_url,
+                    str(repo_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            logger.debug(f"Skills repository cloned to {repo_path}")
+
+        return repo_path
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Git operation timed out for {repo_url}")
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            f"Failed to clone/update repository {repo_url}: {e.stderr.decode()}"
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"Error managing skills repository: {str(e)}")
+        return None
+
+
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     branch: str = PUBLIC_SKILLS_BRANCH,
 ) -> list[Skill]:
     """Load skills from the public OpenHands skills repository.
 
-    This function fetches skills from the public skills registry at
-    https://github.com/OpenHands/skills. Skills are downloaded and loaded
-    dynamically, allowing users to get the latest skills without SDK updates.
+    This function maintains a local git clone of the public skills registry at
+    https://github.com/OpenHands/skills. On first run, it clones the repository
+    to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
+    to keep the skills up-to-date. This approach is more efficient than fetching
+    individual files via HTTP.
 
     Args:
         repo_url: URL of the skills repository. Defaults to the official
@@ -406,86 +514,39 @@ def load_public_skills(
     """
     all_skills = []
 
-    # Extract owner and repo name from GitHub URL
     try:
-        # Support both HTTPS and SSH URLs
-        if repo_url.startswith("https://github.com/"):
-            parts = repo_url.replace("https://github.com/", "").rstrip("/").split("/")
-        elif repo_url.startswith("git@github.com:"):
-            parts = repo_url.replace("git@github.com:", "").rstrip("/").split("/")
-        else:
-            logger.warning(
-                f"Invalid repository URL format: {repo_url}. "
-                f"Expected GitHub URL format."
-            )
+        # Get or update the local repository
+        cache_dir = _get_skills_cache_dir()
+        repo_path = _update_skills_repository(repo_url, branch, cache_dir)
+
+        if repo_path is None:
+            logger.warning("Failed to access skills repository")
             return all_skills
 
-        if len(parts) < 2:
-            logger.warning(f"Invalid repository URL format: {repo_url}")
+        # Load skills from the local repository
+        skills_dir = repo_path / "skills"
+        if not skills_dir.exists():
+            logger.warning(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
-        owner, repo = parts[0], parts[1].replace(".git", "")
+        # Find all .md files in the skills directory
+        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
 
-        # Use GitHub API to list files in the skills/ subdirectory
-        api_url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}:skills?recursive=1"
+        logger.debug(f"Found {len(md_files)} skill files in repository")
 
-        logger.debug(f"Fetching skills from {repo_url} (branch: {branch})")
+        # Load each skill file
+        for skill_file in md_files:
+            try:
+                skill = Skill.load(
+                    path=skill_file,
+                    skill_dir=repo_path,
+                )
+                all_skills.append(skill)
+                logger.debug(f"Loaded public skill: {skill.name}")
+            except Exception as e:
+                logger.warning(f"Failed to load skill from {skill_file.name}: {str(e)}")
+                continue
 
-        with httpx.Client(timeout=30.0) as client:
-            response = client.get(api_url)
-            response.raise_for_status()
-            tree_data = response.json()
-
-            # Find all .md files in the skills/ directory
-            md_files = [
-                f"skills/{item['path']}"
-                for item in tree_data.get("tree", [])
-                if item["type"] == "blob"
-                and item["path"].endswith(".md")
-                and item["path"] != "README.md"
-            ]
-
-            logger.debug(f"Found {len(md_files)} skill files in repository")
-
-            # Download and load each skill file
-            for file_path in md_files:
-                try:
-                    # Use raw.githubusercontent.com for file content
-                    raw_url = (
-                        f"https://raw.githubusercontent.com/"
-                        f"{owner}/{repo}/{branch}/{file_path}"
-                    )
-                    file_response = client.get(raw_url)
-                    file_response.raise_for_status()
-                    file_content = file_response.text
-
-                    # Create a temporary directory structure for skill loading
-                    with tempfile.TemporaryDirectory() as temp_dir:
-                        temp_path = Path(temp_dir)
-                        skill_file = temp_path / file_path
-                        skill_file.parent.mkdir(parents=True, exist_ok=True)
-                        skill_file.write_text(file_content)
-
-                        # Load the skill using existing load method
-                        skill = Skill.load(
-                            path=skill_file,
-                            skill_dir=temp_path,
-                            file_content=file_content,
-                        )
-                        all_skills.append(skill)
-                        logger.debug(f"Loaded public skill: {skill.name}")
-
-                except Exception as e:
-                    logger.warning(f"Failed to load skill from {file_path}: {str(e)}")
-                    continue
-
-    except httpx.HTTPStatusError as e:
-        logger.warning(
-            f"HTTP error fetching skills from {repo_url}: "
-            f"{e.response.status_code} - {e.response.text}"
-        )
-    except httpx.RequestError as e:
-        logger.warning(f"Network error fetching skills from {repo_url}: {str(e)}")
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
 
