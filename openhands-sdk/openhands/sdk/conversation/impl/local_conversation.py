@@ -460,9 +460,17 @@ class LocalConversation(BaseConversation):
             role="user",
             content=[
                 TextContent(
-                    text=f"# Question section\n"
-                    "Based on the activity so far answer the following question"
-                    f"##Question\n\n{question}"
+                    text=(
+                        "<QUESTION>\n"
+                        "Based on the activity so far answer the following question\n\n"
+                        "## Question\n"
+                        f"{question}\n\n\n"
+                        "<IMPORTANT>\n"
+                        "This is a question, do not make any tool call and just answer "
+                        "my question.\n"
+                        "</IMPORTANT>\n"
+                        "</QUESTION>"
+                    )
                 )
             ],
         )
@@ -476,6 +484,8 @@ class LocalConversation(BaseConversation):
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
+                    "native_tool_calling": False,
+                    "caching_prompt": False,
                 },
                 deep=True,
             )
