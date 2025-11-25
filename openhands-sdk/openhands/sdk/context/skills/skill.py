@@ -400,23 +400,12 @@ def _update_skills_repository(
     Returns:
         Path to the local repository if successful, None otherwise.
     """
-    # Create a safe directory name from repo URL
-    repo_name = (
-        repo_url.replace("https://", "")
-        .replace("http://", "")
-        .replace("git@", "")
-        .replace(":", "_")
-        .replace("/", "_")
-        .replace(".", "_")
-    )
-    repo_path = cache_dir / repo_name
+    repo_path = cache_dir / "openhands-skills"
 
     try:
         if repo_path.exists() and (repo_path / ".git").exists():
-            # Repository exists, try to pull latest changes
             logger.debug(f"Updating skills repository at {repo_path}")
             try:
-                # Fetch the latest changes
                 subprocess.run(
                     ["git", "fetch", "origin"],
                     cwd=repo_path,
@@ -424,7 +413,6 @@ def _update_skills_repository(
                     capture_output=True,
                     timeout=30,
                 )
-                # Reset to the target branch
                 subprocess.run(
                     ["git", "reset", "--hard", f"origin/{branch}"],
                     cwd=repo_path,
@@ -441,10 +429,8 @@ def _update_skills_repository(
                     f"using existing cached version"
                 )
         else:
-            # Repository doesn't exist, clone it
             logger.debug(f"Cloning skills repository from {repo_url}")
             if repo_path.exists():
-                # Remove incomplete/corrupted directory
                 import shutil
 
                 shutil.rmtree(repo_path)
