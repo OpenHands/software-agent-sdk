@@ -12,7 +12,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent, Event, Message, get_logger
+from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
@@ -292,7 +292,7 @@ class EventService:
             # the event is both persisted and sent to WebSocket subscribers
             self._main_loop.run_in_executor(None, self._conversation._on_event, event)
 
-    def _setup_llm_log_streaming(self, agent: Agent) -> None:
+    def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
         for llm in agent.get_all_llms():
             if not llm.log_completions:
@@ -316,7 +316,7 @@ class EventService:
 
             llm.telemetry.set_log_callback(log_callback)
 
-    def _setup_stats_streaming(self, agent: Agent) -> None:
+    def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""
 
         def stats_callback() -> None:
@@ -343,12 +343,6 @@ class EventService:
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
         agent = Agent.model_validate(self.stored.agent.model_dump())
 
-        # Setup LLM log streaming for remote execution
-        self._setup_llm_log_streaming(agent)
-
-        # Setup stats streaming for remote execution
-        self._setup_stats_streaming(agent)
-
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -369,6 +363,12 @@ class EventService:
 
         # Register state change callback to automatically publish updates
         self._conversation._state.set_on_state_change(self._conversation._on_event)
+
+        # Setup LLM log streaming for remote execution
+        self._setup_llm_log_streaming(self._conversation.agent)
+
+        # Setup stats streaming for remote execution
+        self._setup_stats_streaming(self._conversation.agent)
 
         # Publish initial state update
         await self._publish_state_update()
