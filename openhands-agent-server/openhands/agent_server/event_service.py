@@ -288,9 +288,18 @@ class EventService:
         the conversation's normal event flow to ensure they are persisted.
         """
         if self._main_loop and self._main_loop.is_running() and self._conversation:
-            # Run the synchronous _on_event callback in an executor to ensure
-            # the event is both persisted and sent to WebSocket subscribers
-            self._main_loop.run_in_executor(None, self._conversation._on_event, event)
+            # Capture conversation reference for closure
+            conversation = self._conversation
+
+            # Wrap _on_event with lock acquisition to ensure thread-safe access
+            # to conversation state and event log during concurrent operations
+            def locked_on_event():
+                with conversation._state:
+                    conversation._on_event(event)
+
+            # Run the locked callback in an executor to ensure the event is
+            # both persisted and sent to WebSocket subscribers
+            self._main_loop.run_in_executor(None, locked_on_event)
 
     def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
         """Configure LLM log callbacks to stream logs via events."""
