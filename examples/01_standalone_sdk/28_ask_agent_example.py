@@ -137,3 +137,7 @@ for i, (question, response) in enumerate(questions_and_responses, 1):
 
 final_truncated = final_response[:100] + ("..." if len(final_response) > 100 else "")
 print(f"\nFinal Question Response: {final_truncated}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost:.4f}")
