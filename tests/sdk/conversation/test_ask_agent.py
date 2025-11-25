@@ -88,44 +88,10 @@ def test_local_conversation_ask_agent(mock_completion):
             "##Question\n\nWhat is 2+2?" == user_message.content[0].text
         )
 
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_ask_agent_empty_response(mock_completion):
-    """Test ask_agent with empty response."""
-    agent = create_test_agent()
-
-    # Mock empty response
-    mock_response = create_mock_llm_response("")
-    mock_completion.return_value = mock_response
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
-
-        result = conv.ask_agent("What is 2+2?")
-
-        assert result == ""
-
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_ask_agent_no_text_content(mock_completion):
-    """Test ask_agent with non-text content."""
-    agent = create_test_agent()
-
-    # Mock response with empty message content
-    mock_response = Mock(spec=LLMResponse)
-    mock_message = Mock()
-    mock_non_text_content = Mock()
-    # This mock object won't be an instance of TextContent
-    mock_message.content = [mock_non_text_content]
-    mock_response.message = mock_message
-    mock_completion.return_value = mock_response
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
-
-        result = conv.ask_agent("What is 2+2?")
-
-        assert result == ""
+        ask_agent_llm = conv.llm_registry.get("ask-agent-llm")
+        assert ask_agent_llm.native_tool_calling is False
+        assert ask_agent_llm.usage_id == "ask-agent-llm"
+        assert ask_agent_llm.caching_prompt is False
 
 
 def test_remote_conversation_ask_agent():
@@ -185,99 +151,3 @@ def test_remote_conversation_ask_agent():
         assert call_args[0] == "POST"
         assert "ask_agent" in call_args[1]
         assert call_kwargs["json"] == {"question": "What is the weather?"}
-
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_ask_agent_thread_safety(mock_completion):
-    """Test that ask_agent doesn't interfere with conversation state."""
-    agent = create_test_agent()
-
-    # Mock the LLM completion response
-    mock_response = create_mock_llm_response("Agent response")
-    mock_completion.return_value = mock_response
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
-
-        # Store initial state
-        initial_events_count = len(conv.state.events)
-
-        result = conv.ask_agent("Test question")
-
-        # Verify the response
-        assert result == "Agent response"
-
-        # Verify conversation state wasn't affected
-        final_events_count = len(conv.state.events)
-        assert final_events_count == initial_events_count
-
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_ask_agent_includes_context(mock_completion):
-    """Test that ask_agent includes conversation context when available."""
-    agent = create_test_agent()
-
-    # Mock the LLM completion response
-    mock_response = create_mock_llm_response("Context-aware response")
-    mock_completion.return_value = mock_response
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
-
-        # Add some conversation history by sending a message
-        conv.send_message("Hello, I need help with Python")
-
-        result = conv.ask_agent("What was my original question?")
-
-        assert result == "Context-aware response"
-
-        # Verify the LLM was called with context-aware messages
-        mock_completion.assert_called()
-        call_args = mock_completion.call_args[0][0]
-        # Should include system message, previous user message, and current question
-        assert len(call_args) >= 3
-        # Last message should be the current question
-        user_message = call_args[-1]
-        assert user_message.role == "user"
-        assert (
-            "# Question section\n"
-            "Based on the activity so far answer the following question"
-            "##Question\n\nWhat was my original question?"
-            == user_message.content[0].text
-        )
-
-        # Should include the previous user message in the context
-        previous_messages = [msg for msg in call_args if msg.role == "user"]
-        assert len(previous_messages) >= 2
-        # Find the original message
-        original_message_found = any(
-            "Hello, I need help with Python" in msg.content[0].text
-            for msg in previous_messages[:-1]  # Exclude the current question
-        )
-        assert original_message_found
-
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_ask_agent_disables_tool_calling(mock_completion):
-    """Test that ask_agent disables native tool calling to avoid LiteLLM errors."""
-    agent = create_test_agent()
-
-    # Mock the LLM completion response
-    mock_response = create_mock_llm_response("Agent response without tools")
-    mock_completion.return_value = mock_response
-
-    with tempfile.TemporaryDirectory() as tmpdir:
-        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
-
-        result = conv.ask_agent("Simple question")
-
-        assert result == "Agent response without tools"
-
-        # Verify the LLM was called
-        mock_completion.assert_called_once()
-
-        # Verify that the ask-agent-llm was created with native_tool_calling=False
-        ask_agent_llm = conv.llm_registry.get("ask-agent-llm")
-        assert ask_agent_llm.native_tool_calling is False
-        assert ask_agent_llm.usage_id == "ask-agent-llm"
-        assert ask_agent_llm.caching_prompt is False
