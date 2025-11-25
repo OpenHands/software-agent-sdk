@@ -35,21 +35,17 @@ on:
 
 env:
     BENCHMARKS_REPO: OpenHands/benchmarks
-    BENCHMARKS_REF: main
-    BENCHMARKS_BUILD_WORKFLOW: build-swe-bench-images.yml
+    BENCHMARKS_REF: openhands/workflow-call-support
     EVAL_REPO: OpenHands/evaluation
-    EVAL_WORKFLOW: eval-job.yml
+    EVAL_REF: openhands/workflow-call-support
     DATASET: princeton-nlp/SWE-bench_Verified
     SPLIT: test
     MAX_BUILD_WORKERS: '32'
     EVAL_AGENT_IMAGE: ghcr.io/openhands/eval-agent-server
     EVAL_AGENT_TARGET: source-minimal
-    # Polling configuration for workflow status checks
-    MAX_POLL_ATTEMPTS: '80'  # 80 attempts × 60s = 80 minutes max wait
-    POLL_INTERVAL_SECONDS: '60'
 
 jobs:
-    build-and-evaluate:
+    prepare:
         if: >
             github.event_name == 'release' ||
             github.event_name == 'workflow_dispatch' ||
@@ -58,13 +54,18 @@ jobs:
               github.event.label.name == 'run-eval-2' ||
               github.event.label.name == 'run-eval-50' ||
               github.event.label.name == 'run-eval-100'))
-        runs-on: blacksmith-32vcpu-ubuntu-2204
+        runs-on: ubuntu-latest
         permissions:
             contents: read
-            packages: write
-            actions: write
             issues: write
             pull-requests: write
+        outputs:
+            eval_limit: ${{ steps.params.outputs.eval_limit }}
+            sdk_ref: ${{ steps.params.outputs.sdk_ref }}
+            sdk_sha: ${{ steps.get-sha.outputs.sdk_sha }}
+            models: ${{ steps.params.outputs.models }}
+            pr_number: ${{ steps.params.outputs.pr_number }}
+            trigger_desc: ${{ steps.params.outputs.trigger_desc }}
 
         steps:
             - name: Checkout sdk code (base for validation)
@@ -100,17 +101,8 @@ jobs:
               env:
                   DEFAULT_MODEL: ${{ steps.allowlists.outputs.default_model }}
                   ALLOWED_MODELS_JSON: ${{ steps.allowlists.outputs.allowed_models }}
-                  PAT_TOKEN_DEFAULT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
               run: |
                   set -euo pipefail
-
-                  # Set PAT token for cross-repo workflow dispatch
-                  PAT_TOKEN="$PAT_TOKEN_DEFAULT"
-                  if [ -z "$PAT_TOKEN" ]; then
-                    echo "Missing PAT token" >&2
-                    exit 1
-                  fi
-                  echo "PAT_TOKEN=$PAT_TOKEN" >> "$GITHUB_ENV"
 
                   # Determine eval limit based on trigger
                   if [ "${{ github.event_name }}" = "pull_request_target" ]; then
@@ -177,130 +169,54 @@ jobs:
                   echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
                   echo "Using SDK commit: $SDK_SHA"
 
-            - name: Dispatch benchmarks image build
-              id: build-dispatch
-              env:
-                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
-                  DATASET: ${{ env.DATASET }}
-                  SPLIT: ${{ env.SPLIT }}
-                  MAX_BUILD_WORKERS: ${{ env.MAX_BUILD_WORKERS }}
-              run: |
-                  set -euo pipefail
-                  SDK_SHA="${{ steps.get-sha.outputs.sdk_sha }}"
+    build-benchmarks:
+        needs: prepare
+        permissions:
+            contents: read
+            packages: write
+        uses: OpenHands/benchmarks/.github/workflows/build-swe-bench-images.yml@openhands/workflow-call-support
+        with:
+            dataset: ${{ env.DATASET }}
+            split: ${{ env.SPLIT }}
+            max-workers: ${{ env.MAX_BUILD_WORKERS }}
+            n-limit: ${{ needs.prepare.outputs.eval_limit }}
+            sdk-commit: ${{ needs.prepare.outputs.sdk_sha }}
 
-                  # Record timestamp before dispatch to avoid race condition
-                  DISPATCH_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-                  echo "dispatch_time=$DISPATCH_TIME" >> "$GITHUB_OUTPUT"
+    run-evaluation:
+        needs: [prepare, build-benchmarks]
+        permissions:
+            contents: read
+        uses: OpenHands/evaluation/.github/workflows/eval-job.yml@openhands/workflow-call-support
+        secrets: inherit
+        with:
+            sdk_commit: ${{ needs.prepare.outputs.sdk_sha }}
+            eval_limit: ${{ needs.prepare.outputs.eval_limit }}
+            models: ${{ needs.prepare.outputs.models }}
 
-                  echo "Dispatching benchmarks build with SDK commit: $SDK_SHA at $DISPATCH_TIME"
-                  PAYLOAD=$(jq -n \
-                    --arg dataset "$DATASET" \
-                    --arg split "$SPLIT" \
-                    --arg max_workers "$MAX_BUILD_WORKERS" \
-                    --arg n_limit "$EVAL_LIMIT" \
-                    --arg sdk_commit "$SDK_SHA" \
-                    '{ref:"main", inputs: {dataset:$dataset, split:$split, "max-workers":$max_workers, "n-limit":$n_limit, "sdk-commit":$sdk_commit}}')
-                  RESPONSE=$(curl -sS -o /tmp/build-dispatch.out -w "%{http_code}" -X POST \
-                    -H "Authorization: token $PAT_TOKEN" \
-                    -H "Accept: application/vnd.github+json" \
-                    -d "$PAYLOAD" \
-                    "https://api.github.com/repos/${{ env.BENCHMARKS_REPO }}/actions/workflows/${{ env.BENCHMARKS_BUILD_WORKFLOW }}/dispatches")
-                  if [ "$RESPONSE" != "204" ]; then
-                    echo "Benchmarks build dispatch failed (status $RESPONSE):" >&2
-                    cat /tmp/build-dispatch.out >&2
-                    exit 1
-                  fi
-
-                  # Wait for run to be created in GitHub's system
-                  echo "Waiting 10 seconds for workflow run to be created..."
-                  sleep 10
-                  echo "bench_build_dispatched=true" >> "$GITHUB_OUTPUT"
-
-            - name: Wait for benchmarks build completion
-              env:
-                  DISPATCH_TIME: ${{ steps.build-dispatch.outputs.dispatch_time }}
-              run: |
-                  set -euo pipefail
-                  WORKFLOW_ID="${{ env.BENCHMARKS_BUILD_WORKFLOW }}"
-                  REPO="${{ env.BENCHMARKS_REPO }}"
-                  MAX_ATTEMPTS="${{ env.MAX_POLL_ATTEMPTS }}"
-                  SLEEP_SECONDS="${{ env.POLL_INTERVAL_SECONDS }}"
-
-                  # Find the run that was created after our dispatch
-                  echo "Looking for workflow run created after $DISPATCH_TIME"
-                  RUN_ID=""
-                  for i in $(seq 1 $MAX_ATTEMPTS); do
-                    # Query for recent runs on main branch, get more results to avoid race
-                    RUNS=$(curl -sS \
-                      -H "Authorization: token $PAT_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?per_page=5&branch=main&created=>=$DISPATCH_TIME")
-
-                    # Find the first run created at or after dispatch time
-                    if [ -z "$RUN_ID" ]; then
-                      RUN_ID=$(echo "$RUNS" | jq -r ".workflow_runs[] | select(.created_at >= \"$DISPATCH_TIME\") | .id" | head -1)
-                      if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
-                        echo "Found workflow run: $RUN_ID"
-                      else
-                        echo "Waiting for workflow run to appear (attempt $i/$MAX_ATTEMPTS)..."
-                        sleep 5
-                        continue
-                      fi
-                    fi
-
-                    # Check status of our specific run
-                    RUN_DATA=$(echo "$RUNS" | jq -r ".workflow_runs[] | select(.id == $RUN_ID)")
-                    STATUS=$(echo "$RUN_DATA" | jq -r '.status')
-                    CONCL=$(echo "$RUN_DATA" | jq -r '.conclusion')
-
-                    echo "Benchmarks build run ${RUN_ID}: status=${STATUS}, conclusion=${CONCL}"
-                    if [ "$STATUS" = "completed" ]; then
-                      if [ "$CONCL" = "success" ]; then
-                        exit 0
-                      else
-                        echo "Benchmarks build failed with conclusion ${CONCL}" >&2
-                        exit 1
-                      fi
-                    fi
-                    sleep $SLEEP_SECONDS
-                  done
-                  echo "Timed out waiting for benchmarks build to finish" >&2
-                  exit 1
-
-            - name: Dispatch evaluation workflow
-              env:
-                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
-                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
-                  MODELS: ${{ steps.params.outputs.models }}
-                  EVAL_REPO: ${{ env.EVAL_REPO }}
-                  EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
-              run: |
-                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA"
-                  PAYLOAD=$(jq -n \
-                    --arg sdk "$SDK_SHA" \
-                    --arg eval_limit "$EVAL_LIMIT" \
-                    --arg models "$MODELS" \
-                    '{ref: "main", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models}}')
-                  RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
-                    -H "Authorization: token $PAT_TOKEN" \
-                    -H "Accept: application/vnd.github+json" \
-                    -d "$PAYLOAD" \
-                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches")
-                  if [ "$RESPONSE" != "204" ]; then
-                    echo "Dispatch failed (status $RESPONSE):" >&2
-                    cat /tmp/dispatch.out >&2
-                    exit 1
-                  fi
+    comment-on-pr:
+        needs: [prepare, build-benchmarks, run-evaluation]
+        if: always()
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            issues: write
+            pull-requests: write
+        steps:
+            - name: Checkout for PR lookup
+              uses: actions/checkout@v4
 
             - name: Comment on PR
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
-                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
-                  MODELS: ${{ steps.params.outputs.models }}
-                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
+                  SDK_SHA: ${{ needs.prepare.outputs.sdk_sha }}
+                  EVAL_LIMIT: ${{ needs.prepare.outputs.eval_limit }}
+                  MODELS: ${{ needs.prepare.outputs.models }}
+                  TRIGGER_DESC: ${{ needs.prepare.outputs.trigger_desc }}
                   EVENT_NAME: ${{ github.event_name }}
-                  PR_NUMBER_INPUT: ${{ steps.params.outputs.pr_number }}
+                  PR_NUMBER_INPUT: ${{ needs.prepare.outputs.pr_number }}
+                  IMAGES_BUILT: ${{ needs.build-benchmarks.outputs.images_built }}
+                  BUILD_STATUS: ${{ needs.build-benchmarks.result }}
+                  EVAL_STATUS: ${{ needs.run-evaluation.result }}
               run: |
                   set -euo pipefail
                   PR_NUMBER="$PR_NUMBER_INPUT"
@@ -318,8 +234,36 @@ jobs:
                     exit 0
                   fi
 
-                  COMMENT_BODY=$(printf '**Evaluation Triggered**\n\n- Trigger: %s\n- SDK: %s\n- Eval limit: %s\n- Models: %s\n' \
-                    "$TRIGGER_DESC" "$SDK_SHA" "$EVAL_LIMIT" "$MODELS")
+                  # Build status message
+                  if [ "$BUILD_STATUS" = "success" ]; then
+                    BUILD_MSG="✅ Built $IMAGES_BUILT images"
+                  else
+                    BUILD_MSG="❌ Build failed"
+                  fi
+
+                  if [ "$EVAL_STATUS" = "success" ]; then
+                    EVAL_MSG="✅ Evaluation started"
+                  elif [ "$EVAL_STATUS" = "skipped" ]; then
+                    EVAL_MSG="⏭️ Evaluation skipped (build failed)"
+                  else
+                    EVAL_MSG="❌ Evaluation failed"
+                  fi
+
+                  COMMENT_BODY=$(cat <<EOF
+                  **Evaluation Triggered**
+
+                  - Trigger: $TRIGGER_DESC
+                  - SDK: \`$SDK_SHA\`
+                  - Eval limit: $EVAL_LIMIT
+                  - Models: $MODELS
+
+                  **Status:**
+                  - Benchmarks: $BUILD_MSG
+                  - Evaluation: $EVAL_MSG
+
+                  [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+                  EOF
+                  )
 
                   curl -sS -X POST \
                     -H "Accept: application/vnd.github+json" \
