@@ -2,7 +2,6 @@ import json
 import types
 from collections.abc import Sequence
 from typing import (
-    TYPE_CHECKING,
     Annotated,
     Any,
     Union,
@@ -17,10 +16,6 @@ from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
-
-
-if TYPE_CHECKING:
-    pass
 
 
 def fix_malformed_tool_arguments(
