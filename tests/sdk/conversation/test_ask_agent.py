@@ -129,11 +129,17 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
     user_msg = messages[-1]
     assert user_msg.role == "user"
-    assert (
-        "# Question section\n"
-        "Based on the activity so far answer the following question"
-        "##Question\n\nWhat is 2+2?" == user_msg.content[0].text
+    expected_text = (
+        "<QUESTION>\n"
+        "Based on the activity so far answer the following question\n\n"
+        "## Question\n"
+        "What is 2+2?\n\n\n"
+        "<IMPORTANT>\n"
+        "This is a question, do not make any tool call and just answer my question.\n"
+        "</IMPORTANT>\n"
+        "</QUESTION>"
     )
+    assert user_msg.content[0].text == expected_text
 
     # Dedicated ask-agent LLM is configured correctly
     ask_agent_llm = conv.llm_registry.get("ask-agent-llm")
