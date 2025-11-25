@@ -181,8 +181,7 @@ jobs:
             max-workers: '32'
             n-limit: ${{ needs.prepare.outputs.eval_limit }}
             sdk-commit: ${{ needs.prepare.outputs.sdk_sha }}
-        secrets:
-            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        secrets: inherit
 
     dispatch-evaluation:
         needs: [prepare, build-benchmarks]
