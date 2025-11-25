@@ -50,7 +50,6 @@ class FIFOLock:
         Returns:
             True if lock was acquired, False otherwise.
         """
-        me = threading.Condition(self._mutex)
         ident = threading.get_ident()
         start = time.monotonic()
 
@@ -60,10 +59,17 @@ class FIFOLock:
                 self._count += 1
                 return True
 
+            if self._owner is None and not self._waiters:
+                self._owner = ident
+                self._count = 1
+                return True
+
             if not blocking:
                 # Give up immediately
                 return False
+
             # Add to wait queue
+            me = threading.Condition(self._mutex)
             self._waiters.append(me)
 
             while True:
