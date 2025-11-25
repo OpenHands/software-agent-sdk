@@ -4,7 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.context.view import View
+from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -24,7 +24,6 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
@@ -458,13 +457,6 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
-
-        # Get the agent's current view of the conversation context
-
-        view = View.from_events(self.state.events)
-        visible_events: list = view.events
-        visible_events = LLMConvertibleEvent.events_to_messages(visible_events)
-
         # Create a user message with the context-aware question
         user_message = Message(
             role="user",
@@ -476,10 +468,13 @@ class LocalConversation(BaseConversation):
                 )
             ],
         )
-        visible_events.append(user_message)
 
-        # Use the agent's LLM to get a direct completion
-        # This bypasses the conversation state and agent step cycle
+        # Prepare messages using the utility function (no condenser for ask_agent)
+        messages = prepare_llm_messages(
+            self.state, condenser=None, additional_messages=[user_message]
+        )
+
+        # Get or create the specialized ask-agent LLM
         try:
             question_llm = self.llm_registry.get("ask-agent-llm")
         except KeyError:
@@ -495,12 +490,11 @@ class LocalConversation(BaseConversation):
             )
             self.llm_registry.add(question_llm)
 
+        # Use the utility function to make the LLM completion call
         # Pass agent tools so LLM can understand tool_calls in conversation history,
         # but native_tool_calling=False prevents new tool calls
-        response = question_llm.completion(
-            visible_events,
-            tools=list(self.agent.tools_map.values()),
-            add_security_risk_prediction=True,
+        response = make_llm_completion(
+            question_llm, messages, tools=list(self.agent.tools_map.values())
         )
 
         # Extract the text content from the LLMResponse message

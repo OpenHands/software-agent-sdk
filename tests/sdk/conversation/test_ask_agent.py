@@ -124,7 +124,7 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
     # LLM was called with a question appended as the last user message
     mock_completion.assert_called_once()
-    messages = mock_completion.call_args[0][0]
+    messages = mock_completion.call_args.kwargs["messages"]
     assert len(messages) >= 2
 
     user_msg = messages[-1]
@@ -259,7 +259,7 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     assert result == "Based on the tool calls, I can see you ran 'ls' command."
 
     mock_completion.assert_called_once()
-    messages = mock_completion.call_args[0][0]
+    messages = mock_completion.call_args.kwargs["messages"]
 
     # Expect: system message + user + assistant(tool_call) + tool + question
     assert len(messages) >= 5
