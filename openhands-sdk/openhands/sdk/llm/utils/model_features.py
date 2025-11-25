@@ -42,8 +42,6 @@ REASONING_EFFORT_PATTERNS: list[str] = [
     "gemini-2.5-pro",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
-    # Anthropic Claude Opus 4.5 family (uses effort parameter)
-    "claude-opus-4.5",
     "claude-opus-4-5",
 ]
 
