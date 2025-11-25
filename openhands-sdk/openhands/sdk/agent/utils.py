@@ -148,7 +148,7 @@ def prepare_llm_messages(
     """
 
     view = View.from_events(state.events)
-    llm_convertible_events = view.events
+    llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     # If a condenser is registered, we need to give it an
     # opportunity to transform the events. This will either
