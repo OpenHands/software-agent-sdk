@@ -83,8 +83,9 @@ def test_local_conversation_ask_agent(mock_completion):
         user_message = call_args[-1]
         assert user_message.role == "user"
         assert (
-            "Answer the following question: What is 2+2?"
-            in user_message.content[0].text
+            "# Question section\n"
+            "Based on the activity so far answer the following question"
+            "##Question\n\nWhat is 2+2?" == user_message.content[0].text
         )
 
 
@@ -239,8 +240,10 @@ def test_ask_agent_includes_context(mock_completion):
         user_message = call_args[-1]
         assert user_message.role == "user"
         assert (
-            "Answer the following question: What was my original question?"
-            in user_message.content[0].text
+            "# Question section\n"
+            "Based on the activity so far answer the following question"
+            "##Question\n\nWhat was my original question?"
+            == user_message.content[0].text
         )
 
         # Should include the previous user message in the context

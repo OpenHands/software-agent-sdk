@@ -495,6 +495,8 @@ class LocalConversation(BaseConversation):
                     "usage_id": "ask-agent-llm",
                     # One off responses take longer with caching
                     "caching_prompt": False,
+                    # Disable native tool calling to prevent new tool calls
+                    "native_tool_calling": False,
                 },
                 deep=True,
             )
