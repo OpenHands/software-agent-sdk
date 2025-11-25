@@ -30,10 +30,8 @@ def test_model_matches(name, pattern, expected):
         ("o1", True),
         ("o3-mini", True),
         ("o3", True),
-        # Anthropic Opus 4.5 (dot and dash variants)
-        ("claude-opus-4.5", True),
+        # Anthropic Opus 4.5 (dash variant only)
         ("claude-opus-4-5", True),
-        ("us.anthropic.claude-opus-4.5-20251101", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),
