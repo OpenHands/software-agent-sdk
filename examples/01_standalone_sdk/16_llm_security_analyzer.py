@@ -118,7 +118,6 @@ agent = Agent(llm=llm, tools=tools)
 conversation = Conversation(
     agent=agent, persistence_dir="./.conversations", workspace="."
 )
-# Set security analyzer via conversation (new approach after deprecation)
 conversation.set_security_analyzer(LLMSecurityAnalyzer())
 conversation.set_confirmation_policy(ConfirmRisky())
 
