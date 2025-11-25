@@ -1,6 +1,8 @@
 """Tests for ask_agent functionality in conversation classes."""
 
+import json
 import tempfile
+from collections.abc import Sequence
 from unittest.mock import Mock, patch
 
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
@@ -9,9 +11,39 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
-from openhands.sdk.llm import LLM, LLMResponse, Message, MetricsSnapshot
+from openhands.sdk.event.llm_convertible import (
+    ActionEvent,
+    MessageEvent,
+    ObservationEvent,
+)
+from openhands.sdk.llm import (
+    LLM,
+    ImageContent,
+    LLMResponse,
+    Message,
+    MessageToolCall,
+    MetricsSnapshot,
+    TextContent,
+)
+from openhands.sdk.tool import Action, Observation
 from openhands.sdk.workspace import RemoteWorkspace
 from tests.sdk.conversation.conftest import create_mock_http_client
+
+
+class MockAction(Action):
+    """Mock action for testing."""
+
+    command: str
+
+
+class MockObservation(Observation):
+    """Mock observation for testing."""
+
+    result: str
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=self.result)]
 
 
 def create_test_agent() -> Agent:
@@ -151,3 +183,117 @@ def test_remote_conversation_ask_agent():
         assert call_args[0] == "POST"
         assert "ask_agent" in call_args[1]
         assert call_kwargs["json"] == {"question": "What is the weather?"}
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_with_existing_events_and_tool_calls(mock_completion):
+    """Test ask_agent with existing conversation events including tool calls."""
+    agent = create_test_agent()
+
+    # Mock the LLM completion response
+    mock_response = create_mock_llm_response(
+        "Based on the tool calls, I can see you ran 'ls' command."
+    )
+    mock_completion.return_value = mock_response
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        conv = Conversation(agent=agent, persistence_dir=tmpdir, workspace=tmpdir)
+
+        # Add existing events to the conversation including tool calls
+        # 1. User message
+        user_message = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="List the files in current directory")],
+            ),
+        )
+        conv.state.events.append(user_message)
+
+        # 2. Action event with tool call
+        tool_call = MessageToolCall(
+            id="call_123",
+            name="terminal",
+            arguments=json.dumps({"command": "ls -la"}),
+            origin="completion",
+        )
+        action_event = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I'll list the files using the terminal")],
+            action=MockAction(command="ls -la"),
+            tool_name="terminal",
+            tool_call_id="call_123",
+            tool_call=tool_call,
+            llm_response_id="response_1",
+        )
+        conv.state.events.append(action_event)
+
+        # 3. Observation event
+        observation_result = (
+            "total 8\n"
+            "drwxr-xr-x 2 user user 4096 Nov 25 10:00 .\n"
+            "drwxr-xr-x 3 user user 4096 Nov 25 09:59 ..\n"
+            "-rw-r--r-- 1 user user   12 Nov 25 10:00 test.txt"
+        )
+        observation_event = ObservationEvent(
+            source="environment",
+            observation=MockObservation(result=observation_result),
+            action_id="action_123",
+            tool_name="terminal",
+            tool_call_id="call_123",
+        )
+        conv.state.events.append(observation_event)
+
+        # Now call ask_agent
+        result = conv.ask_agent("What did you find?")
+
+        assert result == "Based on the tool calls, I can see you ran 'ls' command."
+
+        # Verify the LLM was called with all existing events converted to messages
+        mock_completion.assert_called_once()
+        call_args = mock_completion.call_args[0][0]
+
+        # Should include system message, user message, assistant message with tool call,
+        # tool response, and the question
+        assert len(call_args) >= 5
+
+        # Find the user message, assistant message with tool call, and tool response
+        user_msg = None
+        assistant_msg = None
+        tool_msg = None
+        question_msg = None
+
+        for msg in call_args:
+            if msg.role == "user" and any(
+                "List the files" in content.text
+                for content in msg.content
+                if hasattr(content, "text")
+            ):
+                user_msg = msg
+            elif msg.role == "assistant" and msg.tool_calls:
+                assistant_msg = msg
+            elif msg.role == "tool":
+                tool_msg = msg
+            elif msg.role == "user" and any(
+                "What did you find?" in content.text
+                for content in msg.content
+                if hasattr(content, "text")
+            ):
+                question_msg = msg
+
+        # Verify all expected messages are present
+        assert user_msg is not None, "User message should be present"
+        assert assistant_msg is not None, (
+            "Assistant message with tool call should be present"
+        )
+        assert tool_msg is not None, "Tool response message should be present"
+        assert question_msg is not None, "Question message should be present"
+
+        # Verify tool call details
+        assert len(assistant_msg.tool_calls) == 1
+        assert assistant_msg.tool_calls[0].id == "call_123"
+        assert assistant_msg.tool_calls[0].name == "terminal"
+
+        # Verify tool response details
+        assert tool_msg.tool_call_id == "call_123"
+        assert tool_msg.name == "terminal"
