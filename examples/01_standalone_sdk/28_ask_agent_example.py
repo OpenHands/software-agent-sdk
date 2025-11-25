@@ -1,6 +1,9 @@
 """
 Example demonstrating the ask_agent functionality for getting sidebar replies
 from the agent for a running conversation.
+
+This example shows how to use ask_agent() to get quick responses from the agent
+about the current conversation state without interrupting the main execution flow.
 """
 
 import os
