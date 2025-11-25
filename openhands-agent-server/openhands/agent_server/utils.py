@@ -156,16 +156,7 @@ def patch_fastapi_discriminated_union_support():
 
     Also extracts inline discriminated unions as separate schema components for
     better OpenAPI documentation and Swagger UI display.
-
-    Skips patching if SKIP_FASTAPI_DISCRIMINATED_UNION_FIX environment variable is set.
     """
-    # Skip patching if environment variable flag is defined
-    if os.environ.get("SKIP_FASTAPI_DISCRIMINATED_UNION_FIX"):
-        logger.debug(
-            "Skipping FastAPI discriminated union patch due to environment variable"
-        )
-        return
-
     try:
         import fastapi._compat.v2 as fastapi_v2
         from fastapi import FastAPI
