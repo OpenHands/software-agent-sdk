@@ -463,6 +463,17 @@ class EventService:
             None, self._conversation.generate_title, resolved_llm, max_length
         )
 
+    async def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple question without affecting conversation state.
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._conversation.ask_agent, question)
+
     async def get_state(self) -> ConversationState:
         if not self._conversation:
             raise ValueError("inactive_service")

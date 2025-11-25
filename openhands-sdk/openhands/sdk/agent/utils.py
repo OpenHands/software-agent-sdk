@@ -1,8 +1,21 @@
 import json
 import types
-from typing import Annotated, Any, Union, get_args, get_origin
+from collections.abc import Sequence
+from typing import (
+    Annotated,
+    Any,
+    Union,
+    get_args,
+    get_origin,
+    overload,
+)
 
-from openhands.sdk.tool import Action
+from openhands.sdk.context.condenser.base import CondenserBase
+from openhands.sdk.context.view import View
+from openhands.sdk.event.base import Event, LLMConvertibleEvent
+from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.llm import LLM, LLMResponse, Message
+from openhands.sdk.tool import Action, ToolDefinition
 
 
 def fix_malformed_tool_arguments(
@@ -96,3 +109,101 @@ def fix_malformed_tool_arguments(
                 pass
 
     return fixed_arguments
+
+
+@overload
+def prepare_llm_messages(
+    events: Sequence[Event],
+    condenser: None = None,
+    additional_messages: list[Message] | None = None,
+) -> list[Message]: ...
+
+
+@overload
+def prepare_llm_messages(
+    events: Sequence[Event],
+    condenser: CondenserBase,
+    additional_messages: list[Message] | None = None,
+) -> list[Message] | Condensation: ...
+
+
+def prepare_llm_messages(
+    events: Sequence[Event],
+    condenser: CondenserBase | None = None,
+    additional_messages: list[Message] | None = None,
+) -> list[Message] | Condensation:
+    """Prepare LLM messages from conversation context.
+
+    This utility function extracts the common logic for preparing conversation
+    context that is shared between agent.step() and ask_agent() methods.
+    It handles condensation internally and calls the callback when needed.
+
+    Args:
+        state: The conversation state containing events
+        condenser: Optional condenser for handling context window limits
+        additional_messages: Optional additional messages to append
+        on_event: Optional callback for handling condensation events
+
+    Returns:
+        List of messages ready for LLM completion
+
+    Raises:
+        RuntimeError: If condensation is needed but no callback is provided
+    """
+
+    view = View.from_events(events)
+    llm_convertible_events: list[LLMConvertibleEvent] = view.events
+
+    # If a condenser is registered, we need to give it an
+    # opportunity to transform the events. This will either
+    # produce a list of events, exactly as expected, or a
+    # new condensation that needs to be processed
+    if condenser is not None:
+        condensation_result = condenser.condense(view)
+
+        match condensation_result:
+            case View():
+                llm_convertible_events = condensation_result.events
+
+            case Condensation():
+                return condensation_result
+
+    # Convert events to messages
+    messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
+
+    # Add any additional messages (e.g., user question for ask_agent)
+    if additional_messages:
+        messages.extend(additional_messages)
+
+    return messages
+
+
+def make_llm_completion(
+    llm: LLM,
+    messages: list[Message],
+    tools: list[ToolDefinition] | None = None,
+) -> LLMResponse:
+    """Make an LLM completion call with the provided messages and tools.
+
+    Args:
+        llm: The LLM instance to use for completion
+        messages: The messages to send to the LLM
+        tools: Optional list of tools to provide to the LLM
+
+    Returns:
+        LLMResponse from the LLM completion call
+    """
+    if llm.uses_responses_api():
+        return llm.responses(
+            messages=messages,
+            tools=tools or [],
+            include=None,
+            store=False,
+            add_security_risk_prediction=True,
+        )
+    else:
+        return llm.completion(
+            messages=messages,
+            tools=tools or [],
+            add_security_risk_prediction=True,
+        )

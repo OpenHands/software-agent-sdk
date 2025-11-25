@@ -216,6 +216,24 @@ class BaseConversation(ABC):
         """
         return str(Path(persistence_base_dir) / conversation_id.hex)
 
+    @abstractmethod
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        ...
+
     @staticmethod
     def compose_callbacks(
         callbacks: Iterable[ConversationCallbackType],
