@@ -57,7 +57,7 @@ jobs:
               github.event.label.name == 'run-eval-50' ||
               github.event.label.name == 'run-eval-200' ||
               github.event.label.name == 'run-eval-500'))
-        runs-on: blacksmith-32vcpu-ubuntu-2204
+        runs-on: ubuntu-latest
         permissions:
             contents: read
             packages: write
