@@ -128,11 +128,17 @@ def main(files: list[str] | None = None) -> int:
     )
 
     # If specific files are provided, filter checks to only those directories
-    check_sdk = files is None or any(str(sdk_path) in f for f in files)
-    check_tools = files is None or any(str(tools_path) in f for f in files)
-    check_agent_server = files is None or any(
-        str(agent_server_path) in f for f in files
-    )
+    if files:
+        # Convert file paths to absolute for comparison
+        abs_files = [str(Path(f).resolve()) for f in files]
+        check_sdk = any(str(sdk_path) in f for f in abs_files)
+        check_tools = any(str(tools_path) in f for f in abs_files)
+        check_agent_server = any(str(agent_server_path) in f for f in abs_files)
+    else:
+        # Check all packages if no files specified
+        check_sdk = True
+        check_tools = True
+        check_agent_server = True
 
     all_violations = []
 
