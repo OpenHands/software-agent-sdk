@@ -124,8 +124,17 @@ class BaseConversation(ABC):
     def conversation_stats(self) -> ConversationStats: ...
 
     @abstractmethod
-    def send_message(self, message: str | Message) -> None:
-        """Send a message to the agent."""
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
+        """Send a message to the agent.
+
+        Args:
+            message: Either a string (which will be converted to a user message)
+                    or a Message object
+            sender: Optional identifier of the sender. Can be used to track
+                   message origin in multi-agent scenarios. For example, when
+                   one agent delegates to another, the sender can be set to
+                   identify which agent is sending the message.
+        """
         ...
 
     @abstractmethod
@@ -192,9 +201,19 @@ class BaseConversation(ABC):
 
     @staticmethod
     def get_persistence_dir(
-        persistence_base_dir: str, conversation_id: ConversationID
+        persistence_base_dir: str | Path, conversation_id: ConversationID
     ) -> str:
-        """Get the persistence directory for the conversation."""
+        """Get the persistence directory for the conversation.
+
+        Args:
+            persistence_base_dir: Base directory for persistence. Can be a string
+                path or Path object.
+            conversation_id: Unique conversation ID.
+
+        Returns:
+            String path to the conversation-specific persistence directory.
+            Always returns a normalized string path even if a Path was provided.
+        """
         return str(Path(persistence_base_dir) / conversation_id.hex)
 
     @staticmethod

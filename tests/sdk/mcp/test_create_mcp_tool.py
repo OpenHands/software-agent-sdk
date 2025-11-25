@@ -2,7 +2,10 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from openhands.sdk.mcp import create_mcp_tools
+from openhands.sdk.mcp.exceptions import MCPTimeoutError
 
 
 def test_mock_create_mcp_tools_empty_config():
@@ -260,3 +263,45 @@ def test_real_create_mcp_tools_dict_config():
     assert "security_risk" not in input_schema["properties"]
 
     assert tools[0].executor is not None
+
+
+def test_mock_create_mcp_tools_timeout():
+    """Test that timeout errors are wrapped with informative error messages."""
+    config = {
+        "mcpServers": {
+            "slow_server": {
+                "transport": "stdio",
+                "command": "python",
+                "args": ["./slow_server.py"],
+            },
+            "another_server": {
+                "transport": "http",
+                "url": "https://api.example.com/mcp",
+            },
+        }
+    }
+
+    # Mock the MCPClient and its methods to raise TimeoutError
+    with patch("openhands.sdk.mcp.utils.MCPClient") as mock_client_class:
+        mock_client = MagicMock()
+        mock_client_class.return_value = mock_client
+
+        # Mock call_async_from_sync to raise TimeoutError
+        mock_client.call_async_from_sync.side_effect = TimeoutError()
+
+        # Should raise MCPTimeoutError with informative message
+        with pytest.raises(MCPTimeoutError) as exc_info:
+            create_mcp_tools(config, timeout=30.0)
+
+        # Verify the error message contains useful information
+        error_message = str(exc_info.value)
+        assert "30" in error_message  # timeout value
+        assert "seconds" in error_message
+        assert "slow_server" in error_message  # server name
+        assert "another_server" in error_message  # server name
+        assert "Possible solutions" in error_message  # helpful suggestions
+        assert "timeout" in error_message.lower()
+
+        # Verify the exception has the timeout attribute
+        assert exc_info.value.timeout == 30.0
+        assert exc_info.value.config is not None
