@@ -12,6 +12,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -93,6 +94,12 @@ llm = LLM(
 
 agent = get_default_agent(llm=llm)
 conversation = Conversation(agent=agent, workspace=os.getcwd())
+
+# Conditionally add security analyzer based on environment variable
+add_security_analyzer = bool(os.getenv("ADD_SECURITY_ANALYZER", "").strip())
+if add_security_analyzer:
+    print("Agent security analyzer added.")
+    conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
 # 1) Confirmation mode ON
 conversation.set_confirmation_policy(AlwaysConfirm())

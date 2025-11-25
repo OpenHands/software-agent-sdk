@@ -10,6 +10,7 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     get_logger,
 )
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
@@ -65,6 +66,8 @@ conversation = Conversation(
     callbacks=[conversation_callback],
     workspace=cwd,
 )
+# Set security analyzer via conversation (new approach after deprecation)
+conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
 logger.info("Starting conversation with MCP integration...")
 conversation.send_message(
