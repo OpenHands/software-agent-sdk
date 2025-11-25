@@ -42,6 +42,8 @@ REASONING_EFFORT_PATTERNS: list[str] = [
     "gemini-2.5-pro",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
+    # Anthropic Opus 4.5 (both dot and dash variants)
+    "claude-opus-4.5",
     "claude-opus-4-5",
 ]
 
