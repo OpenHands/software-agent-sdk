@@ -170,7 +170,7 @@ jobs:
 
     build-benchmarks:
         needs: prepare
-        uses: OpenHands/benchmarks/.github/workflows/build-swe-bench-images.yml@2c681343b540444944f3d88a2d13b88de51c052b
+        uses: OpenHands/benchmarks/.github/workflows/build-swe-bench-images.yml@refs/heads/openhands/workflow-call-support
         with:
             dataset: princeton-nlp/SWE-bench_Verified
             split: test
