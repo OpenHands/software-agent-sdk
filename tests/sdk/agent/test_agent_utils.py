@@ -27,6 +27,7 @@ def mock_llm():
     """Create a mock LLM for testing."""
     llm = Mock(spec=LLM)
     llm.uses_responses_api.return_value = False
+    llm.metadata = {}
     return llm
 
 
@@ -277,7 +278,9 @@ def test_make_llm_completion_with_completion_api(mock_llm, sample_messages):
     mock_llm.completion.assert_called_once_with(
         messages=sample_messages,
         tools=[],
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
     mock_llm.responses.assert_not_called()
 
@@ -301,6 +304,8 @@ def test_make_llm_completion_with_responses_api(mock_llm, sample_messages):
         include=None,
         store=False,
         add_security_risk_prediction=True,
+        metadata={},
+        on_token=None,
     )
     mock_llm.completion.assert_not_called()
 
@@ -323,7 +328,9 @@ def test_make_llm_completion_with_tools_completion_api(
     mock_llm.completion.assert_called_once_with(
         messages=sample_messages,
         tools=sample_tools,
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
 
 
@@ -348,6 +355,8 @@ def test_make_llm_completion_with_tools_responses_api(
         include=None,
         store=False,
         add_security_risk_prediction=True,
+        metadata={},
+        on_token=None,
     )
 
 
@@ -366,7 +375,9 @@ def test_make_llm_completion_with_none_tools(mock_llm, sample_messages):
     mock_llm.completion.assert_called_once_with(
         messages=sample_messages,
         tools=[],
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
 
 
@@ -385,7 +396,9 @@ def test_make_llm_completion_with_empty_tools_list(mock_llm, sample_messages):
     mock_llm.completion.assert_called_once_with(
         messages=sample_messages,
         tools=[],
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
 
 
@@ -404,7 +417,9 @@ def test_make_llm_completion_empty_messages(mock_llm):
     mock_llm.completion.assert_called_once_with(
         messages=[],
         tools=[],
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
 
 
@@ -440,7 +455,9 @@ def test_prepare_llm_messages_and_make_llm_completion_integration(
     mock_llm.completion.assert_called_once_with(
         messages=sample_messages,
         tools=[],
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
 
 
@@ -449,6 +466,7 @@ def test_make_llm_completion_api_selection():
     # Test completion API selection
     mock_llm = Mock(spec=LLM)
     mock_llm.uses_responses_api.return_value = False
+    mock_llm.metadata = {}
     mock_response = Mock(spec=LLMResponse)
     mock_llm.completion.return_value = mock_response
 
@@ -466,12 +484,15 @@ def test_make_llm_completion_api_selection():
     mock_llm.completion.assert_called_once_with(
         messages=messages,
         tools=[],
+        extra_body={"metadata": {}},
         add_security_risk_prediction=True,
+        on_token=None,
     )
     mock_llm.responses.assert_not_called()
 
     # Reset mocks and test responses API selection
     mock_llm.reset_mock()
+    mock_llm.metadata = {}
     mock_llm.uses_responses_api.return_value = True
     mock_llm.responses.return_value = mock_response
 
@@ -485,5 +506,7 @@ def test_make_llm_completion_api_selection():
         include=None,
         store=False,
         add_security_risk_prediction=True,
+        metadata={},
+        on_token=None,
     )
     mock_llm.completion.assert_not_called()

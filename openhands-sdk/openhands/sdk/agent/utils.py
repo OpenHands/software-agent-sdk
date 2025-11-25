@@ -12,7 +12,7 @@ from typing import (
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.conversation import ConversationTokenCallbackType
+from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message

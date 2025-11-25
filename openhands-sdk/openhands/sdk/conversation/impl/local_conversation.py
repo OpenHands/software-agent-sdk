@@ -4,7 +4,6 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
-from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -514,6 +513,8 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+
         template_dir = (
             Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
         )
