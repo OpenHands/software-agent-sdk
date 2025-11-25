@@ -20,7 +20,7 @@ class DummyLLM:
 
 def test_opus_4_5_uses_effort_and_beta_header_and_strips_temp_top_p():
     llm = DummyLLM(
-        model="claude-opus-4.5-20251101",
+        model="claude-opus-4-5-20251101",
         top_p=0.9,
         temperature=0.7,
         reasoning_effort="medium",
