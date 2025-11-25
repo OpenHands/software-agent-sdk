@@ -690,6 +690,33 @@ class RemoteConversation(BaseConversation):
             self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
         )
 
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        # For remote conversations, delegate to the server endpoint
+        payload = {"question": question}
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/ask_agent",
+            json=payload,
+        )
+        data = resp.json()
+        return data["response"]
+
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.

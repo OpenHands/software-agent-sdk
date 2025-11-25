@@ -4,6 +4,8 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -438,6 +440,67 @@ class LocalConversation(BaseConversation):
                 continue
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
+
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        template_dir = (
+            Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
+        )
+
+        question_text = render_template(
+            str(template_dir), "ask_agent_template.j2", question=question
+        )
+
+        # Create a user message with the context-aware question
+        user_message = Message(
+            role="user",
+            content=[TextContent(text=question_text)],
+        )
+
+        messages = prepare_llm_messages(
+            self.state.events, additional_messages=[user_message]
+        )
+
+        # Get or create the specialized ask-agent LLM
+        try:
+            question_llm = self.llm_registry.get("ask-agent-llm")
+        except KeyError:
+            question_llm = self.agent.llm.model_copy(
+                update={
+                    "usage_id": "ask-agent-llm",
+                },
+                deep=True,
+            )
+            self.llm_registry.add(question_llm)
+
+        # Pass agent tools so LLM can understand tool_calls in conversation history
+        response = make_llm_completion(
+            question_llm, messages, tools=list(self.agent.tools_map.values())
+        )
+
+        message = response.message
+
+        # Extract the text content from the LLMResponse message
+        if message.content and len(message.content) > 0:
+            # Look for the first TextContent in the response
+            for content in response.message.content:
+                if isinstance(content, TextContent):
+                    return content.text
+
+        raise Exception("Failed to generate summary")
 
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
