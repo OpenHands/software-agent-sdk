@@ -12,6 +12,8 @@ from pydantic import (
     TypeAdapter,
 )
 
+from openhands.agent_server.utils import patch_fastapi_discriminated_union_support
+
 
 logger = logging.getLogger(__name__)
 _rebuild_required = True
@@ -302,19 +304,5 @@ def _rebuild_if_required():
         rebuild_all()
 
 
-def _patch_fastapi_if_available():
-    """Call the FastAPI patch if available, for compatibility with DiscriminatedUnionMixin."""  # noqa: E501
-    try:
-        # Import the patch function from agent_server utils if available
-        from openhands.agent_server.utils import (
-            patch_fastapi_discriminated_union_support,
-        )
-
-        patch_fastapi_discriminated_union_support()
-    except ImportError:
-        # agent_server module not available, skip patching
-        pass
-
-
 # Always call the FastAPI patch after DiscriminatedUnionMixin definition
-_patch_fastapi_if_available()
+patch_fastapi_discriminated_union_support()
