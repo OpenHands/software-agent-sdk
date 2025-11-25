@@ -2,7 +2,6 @@
 
 from pydantic import Field, model_validator
 
-from openhands.agent_server.docker.build import BuildOptions, build
 from openhands.sdk.workspace import TargetType
 
 from .workspace import DockerWorkspace
@@ -68,16 +67,11 @@ class DockerDevWorkspace(DockerWorkspace):
         """
         if self.base_image:
             # Build the image from base_image
-            build_opts = BuildOptions(
+            return self._build_image_from_base(
                 base_image=self.base_image,
                 target=self.target,
-                platforms=[self.platform],
-                push=False,
+                platform=self.platform,
             )
-            tags = build(opts=build_opts)
-            if not tags or len(tags) == 0:
-                raise RuntimeError("Build failed, no image tags returned")
-            return tags[0]
         elif self.server_image:
             # Use pre-built image
             return self.server_image
