@@ -456,6 +456,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         return self._metrics
 
+    @property
+    def telemetry(self) -> Telemetry:
+        """Get telemetry handler for this LLM instance.
+
+        Returns:
+            Telemetry object for managing logging and metrics callbacks.
+
+        Example:
+            >>> llm.telemetry.set_log_completions_callback(my_callback)
+        """
+        assert self._telemetry is not None, (
+            "Telemetry should be initialized after model validation"
+        )
+        return self._telemetry
+
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
@@ -803,7 +818,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 m in self.model
                 for m in [
                     "claude-3-7-sonnet",
-                    "claude-3.7-sonnet",
                     "claude-sonnet-4",
                     "kimi-k2-thinking",
                 ]
