@@ -1,0 +1,7 @@
+[
+  {"id": "claude-sonnet-4-5-20250929", "display_name": "Claude Sonnet 4.5", "llm_config": {"model": "litellm_proxy/claude-sonnet-4-5-20250929", "temperature": 0.0}},
+  {"id": "claude-haiku-4-5-20251001", "display_name": "Claude Haiku 4.5", "llm_config": {"model": "litellm_proxy/claude-haiku-4-5-20251001", "temperature": 0.0}},
+  {"id": "gpt-5-mini-2025-08-07", "display_name": "GPT-5 Mini", "llm_config": {"model": "litellm_proxy/gpt-5-mini-2025-08-07", "temperature": 1.0}},
+  {"id": "deepseek-chat", "display_name": "DeepSeek Chat", "llm_config": {"model": "litellm_proxy/deepseek/deepseek-chat"}},
+  {"id": "kimi-k2-thinking", "display_name": "Kimi K2 Thinking", "llm_config": {"model": "litellm_proxy/moonshot/kimi-k2-thinking"}}
+]
