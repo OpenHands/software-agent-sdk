@@ -8,8 +8,8 @@ on:
         types: [published]
     workflow_dispatch:
         inputs:
-            branch:
-                description: Branch or tag to evaluate
+            sdk_ref:
+                description: SDK commit/ref to evaluate
                 required: true
                 default: main
             eval_limit:
@@ -19,10 +19,9 @@ on:
                 type: choice
                 options:
                     - '1'
-                    - '2'
-                    - '10'
                     - '50'
-                    - '100'
+                    - '200'
+                    - '500'
             model_stubs:
                 description: Comma-separated model stubs to evaluate (must be allowlisted)
                 required: false
@@ -36,6 +35,7 @@ on:
 env:
     BENCHMARKS_REPO: OpenHands/benchmarks
     BENCHMARKS_REF: main
+    BENCHMARKS_BUILD_WORKFLOW: build-swe-bench-images.yml
     EVAL_REPO: OpenHands/evaluation
     EVAL_WORKFLOW: eval-job.yml
     DATASET: princeton-nlp/SWE-bench_Verified
@@ -43,6 +43,9 @@ env:
     MAX_BUILD_WORKERS: '32'
     EVAL_AGENT_IMAGE: ghcr.io/openhands/eval-agent-server
     EVAL_AGENT_TARGET: source-minimal
+    # Polling configuration for workflow status checks
+    MAX_POLL_ATTEMPTS: '600'  # 600 attempts × 60s = 10 hours max wait
+    POLL_INTERVAL_SECONDS: '60'
 
 jobs:
     build-and-evaluate:
@@ -51,10 +54,10 @@ jobs:
             github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request_target' &&
              (github.event.label.name == 'run-eval-1' ||
-              github.event.label.name == 'run-eval-2' ||
               github.event.label.name == 'run-eval-50' ||
-              github.event.label.name == 'run-eval-100'))
-        runs-on: blacksmith-32vcpu-ubuntu-2204
+              github.event.label.name == 'run-eval-200' ||
+              github.event.label.name == 'run-eval-500'))
+        runs-on: ubuntu-latest
         permissions:
             contents: read
             packages: write
@@ -67,7 +70,7 @@ jobs:
               uses: actions/checkout@v4
               with:
                   ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.sha || (github.event_name == 
-                      'workflow_dispatch' && github.event.inputs.branch) || github.ref }}
+                      'workflow_dispatch' && github.event.inputs.sdk_ref) || github.ref }}
                   fetch-depth: 0
 
             - name: Load allowlists
@@ -96,17 +99,26 @@ jobs:
               env:
                   DEFAULT_MODEL: ${{ steps.allowlists.outputs.default_model }}
                   ALLOWED_MODELS_JSON: ${{ steps.allowlists.outputs.allowed_models }}
+                  PAT_TOKEN_DEFAULT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
               run: |
                   set -euo pipefail
+
+                  # Set PAT token for cross-repo workflow dispatch
+                  PAT_TOKEN="$PAT_TOKEN_DEFAULT"
+                  if [ -z "$PAT_TOKEN" ]; then
+                    echo "Missing PAT token" >&2
+                    exit 1
+                  fi
+                  echo "PAT_TOKEN=$PAT_TOKEN" >> "$GITHUB_ENV"
 
                   # Determine eval limit based on trigger
                   if [ "${{ github.event_name }}" = "pull_request_target" ]; then
                     LABEL="${{ github.event.label.name }}"
                     case "$LABEL" in
                       run-eval-1) EVAL_LIMIT=1 ;;
-                      run-eval-2) EVAL_LIMIT=2 ;;
                       run-eval-50) EVAL_LIMIT=50 ;;
-                      run-eval-100) EVAL_LIMIT=100 ;;
+                      run-eval-200) EVAL_LIMIT=200 ;;
+                      run-eval-500) EVAL_LIMIT=500 ;;
                       *) echo "Unsupported label $LABEL" >&2; exit 1 ;;
                     esac
                     SDK_REF="${{ github.event.pull_request.head.ref }}"
@@ -119,7 +131,7 @@ jobs:
                     TRIGGER_DESCRIPTION="Release ${{ github.event.release.tag_name }}"
                   else
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
-                    SDK_REF="${{ github.event.inputs.branch }}"
+                    SDK_REF="${{ github.event.inputs.sdk_ref }}"
                     PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
@@ -157,80 +169,119 @@ jobs:
                   git fetch origin "$REF" --force
                   git checkout FETCH_HEAD
 
-            - name: Checkout benchmarks repo
-              uses: actions/checkout@v4
-              with:
-                  repository: ${{ env.BENCHMARKS_REPO }}
-                  ref: ${{ env.BENCHMARKS_REF }}
-                  path: benchmarks
-                  submodules: recursive
-
-            - name: Pin benchmarks SDK to evaluated ref
-              id: sdk-pin
+            - name: Get current commit SHA
+              id: get-sha
               run: |
-                  set -euo pipefail
-                  SDK_REF="${{ steps.params.outputs.sdk_ref }}"
-                  git -C benchmarks/vendor/software-agent-sdk fetch origin "$SDK_REF"
-                  git -C benchmarks/vendor/software-agent-sdk checkout "$SDK_REF"
-                  SDK_SHA=$(git -C benchmarks/vendor/software-agent-sdk rev-parse HEAD)
-                  echo "Using SDK ref $SDK_REF ($SDK_SHA) for image build"
+                  SDK_SHA=$(git rev-parse HEAD)
                   echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  echo "Using SDK commit: $SDK_SHA"
 
-            - name: Set up uv
-              uses: astral-sh/setup-uv@v7
-              with:
-                  enable-cache: true
-
-            - name: Log in to GitHub Container Registry
-              uses: docker/login-action@v3
-              with:
-                  registry: ghcr.io
-                  username: ${{ github.actor }}
-                  password: ${{ secrets.GITHUB_TOKEN }}
-
-            - name: Build and push SWE-Bench images
+            - name: Dispatch benchmarks image build
+              id: build-dispatch
               env:
-                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
-                  SDK_REF: ${{ steps.params.outputs.sdk_ref }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   DATASET: ${{ env.DATASET }}
                   SPLIT: ${{ env.SPLIT }}
                   MAX_BUILD_WORKERS: ${{ env.MAX_BUILD_WORKERS }}
-                  EVAL_AGENT_IMAGE: ${{ env.EVAL_AGENT_IMAGE }}
-                  EVAL_AGENT_TARGET: ${{ env.EVAL_AGENT_TARGET }}
-              working-directory: benchmarks
               run: |
                   set -euo pipefail
-                  echo "Building images for SDK $SDK_SHA (ref: $SDK_REF)"
-                  uv run benchmarks/swe_bench/build_images.py \
-                    --dataset "${DATASET}" \
-                    --split "${SPLIT}" \
-                    --image "${EVAL_AGENT_IMAGE}" \
-                    --target "${EVAL_AGENT_TARGET}" \
-                    --push \
-                    --max-workers "${MAX_BUILD_WORKERS}" \
-                    --n-limit "${EVAL_LIMIT}"
+                  SDK_SHA="${{ steps.get-sha.outputs.sdk_sha }}"
+
+                  # Record timestamp before dispatch to avoid race condition
+                  DISPATCH_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+                  echo "dispatch_time=$DISPATCH_TIME" >> "$GITHUB_OUTPUT"
+
+                  echo "Dispatching benchmarks build with SDK commit: $SDK_SHA at $DISPATCH_TIME"
+                  PAYLOAD=$(jq -n \
+                    --arg dataset "$DATASET" \
+                    --arg split "$SPLIT" \
+                    --arg max_workers "$MAX_BUILD_WORKERS" \
+                    --arg n_limit "$EVAL_LIMIT" \
+                    --arg sdk_commit "$SDK_SHA" \
+                    '{ref:"main", inputs: {dataset:$dataset, split:$split, "max-workers":$max_workers, "n-limit":$n_limit, "sdk-commit":$sdk_commit}}')
+                  RESPONSE=$(curl -sS -o /tmp/build-dispatch.out -w "%{http_code}" -X POST \
+                    -H "Authorization: token $PAT_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -d "$PAYLOAD" \
+                    "https://api.github.com/repos/${{ env.BENCHMARKS_REPO }}/actions/workflows/${{ env.BENCHMARKS_BUILD_WORKFLOW }}/dispatches")
+                  if [ "$RESPONSE" != "204" ]; then
+                    echo "Benchmarks build dispatch failed (status $RESPONSE):" >&2
+                    cat /tmp/build-dispatch.out >&2
+                    exit 1
+                  fi
+
+                  # Wait for run to be created in GitHub's system
+                  echo "Waiting 10 seconds for workflow run to be created..."
+                  sleep 10
+                  echo "bench_build_dispatched=true" >> "$GITHUB_OUTPUT"
+
+            - name: Wait for benchmarks build completion
+              env:
+                  DISPATCH_TIME: ${{ steps.build-dispatch.outputs.dispatch_time }}
+              run: |
+                  set -euo pipefail
+                  WORKFLOW_ID="${{ env.BENCHMARKS_BUILD_WORKFLOW }}"
+                  REPO="${{ env.BENCHMARKS_REPO }}"
+                  MAX_ATTEMPTS="${{ env.MAX_POLL_ATTEMPTS }}"
+                  SLEEP_SECONDS="${{ env.POLL_INTERVAL_SECONDS }}"
+
+                  # Find the run that was created after our dispatch
+                  echo "Looking for workflow run created after $DISPATCH_TIME"
+                  RUN_ID=""
+                  for i in $(seq 1 $MAX_ATTEMPTS); do
+                    # Query for recent runs on main branch, get more results to avoid race
+                    RUNS=$(curl -sS \
+                      -H "Authorization: token $PAT_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?per_page=5&branch=main&created=>=$DISPATCH_TIME")
+
+                    # Find the first run created at or after dispatch time
+                    if [ -z "$RUN_ID" ]; then
+                      RUN_ID=$(echo "$RUNS" | jq -r ".workflow_runs[] | select(.created_at >= \"$DISPATCH_TIME\") | .id" | head -1)
+                      if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
+                        echo "Found workflow run: $RUN_ID"
+                      else
+                        echo "Waiting for workflow run to appear (attempt $i/$MAX_ATTEMPTS)..."
+                        sleep 5
+                        continue
+                      fi
+                    fi
+
+                    # Check status of our specific run
+                    RUN_DATA=$(echo "$RUNS" | jq -r ".workflow_runs[] | select(.id == $RUN_ID)")
+                    STATUS=$(echo "$RUN_DATA" | jq -r '.status')
+                    CONCL=$(echo "$RUN_DATA" | jq -r '.conclusion')
+
+                    echo "Benchmarks build run ${RUN_ID}: status=${STATUS}, conclusion=${CONCL}"
+                    if [ "$STATUS" = "completed" ]; then
+                      if [ "$CONCL" = "success" ]; then
+                        exit 0
+                      else
+                        echo "Benchmarks build failed with conclusion ${CONCL}" >&2
+                        exit 1
+                      fi
+                    fi
+                    sleep $SLEEP_SECONDS
+                  done
+                  echo "Timed out waiting for benchmarks build to finish" >&2
+                  exit 1
 
             - name: Dispatch evaluation workflow
               env:
-                  PAT_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT || secrets.PAT_TOKEN || secrets.GITHUB_TOKEN }}
-                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
+                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
                   EVAL_REPO: ${{ env.EVAL_REPO }}
                   EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
               run: |
-                  if [ -z "$PAT_TOKEN" ]; then
-                    echo "Missing PAT_TOKEN for dispatching evaluation workflow" >&2
-                    exit 1
-                  fi
+                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \
                     --arg eval_limit "$EVAL_LIMIT" \
                     --arg models "$MODELS" \
                     '{ref: "main", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
-                    -H "Authorization: Bearer $PAT_TOKEN" \
+                    -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
                     -d "$PAYLOAD" \
                     "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches")
@@ -243,7 +294,7 @@ jobs:
             - name: Comment on PR
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  SDK_SHA: ${{ steps.sdk-pin.outputs.sdk_sha }}
+                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
                   TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
