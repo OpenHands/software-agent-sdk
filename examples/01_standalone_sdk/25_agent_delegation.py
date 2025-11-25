@@ -71,3 +71,7 @@ conversation.send_message(
     "Ask the lodging sub-agent what it thinks about Covent Garden."
 )
 conversation.run()
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

@@ -43,6 +43,22 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
+# AgentContext provides flexible ways to customize prompts:
+# 1. Skills: Inject instructions (always-active or keyword-triggered)
+# 2. system_message_suffix: Append text to the system prompt
+# 3. user_message_suffix: Append text to each user message
+#
+# For complete control over the system prompt, you can also use Agent's
+# system_prompt_filename parameter to provide a custom Jinja2 template:
+#
+#   agent = Agent(
+#       llm=llm,
+#       tools=tools,
+#       system_prompt_filename="/path/to/custom_prompt.j2",
+#       system_prompt_kwargs={"cli_mode": True, "repo": "my-project"},
+#   )
+#
+# See: https://docs.openhands.dev/sdk/guides/skill#customizing-system-prompts
 agent_context = AgentContext(
     skills=[
         Skill(
@@ -53,7 +69,7 @@ agent_context = AgentContext(
             # You can set it to be the path of a file that contains the skill content
             source=None,
             # trigger determines when the skill is active
-            # trigger=None means always active
+            # trigger=None means always active (repo skill)
             trigger=None,
         ),
         Skill(
@@ -67,7 +83,9 @@ agent_context = AgentContext(
             trigger=KeywordTrigger(keywords=["flarglebargle"]),
         ),
     ],
+    # system_message_suffix is appended to the system prompt (always active)
     system_message_suffix="Always finish your response with the word 'yay!'",
+    # user_message_suffix is appended to each user message
     user_message_suffix="The first character of your response should be 'I'",
 )
 
