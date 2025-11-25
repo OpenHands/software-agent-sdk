@@ -43,7 +43,9 @@ class Telemetry(BaseModel):
     _req_start: float = PrivateAttr(default=0.0)
     _req_ctx: dict[str, Any] = PrivateAttr(default_factory=dict)
     _last_latency: float = PrivateAttr(default=0.0)
-    _log_callback: Callable[[str, str], None] | None = PrivateAttr(default=None)
+    _log_completions_callback: Callable[[str, str], None] | None = PrivateAttr(
+        default=None
+    )
     _stats_update_callback: Callable[[], None] | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
@@ -51,14 +53,16 @@ class Telemetry(BaseModel):
     )
 
     # ---------- Lifecycle ----------
-    def set_log_callback(self, callback: Callable[[str, str], None] | None) -> None:
+    def set_log_completions_callback(
+        self, callback: Callable[[str, str], None] | None
+    ) -> None:
         """Set a callback function for logging instead of writing to file.
 
         Args:
             callback: A function that takes (filename, log_data) and handles the log.
                      Used for streaming logs in remote execution contexts.
         """
-        self._log_callback = callback
+        self._log_completions_callback = callback
 
     def set_stats_update_callback(self, callback: Callable[[], None] | None) -> None:
         """Set a callback function to be notified when stats are updated.
@@ -247,7 +251,7 @@ class Telemetry(BaseModel):
         raw_resp: ModelResponse | ResponsesAPIResponse | None = None,
     ) -> None:
         # Skip if neither file logging nor callback is configured
-        if not self.log_dir and not self._log_callback:
+        if not self.log_dir and not self._log_completions_callback:
             return
         try:
             # Prepare filename and log data
@@ -324,8 +328,8 @@ class Telemetry(BaseModel):
             log_data = json.dumps(data, default=_safe_json, ensure_ascii=False)
 
             # Use callback if set (for remote execution), otherwise write to file
-            if self._log_callback:
-                self._log_callback(filename, log_data)
+            if self._log_completions_callback:
+                self._log_completions_callback(filename, log_data)
             elif self.log_dir:
                 # Create log directory if it doesn't exist
                 os.makedirs(self.log_dir, exist_ok=True)

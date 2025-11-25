@@ -791,12 +791,12 @@ class TestTelemetryCallbacks:
         def log_callback(filename: str, log_data: str):
             callback_called.append((filename, log_data))
 
-        basic_telemetry.set_log_callback(log_callback)
-        assert basic_telemetry._log_callback == log_callback
+        basic_telemetry.set_log_completions_callback(log_callback)
+        assert basic_telemetry._log_completions_callback == log_callback
 
         # Clear callback
-        basic_telemetry.set_log_callback(None)
-        assert basic_telemetry._log_callback is None
+        basic_telemetry.set_log_completions_callback(None)
+        assert basic_telemetry._log_completions_callback is None
 
     def test_set_stats_update_callback(self, basic_telemetry):
         """Test setting stats update callback."""

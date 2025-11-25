@@ -323,7 +323,7 @@ class EventService:
                 )
                 self._emit_event_from_thread(event)
 
-            llm.telemetry.set_log_callback(log_callback)
+            llm.telemetry.set_log_completions_callback(log_callback)
 
     def _setup_stats_streaming(self, agent: AgentBase) -> None:
         """Configure stats update callbacks to stream stats changes via events."""

@@ -464,7 +464,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             Telemetry object for managing logging and metrics callbacks.
 
         Example:
-            >>> llm.telemetry.set_log_callback(my_callback)
+            >>> llm.telemetry.set_log_completions_callback(my_callback)
         """
         assert self._telemetry is not None, (
             "Telemetry should be initialized after model validation"
