@@ -170,9 +170,6 @@ jobs:
 
     build-benchmarks:
         needs: prepare
-        permissions:
-            contents: read
-            packages: write
         uses: OpenHands/benchmarks/.github/workflows/build-swe-bench-images.yml@openhands/workflow-call-support
         with:
             dataset: princeton-nlp/SWE-bench_Verified
