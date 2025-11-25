@@ -4,6 +4,7 @@ from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
 from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.utils.deprecation import warn_cleanup
 
 
 def select_chat_options(
@@ -36,6 +37,15 @@ def select_chat_options(
     if get_features(llm.model).supports_reasoning_effort:
         # Claude models use different parameter format
         if "claude-opus-4-5" in llm.model.lower():
+            warn_cleanup(
+                "Claude Opus 4.5 effort parameter workaround",
+                cleanup_by="1.4.0",
+                details=(
+                    "LiteLLM does not yet redirect reasoning_effort to "
+                    "output_config.effort for Claude Opus 4.5. Remove this workaround "
+                    "once LiteLLM adds native support."
+                ),
+            )
             # Claude uses output_config.effort instead of reasoning_effort
             if llm.reasoning_effort is not None:
                 out["output_config"] = {"effort": llm.reasoning_effort}
