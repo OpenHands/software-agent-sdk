@@ -5,6 +5,7 @@ from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -455,24 +456,18 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        template_dir = (
+            Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
+        )
+
+        question_text = render_template(
+            str(template_dir), "ask_agent_template.j2", question=question
+        )
+
         # Create a user message with the context-aware question
         user_message = Message(
             role="user",
-            content=[
-                TextContent(
-                    text=(
-                        "<QUESTION>\n"
-                        "Based on the activity so far answer the following question\n\n"
-                        "## Question\n"
-                        f"{question}\n\n\n"
-                        "<IMPORTANT>\n"
-                        "This is a question, do not make any tool call and just answer "
-                        "my question.\n"
-                        "</IMPORTANT>\n"
-                        "</QUESTION>"
-                    )
-                )
-            ],
+            content=[TextContent(text=question_text)],
         )
 
         messages = prepare_llm_messages(
