@@ -30,6 +30,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         no_change_timeout_seconds: int | None = None,
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
+        full_output_save_dir: str | None = None,
     ):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
@@ -42,6 +43,8 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                          If None, auto-detect based on system capabilities
             shell_path: Path to the shell binary (for subprocess terminal type only).
                        If None, will auto-detect bash from PATH.
+            full_output_save_dir: Path to directory to save full output
+                                  logs and files, used when truncation is needed.
         """
         self.shell_path = shell_path
         self.session = create_terminal_session(
@@ -52,6 +55,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             shell_path=shell_path,
         )
         self.session.initialize()
+        self.full_output_save_dir: str | None = full_output_save_dir
         logger.info(
             f"TerminalExecutor initialized with working_dir: {working_dir}, "
             f"username: {username}, "
@@ -178,8 +182,14 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 secret_registry = conversation.state.secret_registry
                 masked_content = secret_registry.mask_secrets_in_output(content_text)
                 if masked_content:
-                    data = observation.model_dump(exclude={"content"})
-                    return TerminalObservation.from_text(text=masked_content, **data)
+                    data = observation.model_dump(
+                        exclude={"content", "full_output_save_dir"}
+                    )
+                    return TerminalObservation.from_text(
+                        text=masked_content,
+                        full_output_save_dir=self.full_output_save_dir,
+                        **data,
+                    )
             except Exception:
                 pass
 
