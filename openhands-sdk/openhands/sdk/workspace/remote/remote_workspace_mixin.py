@@ -25,6 +25,9 @@ class RemoteWorkspaceMixin(BaseModel):
     working_dir: str = Field(
         description="The working directory for agent operations and tool execution."
     )
+    api_timeout: float = Field(
+        default=60.0, description="API request timeout in seconds"
+    )
 
     def model_post_init(self, context: Any) -> None:
         # Set up remote host

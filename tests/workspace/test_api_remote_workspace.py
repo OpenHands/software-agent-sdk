@@ -1,4 +1,4 @@
-"""Test APIRemoteWorkspace timeout configuration."""
+"""Test timeout configuration for remote workspaces."""
 
 from unittest.mock import patch
 
@@ -105,3 +105,22 @@ def test_different_timeout_values():
 
             workspace._runtime_id = None
             workspace.cleanup()
+
+
+def test_base_remote_workspace_timeout():
+    """Test that api_timeout works in base RemoteWorkspace class."""
+    from openhands.sdk.workspace.remote import RemoteWorkspace
+
+    custom_timeout = 120.0
+    workspace = RemoteWorkspace(
+        host="https://example.com",
+        working_dir="/workspace",
+        api_timeout=custom_timeout,
+    )
+
+    client = workspace.client
+    assert isinstance(client, httpx.Client)
+    assert client.timeout.read == custom_timeout
+    assert client.timeout.connect == 10.0
+    assert client.timeout.write == 10.0
+    assert client.timeout.pool == 10.0
