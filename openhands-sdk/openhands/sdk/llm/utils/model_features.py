@@ -70,8 +70,6 @@ PROMPT_CACHE_PATTERNS: list[str] = [
     # Anthropic Haiku 4.5 variants (dot and dash)
     "claude-haiku-4.5",
     "claude-haiku-4-5",
-    # Anthropic Opus 4.5 variants (dot and dash)
-    "claude-opus-4.5",
     "claude-opus-4-5",
 ]
 
