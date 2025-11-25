@@ -1,27 +1,6 @@
 """
-Example demonstrating the ask_agent functionality for getting quick responses
-from the agent without affecting conversation state.
-
-This example showcases the ask_agent method, which allows you to:
-1. Ask simple questions to the agent during conversation execution
-2. Get context-aware responses based on the current conversation
-3. Maintain thread safety while the conversation is running
-4. Avoid affecting the conversation state or event flow
-
-Demonstration Flow:
-1. Create a conversation and send initial messages to build context
-2. Start the conversation running in a background thread
-3. While the conversation is processing, use ask_agent to:
-   - Ask about the conversation context
-   - Get clarifications without interrupting the main flow
-   - Demonstrate thread-safe concurrent access
-4. Show that conversation state remains unaffected
-
-Key Benefits:
-- Thread-safe: Can be called while conversation.run() is executing
-- Context-aware: Includes current conversation context in responses
-- State-preserving: Doesn't affect conversation events or execution flow
-- Simple interface: Just pass a string question, get a string response
+Example demonstrating the ask_agent functionality for getting sidebar replies
+from the agent for a running conversation.
 """
 
 import os
@@ -92,7 +71,7 @@ print("This example demonstrates asking questions during conversation execution"
 
 # Step 1: Build conversation context
 print(f"\n[{timestamp()}] Building conversation context...")
-conversation.send_message("Explore this project and describe the current architecture.")
+conversation.send_message("Explore the current directory and describe the architecture")
 
 # Step 2: Start conversation in background thread
 print(f"[{timestamp()}] Starting conversation in background thread...")
@@ -108,23 +87,26 @@ print(f"\n[{timestamp()}] Using ask_agent while conversation is processing...")
 # Ask context-aware questions
 questions_and_responses = []
 
-print(f"\n[{timestamp()}] Asking: What was my original request?")
-response1 = conversation.ask_agent("What was my original request?")
-questions_and_responses.append(("What was my original request?", response1))
+question_1 = "Summarize the activity so far in 1 sentence."
+print(f"\n[{timestamp()}] Asking: {question_1}")
+response1 = conversation.ask_agent(question_1)
+questions_and_responses.append((question_1, response1))
 print(f"Response: {response1}")
 
 time.sleep(1)
 
-print(f"\n[{timestamp()}] Asking: What specific requirements did I mention?")
-response2 = conversation.ask_agent("What specific requirements did I mention?")
-questions_and_responses.append(("What specific requirements did I mention?", response2))
+question_2 = "How's the progress?"
+print(f"\n[{timestamp()}] Asking: {question_2}")
+response2 = conversation.ask_agent(question_2)
+questions_and_responses.append((question_2, response2))
 print(f"Response: {response2}")
 
 time.sleep(1)
 
-print(f"\n[{timestamp()}] Asking: What tools should I expect you to use?")
-response3 = conversation.ask_agent("What tools should I expect you to use?")
-questions_and_responses.append(("What tools should I expect you to use?", response3))
+question_3 = "Have you finished running?"
+print(f"\n[{timestamp()}] {question_3}")
+response3 = conversation.ask_agent(question_3)
+questions_and_responses.append((question_3, response3))
 print(f"Response: {response3}")
 
 # Step 4: Wait for conversation to complete

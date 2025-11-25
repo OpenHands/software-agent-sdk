@@ -468,17 +468,23 @@ class LocalConversation(BaseConversation):
 
         # Get the agent's current view of the conversation context
 
-        with self.state:
-            view = View.from_events(self.state.events)
+        view = View.from_events(self.state.events)
         visible_events: list = view.events
         visible_events = LLMConvertibleEvent.events_to_messages(visible_events)
 
         # Create a user message with the context-aware question
         user_message = Message(
             role="user",
-            content=[TextContent(text=f"Answer the following question: {question}")],
+            content=[
+                TextContent(
+                    text=f"# Question section\n"
+                    "Based on the activity so far answer the following question"
+                    f"##Question\n\n{question}"
+                )
+            ],
         )
         visible_events.append(user_message)
+
         # Use the agent's LLM to get a direct completion
         # This bypasses the conversation state and agent step cycle
         try:
@@ -501,6 +507,7 @@ class LocalConversation(BaseConversation):
             tools=list(self.agent.tools_map.values()),
             add_security_risk_prediction=True,
         )
+
         # Extract the text content from the LLMResponse message
         if response.message.content and len(response.message.content) > 0:
             # Look for the first TextContent in the response
