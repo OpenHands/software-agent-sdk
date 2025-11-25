@@ -21,6 +21,7 @@ on:
                     - '1'
                     - '50'
                     - '200'
+                    - '500'
             model_stubs:
                 description: Comma-separated model stubs to evaluate (must be allowlisted)
                 required: false
@@ -54,7 +55,8 @@ jobs:
             (github.event_name == 'pull_request_target' &&
              (github.event.label.name == 'run-eval-1' ||
               github.event.label.name == 'run-eval-50' ||
-              github.event.label.name == 'run-eval-200'))
+              github.event.label.name == 'run-eval-200' ||
+              github.event.label.name == 'run-eval-500'))
         runs-on: blacksmith-32vcpu-ubuntu-2204
         permissions:
             contents: read
@@ -116,6 +118,7 @@ jobs:
                       run-eval-1) EVAL_LIMIT=1 ;;
                       run-eval-50) EVAL_LIMIT=50 ;;
                       run-eval-200) EVAL_LIMIT=200 ;;
+                      run-eval-500) EVAL_LIMIT=500 ;;
                       *) echo "Unsupported label $LABEL" >&2; exit 1 ;;
                     esac
                     SDK_REF="${{ github.event.pull_request.head.ref }}"
