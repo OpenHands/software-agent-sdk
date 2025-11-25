@@ -186,7 +186,9 @@ class ConversationState(OpenHandsModel):
             state._autosave_enabled = True
             state.agent = resolved
 
-            state.stats = ConversationStats()
+            # Note: stats should NOT be reset here - they are loaded from
+            # persisted state. Resetting would lose all accumulated metrics
+            # including context_window
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"

@@ -251,7 +251,8 @@ class EventService:
             with self._conversation.state as state:
                 run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
-            loop.run_in_executor(None, self._conversation.run)
+            await loop.run_in_executor(None, self._conversation.run)
+            await self._publish_state_update()
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
@@ -410,6 +411,8 @@ class EventService:
             state_update_event = ConversationStateUpdateEvent.from_conversation_state(
                 state
             )
+
+            state.events.append(state_update_event)
 
             # Publish the state update event
             await self._pub_sub(state_update_event)
