@@ -33,11 +33,6 @@ on:
                 required: false
                 default: ''
 
-permissions:
-    contents: read
-    actions: write
-    packages: write
-
 env:
     BENCHMARKS_REPO: OpenHands/benchmarks
     BENCHMARKS_REF: openhands/workflow-call-support
