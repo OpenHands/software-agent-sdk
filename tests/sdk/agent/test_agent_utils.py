@@ -83,14 +83,14 @@ def mock_condenser():
     return Mock(spec=CondenserBase)
 
 
-class MockTestAction(Action):
-    """Mock action for testing."""
+class MockAgentUtilsAction(Action):
+    """Mock action for agent utils testing."""
 
     param1: str = Field(description="First parameter")
 
 
-class MockTestObservation(Observation):
-    """Mock observation for testing."""
+class MockAgentUtilsObservation(Observation):
+    """Mock observation for agent utils testing."""
 
     result: str = Field(description="Result of the action")
 
@@ -99,8 +99,10 @@ class MockTestObservation(Observation):
         return [TextContent(text=self.result)]
 
 
-class MockTestTool(ToolDefinition[MockTestAction, MockTestObservation]):
-    """Mock tool definition for testing."""
+class MockAgentUtilsTool(
+    ToolDefinition[MockAgentUtilsAction, MockAgentUtilsObservation]
+):
+    """Mock tool definition for agent utils testing."""
 
     @classmethod
     def create(cls, conv_state=None, **params):
@@ -111,10 +113,10 @@ class MockTestTool(ToolDefinition[MockTestAction, MockTestObservation]):
 def sample_tools():
     """Create sample tool definitions for testing."""
     return [
-        MockTestTool(
-            description="A test tool",
-            action_type=MockTestAction,
-            observation_type=MockTestObservation,
+        MockAgentUtilsTool(
+            description="A test tool for agent utils",
+            action_type=MockAgentUtilsAction,
+            observation_type=MockAgentUtilsObservation,
         )
     ]
 
