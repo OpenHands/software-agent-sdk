@@ -75,6 +75,7 @@ class FIFOLock:
             while True:
                 # If I'm at the front of the queue and nobody owns it → acquire
                 if self._waiters[0] is me and self._owner is None:
+                    self._waiters.popleft()
                     self._owner = ident
                     self._count = 1
                     return True
@@ -105,7 +106,6 @@ class FIFOLock:
             self._count -= 1
             if self._count == 0:
                 self._owner = None
-                self._waiters.popleft()
                 if self._waiters:
                     self._waiters[0].notify()
 
