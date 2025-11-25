@@ -1,11 +1,10 @@
 import json
 import types
-from collections.abc import Callable
-from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
+from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin, overload
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.event.base import Event, LLMConvertibleEvent
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
@@ -108,12 +107,27 @@ def fix_malformed_tool_arguments(
     return fixed_arguments
 
 
+@overload
+def prepare_llm_messages(
+    state: "ConversationState",
+    condenser: None = None,
+    additional_messages: list[Message] | None = None,
+) -> list[Message]: ...
+
+
+@overload
+def prepare_llm_messages(
+    state: "ConversationState",
+    condenser: CondenserBase,
+    additional_messages: list[Message] | None = None,
+) -> list[Message] | Condensation: ...
+
+
 def prepare_llm_messages(
     state: "ConversationState",
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
-    on_event: Callable[[Event], None] | None = None,
-) -> list[Message]:
+) -> list[Message] | Condensation:
     """Prepare LLM messages from conversation context.
 
     This utility function extracts the common logic for preparing conversation
@@ -136,7 +150,10 @@ def prepare_llm_messages(
     view = View.from_events(state.events)
     llm_convertible_events = view.events
 
-    # Handle condensation if available
+    # If a condenser is registered, we need to give it an
+    # opportunity to transform the events. This will either
+    # produce a list of events, exactly as expected, or a
+    # new condensation that needs to be processed
     if condenser is not None:
         condensation_result = condenser.condense(view)
 
@@ -145,12 +162,7 @@ def prepare_llm_messages(
                 llm_convertible_events = condensation_result.events
 
             case Condensation():
-                if on_event:
-                    on_event(condensation_result)
-                else:
-                    raise RuntimeError(
-                        "Condensation needed but no event callback provided"
-                    )
+                return condensation_result
 
     # Convert events to messages
     messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)

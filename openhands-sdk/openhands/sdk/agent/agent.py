@@ -25,7 +25,7 @@ from openhands.sdk.event import (
     SystemPromptEvent,
     TokenEvent,
 )
-from openhands.sdk.event.condenser import CondensationRequest
+from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
@@ -149,9 +149,16 @@ class Agent(AgentBase):
             return
 
         # Prepare LLM messages using the utility function
-        _messages = prepare_llm_messages(
-            state, condenser=self.condenser, on_event=on_event
+        _messages_or_condensation = prepare_llm_messages(
+            state, condenser=self.condenser
         )
+
+        # Process condensation event before agent sampels another action
+        if isinstance(_messages_or_condensation, Condensation):
+            on_event(_messages_or_condensation)
+            return
+
+        _messages = _messages_or_condensation
 
         logger.debug(
             "Sending messages to LLM: "
@@ -159,7 +166,6 @@ class Agent(AgentBase):
         )
 
         try:
-            # Use the utility function to make the LLM completion call
             llm_response = make_llm_completion(
                 self.llm, _messages, tools=list(self.tools_map.values())
             )
