@@ -308,8 +308,6 @@ class LocalConversation(BaseConversation):
                     self.agent.step(self, on_event=self._on_event)
                     iteration += 1
 
-                    print("current iteration is", iteration)
-
                     # Check for non-finished terminal conditions
                     # Note: We intentionally do NOT check for FINISHED status here.
                     # This allows concurrent user messages to be processed:
@@ -469,7 +467,6 @@ class LocalConversation(BaseConversation):
             ],
         )
 
-        # Prepare messages using the utility function (no condenser for ask_agent)
         messages = prepare_llm_messages(
             self.state, condenser=None, additional_messages=[user_message]
         )
@@ -481,31 +478,26 @@ class LocalConversation(BaseConversation):
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
-                    # One off responses take longer with caching
-                    "caching_prompt": False,
-                    # Disable native tool calling to prevent new tool calls
-                    "native_tool_calling": False,
                 },
                 deep=True,
             )
             self.llm_registry.add(question_llm)
 
-        # Use the utility function to make the LLM completion call
-        # Pass agent tools so LLM can understand tool_calls in conversation history,
-        # but native_tool_calling=False prevents new tool calls
+        # Pass agent tools so LLM can understand tool_calls in conversation history
         response = make_llm_completion(
             question_llm, messages, tools=list(self.agent.tools_map.values())
         )
 
+        message = response.message
+
         # Extract the text content from the LLMResponse message
-        if response.message.content and len(response.message.content) > 0:
+        if message.content and len(message.content) > 0:
             # Look for the first TextContent in the response
             for content in response.message.content:
                 if isinstance(content, TextContent):
                     return content.text
 
-        # Fallback if no text content is available
-        return ""
+        raise Exception("Failed to generate summary")
 
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:

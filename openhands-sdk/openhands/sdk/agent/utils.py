@@ -3,8 +3,10 @@ import types
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin
 
+from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
+from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
 
@@ -108,7 +110,7 @@ def fix_malformed_tool_arguments(
 
 def prepare_llm_messages(
     state: "ConversationState",
-    condenser=None,
+    condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
     on_event: Callable[[Event], None] | None = None,
 ) -> list[Message]:
@@ -130,27 +132,25 @@ def prepare_llm_messages(
     Raises:
         RuntimeError: If condensation is needed but no callback is provided
     """
+
+    view = View.from_events(state.events)
+    llm_convertible_events = view.events
+
     # Handle condensation if available
     if condenser is not None:
-        view = View.from_events(state.events)
         condensation_result = condenser.condense(view)
 
-        # If condenser returns a View, use its events
-        if isinstance(condensation_result, View):
-            llm_convertible_events = condensation_result.events
-        else:
-            # If condenser returns a Condensation, call the callback
-            if on_event is None:
-                raise RuntimeError("Condensation needed but no event callback provided")
-            on_event(condensation_result)  # type: ignore[arg-type]
-            # Return empty list to signal condensation was handled
-            # The caller should check if condensation occurred and return early
-            return []
-    else:
-        # Get all LLM convertible events from state
-        llm_convertible_events = [
-            e for e in state.events if isinstance(e, LLMConvertibleEvent)
-        ]
+        match condensation_result:
+            case View():
+                llm_convertible_events = condensation_result.events
+
+            case Condensation():
+                if on_event:
+                    on_event(condensation_result)
+                else:
+                    raise RuntimeError(
+                        "Condensation needed but no event callback provided"
+                    )
 
     # Convert events to messages
     messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)

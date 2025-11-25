@@ -153,10 +153,6 @@ class Agent(AgentBase):
             state, condenser=self.condenser, on_event=on_event
         )
 
-        # If messages is empty, it means condensation was handled
-        if not _messages:
-            return
-
         logger.debug(
             "Sending messages to LLM: "
             f"{json.dumps([m.model_dump() for m in _messages[1:]], indent=2)}"
