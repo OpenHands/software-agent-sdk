@@ -279,7 +279,7 @@ jobs:
                     --arg models "$MODELS" \
                     --arg pr_number "$PR_NUMBER" \
                     --arg sdk_repo "${{ github.repository }}" \
-                    '{ref: "main", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models, sdk_pr_number: $pr_number, sdk_repo: $sdk_repo}}')
+                    '{ref: "post-eval-results-to-sdk-pr", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models, sdk_pr_number: $pr_number, sdk_repo: $sdk_repo}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
