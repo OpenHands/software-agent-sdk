@@ -1,17 +1,26 @@
 import json
 import types
-from typing import TYPE_CHECKING, Annotated, Any, Union, get_args, get_origin, overload
+from collections.abc import Sequence
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Any,
+    Union,
+    get_args,
+    get_origin,
+    overload,
+)
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
-from openhands.sdk.event.base import LLMConvertibleEvent
+from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
 from openhands.sdk.tool import Action, ToolDefinition
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation.state import ConversationState
+    pass
 
 
 def fix_malformed_tool_arguments(
@@ -109,7 +118,7 @@ def fix_malformed_tool_arguments(
 
 @overload
 def prepare_llm_messages(
-    state: "ConversationState",
+    events: Sequence[Event],
     condenser: None = None,
     additional_messages: list[Message] | None = None,
 ) -> list[Message]: ...
@@ -117,14 +126,14 @@ def prepare_llm_messages(
 
 @overload
 def prepare_llm_messages(
-    state: "ConversationState",
+    events: Sequence[Event],
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
 ) -> list[Message] | Condensation: ...
 
 
 def prepare_llm_messages(
-    state: "ConversationState",
+    events: Sequence[Event],
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
 ) -> list[Message] | Condensation:
@@ -147,7 +156,7 @@ def prepare_llm_messages(
         RuntimeError: If condensation is needed but no callback is provided
     """
 
-    view = View.from_events(state.events)
+    view = View.from_events(events)
     llm_convertible_events: list[LLMConvertibleEvent] = view.events
 
     # If a condenser is registered, we need to give it an

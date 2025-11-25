@@ -475,7 +475,9 @@ class LocalConversation(BaseConversation):
             ],
         )
 
-        messages = prepare_llm_messages(self.state, additional_messages=[user_message])
+        messages = prepare_llm_messages(
+            self.state.events, additional_messages=[user_message]
+        )
 
         # Get or create the specialized ask-agent LLM
         try:
