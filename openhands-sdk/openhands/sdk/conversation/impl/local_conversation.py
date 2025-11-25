@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
@@ -465,16 +466,16 @@ class LocalConversation(BaseConversation):
         visible_events: list = view.events
         visible_events = LLMConvertibleEvent.events_to_messages(visible_events)
 
-        # Create a user message with the context-aware question
+        # Create a user message with the context-aware question using template
+        template_dir = (
+            Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
+        )
+        question_text = render_template(
+            str(template_dir), "ask_agent_template.j2", question=question
+        )
         user_message = Message(
             role="user",
-            content=[
-                TextContent(
-                    text=f"# Question section\n"
-                    "Based on the activity so far answer the following question"
-                    f"##Question\n\n{question}"
-                )
-            ],
+            content=[TextContent(text=question_text)],
         )
         visible_events.append(user_message)
 
