@@ -170,10 +170,6 @@ jobs:
 
     build-benchmarks:
         needs: prepare
-        permissions:
-            contents: read
-            packages: write
-            issues: write
         uses: OpenHands/benchmarks/.github/workflows/build-swe-bench-images.yml@openhands/workflow-call-support
         with:
             dataset: princeton-nlp/SWE-bench_Verified
@@ -181,7 +177,6 @@ jobs:
             max-workers: '32'
             n-limit: ${{ needs.prepare.outputs.eval_limit }}
             sdk-commit: ${{ needs.prepare.outputs.sdk_sha }}
-        secrets: inherit
 
     dispatch-evaluation:
         needs: [prepare, build-benchmarks]
