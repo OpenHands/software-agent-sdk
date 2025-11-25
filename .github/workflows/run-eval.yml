@@ -181,19 +181,39 @@ jobs:
             n-limit: ${{ needs.prepare.outputs.eval_limit }}
             sdk-commit: ${{ needs.prepare.outputs.sdk_sha }}
 
-    run-evaluation:
+    dispatch-evaluation:
         needs: [prepare, build-benchmarks]
+        runs-on: ubuntu-latest
         permissions:
             contents: read
-        uses: OpenHands/evaluation/.github/workflows/eval-job.yml@openhands/workflow-call-support
-        secrets: inherit
-        with:
-            sdk_commit: ${{ needs.prepare.outputs.sdk_sha }}
-            eval_limit: ${{ needs.prepare.outputs.eval_limit }}
-            models: ${{ needs.prepare.outputs.models }}
+        steps:
+            - name: Dispatch evaluation workflow
+              env:
+                  SDK_SHA: ${{ needs.prepare.outputs.sdk_sha }}
+                  EVAL_LIMIT: ${{ needs.prepare.outputs.eval_limit }}
+                  MODELS: ${{ needs.prepare.outputs.models }}
+                  EVAL_REPO: ${{ env.EVAL_REPO }}
+              run: |
+                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA"
+                  PAYLOAD=$(jq -n \
+                    --arg sdk "$SDK_SHA" \
+                    --arg eval_limit "$EVAL_LIMIT" \
+                    --arg models "$MODELS" \
+                    '{ref: "${{ env.EVAL_REF }}", inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models: $models}}')
+                  RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
+                    -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                    -H "Accept: application/vnd.github+json" \
+                    -d "$PAYLOAD" \
+                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/eval-job.yml/dispatches")
+                  if [ "$RESPONSE" != "204" ]; then
+                    echo "Dispatch failed (status $RESPONSE):" >&2
+                    cat /tmp/dispatch.out >&2
+                    exit 1
+                  fi
+                  echo "Evaluation workflow dispatched successfully (async - no polling)"
 
     comment-on-pr:
-        needs: [prepare, build-benchmarks, run-evaluation]
+        needs: [prepare, build-benchmarks, dispatch-evaluation]
         if: always()
         runs-on: ubuntu-latest
         permissions:
@@ -215,7 +235,7 @@ jobs:
                   PR_NUMBER_INPUT: ${{ needs.prepare.outputs.pr_number }}
                   IMAGES_BUILT: ${{ needs.build-benchmarks.outputs.images_built }}
                   BUILD_STATUS: ${{ needs.build-benchmarks.result }}
-                  EVAL_STATUS: ${{ needs.run-evaluation.result }}
+                  EVAL_STATUS: ${{ needs.dispatch-evaluation.result }}
               run: |
                   set -euo pipefail
                   PR_NUMBER="$PR_NUMBER_INPUT"
