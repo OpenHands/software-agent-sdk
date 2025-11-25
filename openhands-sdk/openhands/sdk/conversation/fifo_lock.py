@@ -60,6 +60,9 @@ class FIFOLock:
                 self._count += 1
                 return True
 
+            if not blocking:
+                # Give up immediately
+                return False
             # Add to wait queue
             self._waiters.append(me)
 
@@ -69,11 +72,6 @@ class FIFOLock:
                     self._owner = ident
                     self._count = 1
                     return True
-
-                if not blocking:
-                    # Give up immediately
-                    self._waiters.remove(me)
-                    return False
 
                 if timeout >= 0:
                     remaining = timeout - (time.monotonic() - start)
@@ -95,7 +93,9 @@ class FIFOLock:
         with self._mutex:
             if self._owner != ident:
                 raise RuntimeError("Cannot release lock not owned by current thread")
-
+            assert self._count >= 1, (
+                "When releasing the resource, the count must be >= 1"
+            )
             self._count -= 1
             if self._count == 0:
                 self._owner = None
