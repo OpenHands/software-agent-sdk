@@ -1,12 +1,12 @@
 from unittest.mock import patch
 
 import pytest
-from litellm.exceptions import APIConnectionError
+from litellm.exceptions import APIConnectionError, InternalServerError
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from pydantic import SecretStr
 
 from openhands.sdk.llm import LLM, LLMResponse, Message, TextContent
-from openhands.sdk.llm.exceptions import LLMServiceUnavailableError
+from openhands.sdk.llm.exceptions import LLMNoResponseError, LLMServiceUnavailableError
 
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
@@ -255,3 +255,112 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
         assert isinstance(max_attempts, int)
         assert attempt >= 1
         assert max_attempts == default_config.num_retries
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_internal_server_error_choices_none_retries_with_temperature_bump(
+    mock_litellm_completion, default_config
+):
+    """
+    Test that InternalServerError from convert_to_model_response_object
+    is converted to LLMNoResponseError and retried with temperature bump.
+    """
+    # Ensure we start at 0.0 to trigger bump to 1.0 on retry
+    assert default_config.temperature == 0.0
+
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message=(
+                "Invalid response object Traceback (most recent call last):\n"
+                '  File "litellm/litellm_core_utils/llm_response_utils/'
+                'convert_dict_to_response.py", line 466, in '
+                "convert_to_model_response_object\n"
+                '    assert response_object["choices"] is not None\n'
+                "AssertionError"
+            ),
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        create_mock_response("success"),
+    ]
+
+    response = default_config.completion(
+        messages=[Message(role="user", content=[TextContent(text="hi")])]
+    )
+
+    assert isinstance(response, LLMResponse)
+    assert response.message is not None
+    assert mock_litellm_completion.call_count == 2
+
+    # Verify that on the second call, temperature was bumped to 1.0
+    _, second_kwargs = mock_litellm_completion.call_args_list[1]
+    assert second_kwargs.get("temperature") == 1.0
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_internal_server_error_choices_none_exhausts_retries(
+    mock_litellm_completion, default_config
+):
+    """
+    Test that when all retries fail with InternalServerError from
+    convert_to_model_response_object, LLMNoResponseError is raised.
+    """
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message=(
+                "File convert_to_model_response_object: "
+                "assert response_object['choices'] is not None"
+            ),
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        InternalServerError(
+            message=(
+                "File convert_to_model_response_object: "
+                "assert response_object['choices'] is not None"
+            ),
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+    ]
+
+    with pytest.raises(LLMNoResponseError) as excinfo:
+        default_config.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])]
+        )
+
+    assert mock_litellm_completion.call_count == default_config.num_retries
+    assert "malformed response" in str(excinfo.value).lower()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_internal_server_error_unrelated_not_converted(
+    mock_litellm_completion, default_config
+):
+    """
+    Test that unrelated InternalServerError (not about choices) is NOT
+    converted to LLMNoResponseError.
+    """
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message="Database connection failed",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        InternalServerError(
+            message="Database connection failed",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+    ]
+
+    # Should raise InternalServerError (mapped to LLMServiceUnavailableError),
+    # not LLMNoResponseError
+    with pytest.raises(Exception) as excinfo:
+        default_config.completion(
+            messages=[Message(role="user", content=[TextContent(text="hi")])]
+        )
+
+    # Should NOT be LLMNoResponseError
+    assert not isinstance(excinfo.value, LLMNoResponseError)
+    assert mock_litellm_completion.call_count == default_config.num_retries
