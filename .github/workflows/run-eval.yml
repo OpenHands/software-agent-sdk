@@ -33,19 +33,10 @@ on:
                 default: ''
 
 env:
-    BENCHMARKS_REPO: OpenHands/benchmarks
-    BENCHMARKS_REF: main
-    BENCHMARKS_BUILD_WORKFLOW: build-swe-bench-images.yml
     EVAL_REPO: OpenHands/evaluation
     EVAL_WORKFLOW: eval-job.yml
     DATASET: princeton-nlp/SWE-bench_Verified
     SPLIT: test
-    MAX_BUILD_WORKERS: '32'
-    EVAL_AGENT_IMAGE: ghcr.io/openhands/eval-agent-server
-    EVAL_AGENT_TARGET: source-minimal
-    # Polling configuration for workflow status checks
-    MAX_POLL_ATTEMPTS: '600'  # 600 attempts × 60s = 10 hours max wait
-    POLL_INTERVAL_SECONDS: '60'
 
 jobs:
     build-and-evaluate:
@@ -175,96 +166,6 @@ jobs:
                   SDK_SHA=$(git rev-parse HEAD)
                   echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
                   echo "Using SDK commit: $SDK_SHA"
-
-            - name: Dispatch benchmarks image build
-              id: build-dispatch
-              env:
-                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
-                  DATASET: ${{ env.DATASET }}
-                  SPLIT: ${{ env.SPLIT }}
-                  MAX_BUILD_WORKERS: ${{ env.MAX_BUILD_WORKERS }}
-              run: |
-                  set -euo pipefail
-                  SDK_SHA="${{ steps.get-sha.outputs.sdk_sha }}"
-
-                  # Record timestamp before dispatch to avoid race condition
-                  DISPATCH_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-                  echo "dispatch_time=$DISPATCH_TIME" >> "$GITHUB_OUTPUT"
-
-                  echo "Dispatching benchmarks build with SDK commit: $SDK_SHA at $DISPATCH_TIME"
-                  PAYLOAD=$(jq -n \
-                    --arg dataset "$DATASET" \
-                    --arg split "$SPLIT" \
-                    --arg max_workers "$MAX_BUILD_WORKERS" \
-                    --arg n_limit "$EVAL_LIMIT" \
-                    --arg sdk_commit "$SDK_SHA" \
-                    '{ref:"main", inputs: {dataset:$dataset, split:$split, "max-workers":$max_workers, "n-limit":$n_limit, "sdk-commit":$sdk_commit}}')
-                  RESPONSE=$(curl -sS -o /tmp/build-dispatch.out -w "%{http_code}" -X POST \
-                    -H "Authorization: token $PAT_TOKEN" \
-                    -H "Accept: application/vnd.github+json" \
-                    -d "$PAYLOAD" \
-                    "https://api.github.com/repos/${{ env.BENCHMARKS_REPO }}/actions/workflows/${{ env.BENCHMARKS_BUILD_WORKFLOW }}/dispatches")
-                  if [ "$RESPONSE" != "204" ]; then
-                    echo "Benchmarks build dispatch failed (status $RESPONSE):" >&2
-                    cat /tmp/build-dispatch.out >&2
-                    exit 1
-                  fi
-
-                  # Wait for run to be created in GitHub's system
-                  echo "Waiting 10 seconds for workflow run to be created..."
-                  sleep 10
-                  echo "bench_build_dispatched=true" >> "$GITHUB_OUTPUT"
-
-            - name: Wait for benchmarks build completion
-              env:
-                  DISPATCH_TIME: ${{ steps.build-dispatch.outputs.dispatch_time }}
-              run: |
-                  set -euo pipefail
-                  WORKFLOW_ID="${{ env.BENCHMARKS_BUILD_WORKFLOW }}"
-                  REPO="${{ env.BENCHMARKS_REPO }}"
-                  MAX_ATTEMPTS="${{ env.MAX_POLL_ATTEMPTS }}"
-                  SLEEP_SECONDS="${{ env.POLL_INTERVAL_SECONDS }}"
-
-                  # Find the run that was created after our dispatch
-                  echo "Looking for workflow run created after $DISPATCH_TIME"
-                  RUN_ID=""
-                  for i in $(seq 1 $MAX_ATTEMPTS); do
-                    # Query for recent runs on main branch, get more results to avoid race
-                    RUNS=$(curl -sS \
-                      -H "Authorization: token $PAT_TOKEN" \
-                      -H "Accept: application/vnd.github+json" \
-                      "https://api.github.com/repos/${REPO}/actions/workflows/${WORKFLOW_ID}/runs?per_page=5&branch=main&created=>=$DISPATCH_TIME")
-
-                    # Find the first run created at or after dispatch time
-                    if [ -z "$RUN_ID" ]; then
-                      RUN_ID=$(echo "$RUNS" | jq -r ".workflow_runs[] | select(.created_at >= \"$DISPATCH_TIME\") | .id" | head -1)
-                      if [ -n "$RUN_ID" ] && [ "$RUN_ID" != "null" ]; then
-                        echo "Found workflow run: $RUN_ID"
-                      else
-                        echo "Waiting for workflow run to appear (attempt $i/$MAX_ATTEMPTS)..."
-                        sleep 5
-                        continue
-                      fi
-                    fi
-
-                    # Check status of our specific run
-                    RUN_DATA=$(echo "$RUNS" | jq -r ".workflow_runs[] | select(.id == $RUN_ID)")
-                    STATUS=$(echo "$RUN_DATA" | jq -r '.status')
-                    CONCL=$(echo "$RUN_DATA" | jq -r '.conclusion')
-
-                    echo "Benchmarks build run ${RUN_ID}: status=${STATUS}, conclusion=${CONCL}"
-                    if [ "$STATUS" = "completed" ]; then
-                      if [ "$CONCL" = "success" ]; then
-                        exit 0
-                      else
-                        echo "Benchmarks build failed with conclusion ${CONCL}" >&2
-                        exit 1
-                      fi
-                    fi
-                    sleep $SLEEP_SECONDS
-                  done
-                  echo "Timed out waiting for benchmarks build to finish" >&2
-                  exit 1
 
             - name: Dispatch evaluation workflow
               env:
