@@ -497,3 +497,48 @@ def test_remote_conversation_ask_agent_raises_request_error(agent):
             conv.ask_agent("What is the current status?")
 
         assert "Connection failed" in str(exc_info.value)
+
+
+# ---------------------------------------------------------------------------
+# Template directory and rendering tests
+# ---------------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_ask_agent_template_dir_path_construction(mock_completion, tmp_path, agent):
+    """Test that ask_agent correctly constructs template_dir path and finds template."""
+    mock_completion.return_value = create_mock_llm_response(
+        "Template rendered successfully"
+    )
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # Call ask_agent to trigger template_dir construction
+    result = conv.ask_agent("Test question")
+    assert result == "Template rendered successfully"
+
+    # Verify LLM was called with properly formatted question
+    mock_completion.assert_called_once()
+    messages = mock_completion.call_args.kwargs["messages"]
+
+    # Find the user message with the question
+    question_msg = None
+    for msg in messages:
+        if msg.role == "user" and msg.content:
+            for content in msg.content:
+                if isinstance(content, TextContent) and "Test question" in content.text:
+                    question_msg = msg
+                    break
+
+    assert question_msg is not None, "Question message should be found"
+
+    # Verify the template was rendered correctly (contains expected template structure)
+    question_text = question_msg.content[0].text
+    assert "<QUESTION>" in question_text
+    assert "Test question" in question_text
+    assert "<IMPORTANT>" in question_text
+    assert "do not make any tool call" in question_text
