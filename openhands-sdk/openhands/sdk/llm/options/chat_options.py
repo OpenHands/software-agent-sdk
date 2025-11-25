@@ -35,7 +35,7 @@ def select_chat_options(
     # Reasoning-model quirks
     if get_features(llm.model).supports_reasoning_effort:
         # Claude models use different parameter format
-        if "claude-opus-4" in llm.model.lower():
+        if "claude-opus-4-5" in llm.model.lower():
             # Claude uses output_config.effort instead of reasoning_effort
             if llm.reasoning_effort is not None:
                 out["output_config"] = {"effort": llm.reasoning_effort}
