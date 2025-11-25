@@ -51,15 +51,12 @@ def test_reasoning_effort_support(model, expected_reasoning):
         # AWS Bedrock model ids (provider-prefixed)
         ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", True),
         ("bedrock/anthropic.claude-3-haiku-20240307-v1:0", True),
-        # Anthropic Haiku 4.5 variants (dot and dash)
-        ("claude-haiku-4.5", True),
+        # Anthropic Haiku 4.5 variants (dash only; official IDs use hyphens)
         ("claude-haiku-4-5", True),
-        ("us.anthropic.claude-haiku-4.5-20251001", True),
         ("us.anthropic.claude-haiku-4-5-20251001", True),
         ("bedrock/anthropic.claude-3-opus-20240229-v1:0", True),
-        # Anthropic 4.5 variants (dash and dot)
+        # Anthropic 4.5 variants (dash only; official IDs use hyphens)
         ("claude-sonnet-4-5", True),
-        ("claude-sonnet-4.5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),

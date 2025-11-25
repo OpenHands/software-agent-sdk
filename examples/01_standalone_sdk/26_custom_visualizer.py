@@ -65,4 +65,4 @@ print("Task completed!")
 
 # Report cost
 cost = llm.metrics.accumulated_cost
-print(f"EXAMPLE_COST: ${cost:.4f}")
+print(f"EXAMPLE_COST: {cost:.4f}")
