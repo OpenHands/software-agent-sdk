@@ -484,8 +484,6 @@ class LocalConversation(BaseConversation):
             question_llm = self.agent.llm.model_copy(
                 update={
                     "usage_id": "ask-agent-llm",
-                    "native_tool_calling": False,
-                    "caching_prompt": False,
                 },
                 deep=True,
             )

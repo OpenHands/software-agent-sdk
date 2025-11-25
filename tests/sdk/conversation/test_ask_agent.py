@@ -143,8 +143,46 @@ def test_local_conversation_ask_agent(mock_completion, tmp_path, agent):
 
     # Dedicated ask-agent LLM is configured correctly
     ask_agent_llm = conv.llm_registry.get("ask-agent-llm")
-    assert ask_agent_llm.native_tool_calling is False
+    # Verify that parameters are copied from the original agent's LLM
+    assert ask_agent_llm.native_tool_calling == agent.llm.native_tool_calling
+    assert ask_agent_llm.caching_prompt == agent.llm.caching_prompt
     assert ask_agent_llm.usage_id == "ask-agent-llm"
+    # Since we're using default LLM values, these should be True
+    assert ask_agent_llm.native_tool_calling is True
+    assert ask_agent_llm.caching_prompt is True
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_path):
+    """ask_agent creates LLM with parameters copied from original agent's LLM."""
+    mock_completion.return_value = create_mock_llm_response("Test response")
+
+    # Create agent with custom LLM configuration
+    llm = LLM(
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-llm",
+        native_tool_calling=False,  # Non-default value
+        caching_prompt=False,  # Non-default value
+    )
+    agent = Agent(llm=llm, tools=[])
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    result = conv.ask_agent("Test question")
+    assert result == "Test response"
+
+    # Verify that ask-agent-llm copies the custom configuration
+    ask_agent_llm = conv.llm_registry.get("ask-agent-llm")
+    assert ask_agent_llm.native_tool_calling == agent.llm.native_tool_calling
+    assert ask_agent_llm.caching_prompt == agent.llm.caching_prompt
+    assert ask_agent_llm.usage_id == "ask-agent-llm"
+    # Verify the specific custom values are copied
+    assert ask_agent_llm.native_tool_calling is False
     assert ask_agent_llm.caching_prompt is False
 
 
