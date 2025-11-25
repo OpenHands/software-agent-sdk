@@ -803,7 +803,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 m in self.model
                 for m in [
                     "claude-3-7-sonnet",
-                    "claude-3.7-sonnet",
                     "claude-sonnet-4",
                     "kimi-k2-thinking",
                 ]
