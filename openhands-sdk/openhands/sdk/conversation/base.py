@@ -218,22 +218,19 @@ class BaseConversation(ABC):
 
     @abstractmethod
     def ask_agent(self, question: str) -> str:
-        """Ask the agent a simple question and get a response without affecting state.
+        """Ask the agent a simple, stateless question and get a direct LLM response.
 
-        This method provides a way to get quick responses from the agent's LLM
-        without going through the normal conversation flow. It's useful for
-        getting simple answers or clarifications while a conversation is running.
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
 
         Args:
             question: A simple string question to ask the agent
 
         Returns:
             A string response from the agent
-
-        Note:
-            This method is thread-safe and can be called while conversation.run()
-            is executing in another thread. It does not affect the conversation
-            state, events, or execution status.
         """
         ...
 
