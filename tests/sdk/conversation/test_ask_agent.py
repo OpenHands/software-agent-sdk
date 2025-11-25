@@ -327,3 +327,173 @@ def test_ask_agent_with_existing_events_and_tool_calls(
 
     assert tool_msg.tool_call_id == "call_123"
     assert tool_msg.name == "terminal"
+
+
+# ---------------------------------------------------------------------------
+# Exception handling tests
+# ---------------------------------------------------------------------------
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_local_conversation_ask_agent_raises_context_window_error(
+    mock_completion, tmp_path, agent
+):
+    """ask_agent properly propagates LLMContextWindowExceedError from LLM completion."""
+    from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
+
+    # Mock LLM completion to raise context window error
+    mock_completion.side_effect = LLMContextWindowExceedError(
+        "Context window exceeded: conversation too long"
+    )
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # ask_agent should propagate the exception
+    with pytest.raises(LLMContextWindowExceedError) as exc_info:
+        conv.ask_agent("What is the current status?")
+
+    assert "Context window exceeded" in str(exc_info.value)
+    mock_completion.assert_called_once()
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_local_conversation_ask_agent_raises_failed_to_generate_summary(
+    mock_completion, tmp_path, agent
+):
+    """ask_agent raises 'Failed to generate summary' when LLM returns no text."""
+    # Mock LLM response with no text content
+    mock_response = create_mock_llm_response("")
+    mock_response.message.content = []  # Empty content list
+    mock_completion.return_value = mock_response
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # ask_agent should raise the generic exception
+    with pytest.raises(Exception) as exc_info:
+        conv.ask_agent("What is the current status?")
+
+    assert str(exc_info.value) == "Failed to generate summary"
+    mock_completion.assert_called_once()
+
+
+@patch("openhands.sdk.llm.llm.LLM.completion")
+def test_local_conversation_ask_agent_raises_failed_to_generate_summary_non_text(
+    mock_completion, tmp_path, agent
+):
+    """ask_agent raises 'Failed to generate summary' when LLM returns only non-text."""
+    # Mock LLM response with only image content (no text content)
+    mock_response = create_mock_llm_response("")
+    mock_response.message.content = [
+        ImageContent(image_urls=["http://example.com/image.jpg"])
+    ]
+    mock_completion.return_value = mock_response
+
+    conv = Conversation(
+        agent=agent,
+        persistence_dir=str(tmp_path),
+        workspace=str(tmp_path),
+    )
+
+    # ask_agent should raise the generic exception
+    with pytest.raises(Exception) as exc_info:
+        conv.ask_agent("What is the current status?")
+
+    assert str(exc_info.value) == "Failed to generate summary"
+    mock_completion.assert_called_once()
+
+
+def test_remote_conversation_ask_agent_raises_http_status_error(agent):
+    """RemoteConversation ask_agent properly propagates HTTPStatusError from server."""
+    import httpx
+
+    workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
+    mock_client = create_mock_http_client("12345678-1234-5678-9abc-123456789abc")
+
+    # Mock HTTP error response for ask_agent endpoint
+    mock_error_response = Mock()
+    mock_error_response.status_code = 500
+    mock_error_response.reason_phrase = "Internal Server Error"
+    mock_error_response.json.return_value = {"error": "LLM context window exceeded"}
+    mock_error_response.text = "Internal Server Error"
+
+    def mock_request(method, url, **kwargs):
+        if method == "POST" and "ask_agent" in url:
+            # Raise HTTPStatusError for ask_agent requests
+            raise httpx.HTTPStatusError(
+                "500 Internal Server Error",
+                request=Mock(),
+                response=mock_error_response,
+            )
+
+        # Normal responses for other requests
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = (
+            {"id": "12345678-1234-5678-9abc-123456789abc"}
+            if method == "POST"
+            else {"items": []}
+        )
+        return response
+
+    mock_client.request = Mock(side_effect=mock_request)
+
+    with patch("httpx.Client", return_value=mock_client):
+        conv = RemoteConversation(
+            base_url="http://test-server",
+            api_key="test-key",
+            agent=agent,
+            workspace=workspace,
+        )
+
+        # ask_agent should propagate the HTTPStatusError
+        with pytest.raises(httpx.HTTPStatusError) as exc_info:
+            conv.ask_agent("What is the current status?")
+
+        assert "500 Internal Server Error" in str(exc_info.value)
+
+
+def test_remote_conversation_ask_agent_raises_request_error(agent):
+    """RemoteConversation ask_agent properly propagates RequestError from network."""
+    import httpx
+
+    workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
+    mock_client = create_mock_http_client("12345678-1234-5678-9abc-123456789abc")
+
+    def mock_request(method, url, **kwargs):
+        if method == "POST" and "ask_agent" in url:
+            # Raise RequestError for ask_agent requests (network error)
+            raise httpx.RequestError("Connection failed", request=Mock())
+
+        # Normal responses for other requests
+        response = Mock()
+        response.raise_for_status.return_value = None
+        response.json.return_value = (
+            {"id": "12345678-1234-5678-9abc-123456789abc"}
+            if method == "POST"
+            else {"items": []}
+        )
+        return response
+
+    mock_client.request = Mock(side_effect=mock_request)
+
+    with patch("httpx.Client", return_value=mock_client):
+        conv = RemoteConversation(
+            base_url="http://test-server",
+            api_key="test-key",
+            agent=agent,
+            workspace=workspace,
+        )
+
+        # ask_agent should propagate the RequestError
+        with pytest.raises(httpx.RequestError) as exc_info:
+            conv.ask_agent("What is the current status?")
+
+        assert "Connection failed" in str(exc_info.value)
