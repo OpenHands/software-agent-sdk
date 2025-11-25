@@ -63,6 +63,9 @@ class APIRemoteWorkspace(RemoteWorkspace):
     init_timeout: float = Field(
         default=300.0, description="Runtime init timeout (seconds)"
     )
+    api_timeout: float = Field(
+        default=60.0, description="API request timeout (seconds)"
+    )
     keep_alive: bool = Field(default=False, description="Keep runtime alive on cleanup")
     pause_on_close: bool = Field(
         default=False, description="Pause instead of stop on cleanup"
@@ -75,6 +78,24 @@ class APIRemoteWorkspace(RemoteWorkspace):
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
+
+    @property
+    def client(self) -> httpx.Client:
+        """Override client property to use api_timeout for HTTP requests."""
+        client = self._client
+        if client is None:
+            # Use api_timeout for the read timeout to allow longer operations
+            timeout = httpx.Timeout(
+                connect=10.0,
+                read=self.api_timeout,
+                write=10.0,
+                pool=10.0,
+            )
+            client = httpx.Client(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
+            self._client = client
+        return client
 
     @property
     def _api_headers(self):

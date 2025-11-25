@@ -32,12 +32,12 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     def client(self) -> httpx.AsyncClient:
         client = self._client
         if client is None:
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=self.api_timeout,
-                write=10.0,
-                pool=10.0,
-            )
+            # Configure reasonable timeouts for HTTP requests
+            # - connect: 10 seconds to establish connection
+            # - read: 60 seconds to read response (for LLM operations)
+            # - write: 10 seconds to send request
+            # - pool: 10 seconds to get connection from pool
+            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
             client = httpx.AsyncClient(
                 base_url=self.host, timeout=timeout, headers=self._headers
             )
