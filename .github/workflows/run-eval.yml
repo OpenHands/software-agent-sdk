@@ -73,6 +73,11 @@ jobs:
                       'workflow_dispatch' && github.event.inputs.sdk_ref) || github.ref }}
                   fetch-depth: 0
 
+            - name: Setup Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.11'
+
             - name: Load model IDs
               id: load-models
               run: |
