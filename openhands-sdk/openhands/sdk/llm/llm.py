@@ -211,6 +211,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     ollama_base_url: str | None = Field(default=None)
 
+    stream: bool = Field(
+        default=False,
+        description=(
+            "Enable streaming responses from the LLM. "
+            "When enabled, the provided `on_token` callback in .completions "
+            "and .responses will be invoked for each chunk of tokens."
+        ),
+    )
     drop_params: bool = Field(default=True)
     modify_params: bool = Field(
         default=True,
@@ -288,15 +296,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description=(
             "Unique usage identifier for the LLM. Used for registry lookups, "
             "telemetry, and spend tracking."
-        ),
-    )
-    metadata: dict[str, Any] = Field(
-        default_factory=dict,
-        description=(
-            "Additional metadata for the LLM instance. "
-            "Example structure: "
-            "{'trace_version': '1.0.0', 'tags': ['model:gpt-4', 'agent:my-agent'], "
-            "'session_id': 'session-123', 'trace_user_id': 'user-456'}"
         ),
     )
     litellm_extra_body: dict[str, Any] = Field(
@@ -504,8 +503,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> print(response.content)
         """
         # Check if streaming is requested
-        if on_token is not None or kwargs.get("stream", False):
-            raise ValueError("Streaming is not supported for completion API yet")
+        if kwargs.get("stream", False) or self.stream or on_token is not None:
+            raise ValueError("Streaming is not supported in completion() method")
 
         # 1) serialize messages
         formatted_messages = self.format_messages_for_llm(messages)
@@ -631,18 +630,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
 
         Maps Message[] -> (instructions, input[]) and returns LLMResponse.
-        Streaming is enabled when ``on_token`` is provided.
         """
-        user_requested_stream = bool(kwargs.get("stream", False))
-        if user_requested_stream and on_token is None:
+        enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if enable_streaming and on_token is None:
             raise ValueError(
                 "Streaming for Responses API requires an on_token callback"
             )
-
         if on_token is not None:
             kwargs["stream"] = True
-        else:
-            kwargs.pop("stream", None)
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
@@ -922,6 +917,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     # =========================================================================
     # Transport + helpers
+    # =========================================================================
     def _transport_call(
         self, *, messages: list[dict[str, Any]], **kwargs
     ) -> ModelResponse:
