@@ -449,6 +449,7 @@ class LocalConversation(BaseConversation):
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
             except NotImplementedError:
+                # Tool has no executor, skip it without erroring
                 continue
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
