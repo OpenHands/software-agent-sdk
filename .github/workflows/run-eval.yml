@@ -188,6 +188,7 @@ jobs:
                   EVAL_REPO: ${{ env.EVAL_REPO }}
                   EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
                   EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
+                  TRIGGER_REASON: ${{ github.event.inputs.reason }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (eval branch: $EVAL_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -195,7 +196,8 @@ jobs:
                     --arg eval_limit "$EVAL_LIMIT" \
                     --argjson models "$MODELS_JSON" \
                     --arg ref "$EVAL_BRANCH" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring)}}')
+                    --arg reason "$TRIGGER_REASON" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
