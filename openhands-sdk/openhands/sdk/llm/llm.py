@@ -756,6 +756,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "ignore",
                     category=UserWarning,
                 )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=DeprecationWarning,
+                    message="Accessing the 'model_fields' attribute.*",
+                )
                 # Extract api_key value with type assertion for type checker
                 api_key_value: str | None = None
                 if self.api_key:
