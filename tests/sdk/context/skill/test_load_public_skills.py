@@ -203,7 +203,7 @@ def test_update_skills_repository_update_existing(tmp_path):
     cache_dir.mkdir()
 
     # Create existing repo with .git directory
-    repo_path = cache_dir / "openhands-skills"
+    repo_path = cache_dir / "public-skills"
     repo_path.mkdir()
     git_dir = repo_path / ".git"
     git_dir.mkdir()
@@ -255,7 +255,7 @@ def test_update_skills_repository_update_fails_uses_cache(tmp_path):
     cache_dir.mkdir()
 
     # Create existing repo with .git directory
-    repo_path = cache_dir / "openhands-skills"
+    repo_path = cache_dir / "public-skills"
     repo_path.mkdir()
     git_dir = repo_path / ".git"
     git_dir.mkdir()
