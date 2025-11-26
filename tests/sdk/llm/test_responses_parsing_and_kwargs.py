@@ -1,13 +1,6 @@
-from types import SimpleNamespace
 from unittest.mock import patch
 
-import pytest
-from litellm.responses.main import mock_responses_api_response
-from litellm.types.llms.openai import (
-    ResponseAPIUsage,
-    ResponsesAPIResponse,
-    ResponsesAPIStreamEvents,
-)
+from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
@@ -16,7 +9,7 @@ from openai.types.responses.response_reasoning_item import (
     Summary,
 )
 
-from openhands.sdk.llm import LLM, LLMStreamChunk
+from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.responses_options import select_responses_options
 
@@ -137,85 +130,3 @@ def test_llm_responses_end_to_end(mock_responses_call):
     ]
     # Telemetry should have recorded usage (one entry)
     assert len(llm._telemetry.metrics.token_usages) == 1  # type: ignore[attr-defined]
-
-
-@pytest.mark.skip(
-    reason="Streaming for Responses API is not yet implemented in this PR"
-)
-@patch("openhands.sdk.llm.llm.litellm_responses")
-def test_llm_responses_streaming_invokes_token_callback(mock_responses_call):
-    llm = LLM(model="gpt-5-mini")
-    sys = Message(role="system", content=[TextContent(text="inst")])
-    user = Message(role="user", content=[TextContent(text="hi")])
-
-    final_resp = mock_responses_api_response("Streaming hello")
-
-    delta_event = SimpleNamespace(
-        type=ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA,
-        delta="Streaming ",
-        output_index=0,
-        content_index=0,
-        item_id="item-1",
-    )
-    completion_event = SimpleNamespace(
-        type=ResponsesAPIStreamEvents.RESPONSE_COMPLETED,
-        response=final_resp,
-    )
-
-    class DummyStream:
-        def __init__(self, events):
-            self._events: list[LLMStreamChunk] = events
-            self._index: int = 0
-            self.finished: bool = False
-            self.completed_response: LLMStreamChunk | None = None
-
-        def __iter__(self):
-            return self
-
-        def __next__(self):
-            if self._index >= len(self._events):
-                self.finished = True
-                raise StopIteration
-            event = self._events[self._index]
-            self._index += 1
-            if (
-                getattr(event, "type", None)
-                == ResponsesAPIStreamEvents.RESPONSE_COMPLETED
-            ):
-                self.completed_response = event
-            return event
-
-    stream = DummyStream([delta_event, completion_event])
-    mock_responses_call.return_value = stream
-
-    captured = []
-
-    def on_token(event):
-        captured.append(event)
-
-    result = llm.responses([sys, user], on_token=on_token)
-
-    assert [evt.type for evt in captured] == [
-        ResponsesAPIStreamEvents.OUTPUT_TEXT_DELTA.value,
-        ResponsesAPIStreamEvents.RESPONSE_COMPLETED.value,
-    ]
-    assert captured[0].text_delta == "Streaming "
-    assert captured[1].is_final is True
-    assert result.message.role == "assistant"
-    assert "Streaming hello" in "".join(
-        c.text for c in result.message.content if isinstance(c, TextContent)
-    )
-    assert stream.finished is True
-    assert len(llm._telemetry.metrics.token_usages) == 1  # type: ignore[attr-defined]
-
-
-@pytest.mark.skip(
-    reason="Streaming for Responses API is not yet implemented in this PR"
-)
-def test_llm_responses_stream_requires_callback():
-    llm = LLM(model="gpt-5-mini")
-    sys = Message(role="system", content=[TextContent(text="inst")])
-    user = Message(role="user", content=[TextContent(text="hi")])
-
-    with pytest.raises(ValueError, match="Streaming is not supported"):
-        llm.responses([sys, user], stream=True)
