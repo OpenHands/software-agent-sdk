@@ -1,5 +1,6 @@
 import io
 import re
+import shutil
 import subprocess
 from itertools import chain
 from pathlib import Path
@@ -378,9 +379,9 @@ def _get_skills_cache_dir() -> Path:
     """Get the local cache directory for public skills repository.
 
     Returns:
-        Path to the skills cache directory (~/.openhands/skills-cache/).
+        Path to the skills cache directory (~/.openhands/cache/skills).
     """
-    cache_dir = Path.home() / ".openhands" / "skills-cache"
+    cache_dir = Path.home() / ".openhands" / "cache" / "skills"
     cache_dir.mkdir(parents=True, exist_ok=True)
     return cache_dir
 
@@ -400,7 +401,7 @@ def _update_skills_repository(
     Returns:
         Path to the local repository if successful, None otherwise.
     """
-    repo_path = cache_dir / "openhands-skills"
+    repo_path = cache_dir / "public-skills"
 
     try:
         if repo_path.exists() and (repo_path / ".git").exists():
@@ -429,10 +430,8 @@ def _update_skills_repository(
                     f"using existing cached version"
                 )
         else:
-            logger.debug(f"Cloning skills repository from {repo_url}")
+            logger.info(f"Cloning public skills repository from {repo_url}")
             if repo_path.exists():
-                import shutil
-
                 shutil.rmtree(repo_path)
 
             subprocess.run(
@@ -506,7 +505,7 @@ def load_public_skills(
         repo_path = _update_skills_repository(repo_url, branch, cache_dir)
 
         if repo_path is None:
-            logger.warning("Failed to access skills repository")
+            logger.warning("Failed to access public skills repository")
             return all_skills
 
         # Load skills from the local repository
@@ -518,7 +517,7 @@ def load_public_skills(
         # Find all .md files in the skills directory
         md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
 
-        logger.debug(f"Found {len(md_files)} skill files in repository")
+        logger.info(f"Found {len(md_files)} skill files in public skills repository")
 
         # Load each skill file
         for skill_file in md_files:
@@ -536,7 +535,7 @@ def load_public_skills(
     except Exception as e:
         logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
 
-    logger.debug(
+    logger.info(
         f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
     )
     return all_skills

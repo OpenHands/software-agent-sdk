@@ -107,7 +107,6 @@ class AgentContext(BaseModel):
         """Load public skills from OpenHands skills repository if enabled."""
         if not self.load_public_skills:
             return self
-
         try:
             public_skills = load_public_skills()
             # Merge public skills with explicit skills, avoiding duplicates
@@ -118,11 +117,10 @@ class AgentContext(BaseModel):
                 else:
                     logger.warning(
                         f"Skipping public skill '{public_skill.name}' "
-                        f"(already in explicit skills)"
+                        f"(already in existing skills)"
                     )
         except Exception as e:
             logger.warning(f"Failed to load public skills: {str(e)}")
-
         return self
 
     def get_system_message_suffix(self) -> str | None:
