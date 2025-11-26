@@ -469,6 +469,7 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        # Import here to avoid circular imports
         from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 
         template_dir = (
