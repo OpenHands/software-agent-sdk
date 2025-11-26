@@ -86,6 +86,8 @@ class EventService:
         page_id: str | None = None,
         limit: int = 100,
         kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
@@ -108,6 +110,15 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
+                    continue
+
+                # Apply body filter if provided (case-insensitive substring match)
+                if body is not None:
+                    if not self._event_matches_body(event, body):
+                        continue
 
                 # Apply timestamp filters if provided (ISO string comparison)
                 if (
@@ -152,6 +163,8 @@ class EventService:
     async def count_events(
         self,
         kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
@@ -174,6 +187,15 @@ class EventService:
                 ):
                     continue
 
+                # Apply source filter if provided
+                if source is not None and event.source != source:
+                    continue
+
+                # Apply body filter if provided (case-insensitive substring match)
+                if body is not None:
+                    if not self._event_matches_body(event, body):
+                        continue
+
                 # Apply timestamp filters if provided (ISO string comparison)
                 if (
                     timestamp_gte_str is not None
@@ -186,6 +208,32 @@ class EventService:
                 count += 1
 
         return count
+
+    def _event_matches_body(self, event: Event, body: str) -> bool:
+        """Check if event's message content matches body filter (case-insensitive)."""
+        # Import here to avoid circular imports
+        from openhands.sdk.event.llm_convertible.message import MessageEvent
+        from openhands.sdk.llm.message import content_to_str
+
+        # Only check MessageEvent instances for body content
+        if not isinstance(event, MessageEvent):
+            return False
+
+        # Extract text content from the message
+        text_parts = content_to_str(event.llm_message.content)
+
+        # Also check extended content if present
+        if event.extended_content:
+            extended_text_parts = content_to_str(event.extended_content)
+            text_parts.extend(extended_text_parts)
+
+        # Also check reasoning content if present
+        if event.reasoning_content:
+            text_parts.append(event.reasoning_content)
+
+        # Combine all text content and perform case-insensitive substring match
+        full_text = " ".join(text_parts).lower()
+        return body.lower() in full_text
 
     async def batch_get_events(self, event_ids: list[str]) -> list[Event | None]:
         """Given a list of ids, get events (Or none for any which were not found)"""
@@ -373,3 +421,6 @@ class EventService:
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.save_meta()
         await self.close()
+
+    def is_open(self) -> bool:
+        return bool(self._conversation)
