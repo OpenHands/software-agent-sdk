@@ -11,7 +11,10 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
-from openhands.sdk.conversation.types import ConversationCallbackType
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -24,6 +27,7 @@ __all__ = [
     "ConversationState",
     "ConversationExecutionStatus",
     "ConversationCallbackType",
+    "ConversationTokenCallbackType",
     "DefaultConversationVisualizer",
     "ConversationVisualizerBase",
     "SecretRegistry",

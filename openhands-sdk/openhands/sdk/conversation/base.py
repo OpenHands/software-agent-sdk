@@ -1,12 +1,16 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
@@ -25,6 +29,13 @@ from openhands.sdk.workspace.base import BaseWorkspace
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.state import ConversationExecutionStatus
+
+
+CallbackType = TypeVar(
+    "CallbackType",
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 
 
 class ConversationStateProtocol(Protocol):
@@ -235,9 +246,7 @@ class BaseConversation(ABC):
         ...
 
     @staticmethod
-    def compose_callbacks(
-        callbacks: Iterable[ConversationCallbackType],
-    ) -> ConversationCallbackType:
+    def compose_callbacks(callbacks: Iterable[CallbackType]) -> CallbackType:
         """Compose multiple callbacks into a single callback function.
 
         Args:
@@ -252,4 +261,4 @@ class BaseConversation(ABC):
                 if cb:
                     cb(event)
 
-        return composed
+        return cast(CallbackType, composed)

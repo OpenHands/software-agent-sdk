@@ -12,6 +12,7 @@ from typing import (
 
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
+from openhands.sdk.conversation.types import ConversationTokenCallbackType
 from openhands.sdk.event.base import Event, LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, LLMResponse, Message
@@ -182,6 +183,7 @@ def make_llm_completion(
     llm: LLM,
     messages: list[Message],
     tools: list[ToolDefinition] | None = None,
+    on_token: ConversationTokenCallbackType | None = None,
 ) -> LLMResponse:
     """Make an LLM completion call with the provided messages and tools.
 
@@ -189,6 +191,7 @@ def make_llm_completion(
         llm: The LLM instance to use for completion
         messages: The messages to send to the LLM
         tools: Optional list of tools to provide to the LLM
+        on_token: Optional callback for streaming token updates
 
     Returns:
         LLMResponse from the LLM completion call
@@ -200,10 +203,12 @@ def make_llm_completion(
             include=None,
             store=False,
             add_security_risk_prediction=True,
+            on_token=on_token,
         )
     else:
         return llm.completion(
             messages=messages,
             tools=tools or [],
             add_security_risk_prediction=True,
+            on_token=on_token,
         )

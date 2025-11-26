@@ -15,6 +15,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
@@ -438,7 +442,12 @@ def test_agent_resolve_diff_different_class_raises_error():
         def init_state(self, state, on_event):
             pass
 
-        def step(self, conversation, on_event):
+        def step(
+            self,
+            conversation,
+            on_event: ConversationCallbackType,
+            on_token: ConversationTokenCallbackType | None = None,
+        ):
             pass
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")

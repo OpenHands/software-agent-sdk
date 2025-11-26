@@ -13,6 +13,7 @@ from openhands.sdk.agent.utils import (
 from openhands.sdk.conversation import (
     ConversationCallbackType,
     ConversationState,
+    ConversationTokenCallbackType,
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
@@ -135,6 +136,7 @@ class Agent(AgentBase):
         self,
         conversation: LocalConversation,
         on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         state = conversation.state
         # Check for pending actions (implicit confirmation)
@@ -167,7 +169,10 @@ class Agent(AgentBase):
 
         try:
             llm_response = make_llm_completion(
-                self.llm, _messages, tools=list(self.tools_map.values())
+                self.llm,
+                _messages,
+                tools=list(self.tools_map.values()),
+                on_token=on_token,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
