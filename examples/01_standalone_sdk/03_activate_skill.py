@@ -119,7 +119,9 @@ conversation.run()
 
 print("=" * 100)
 print("Now triggering public skill 'github'")
-conversation.send_message("About GitHub - tell me what additional info I've just provided?")
+conversation.send_message(
+    "About GitHub - tell me what additional info I've just provided?"
+)
 conversation.run()
 
 print("=" * 100)
