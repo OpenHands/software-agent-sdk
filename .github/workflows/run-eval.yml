@@ -81,12 +81,12 @@ jobs:
                   echo "allowed_models=$ALLOWED_MODELS_JSON" >> "$GITHUB_OUTPUT"
                   echo "default_model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
 
-            - name: Validate labeler
-              if: github.event_name == 'pull_request_target'
+            - name: Validate authorization
+              if: github.event_name == 'pull_request_target' || github.event_name == 'workflow_dispatch'
               run: |
-                  LABELER="${{ github.actor }}"
-                  if ! grep -Fx "$LABELER" .github/run-eval/authorized-labelers.txt >/dev/null; then
-                    echo "User $LABELER is not authorized to trigger eval." >&2
+                  ACTOR="${{ github.actor }}"
+                  if ! grep -Fx "$ACTOR" .github/run-eval/authorized-labelers.txt >/dev/null; then
+                    echo "User $ACTOR is not authorized to trigger eval." >&2
                     exit 1
                   fi
 
