@@ -779,6 +779,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     chunks = []
                     for chunk in ret:
                         on_token(chunk)
+                        chunks.append(chunk)
                     ret = litellm.stream_chunk_builder(chunks, messages=messages)
 
                 assert isinstance(ret, ModelResponse), (
