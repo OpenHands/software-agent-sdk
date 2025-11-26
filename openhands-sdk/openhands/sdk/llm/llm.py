@@ -482,9 +482,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         enable_streaming = bool(kwargs.get("stream", False)) or self.stream
         if enable_streaming:
             if on_token is None:
-                raise ValueError(
-                    "Streaming for Responses API requires an on_token callback"
-                )
+                raise ValueError("Streaming requires an on_token callback")
             kwargs["stream"] = True
 
         # 1) serialize messages

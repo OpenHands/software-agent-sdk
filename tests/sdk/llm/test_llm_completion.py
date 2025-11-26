@@ -107,13 +107,13 @@ def test_llm_completion_basic(mock_completion):
 
 
 def test_llm_streaming_not_supported(default_config):
-    """Test that streaming is not supported in the basic LLM class."""
+    """Test that streaming requires an on_token callback."""
     llm = default_config
 
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    # Streaming should raise an error
-    with pytest.raises(ValueError, match="Streaming is not supported"):
+    # Streaming without callback should raise an error
+    with pytest.raises(ValueError, match="Streaming requires an on_token callback"):
         llm.completion(messages=messages, stream=True)
 
 

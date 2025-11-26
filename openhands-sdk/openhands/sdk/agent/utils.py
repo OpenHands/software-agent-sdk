@@ -196,6 +196,9 @@ def make_llm_completion(
     Returns:
         LLMResponse from the LLM completion call
     """
+    # Get metadata from LLM if available
+    metadata = getattr(llm, "metadata", {})
+
     if llm.uses_responses_api():
         return llm.responses(
             messages=messages,
@@ -204,6 +207,7 @@ def make_llm_completion(
             store=False,
             add_security_risk_prediction=True,
             on_token=on_token,
+            metadata=metadata,
         )
     else:
         return llm.completion(
@@ -211,4 +215,5 @@ def make_llm_completion(
             tools=tools or [],
             add_security_risk_prediction=True,
             on_token=on_token,
+            extra_body={"metadata": metadata},
         )
