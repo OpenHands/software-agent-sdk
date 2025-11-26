@@ -22,8 +22,8 @@ on:
                     - '50'
                     - '200'
                     - '500'
-            model_stubs:
-                description: Comma-separated model stubs to evaluate (must be allowlisted)
+            model_ids:
+                description: Comma-separated model IDs to evaluate (must exist in models.json)
                 required: false
                 default: ''
                 type: string
@@ -69,16 +69,17 @@ jobs:
                       'workflow_dispatch' && github.event.inputs.sdk_ref) || github.ref }}
                   fetch-depth: 0
 
-            - name: Load allowlists
-              id: allowlists
+            - name: Load model IDs from models.json
+              id: load-models
               run: |
-                  ALLOWED_MODELS_JSON=$(jq -c '.' .github/run-eval/allowed-model-stubs.json)
-                  DEFAULT_MODEL=$(echo "$ALLOWED_MODELS_JSON" | jq -r '.[0]')
-                  if [ -z "$DEFAULT_MODEL" ]; then
-                    echo "No default model stub configured" >&2
+                  # Extract all model IDs from models.json
+                  ALLOWED_MODEL_IDS=$(jq -c '[.[].id]' .github/run-eval/models.json)
+                  DEFAULT_MODEL=$(echo "$ALLOWED_MODEL_IDS" | jq -r '.[0]')
+                  if [ -z "$DEFAULT_MODEL" ] || [ "$DEFAULT_MODEL" = "null" ]; then
+                    echo "No models configured in models.json" >&2
                     exit 1
                   fi
-                  echo "allowed_models=$ALLOWED_MODELS_JSON" >> "$GITHUB_OUTPUT"
+                  echo "allowed_model_ids=$ALLOWED_MODEL_IDS" >> "$GITHUB_OUTPUT"
                   echo "default_model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
 
             - name: Validate authorization
@@ -93,8 +94,8 @@ jobs:
             - name: Resolve parameters
               id: params
               env:
-                  DEFAULT_MODEL: ${{ steps.allowlists.outputs.default_model }}
-                  ALLOWED_MODELS_JSON: ${{ steps.allowlists.outputs.allowed_models }}
+                  DEFAULT_MODEL: ${{ steps.load-models.outputs.default_model }}
+                  ALLOWED_MODEL_IDS_JSON: ${{ steps.load-models.outputs.allowed_model_ids }}
                   PAT_TOKEN_DEFAULT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
               run: |
                   set -euo pipefail
@@ -136,16 +137,17 @@ jobs:
                     TRIGGER_DESCRIPTION="Manual trigger: ${REASON}"
                   fi
 
-                  # Normalize and validate models
-                  MODELS_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_stubs || '' }}"
+                  # Normalize and validate model IDs
+                  MODELS_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_ids || '' }}"
                   if [ -z "$MODELS_INPUT" ]; then
                     MODELS_INPUT="$DEFAULT_MODEL"
                   fi
                   MODELS=$(printf '%s' "$MODELS_INPUT" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)
-                  ALLOWED_LIST=$(echo "$ALLOWED_MODELS_JSON" | jq -r '.[]')
+                  ALLOWED_LIST=$(echo "$ALLOWED_MODEL_IDS_JSON" | jq -r '.[]')
                   for MODEL in ${MODELS//,/ }; do
                     if ! echo "$ALLOWED_LIST" | grep -Fx "$MODEL" >/dev/null; then
-                      echo "Model stub '$MODEL' is not allowlisted" >&2
+                      echo "Model ID '$MODEL' not found in models.json" >&2
+                      echo "Available models: $(echo "$ALLOWED_LIST" | paste -sd, -)" >&2
                       exit 1
                     fi
                   done
