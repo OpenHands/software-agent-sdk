@@ -39,7 +39,7 @@ def select_responses_options(
     include_list = list(include) if include is not None else []
     if not out.get("store", False):
         # Only add encrypted reasoning if the LLM has enable_encrypted_reasoning=True
-        if getattr(llm, "enable_encrypted_reasoning", False):
+        if llm.enable_encrypted_reasoning:
             if "reasoning.encrypted_content" not in include_list:
                 include_list.append("reasoning.encrypted_content")
     if include_list:
