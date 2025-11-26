@@ -48,8 +48,7 @@ a = Analysis(
     hiddenimports=[
         # Pull all OpenHands modules from the namespace (PEP 420 safe once pathex is correct)
         *collect_submodules("openhands.sdk"),
-        # Exclude tom_consult from tools collection as it has heavy dependencies (numpy, pandas, scipy)
-        *[m for m in collect_submodules("openhands.tools") if "tom_consult" not in m],
+        *collect_submodules("openhands.tools"),
         *collect_submodules("openhands.workspace"),
         *collect_submodules("openhands.agent_server"),
 
@@ -81,12 +80,6 @@ a = Analysis(
         # Exclude mcp CLI parts that pull in typer/extra deps
         "mcp.cli",
         "mcp.cli.cli",
-        # Exclude tom-swe and tom_consult (optional feature with heavy dependencies)
-        "tom_swe",
-        "openhands.tools.tom_consult",
-        # tom-swe dependencies
-        "bm25s",
-        "datasets",
     ],
     noarchive=False,
     # IMPORTANT: don't use optimize=2 (-OO); it strips docstrings needed by parsers (e.g., PLY/bashlex)
