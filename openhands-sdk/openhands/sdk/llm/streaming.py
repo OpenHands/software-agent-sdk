@@ -1,8 +1,7 @@
-from __future__ import annotations
-
 from collections.abc import Callable
-from dataclasses import dataclass
 from typing import Any, Literal
+
+from pydantic import BaseModel
 
 
 StreamPartKind = Literal[
@@ -16,8 +15,7 @@ StreamPartKind = Literal[
 ]
 
 
-@dataclass(slots=True)
-class LLMStreamChunk:
+class LLMStreamChunk(BaseModel):
     """Represents a streaming delta emitted by an LLM provider."""
 
     type: str
