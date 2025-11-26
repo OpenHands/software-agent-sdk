@@ -1,7 +1,6 @@
 import os
 import sys
 
-from litellm.types.utils import ModelResponseStream
 from pydantic import SecretStr
 
 from openhands.sdk import (
@@ -9,6 +8,7 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.streaming import ModelResponseStream
 from openhands.tools.preset.default import get_default_agent
 
 
