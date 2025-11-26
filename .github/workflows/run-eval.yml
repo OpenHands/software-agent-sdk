@@ -77,11 +77,11 @@ jobs:
             - name: Load model IDs from Python script
               id: load-models
               run: |
-                  # Extract all model IDs from resolve_model_configs.py
+                  # Extract all model IDs from resolve_model_config.py
                   ALLOWED_MODEL_IDS=$(python3 << 'EOF'
                   import sys
                   sys.path.insert(0, '.github/run-eval')
-                  from resolve_model_configs import MODELS
+                  from resolve_model_config import MODELS
                   import json
                   print(json.dumps(list(MODELS.keys())))
                   EOF
@@ -166,7 +166,7 @@ jobs:
               env:
                   MODEL_IDS: ${{ steps.params.outputs.models }}
               run: |
-                  python3 .github/run-eval/resolve_model_configs.py
+                  python3 .github/run-eval/resolve_model_config.py
 
             - name: Checkout evaluated ref for PRs
               if: github.event_name == 'pull_request_target'
