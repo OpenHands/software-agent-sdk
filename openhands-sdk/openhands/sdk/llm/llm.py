@@ -427,7 +427,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.retry_listener is not None:
             self.retry_listener(attempt_number, num_retries, _err)
         if self._telemetry is not None and _err is not None:
-            self._telemetry.on_error(_err)  # type: ignore
+            self._telemetry.on_error(_err)
 
     # =========================================================================
     # Public API
