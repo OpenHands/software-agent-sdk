@@ -1,33 +1,6 @@
 from collections.abc import Callable
-from typing import Any, Literal
 
-from pydantic import BaseModel
-
-
-StreamPartKind = Literal[
-    "assistant_message",
-    "reasoning_summary",
-    "function_call_arguments",
-    "refusal",
-    "system",
-    "status",
-    "unknown",
-]
+from litellm.types.utils import ModelResponseStream
 
 
-class LLMStreamChunk(BaseModel):
-    """Represents a streaming delta emitted by an LLM provider."""
-
-    type: str
-    part_kind: StreamPartKind = "unknown"
-    text_delta: str | None = None
-    arguments_delta: str | None = None
-    output_index: int | None = None
-    content_index: int | None = None
-    item_id: str | None = None
-    response_id: str | None = None
-    is_final: bool = False
-    raw_chunk: Any | None = None
-
-
-TokenCallbackType = Callable[[LLMStreamChunk], None]
+TokenCallbackType = Callable[[ModelResponseStream], None]
