@@ -1,6 +1,9 @@
 from unittest.mock import patch
 
-from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+from litellm.types.llms.openai import (
+    ResponseAPIUsage,
+    ResponsesAPIResponse,
+)
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
@@ -9,7 +12,7 @@ from openai.types.responses.response_reasoning_item import (
     Summary,
 )
 
-from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
 from openhands.sdk.llm.options.responses_options import select_responses_options
 

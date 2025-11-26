@@ -111,14 +111,14 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-# Agent with security analyzer
-security_analyzer = LLMSecurityAnalyzer()
-agent = Agent(llm=llm, tools=tools, security_analyzer=security_analyzer)
+# Agent
+agent = Agent(llm=llm, tools=tools)
 
 # Conversation with persisted filestore
 conversation = Conversation(
     agent=agent, persistence_dir="./.conversations", workspace="."
 )
+conversation.set_security_analyzer(LLMSecurityAnalyzer())
 conversation.set_confirmation_policy(ConfirmRisky())
 
 print("\n1) Safe command (LOW risk - should execute automatically)...")

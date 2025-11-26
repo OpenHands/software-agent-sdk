@@ -199,6 +199,18 @@ class GenerateTitleResponse(BaseModel):
     title: str = Field(description="The generated title for the conversation")
 
 
+class AskAgentRequest(BaseModel):
+    """Payload to ask the agent a simple question."""
+
+    question: str = Field(description="The question to ask the agent")
+
+
+class AskAgentResponse(BaseModel):
+    """Response containing the agent's answer."""
+
+    response: str = Field(description="The agent's response to the question")
+
+
 class BashEventBase(DiscriminatedUnionMixin, ABC):
     """Base class for all bash event types"""
 
