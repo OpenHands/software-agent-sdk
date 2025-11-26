@@ -444,11 +444,7 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        try:
-            tools = list(self.agent.tools_map.values())
-        except RuntimeError:
-            tools = []
-        for tool in tools:
+        for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
