@@ -139,7 +139,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         self.host = self._runtime_url.rstrip("/")
         self.api_key = self._session_api_key
         # Reset HTTP client with new host and API key
-        self._reset_client()
+        self.reset_client()
         # Verify client is properly initialized
         assert self.client is not None
         assert self.client.base_url == self.host

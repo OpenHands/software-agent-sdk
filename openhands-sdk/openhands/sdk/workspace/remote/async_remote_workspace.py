@@ -15,7 +15,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
 
     _client: httpx.AsyncClient | None = PrivateAttr(default=None)
 
-    async def _reset_client(self) -> None:
+    async def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
 
         This is useful when connection parameters (host, api_key) have changed
