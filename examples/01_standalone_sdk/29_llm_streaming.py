@@ -125,3 +125,7 @@ conversation.send_message(cleanup_prompt)
 print("Token Streaming:")
 print("-" * 100 + "\n")
 conversation.run()
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
