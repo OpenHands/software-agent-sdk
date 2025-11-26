@@ -27,7 +27,6 @@ def mock_llm():
     """Create a mock LLM for testing."""
     llm = Mock(spec=LLM)
     llm.uses_responses_api.return_value = False
-    llm.metadata = {}
     return llm
 
 
@@ -458,7 +457,6 @@ def test_make_llm_completion_api_selection():
     # Test completion API selection
     mock_llm = Mock(spec=LLM)
     mock_llm.uses_responses_api.return_value = False
-    mock_llm.metadata = {}
     mock_response = Mock(spec=LLMResponse)
     mock_llm.completion.return_value = mock_response
 
@@ -483,7 +481,6 @@ def test_make_llm_completion_api_selection():
 
     # Reset mocks and test responses API selection
     mock_llm.reset_mock()
-    mock_llm.metadata = {}
     mock_llm.uses_responses_api.return_value = True
     mock_llm.responses.return_value = mock_response
 
