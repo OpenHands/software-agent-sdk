@@ -1,5 +1,0 @@
-1. The OpenHands Software Agent SDK is a set of Python and REST APIs for building agents that work with code, supporting tasks from simple README generation to complex multi-agent refactors and rewrites.
-
-2. The SDK supports multiple workspace environments - agents can either use the local machine as their workspace or run inside ephemeral workspaces (e.g., in Docker or Kubernetes) using the Agent Server.
-
-3. The project is organized into multiple sub-packages including openhands-sdk, openhands-tools, openhands-workspace, and openhands-agent-server, and powers production applications like the OpenHands CLI and OpenHands Cloud.
