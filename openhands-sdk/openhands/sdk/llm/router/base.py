@@ -10,6 +10,7 @@ from pydantic import (
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import Message
+from openhands.sdk.llm.streaming import TokenCallbackType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolDefinition
 
@@ -52,6 +53,7 @@ class RouterLLM(LLM):
         tools: Sequence[ToolDefinition] | None = None,
         return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
         """
@@ -70,6 +72,7 @@ class RouterLLM(LLM):
             tools=tools,
             _return_metrics=return_metrics,
             add_security_risk_prediction=add_security_risk_prediction,
+            on_token=on_token,
             **kwargs,
         )
 
