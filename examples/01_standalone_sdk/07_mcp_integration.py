@@ -21,7 +21,7 @@ logger = get_logger(__name__)
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -50,7 +50,6 @@ agent = Agent(
     mcp_config=mcp_config,
     # This regex filters out all repomix tools except pack_codebase
     filter_tools_regex="^(?!repomix)(.*)|^repomix.*pack_codebase.*$",
-    security_analyzer=LLMSecurityAnalyzer(),
 )
 
 llm_messages = []  # collect raw LLM messages
@@ -67,6 +66,7 @@ conversation = Conversation(
     callbacks=[conversation_callback],
     workspace=cwd,
 )
+conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
 logger.info("Starting conversation with MCP integration...")
 conversation.send_message(

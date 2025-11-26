@@ -9,6 +9,7 @@ from openhands.sdk.conversation import (
     BaseConversation,
     Conversation,
     ConversationCallbackType,
+    ConversationExecutionStatus,
     LocalConversation,
     RemoteConversation,
 )
@@ -80,6 +81,7 @@ __all__ = [
     "BaseConversation",
     "LocalConversation",
     "RemoteConversation",
+    "ConversationExecutionStatus",
     "ConversationCallbackType",
     "Event",
     "LLMConvertibleEvent",

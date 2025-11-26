@@ -360,25 +360,3 @@ def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
         # After both services are marked restored
         assert service_id_2 in conversation_stats._restored_usage_ids
         assert len(conversation_stats._restored_usage_ids) == 2
-
-
-def test_service_shims_expose_usage_data(conversation_stats):
-    """Ensure legacy service-based APIs remain functional with deprecation warnings."""
-    metrics = Metrics(model_name="gpt-4")
-
-    with pytest.deprecated_call():
-        conversation_stats.service_to_metrics = {"legacy-service": metrics}
-
-    assert "legacy-service" in conversation_stats.usage_to_metrics
-
-    with pytest.deprecated_call():
-        retrieved = conversation_stats.get_metrics_for_service("legacy-service")
-
-    assert retrieved is metrics
-
-    conversation_stats._restored_usage_ids.add("legacy-service")
-
-    with pytest.deprecated_call():
-        restored = conversation_stats._restored_services
-
-    assert "legacy-service" in restored

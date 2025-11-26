@@ -67,6 +67,14 @@ jobs:
                       run-suffix: deepseek_run
                       llm-config:
                           model: litellm_proxy/deepseek/deepseek-chat
+                    - name: Kimi K2 Thinking
+                      run-suffix: kimi_k2_run
+                      llm-config:
+                          model: litellm_proxy/moonshot/kimi-k2-thinking
+                    - name: Gemini 3 Pro
+                      run-suffix: gemini_3_pro_run
+                      llm-config:
+                          model: litellm_proxy/vertex_ai/gemini-3-pro-preview
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
@@ -225,7 +233,8 @@ jobs:
             - name: Create consolidated PR comment
               if: github.event_name == 'pull_request_target'
               run: |
-                  COMMENT_BODY=$(cat consolidated_report.md)
+                  # Sanitize @OpenHands mentions to prevent self-mention loops
+                  COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
                   # Use GitHub CLI to create comment with explicit PR number
                   echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
               env:
@@ -235,8 +244,8 @@ jobs:
               if: github.event_name == 'schedule'
               id: read_report
               run: |
-                  # Read the report and set as output
-                  REPORT_CONTENT=$(cat consolidated_report.md)
+                  # Read and sanitize the report, then set as output
+                  REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < consolidated_report.md)
                   echo "report<<EOF" >> $GITHUB_OUTPUT
                   echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
                   echo "EOF" >> $GITHUB_OUTPUT

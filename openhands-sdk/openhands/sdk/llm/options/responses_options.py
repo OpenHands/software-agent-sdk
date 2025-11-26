@@ -50,7 +50,7 @@ def select_responses_options(
         if llm.reasoning_summary:
             out["reasoning"]["summary"] = llm.reasoning_summary
 
-    # Pass through litellm_extra_body if provided
+    # Always forward extra_body if provided; let the LLM provider validate
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 

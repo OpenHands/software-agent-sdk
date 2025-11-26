@@ -231,14 +231,16 @@ class RemoteWorkspaceMixin(BaseModel):
         _logger.debug(f"Remote file download: {source} -> {destination}")
 
         try:
-            # Request the file from remote system
-            params = {"file_path": str(source)}
+            # Construct URL with path parameter (not query parameter)
+            # Double slash ensures FastAPI extracts path with leading slash
+            # for absolute path validation
+            source_str = str(source)
+            url = f"/api/file/download//{source_str.lstrip('/')}"
 
             # Make HTTP call
             response = yield {
                 "method": "GET",
-                "url": "/api/file/download",
-                "params": params,
+                "url": url,
                 "headers": self._headers,
                 "timeout": 60.0,
             }

@@ -7,14 +7,12 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-import openhands.sdk.security.analyzer as analyzer
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
@@ -23,6 +21,7 @@ from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 if TYPE_CHECKING:
     from openhands.sdk.conversation import ConversationState, LocalConversation
     from openhands.sdk.conversation.types import ConversationCallbackType
+
 
 logger = get_logger(__name__)
 
@@ -122,11 +121,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
         examples=[{"cli_mode": True}],
     )
-    security_analyzer: analyzer.SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-        examples=[{"kind": "LLMSecurityAnalyzer"}],
-    )
+
     condenser: CondenserBase | None = Field(
         default=None,
         description="Optional condenser to use for condensing conversation history.",
@@ -164,13 +159,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @property
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
-        # Prepare template kwargs, including cli_mode if available
         template_kwargs = dict(self.system_prompt_kwargs)
-        if self.security_analyzer:
-            template_kwargs["llm_security_analyzer"] = bool(
-                isinstance(self.security_analyzer, LLMSecurityAnalyzer)
-            )
-
         system_message = render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
@@ -198,6 +187,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def _initialize(self, state: "ConversationState"):
         """Create an AgentBase instance from an AgentSpec."""
+
         if self._tools:
             logger.warning("Agent already initialized; skipping re-initialization.")
             return
@@ -266,8 +256,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
         """
         Return a new AgentBase instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key, security_analyzer) taken from
-        `self`.
+        explicitly whitelisted fields (e.g. api_key) taken from `self`.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
@@ -295,11 +284,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     update={"llm": new_condenser_llm}
                 )
                 updates["condenser"] = new_condenser
-
-        # Allow security_analyzer to differ - use the runtime (self) version
-        # This allows users to add/remove security analyzers mid-conversation
-        # (e.g., when switching to weaker LLMs that can't handle security_risk field)
-        updates["security_analyzer"] = self.security_analyzer
 
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}

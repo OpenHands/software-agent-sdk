@@ -14,6 +14,7 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -165,6 +166,14 @@ class SetConfirmationPolicyRequest(BaseModel):
     policy: ConfirmationPolicyBase = Field(description="The confirmation policy to set")
 
 
+class SetSecurityAnalyzerRequest(BaseModel):
+    "Payload to set security analyzer for a conversation"
+
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        description="The security analyzer to set"
+    )
+
+
 class UpdateConversationRequest(BaseModel):
     """Payload to update conversation metadata."""
 
@@ -188,6 +197,18 @@ class GenerateTitleResponse(BaseModel):
     """Response containing the generated conversation title."""
 
     title: str = Field(description="The generated title for the conversation")
+
+
+class AskAgentRequest(BaseModel):
+    """Payload to ask the agent a simple question."""
+
+    question: str = Field(description="The question to ask the agent")
+
+
+class AskAgentResponse(BaseModel):
+    """Response containing the agent's answer."""
+
+    response: str = Field(description="The agent's response to the question")
 
 
 class BashEventBase(DiscriminatedUnionMixin, ABC):

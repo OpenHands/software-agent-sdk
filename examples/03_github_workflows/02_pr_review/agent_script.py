@@ -10,7 +10,7 @@ Designed for use with GitHub Actions workflows triggered by PR labels.
 
 Environment Variables:
     LLM_API_KEY: API key for the LLM (required)
-    LLM_MODEL: Language model to use (default: openhands/claude-sonnet-4-5-20250929)
+    LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for API access (required)
     PR_NUMBER: Pull request number (required)
@@ -38,6 +38,7 @@ from prompt import PROMPT  # noqa: E402
 
 from openhands.sdk import LLM, Conversation, get_logger  # noqa: E402
 from openhands.sdk.conversation import get_agent_final_response  # noqa: E402
+from openhands.sdk.utils.github import sanitize_openhands_mentions  # noqa: E402
 from openhands.tools.preset.default import get_default_agent  # noqa: E402
 
 
@@ -51,6 +52,9 @@ def post_review_comment(review_content: str) -> None:
     Args:
         review_content: The review content to post
     """
+    # Sanitize @OpenHands mentions to prevent self-mention loops
+    review_content = sanitize_openhands_mentions(review_content)
+
     logger.info("Posting review comment to GitHub...")
     pr_number = os.getenv("PR_NUMBER")
     repo_name = os.getenv("REPO_NAME")
@@ -121,7 +125,7 @@ def main():
 
         # Configure LLM
         api_key = os.getenv("LLM_API_KEY")
-        model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+        model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
         base_url = os.getenv("LLM_BASE_URL")
 
         llm_config = {

@@ -48,6 +48,7 @@ def base_llm() -> LLM:
         num_retries=2,
         retry_min_wait=1,
         retry_max_wait=2,
+        temperature=0.0,  # Explicitly set to test temperature bump behavior
     )
 
 

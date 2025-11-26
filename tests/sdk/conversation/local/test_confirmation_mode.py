@@ -658,31 +658,31 @@ class TestConfirmationMode:
     def test_is_confirmation_mode_active_property(self):
         """Test the is_confirmation_mode_active property behavior."""
         # Initially, no security analyzer and NeverConfirm policy
-        assert self.conversation.state.agent.security_analyzer is None
+        assert self.conversation.state.security_analyzer is None
         assert self.conversation.state.confirmation_policy == NeverConfirm()
         assert not self.conversation.confirmation_policy_active
         assert not self.conversation.is_confirmation_mode_active
 
         # Set confirmation policy to AlwaysConfirm, but still no security analyzer
         self.conversation.set_confirmation_policy(AlwaysConfirm())
-        assert self.conversation.state.agent.security_analyzer is None
+        assert self.conversation.state.security_analyzer is None
         assert self.conversation.state.confirmation_policy == AlwaysConfirm()
         assert self.conversation.confirmation_policy_active
         # Still False because no security analyzer
         assert not self.conversation.is_confirmation_mode_active
 
-        # Create agent with security analyzer
+        # Create agent and set security analyzer on conversation state
         from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
-        agent_with_analyzer = Agent(
+        agent = Agent(
             llm=self.llm,
             tools=[Tool(name="test_tool")],
-            security_analyzer=LLMSecurityAnalyzer(),
         )
-        conversation_with_analyzer = Conversation(agent=agent_with_analyzer)
+        conversation_with_analyzer = Conversation(agent=agent)
+        conversation_with_analyzer.set_security_analyzer(LLMSecurityAnalyzer())
 
         # Initially with security analyzer but NeverConfirm policy
-        assert conversation_with_analyzer.state.agent.security_analyzer is not None
+        assert conversation_with_analyzer.state.security_analyzer is not None
         assert conversation_with_analyzer.state.confirmation_policy == NeverConfirm()
         assert not conversation_with_analyzer.confirmation_policy_active
         # False because policy is NeverConfirm
@@ -690,7 +690,7 @@ class TestConfirmationMode:
 
         # Set confirmation policy to AlwaysConfirm with security analyzer
         conversation_with_analyzer.set_confirmation_policy(AlwaysConfirm())
-        assert conversation_with_analyzer.state.agent.security_analyzer is not None
+        assert conversation_with_analyzer.state.security_analyzer is not None
         assert conversation_with_analyzer.state.confirmation_policy == AlwaysConfirm()
         assert conversation_with_analyzer.confirmation_policy_active
         # True because both conditions are met
