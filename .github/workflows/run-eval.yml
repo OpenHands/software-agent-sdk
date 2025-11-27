@@ -41,6 +41,11 @@ on:
                 required: false
                 default: main
                 type: string
+            pr_number:
+                description: '[TEMPORARY] PR number for testing PR comments (leave empty for normal use)'
+                required: false
+                default: ''
+                type: string
 
 env:
     EVAL_REPO: OpenHands/evaluation
@@ -132,7 +137,7 @@ jobs:
                   else
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
-                    PR_NUMBER=""
+                    PR_NUMBER="${{ github.event.inputs.pr_number }}"
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
                       REASON="manual"
