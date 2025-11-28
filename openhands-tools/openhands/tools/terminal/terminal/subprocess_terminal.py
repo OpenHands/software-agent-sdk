@@ -155,6 +155,7 @@ class SubprocessTerminal(TerminalInterface):
         # 1) Single atomic init line: clear PROMPT_COMMAND, set PS2/PS1, print sentinel
         sentinel = f"__OH_READY_{uuid.uuid4().hex}__"
         init_cmd = (
+            "set +H; "
             f"export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
             f'export PS2=""; '
             f'printf "{sentinel}"'
