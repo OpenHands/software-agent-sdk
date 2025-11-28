@@ -1,11 +1,11 @@
 """Test agent JSON serialization with DiscriminatedUnionMixin."""
 
 import json
-from typing import cast
 from unittest.mock import Mock
 
 import mcp.types
 import pytest
+from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel
 
 from openhands.sdk.agent import Agent
@@ -62,16 +62,23 @@ def test_mcp_tool_serialization():
 def test_agent_serialization_should_include_mcp_tool() -> None:
     # Create a simple LLM instance and agent with empty tools
     llm = LLM(model="test-model", usage_id="test-llm")
-    mcp_config = {
+    mcp_config_dict = {
         "mcpServers": {
             "dummy": {"command": "echo", "args": ["dummy-mcp"]},
         }
     }
-    agent = Agent(llm=llm, tools=[], mcp_config=cast(dict[str, object], mcp_config))
+    mcp_config = MCPConfig.model_validate(mcp_config_dict)
+    agent = Agent(llm=llm, tools=[], mcp_config=mcp_config)
 
     # Serialize to JSON (excluding non-serializable fields)
     agent_dump = agent.model_dump()
-    assert agent_dump.get("mcp_config") == mcp_config
+    # The mcp_config should now be a properly structured MCPConfig object
+    assert "mcp_config" in agent_dump
+    assert "mcpServers" in agent_dump["mcp_config"]
+    assert "dummy" in agent_dump["mcp_config"]["mcpServers"]
+    assert agent_dump["mcp_config"]["mcpServers"]["dummy"]["command"] == "echo"
+    assert agent_dump["mcp_config"]["mcpServers"]["dummy"]["args"] == ["dummy-mcp"]
+
     agent_json = agent.model_dump_json()
 
     # Deserialize from JSON using the base class

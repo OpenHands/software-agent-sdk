@@ -1,5 +1,6 @@
 import json
 
+from fastmcp.mcp_config import MCPConfig
 from pydantic import ValidationError, model_validator
 
 import openhands.sdk.security.analyzer as analyzer
@@ -89,6 +90,11 @@ class Agent(AgentBase):
 
         kwargs.setdefault("llm_security_analyzer", True)
         data["system_prompt_kwargs"] = kwargs
+
+        # Convert dict mcp_config to MCPConfig object for backward compatibility
+        if "mcp_config" in data and isinstance(data["mcp_config"], dict):
+            data["mcp_config"] = MCPConfig.model_validate(data["mcp_config"])
+
         return data
 
     def init_state(

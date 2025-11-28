@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
 from typing import TYPE_CHECKING, Any
 
+from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from openhands.sdk.context.agent_context import AgentContext
@@ -65,9 +66,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             },
         ],
     )
-    mcp_config: dict[str, Any] = Field(
-        default_factory=dict,
-        description="Optional MCP configuration dictionary to create MCP tools.",
+    mcp_config: MCPConfig = Field(
+        default_factory=MCPConfig,
+        description="Optional MCP configuration to create MCP tools.",
         examples=[
             {"mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}}
         ],
@@ -200,7 +201,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             tools.extend(resolve_tool(tool_spec, state))
 
         # Add MCP tools if configured
-        if self.mcp_config:
+        if self.mcp_config.mcpServers:
             mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
             tools.extend(mcp_tools)
 
