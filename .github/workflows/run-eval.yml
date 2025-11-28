@@ -23,7 +23,8 @@ on:
                     - '200'
                     - '500'
             model_ids:
-                description: Comma-separated model IDs to evaluate (must exist in models.json)
+                description: Comma-separated model IDs to evaluate. Must be keys of MODELS in resolve_model_config.py. Defaults to first model in that
+                    dict.
                 required: false
                 default: ''
                 type: string
@@ -41,11 +42,7 @@ on:
                 required: false
                 default: main
                 type: string
-            pr_number:
-                description: '[TEMPORARY] PR number for testing PR comments (leave empty for normal use)'
-                required: false
-                default: ''
-                type: string
+
 
 env:
     EVAL_REPO: OpenHands/evaluation
@@ -116,7 +113,7 @@ jobs:
                   fi
                   echo "PAT_TOKEN=$PAT_TOKEN" >> "$GITHUB_ENV"
 
-                  # Determine eval limit based on trigger
+                  # Determine eval limit and SDK SHA based on trigger
                   if [ "${{ github.event_name }}" = "pull_request_target" ]; then
                     LABEL="${{ github.event.label.name }}"
                     case "$LABEL" in
@@ -126,18 +123,20 @@ jobs:
                       run-eval-500) EVAL_LIMIT=500 ;;
                       *) echo "Unsupported label $LABEL" >&2; exit 1 ;;
                     esac
-                    SDK_REF="${{ github.event.pull_request.head.ref }}"
+                    SDK_SHA="${{ github.event.pull_request.head.sha }}"
                     PR_NUMBER="${{ github.event.pull_request.number }}"
                     TRIGGER_DESCRIPTION="Label '${LABEL}' on PR #${PR_NUMBER}"
                   elif [ "${{ github.event_name }}" = "release" ]; then
                     EVAL_LIMIT=50
-                    SDK_REF="${{ github.event.release.tag_name }}"
+                    SDK_SHA="${{ github.event.release.target_commitish }}"
                     PR_NUMBER=""
                     TRIGGER_DESCRIPTION="Release ${{ github.event.release.tag_name }}"
                   else
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
-                    PR_NUMBER="${{ github.event.inputs.pr_number }}"
+                    # Convert ref to SHA for manual dispatch
+                    SDK_SHA=$(git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
+                    PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
                       REASON="manual"
@@ -161,7 +160,7 @@ jobs:
                   done
 
                   echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
-                  echo "sdk_ref=$SDK_REF" >> "$GITHUB_OUTPUT"
+                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
                   echo "models=$MODELS" >> "$GITHUB_OUTPUT"
                   echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
                   echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
@@ -173,25 +172,9 @@ jobs:
               run: |
                   python3 .github/run-eval/resolve_model_config.py
 
-            - name: Checkout evaluated ref for PRs
-              if: github.event_name == 'pull_request_target'
-              run: |
-                  set -euo pipefail
-                  # Switch to the PR head for image build and SDK pinning.
-                  REF="${{ steps.params.outputs.sdk_ref }}"
-                  git fetch origin "$REF" --force
-                  git checkout FETCH_HEAD
-
-            - name: Resolve SDK commit SHA for evaluation
-              id: get-sha
-              run: |
-                  SDK_SHA=$(git rev-parse HEAD)
-                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
-                  echo "Using SDK commit: $SDK_SHA"
-
             - name: Dispatch evaluation workflow
               env:
-                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
+                  SDK_SHA: ${{ steps.params.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS_JSON: ${{ steps.resolve-models.outputs.models_json }}
                   EVAL_REPO: ${{ env.EVAL_REPO }}
