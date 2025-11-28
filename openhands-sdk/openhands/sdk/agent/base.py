@@ -195,11 +195,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         template_kwargs = dict(self.system_prompt_kwargs)
 
         template_name = self.system_prompt_filename
-        if template_name == "system_prompt.j2" and self.llm.is_gpt5_family():
-            candidate = "system_prompt-gpt.j2"
-            prompt_path = os.path.join(self.prompt_dir, candidate)
-            if os.path.exists(prompt_path):
-                template_name = candidate
+        # Expose model-family information to the template so it can conditionally
+        # adjust behavior without swapping template files.
+        template_kwargs["is_gpt5"] = self.llm.is_gpt5_family()
 
         system_message = render_template(
             prompt_dir=self.prompt_dir,

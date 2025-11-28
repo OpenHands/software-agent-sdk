@@ -131,27 +131,22 @@ def test_agent_supports_nested_polymorphic_json_serialization() -> None:
     assert deserialized_container.agents[1].model_dump() == agent2.model_dump()
 
 
-def test_agent_system_message_selects_gpt5_prompt_when_available(tmp_path, monkeypatch):
-    """AgentBase.system_message should switch to system_prompt-gpt.j2 for GPT-5.
+def test_agent_system_message_sets_is_gpt5_context_when_gpt5(tmp_path, monkeypatch):
+    """AgentBase.system_message should render default template with is_gpt5=True.
 
-    The switch only occurs when:
-    - system_prompt_filename is left as the default "system_prompt.j2"; and
-    - the LLM model is GPT-5 family; and
-    - a sibling system_prompt-gpt.j2 file exists in the prompts dir.
+    We no longer switch templates; instead, the default template can conditionally
+    include GPT-5 specific sections via a Jinja variable `is_gpt5`.
     """
 
-    # Create a temp prompts directory with both default and GPT-5 templates
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     default_template = prompts_dir / "system_prompt.j2"
-    gpt5_template = prompts_dir / "system_prompt-gpt.j2"
 
-    default_template.write_text("DEFAULT_PROMPT", encoding="utf-8")
-    gpt5_template.write_text("GPT5_PROMPT", encoding="utf-8")
+    # Use a minimal template that reflects the is_gpt5 flag
+    default_template.write_text(
+        "{{ 'IS_GPT5' if is_gpt5 else 'NOT_GPT5' }}", encoding="utf-8"
+    )
 
-    # Monkeypatch Agent.prompt_dir to point at our temp prompts_dir.
-    # We avoid subclassing Agent here, since AgentBase discriminated unions
-    # require globally unique "kind" values per concrete subclass.
     def _prompt_dir(self) -> str:  # type: ignore[override]
         return str(prompts_dir)
 
@@ -160,20 +155,19 @@ def test_agent_system_message_selects_gpt5_prompt_when_available(tmp_path, monke
     llm = LLM(model="gpt-5-mini", usage_id="test-gpt5-agent")
     agent = Agent(llm=llm, tools=[])
 
-    # With GPT-5 model and both templates present, we should pick GPT5_PROMPT
-    assert agent.system_message == "GPT5_PROMPT"
+    assert agent.system_message == "IS_GPT5"
 
 
 def test_agent_system_message_uses_default_prompt_when_not_gpt5(tmp_path, monkeypatch):
-    """Non-GPT-5 models should continue to use the default system prompt."""
+    """Non-GPT-5 models should render with is_gpt5=False in default template."""
 
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     default_template = prompts_dir / "system_prompt.j2"
-    gpt5_template = prompts_dir / "system_prompt-gpt.j2"
 
-    default_template.write_text("DEFAULT_PROMPT", encoding="utf-8")
-    gpt5_template.write_text("GPT5_PROMPT", encoding="utf-8")
+    default_template.write_text(
+        "{{ 'IS_GPT5' if is_gpt5 else 'NOT_GPT5' }}", encoding="utf-8"
+    )
 
     def _prompt_dir(self) -> str:  # type: ignore[override]
         return str(prompts_dir)
@@ -183,22 +177,20 @@ def test_agent_system_message_uses_default_prompt_when_not_gpt5(tmp_path, monkey
     llm = LLM(model="gpt-4o", usage_id="test-gpt4-agent")
     agent = Agent(llm=llm, tools=[])
 
-    # Non-GPT-5 model should still render from system_prompt.j2
-    assert agent.system_message == "DEFAULT_PROMPT"
+    assert agent.system_message == "NOT_GPT5"
 
 
-def test_agent_system_message_uses_configured_prompt_filename_even_for_gpt5(
-    tmp_path, monkeypatch
-):
-    """If system_prompt_filename is overridden, GPT-5 should not auto-switch."""
+def test_agent_system_message_respects_custom_prompt_filename(tmp_path, monkeypatch):
+    """If a custom prompt filename is set, render it with is_gpt5 in context."""
 
     prompts_dir = tmp_path / "prompts"
     prompts_dir.mkdir()
     custom_template = prompts_dir / "custom_prompt.j2"
-    gpt5_template = prompts_dir / "system_prompt-gpt.j2"
 
-    custom_template.write_text("CUSTOM_PROMPT", encoding="utf-8")
-    gpt5_template.write_text("GPT5_PROMPT", encoding="utf-8")
+    # The custom template should still get the flag in context
+    custom_template.write_text(
+        "CUSTOM_{{ 'GPT5' if is_gpt5 else 'OTHER' }}", encoding="utf-8"
+    )
 
     def _prompt_dir(self) -> str:  # type: ignore[override]
         return str(prompts_dir)
@@ -212,9 +204,7 @@ def test_agent_system_message_uses_configured_prompt_filename_even_for_gpt5(
         system_prompt_filename="custom_prompt.j2",
     )
 
-    # Because system_prompt_filename was overridden, we should respect it and not
-    # auto-swap to the GPT-5 template.
-    assert agent.system_message == "CUSTOM_PROMPT"
+    assert agent.system_message == "CUSTOM_GPT5"
 
 
 def test_agent_model_validate_json_dict() -> None:
