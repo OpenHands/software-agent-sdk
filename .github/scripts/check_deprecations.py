@@ -64,7 +64,7 @@ class DeprecationRecord:
     deprecated_in: str | None
     path: Path
     line: int
-    kind: Literal["decorator", "warn_call"]
+    kind: Literal["decorator", "warn_call", "cleanup_call"]
     package: str
 
 
@@ -246,28 +246,47 @@ def _gather_warn_calls(
         else:
             continue
 
-        if func_name != "warn_deprecated":
-            continue
+        if func_name == "warn_deprecated":
+            identifier_node = node.args[0] if node.args else None
+            if identifier_node is None:
+                continue
+            identifier = ast.unparse(identifier_node)
 
-        identifier_node = node.args[0] if node.args else None
-        if identifier_node is None:
-            continue
-        identifier = ast.unparse(identifier_node)
+            removed_expr = _extract_kw(node, "removed_in")
+            deprecated_expr = _extract_kw(node, "deprecated_in")
 
-        removed_expr = _extract_kw(node, "removed_in")
-        deprecated_expr = _extract_kw(node, "deprecated_in")
+            yield DeprecationRecord(
+                identifier=identifier,
+                removed_in=_parse_removed_value(
+                    removed_expr, path=path, line=node.lineno
+                ),
+                deprecated_in=_parse_deprecated_value(
+                    deprecated_expr, path=path, line=node.lineno
+                ),
+                path=path,
+                line=node.lineno,
+                kind="warn_call",
+                package=package,
+            )
+        elif func_name == "warn_cleanup":
+            identifier_node = node.args[0] if node.args else None
+            if identifier_node is None:
+                continue
+            identifier = ast.unparse(identifier_node)
 
-        yield DeprecationRecord(
-            identifier=identifier,
-            removed_in=_parse_removed_value(removed_expr, path=path, line=node.lineno),
-            deprecated_in=_parse_deprecated_value(
-                deprecated_expr, path=path, line=node.lineno
-            ),
-            path=path,
-            line=node.lineno,
-            kind="warn_call",
-            package=package,
-        )
+            cleanup_expr = _extract_kw(node, "cleanup_by")
+
+            yield DeprecationRecord(
+                identifier=identifier,
+                removed_in=_parse_removed_value(
+                    cleanup_expr, path=path, line=node.lineno
+                ),
+                deprecated_in=None,
+                path=path,
+                line=node.lineno,
+                kind="cleanup_call",
+                package=package,
+            )
 
 
 def _build_identifier(node: ast.AST) -> str:
@@ -329,6 +348,14 @@ def _should_fail(current_version: str, record: DeprecationRecord) -> bool:
 def _format_record(record: DeprecationRecord) -> str:
     location = record.path.relative_to(REPO_ROOT)
     removed = record.removed_in if record.removed_in is not None else "(none)"
+
+    if record.kind == "cleanup_call":
+        return (
+            f"- [{record.package}] {record.identifier} ({record.kind})\n"
+            f"  cleanup by:    {removed}\n"
+            f"  defined at:    {location}:{record.line}"
+        )
+
     deprecated = (
         record.deprecated_in if record.deprecated_in is not None else "(unknown)"
     )
@@ -371,14 +398,34 @@ def main(argv: Sequence[str] | None = None) -> int:
         package_summaries.append((package.name, current_version, len(records)))
 
     if overdue:
-        print("The following deprecated features have passed their removal deadline:\n")
-        for record in overdue:
-            print(_format_record(record))
-            print()
-        print(
-            "Update or remove the listed features before publishing a version that "
-            "meets or exceeds their removal deadline."
-        )
+        deprecated_items = [r for r in overdue if r.kind != "cleanup_call"]
+        cleanup_items = [r for r in overdue if r.kind == "cleanup_call"]
+
+        if deprecated_items:
+            print(
+                "The following deprecated features have passed their removal "
+                "deadline:\n"
+            )
+            for record in deprecated_items:
+                print(_format_record(record))
+                print()
+
+        if cleanup_items:
+            print("The following workarounds have passed their cleanup deadline:\n")
+            for record in cleanup_items:
+                print(_format_record(record))
+                print()
+
+        if deprecated_items:
+            print(
+                "Update or remove the listed features before publishing a version that "
+                "meets or exceeds their removal deadline."
+            )
+        if cleanup_items:
+            print(
+                "Remove the listed workarounds before publishing a version that "
+                "meets or exceeds their cleanup deadline."
+            )
         return 1
 
     for package_name, version, count in package_summaries:

@@ -9,6 +9,8 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    AskAgentRequest,
+    AskAgentResponse,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -289,3 +291,19 @@ async def generate_conversation_title(
     if title is None:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
     return GenerateTitleResponse(title=title)
+
+
+@conversation_router.post(
+    "/{conversation_id}/ask_agent",
+    responses={404: {"description": "Item not found"}},
+)
+async def ask_agent(
+    conversation_id: UUID,
+    request: AskAgentRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> AskAgentResponse:
+    """Ask the agent a simple question without affecting conversation state."""
+    response = await conversation_service.ask_agent(conversation_id, request.question)
+    if response is None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return AskAgentResponse(response=response)

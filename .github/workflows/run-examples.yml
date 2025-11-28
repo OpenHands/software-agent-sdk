@@ -25,6 +25,7 @@ jobs:
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
+              if: github.event_name == 'pull_request'
               uses: lewagon/wait-on-check-action@v1.4.1
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
@@ -64,261 +65,105 @@ jobs:
                   REPO_NAME: ${{ github.event.repository.name }}
                   GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
               run: |
-                  # List of examples to test
-                  # Excluded examples:
-                  # - 01_hello_world.py: requires LiteLLM proxy URL (OPENAI_BASE_URL) not set in CI
-                  # - 04_confirmation_mode_example.py: requires user input
-                  # - 06_interactive_terminal_w_reasoning.py: interactive terminal
-                  # - 08_mcp_with_oauth.py: requires OAuth setup
-                  # - 15_browser_use.py: requires browser setup
-                  # - 16_llm_security_analyzer.py: requires user input
-                  # - 04_convo_with_api_sandboxed_server.py: requires sandbox API keys
-                  # - 04_vscode_with_docker_sandboxed_server.py: requires VSCode setup
-                  EXAMPLES=(
-                      "examples/01_standalone_sdk/02_custom_tools.py"
-                      "examples/01_standalone_sdk/03_activate_skill.py"
-                      "examples/01_standalone_sdk/05_use_llm_registry.py"
-                      "examples/01_standalone_sdk/07_mcp_integration.py"
-                      "examples/01_standalone_sdk/09_pause_example.py"
-                      "examples/01_standalone_sdk/10_persistence.py"
-                      "examples/01_standalone_sdk/11_async.py"
-                      "examples/01_standalone_sdk/12_custom_secrets.py"
-                      "examples/01_standalone_sdk/13_get_llm_metrics.py"
-                      "examples/01_standalone_sdk/14_context_condenser.py"
-                      "examples/01_standalone_sdk/17_image_input.py"
-                      "examples/01_standalone_sdk/18_send_message_while_processing.py"
-                      "examples/01_standalone_sdk/19_llm_routing.py"
-                      "examples/01_standalone_sdk/20_stuck_detector.py"
-                      "examples/01_standalone_sdk/21_generate_extraneous_conversation_costs.py"
-                      "examples/01_standalone_sdk/22_anthropic_thinking.py"
-                      "examples/01_standalone_sdk/23_responses_reasoning.py"
-                      "examples/01_standalone_sdk/24_planning_agent_workflow.py"
-                      "examples/01_standalone_sdk/25_agent_delegation.py"
-                      "examples/01_standalone_sdk/26_custom_visualizer.py"
-                      "examples/02_remote_agent_server/01_convo_with_local_agent_server.py"
-                      "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py"
-                      "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py"
-                      "examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py"
-                  )
+                  RESULTS_DIR=".example-test-results"
+                  REPORT_PATH="examples_report.md"
+                  rm -rf "$RESULTS_DIR"
+                  mkdir -p "$RESULTS_DIR"
 
-                  # GitHub API setup (only for PR events)
-                  if [ "${{ github.event_name }}" = "pull_request" ]; then
-                      API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
-                  fi
-
-                  # Function to sanitize @OpenHands mentions using the SDK utility
-                  sanitize_comment() {
-                      local text="$1"
-                      printf "%s" "$text" | uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')"
-                  }
-
-                  # Function to update PR comment
                   update_comment() {
-                      # Skip if not a PR event
-                      if [ "${{ github.event_name }}" != "pull_request" ]; then
+                      if [ -z "$API_URL" ]; then
+                          echo "Skipping PR comment update because API_URL is unset."
                           return
                       fi
-                      
+
                       local comment_body="$1"
+                      local payload
                       local response
-                      
-                      # Sanitize @OpenHands mentions before posting
-                      comment_body=$(sanitize_comment "$comment_body")
-                      
+
+                      payload=$(jq -n --arg body "$comment_body" '{body: $body}')
+
                       if [ -z "$COMMENT_ID" ]; then
-                          # Create new comment
-                          response=$(curl -s -X POST \
+                          echo "Creating PR comment..."
+                          if ! response=$(curl -sSf -X POST \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
+                              -H "Content-Type: application/json" \
                               "${API_URL}" \
-                              -d "{\"body\":$(echo "$comment_body" | jq -Rs .)}")
-                          COMMENT_ID=$(echo "$response" | jq -r '.id')
+                              -d "$payload"); then
+                              echo "::error::Failed to create PR comment."
+                              exit 1
+                          fi
+                          COMMENT_ID=$(echo "$response" | jq -r '.id // ""')
+                          if [ -z "$COMMENT_ID" ]; then
+                              echo "::error::GitHub API response did not include a comment id: $response"
+                              exit 1
+                          fi
                           echo "Created comment with ID: $COMMENT_ID"
                       else
-                          # Update existing comment
-                          curl -s -X PATCH \
+                          echo "Updating PR comment (ID: $COMMENT_ID)..."
+                          if ! curl -sSf -X PATCH \
                               -H "Authorization: token ${GITHUB_TOKEN}" \
                               -H "Accept: application/vnd.github.v3+json" \
+                              -H "Content-Type: application/json" \
                               "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${COMMENT_ID}" \
-                              -d "{\"body\":$(echo "$comment_body" | jq -Rs .)}" > /dev/null
-                      fi
-                  }
-
-                  # Function to format cost with 2 decimal places
-                  format_cost() {
-                      local cost="$1"
-                      if [ -z "$cost" ] || [ "$cost" = "N/A" ]; then
-                          echo "N/A"
-                      else
-                          printf "\$%.2f" "$cost" 2>/dev/null || echo "N/A"
-                      fi
-                  }
-
-                  # Function to generate markdown table
-                  generate_table() {
-                      local header="## 🔄 Running Examples with \`${LLM_MODEL}\`\n\n"
-                      header+="_Last updated: $(date -u '+%Y-%m-%d %H:%M:%S UTC')_\n\n"
-                      header+="| Example | Status | Duration | Cost |\n"
-                      header+="|---------|--------|----------|------|\n"
-                      
-                      local rows=""
-                      for example in "${EXAMPLES[@]}"; do
-                          # Strip examples/ prefix and show relative path from there
-                          local short_name="${example#examples/}"
-                          local status="${TEST_STATUS[$example]:-⏳ Pending}"
-                          local duration="${TEST_DURATION[$example]:--}"
-                          local cost="${TEST_COST[$example]:--}"
-                          rows+="| ${short_name} | ${status} | ${duration} | ${cost} |\n"
-                      done
-                      
-                      local summary="\n---\n\n"
-                      if [ $COMPLETED -eq ${#EXAMPLES[@]} ]; then
-                          if [ $FAILED -eq 0 ]; then
-                              summary+="### ✅ All tests passed!\n\n"
-                          else
-                              summary+="### ❌ Some tests failed\n\n"
+                              -d "$payload" > /dev/null; then
+                              echo "::error::Failed to update PR comment (ID: $COMMENT_ID)."
+                              exit 1
                           fi
-                          summary+="**Total:** ${#EXAMPLES[@]} | **Passed:** ${PASSED} | **Failed:** ${FAILED}"
-                          
-                          # Calculate and display total cost if available
-                          if [ -n "$TOTAL_COST" ]; then
-                              summary+=" | **Total Cost:** $(format_cost $TOTAL_COST)"
-                          fi
-                          
-                          summary+="\n\n[View full workflow run](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID})"
-                      else
-                          summary+="**Progress:** ${COMPLETED}/${#EXAMPLES[@]} completed | **Passed:** ${PASSED} | **Failed:** ${FAILED}"
                       fi
-                      
-                      echo -e "${header}${rows}${summary}"
                   }
 
-                  # Initialize tracking variables
-                  declare -A TEST_STATUS
-                  declare -A TEST_DURATION
-                  declare -A TEST_COST
-                  FAILED=0
-                  PASSED=0
-                  COMPLETED=0
-                  TOTAL_COST=0
-                  FAILED_EXAMPLES=()
-                  RESULTS_FILE="test-results.txt"
+                  API_URL=""
                   COMMENT_ID=""
 
-                  # Clear results file
-                  > "$RESULTS_FILE"
-
-                  # Create initial comment with all tests pending (only for PR events)
                   if [ "${{ github.event_name }}" = "pull_request" ]; then
-                      echo "Creating initial PR comment..."
-                      update_comment "$(generate_table)"
+                      API_URL="https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PR_NUMBER}/comments"
+                      initial_comment="## 🔄 Running Examples with \`${LLM_MODEL}\`"
+                      initial_comment+=$'\n\n'
+                      initial_comment+="_Run in progress..._"
+                      initial_comment+=$'\n'
+                      update_comment "$initial_comment"
                   fi
 
-                  echo "=========================================="
-                  echo "Running ${#EXAMPLES[@]} examples with $LLM_MODEL"
-                  echo "=========================================="
+                  EXIT_CODE=0
+                  uv run pytest tests/examples/test_examples.py \
+                      --run-examples \
+                      --examples-results-dir "$RESULTS_DIR" \
+                      -n 4 || EXIT_CODE=$?
 
-                  for example in "${EXAMPLES[@]}"; do
-                      echo ""
-                      echo "Running: $example"
-                      echo "------------------------------------------"
-                                  
-                      START_TIME=$(date +%s)
-                                  
-                      # Create temp file to capture output
-                      OUTPUT_FILE=$(mktemp)
-                                  
-                      # Run example with timeout (20 minutes per example)
-                      # Capture output while still displaying it
-                      # Use || true to prevent script exit on failure
-                      (timeout 1200 uv run python "$example" 2>&1 || true) | tee "$OUTPUT_FILE"
-                                  
-                      # Check if command succeeded by looking at Python exit
-                      if ! grep -q "EXAMPLE_COST:" "$OUTPUT_FILE"; then
-                          EXIT_CODE=1
-                      else
-                          EXIT_CODE=0
-                      fi
-                                  
-                      END_TIME=$(date +%s)
-                      DURATION=$((END_TIME - START_TIME))
-                      DURATION_STR="${DURATION}s"
-                                  
-                      # Extract cost from output
-                      COST=$(grep "EXAMPLE_COST:" "$OUTPUT_FILE" | awk '{print $2}' | tail -1 || echo "0.00")
-                      if [ -z "$COST" ]; then
-                          COST="0.00"
-                      fi
-                                  
-                      # Accumulate total cost
-                      TOTAL_COST=$(echo "$TOTAL_COST + $COST" | bc -l 2>/dev/null || echo "$TOTAL_COST")
-                                  
-                      if [ "$EXIT_CODE" -eq 0 ]; then
-                          echo "✓ PASSED: $example (${DURATION_STR}, cost: \$${COST})"
-                          PASSED=$((PASSED + 1))
-                          COMPLETED=$((COMPLETED + 1))
-                          TEST_STATUS[$example]="✅ PASS"
-                          TEST_DURATION[$example]="${DURATION_STR}"
-                          TEST_COST[$example]="$(format_cost $COST)"
-                          echo "PASS|$example|${DURATION}|${COST}" >> "$RESULTS_FILE"
-                      else
-                          echo "✗ FAILED: $example (exit code: $EXIT_CODE, ${DURATION_STR}, cost: \$${COST})"
-                          FAILED=$((FAILED + 1))
-                          COMPLETED=$((COMPLETED + 1))
-                          FAILED_EXAMPLES+=("$example")
-                          TEST_STATUS[$example]="❌ FAIL (exit: ${EXIT_CODE})"
-                          TEST_DURATION[$example]="${DURATION_STR}"
-                          TEST_COST[$example]="$(format_cost $COST)"
-                          echo "FAIL|$example|$EXIT_CODE|${DURATION}|${COST}" >> "$RESULTS_FILE"
-                      fi
-                                  
-                      # Clean up temp file
-                      rm -f "$OUTPUT_FILE"
-                                  
-                      # Update PR comment after each test (with error handling)
-                      echo "Updating PR comment..."
-                      update_comment "$(generate_table)" || echo "Warning: Failed to update PR comment"
-                  done
+                  TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+                  WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
-                  echo ""
-                  echo "=========================================="
-                  echo "Test Results Summary"
-                  echo "=========================================="
-                  echo "Total: ${#EXAMPLES[@]}"
-                  echo "Passed: $PASSED"
-                  echo "Failed: $FAILED"
-                  echo "Total Cost: $(format_cost $TOTAL_COST)"
+                  uv run python scripts/render_examples_report.py \
+                      --results-dir "$RESULTS_DIR" \
+                      --model "$LLM_MODEL" \
+                      --workflow-url "$WORKFLOW_URL" \
+                      --timestamp "$TIMESTAMP" \
+                      --output "$REPORT_PATH"
 
-                  # Generate final report and save to file
-                  FINAL_REPORT=$(generate_table)
-                  echo "$FINAL_REPORT" > examples_report.md
-                  echo "Final report saved to examples_report.md"
+                  COMMENT_BODY="$(cat "$REPORT_PATH")"
+                  echo "$COMMENT_BODY"
 
-                  if [ $FAILED -gt 0 ]; then
-                      echo ""
-                      echo "Failed examples:"
-                      for failed_example in "${FAILED_EXAMPLES[@]}"; do
-                          echo "  - $failed_example"
-                      done
-                      exit 1
+                  if [ "${{ github.event_name }}" = "pull_request" ]; then
+                      echo "Publishing PR comment..."
+                      update_comment "$COMMENT_BODY"
                   fi
 
-                  echo ""
-                  echo "All examples passed! ✓"
-
+                  if [ $EXIT_CODE -ne 0 ]; then
+                      exit $EXIT_CODE
+                  fi
             - name: Read examples report for issue comment
               if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
               id: read_report
               shell: bash
               run: |
                   if [ -f examples_report.md ]; then
-                      # Sanitize @OpenHands mentions before posting
-                      REPORT_CONTENT=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < examples_report.md)
-                      echo "report<<EOF" >> $GITHUB_OUTPUT
-                      echo "$REPORT_CONTENT" >> $GITHUB_OUTPUT
-                      echo "EOF" >> $GITHUB_OUTPUT
+                      REPORT_CONTENT=$(cat examples_report.md)
+                      echo "report<<EOF" >> "$GITHUB_OUTPUT"
+                      echo "$REPORT_CONTENT" >> "$GITHUB_OUTPUT"
+                      echo "EOF" >> "$GITHUB_OUTPUT"
                   else
-                      echo "report=Report file not found" >> $GITHUB_OUTPUT
+                      echo "report=Report file not found" >> "$GITHUB_OUTPUT"
                   fi
 
             - name: Comment with results on tracker issue
