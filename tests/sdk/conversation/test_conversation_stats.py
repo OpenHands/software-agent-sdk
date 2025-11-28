@@ -45,7 +45,7 @@ def connected_registry_and_stats(mock_llm_registry, conversation_stats):
 
 def test_get_combined_metrics(conversation_stats):
     """Test that combined metrics are calculated correctly."""
-    # Add multiple usages with metrics
+    # Add multiple usage groups with metrics
     usage1 = "usage1"
     metrics1 = Metrics(model_name="gpt-4")
     metrics1.add_cost(0.05)
