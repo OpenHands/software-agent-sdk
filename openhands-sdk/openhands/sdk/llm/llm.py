@@ -882,7 +882,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         Notes:
             - Excludes GPT-5 Codex variants (e.g., "gpt-5-codex"), which have
-              different prompting/tool-usage expectations.
+              different prompting expectations.
         """
         return "gpt-5" in self.model and "codex" not in self.model
 
