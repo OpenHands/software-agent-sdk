@@ -1,5 +1,7 @@
 import io
 import re
+import shutil
+import subprocess
 from itertools import chain
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
@@ -364,5 +366,176 @@ def load_user_skills() -> list[Skill]:
 
     logger.debug(
         f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills
+
+
+# Public skills repository configuration
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_BRANCH = "main"
+
+
+def _get_skills_cache_dir() -> Path:
+    """Get the local cache directory for public skills repository.
+
+    Returns:
+        Path to the skills cache directory (~/.openhands/cache/skills).
+    """
+    cache_dir = Path.home() / ".openhands" / "cache" / "skills"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _update_skills_repository(
+    repo_url: str,
+    branch: str,
+    cache_dir: Path,
+) -> Path | None:
+    """Clone or update the local skills repository.
+
+    Args:
+        repo_url: URL of the skills repository.
+        branch: Branch name to use.
+        cache_dir: Directory where the repository should be cached.
+
+    Returns:
+        Path to the local repository if successful, None otherwise.
+    """
+    repo_path = cache_dir / "public-skills"
+
+    try:
+        if repo_path.exists() and (repo_path / ".git").exists():
+            logger.debug(f"Updating skills repository at {repo_path}")
+            try:
+                subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{branch}"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.debug("Skills repository updated successfully")
+            except subprocess.TimeoutExpired:
+                logger.warning("Git pull timed out, using existing cached repository")
+            except subprocess.CalledProcessError as e:
+                logger.warning(
+                    f"Failed to update repository: {e.stderr.decode()}, "
+                    f"using existing cached version"
+                )
+        else:
+            logger.info(f"Cloning public skills repository from {repo_url}")
+            if repo_path.exists():
+                shutil.rmtree(repo_path)
+
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    branch,
+                    repo_url,
+                    str(repo_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            logger.debug(f"Skills repository cloned to {repo_path}")
+
+        return repo_path
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Git operation timed out for {repo_url}")
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            f"Failed to clone/update repository {repo_url}: {e.stderr.decode()}"
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"Error managing skills repository: {str(e)}")
+        return None
+
+
+def load_public_skills(
+    repo_url: str = PUBLIC_SKILLS_REPO,
+    branch: str = PUBLIC_SKILLS_BRANCH,
+) -> list[Skill]:
+    """Load skills from the public OpenHands skills repository.
+
+    This function maintains a local git clone of the public skills registry at
+    https://github.com/OpenHands/skills. On first run, it clones the repository
+    to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
+    to keep the skills up-to-date. This approach is more efficient than fetching
+    individual files via HTTP.
+
+    Args:
+        repo_url: URL of the skills repository. Defaults to the official
+            OpenHands skills repository.
+        branch: Branch name to load skills from. Defaults to 'main'.
+
+    Returns:
+        List of Skill objects loaded from the public repository.
+        Returns empty list if loading fails.
+
+    Example:
+        >>> from openhands.sdk.context import AgentContext
+        >>> from openhands.sdk.context.skills import load_public_skills
+        >>>
+        >>> # Load public skills
+        >>> public_skills = load_public_skills()
+        >>>
+        >>> # Use with AgentContext
+        >>> context = AgentContext(skills=public_skills)
+    """
+    all_skills = []
+
+    try:
+        # Get or update the local repository
+        cache_dir = _get_skills_cache_dir()
+        repo_path = _update_skills_repository(repo_url, branch, cache_dir)
+
+        if repo_path is None:
+            logger.warning("Failed to access public skills repository")
+            return all_skills
+
+        # Load skills from the local repository
+        skills_dir = repo_path / "skills"
+        if not skills_dir.exists():
+            logger.warning(f"Skills directory not found in repository: {skills_dir}")
+            return all_skills
+
+        # Find all .md files in the skills directory
+        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
+
+        logger.info(f"Found {len(md_files)} skill files in public skills repository")
+
+        # Load each skill file
+        for skill_file in md_files:
+            try:
+                skill = Skill.load(
+                    path=skill_file,
+                    skill_dir=repo_path,
+                )
+                all_skills.append(skill)
+                logger.debug(f"Loaded public skill: {skill.name}")
+            except Exception as e:
+                logger.warning(f"Failed to load skill from {skill_file.name}: {str(e)}")
+                continue
+
+    except Exception as e:
+        logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
+
+    logger.info(
+        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
     )
     return all_skills
