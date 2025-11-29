@@ -80,6 +80,24 @@ class APIRemoteWorkspace(RemoteWorkspace):
     _session_api_key: str | None = PrivateAttr(default=None)
 
     @property
+    def client(self) -> httpx.Client:
+        """Override client property to use api_timeout for HTTP requests."""
+        client = self._client
+        if client is None:
+            # Use api_timeout for the read timeout to allow longer operations
+            timeout = httpx.Timeout(
+                connect=10.0,
+                read=self.api_timeout,
+                write=10.0,
+                pool=10.0,
+            )
+            client = httpx.Client(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
+            self._client = client
+        return client
+
+    @property
     def _api_headers(self):
         """Headers for runtime API requests."
 
@@ -120,8 +138,9 @@ class APIRemoteWorkspace(RemoteWorkspace):
         logger.info(f"Runtime ready at {self._runtime_url}")
         self.host = self._runtime_url.rstrip("/")
         self.api_key = self._session_api_key
-        self._client = None  # Reset HTTP client with new host and API key
-        _ = self.client  # Initialize client by accessing the property
+        # Reset HTTP client with new host and API key
+        self.reset_client()
+        # Verify client is properly initialized
         assert self.client is not None
         assert self.client.base_url == self.host
 

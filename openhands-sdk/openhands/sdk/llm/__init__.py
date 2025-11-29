@@ -12,6 +12,7 @@ from openhands.sdk.llm.message import (
     content_to_str,
 )
 from openhands.sdk.llm.router import RouterLLM
+from openhands.sdk.llm.streaming import LLMStreamChunk, TokenCallbackType
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.unverified_models import (
     UNVERIFIED_MODELS_EXCLUDING_BEDROCK,
@@ -34,6 +35,8 @@ __all__ = [
     "RedactedThinkingBlock",
     "ReasoningItemModel",
     "content_to_str",
+    "LLMStreamChunk",
+    "TokenCallbackType",
     "Metrics",
     "MetricsSnapshot",
     "VERIFIED_MODELS",

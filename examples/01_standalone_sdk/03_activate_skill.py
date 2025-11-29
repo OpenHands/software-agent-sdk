@@ -87,6 +87,9 @@ agent_context = AgentContext(
     system_message_suffix="Always finish your response with the word 'yay!'",
     # user_message_suffix is appended to each user message
     user_message_suffix="The first character of your response should be 'I'",
+    # You can also enable automatic load skills from
+    # public registry at https://github.com/OpenHands/skills
+    load_public_skills=True,
 )
 
 # Agent
@@ -112,6 +115,13 @@ conversation.run()
 print("=" * 100)
 print("Now sending flarglebargle to trigger the knowledge skill!")
 conversation.send_message("flarglebargle!")
+conversation.run()
+
+print("=" * 100)
+print("Now triggering public skill 'github'")
+conversation.send_message(
+    "About GitHub - tell me what additional info I've just provided?"
+)
 conversation.run()
 
 print("=" * 100)
