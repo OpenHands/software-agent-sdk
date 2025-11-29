@@ -73,6 +73,8 @@ class Skill(BaseModel):
         ".cursorrules": "cursorrules",
         "agents.md": "agents",
         "agent.md": "agents",
+        "claude.md": "claude",
+        "gemini.md": "gemini",
     }
 
     @classmethod
