@@ -6,9 +6,7 @@ from openhands.sdk.context.condenser import (
 )
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.llm.llm import LLM
-from openhands.sdk.llm.utils.model_features import get_default_tools_for_model
 from openhands.sdk.logger import get_logger
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import Tool
 
 
@@ -34,45 +32,28 @@ def register_default_tools(enable_browser: bool = True) -> None:
 
 def get_default_tools(
     enable_browser: bool = True,
-    model_name: str | None = None,
 ) -> list[Tool]:
     """Get the default set of tool specifications for the standard experience.
 
     Args:
         enable_browser: Whether to include browser tools.
-        model_name: Optional raw model name for model-aware defaults.
     """
     register_default_tools(enable_browser=enable_browser)
 
     # Import tools to access their name attributes
-    from openhands.tools.apply_patch import ApplyPatchTool
     from openhands.tools.file_editor import FileEditorTool
     from openhands.tools.task_tracker import TaskTrackerTool
     from openhands.tools.terminal import TerminalTool
 
-    tool_names = get_default_tools_for_model(model_name)
+    tools = [
+        Tool(name=TerminalTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
+    ]
+    if enable_browser:
+        from openhands.tools.browser_use import BrowserToolSet
 
-    name_to_cls: dict[str, type] = {
-        "terminal": TerminalTool,
-        "file_editor": FileEditorTool,
-        "task_tracker": TaskTrackerTool,
-        "apply_patch": ApplyPatchTool,
-    }
-
-    tools: list[Tool] = []
-    for name in tool_names:
-        if name == "browser_use" and not enable_browser:
-            continue
-        if name == "browser_use" and enable_browser:
-            from openhands.tools.browser_use import BrowserToolSet
-
-            tools.append(Tool(name=BrowserToolSet.name))
-            continue
-        cls = name_to_cls.get(name)
-        if cls is None:
-            continue
-        tools.append(Tool(name=cls.name))
-
+        tools.append(Tool(name=BrowserToolSet.name))
     return tools
 
 
@@ -88,12 +69,10 @@ def get_default_condenser(llm: LLM) -> CondenserBase:
 def get_default_agent(
     llm: LLM,
     cli_mode: bool = False,
-    add_security_analyzer: bool = False,
 ) -> Agent:
     tools = get_default_tools(
         # Disable browser tools in CLI mode
         enable_browser=not cli_mode,
-        model_name=llm.model,
     )
     agent = Agent(
         llm=llm,
@@ -102,6 +81,5 @@ def get_default_agent(
         condenser=get_default_condenser(
             llm=llm.model_copy(update={"usage_id": "condenser"})
         ),
-        security_analyzer=LLMSecurityAnalyzer() if add_security_analyzer else None,
     )
     return agent

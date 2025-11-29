@@ -121,28 +121,6 @@ def get_features(model: str) -> ModelFeatures:
     )
 
 
-# Default tools mapping by model pattern. Values are tool names.
-DEFAULT_TOOLS: list[tuple[str, list[str]]] = [
-    # GPT-5 family: prefer apply_patch over file_editor by default
-    ("gpt-5", ["terminal", "apply_patch", "task_tracker", "browser_use"]),
-]
-
-
-def get_default_tools_for_model(model: str | None) -> list[str]:
-    """Return the default tool names for a given model.
-
-    Falls back to the standard preset tool set when no pattern matches.
-    """
-    if not model:
-        return ["terminal", "file_editor", "task_tracker", "browser_use"]
-
-    for pattern, tools in DEFAULT_TOOLS:
-        if model_matches(model, [pattern]):
-            return tools
-    # Fallback: use standard preset tool set
-    return ["terminal", "file_editor", "task_tracker", "browser_use"]
-
-
 # Default temperature mapping.
 # Each entry: (pattern, default_temperature)
 DEFAULT_TEMPERATURE_PATTERNS: list[tuple[str, float]] = [
