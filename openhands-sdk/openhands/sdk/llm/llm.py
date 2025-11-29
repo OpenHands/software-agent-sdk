@@ -927,12 +927,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         for message in messages:
             message.cache_enabled = self.is_caching_prompt_active()
-            # Enable vision if the model supports it AND the message contains images
+            # Enable vision per-message if either the model supports it or the
+            # message actually contains images (tool observations, etc.)
             has_images = any(
-                isinstance(content, ImageContent) and content.image_urls
-                for content in message.content
+                isinstance(c, ImageContent) and getattr(c, "image_urls", None)
+                for c in message.content
             )
-            message.vision_enabled = self.vision_is_active() or has_images
+            message.vision_enabled = self.vision_is_active() or bool(has_images)
             message.function_calling_enabled = self.native_tool_calling
             model_features = get_features(self.model)
             message.force_string_serializer = (
@@ -958,20 +959,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         msgs = copy.deepcopy(messages)
 
-        # Set vision flag based on model support OR message content
+        # Determine vision per-message to avoid dropping images.
         vision_active = self.vision_is_active()
         for m in msgs:
             has_images = any(
-                isinstance(content, ImageContent) and content.image_urls
-                for content in m.content
+                isinstance(c, ImageContent) and getattr(c, "image_urls", None)
+                for c in m.content
             )
-            m.vision_enabled = vision_active or has_images
+            m.vision_enabled = vision_active or bool(has_images)
 
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
         for m in msgs:
-            # Use the message's vision_enabled flag (which now accounts for images)
             val = m.to_responses_value(vision_enabled=m.vision_enabled)
             if isinstance(val, str):
                 s = val.strip()
