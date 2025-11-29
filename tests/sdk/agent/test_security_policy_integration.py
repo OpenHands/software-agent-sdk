@@ -15,7 +15,6 @@ from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.event import ActionEvent, AgentErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
 
 def test_security_policy_in_system_message():
@@ -91,7 +90,6 @@ def test_security_policy_template_rendering():
 
 def test_llm_security_analyzer_template_kwargs():
     """Test that agent sets template_kwargs appropriately when security analyzer is LLMSecurityAnalyzer."""  # noqa: E501
-    # Create agent with LLMSecurityAnalyzer
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -99,10 +97,9 @@ def test_llm_security_analyzer_template_kwargs():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=LLMSecurityAnalyzer(),
     )
 
-    # Access the system_message property to trigger template_kwargs computation
+    # Get system message (security analyzer context is automatically included)
     system_message = agent.system_message
 
     # Verify that the security risk assessment section is included in the system prompt
@@ -118,7 +115,7 @@ def test_llm_security_analyzer_template_kwargs():
 
 def test_llm_security_analyzer_sandbox_mode():
     """Test that agent includes sandbox mode security risk assessment when cli_mode=False."""  # noqa: E501
-    # Create agent with LLMSecurityAnalyzer and cli_mode=False
+    # Create agent with cli_mode=False
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -126,12 +123,13 @@ def test_llm_security_analyzer_sandbox_mode():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=LLMSecurityAnalyzer(),
         system_prompt_kwargs={"cli_mode": False},
     )
 
-    # Access the system_message property to trigger template_kwargs computation
+    # Get system message (security analyzer context is automatically included)
     system_message = agent.system_message
+
+    print(agent.system_prompt_kwargs)
 
     # Verify that the security risk assessment section is included with sandbox mode content  # noqa: E501
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -144,7 +142,7 @@ def test_llm_security_analyzer_sandbox_mode():
     assert "**Global Rules**" in system_message
 
 
-def test_no_security_analyzer_excludes_risk_assessment():
+def test_no_security_analyzer_still_includes_risk_assessment():
     """Test that security risk assessment section is excluded when no security analyzer is set."""  # noqa: E501
     # Create agent without security analyzer
     agent = Agent(
@@ -156,19 +154,16 @@ def test_no_security_analyzer_excludes_risk_assessment():
         )
     )
 
-    # Get the system message
+    # Get the system message with no security analyzer
     system_message = agent.system_message
 
     # Verify that the security risk assessment section is NOT included
-    assert "<SECURITY_RISK_ASSESSMENT>" not in system_message
-    assert "# Security Risk Policy" not in system_message
-    assert (
-        "When using tools that support the security_risk parameter"
-        not in system_message
-    )
+    assert "<SECURITY_RISK_ASSESSMENT>" in system_message
+    assert "# Security Risk Policy" in system_message
+    assert "When using tools that support the security_risk parameter" in system_message
 
 
-def test_non_llm_security_analyzer_excludes_risk_assessment():
+def test_non_llm_security_analyzer_still_includes_risk_assessment():
     """Test that security risk assessment section is excluded when security analyzer is not LLMSecurityAnalyzer."""  # noqa: E501
     from openhands.sdk.security.analyzer import SecurityAnalyzerBase
     from openhands.sdk.security.risk import SecurityRisk
@@ -177,7 +172,7 @@ def test_non_llm_security_analyzer_excludes_risk_assessment():
         def security_risk(self, action: ActionEvent) -> SecurityRisk:
             return SecurityRisk.LOW
 
-    # Create agent with non-LLM security analyzer
+    # Create agent (security analyzer functionality has been deprecated and removed)
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -185,19 +180,15 @@ def test_non_llm_security_analyzer_excludes_risk_assessment():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=MockSecurityAnalyzer(),
     )
 
     # Get the system message
     system_message = agent.system_message
 
     # Verify that the security risk assessment section is NOT included
-    assert "<SECURITY_RISK_ASSESSMENT>" not in system_message
-    assert "# Security Risk Policy" not in system_message
-    assert (
-        "When using tools that support the security_risk parameter"
-        not in system_message
-    )
+    assert "<SECURITY_RISK_ASSESSMENT>" in system_message
+    assert "# Security Risk Policy" in system_message
+    assert "When using tools that support the security_risk parameter" in system_message
 
 
 def _tool_response(name: str, args_json: str) -> ModelResponse:

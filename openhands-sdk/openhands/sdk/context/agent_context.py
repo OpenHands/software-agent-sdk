@@ -6,6 +6,7 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.skills import (
     Skill,
     SkillKnowledge,
+    load_public_skills,
     load_user_skills,
 )
 from openhands.sdk.llm import Message, TextContent
@@ -56,6 +57,14 @@ class AgentContext(BaseModel):
             "and ~/.openhands/microagents/ (for backward compatibility). "
         ),
     )
+    load_public_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to automatically load skills from the public OpenHands "
+            "skills repository at https://github.com/OpenHands/skills. "
+            "This allows you to get the latest skills without SDK updates."
+        ),
+    )
 
     @field_validator("skills")
     @classmethod
@@ -91,6 +100,27 @@ class AgentContext(BaseModel):
         except Exception as e:
             logger.warning(f"Failed to load user skills: {str(e)}")
 
+        return self
+
+    @model_validator(mode="after")
+    def _load_public_skills(self):
+        """Load public skills from OpenHands skills repository if enabled."""
+        if not self.load_public_skills:
+            return self
+        try:
+            public_skills = load_public_skills()
+            # Merge public skills with explicit skills, avoiding duplicates
+            existing_names = {skill.name for skill in self.skills}
+            for public_skill in public_skills:
+                if public_skill.name not in existing_names:
+                    self.skills.append(public_skill)
+                else:
+                    logger.warning(
+                        f"Skipping public skill '{public_skill.name}' "
+                        f"(already in existing skills)"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to load public skills: {str(e)}")
         return self
 
     def get_system_message_suffix(self) -> str | None:

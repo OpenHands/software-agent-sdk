@@ -1,6 +1,7 @@
 import pytest
 
 from openhands.sdk.llm.utils.model_features import (
+    get_default_temperature,
     get_features,
     model_matches,
 )
@@ -29,6 +30,8 @@ def test_model_matches(name, pattern, expected):
         ("o1", True),
         ("o3-mini", True),
         ("o3", True),
+        # Anthropic Opus 4.5 (dash variant only)
+        ("claude-opus-4-5", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),
@@ -50,15 +53,12 @@ def test_reasoning_effort_support(model, expected_reasoning):
         # AWS Bedrock model ids (provider-prefixed)
         ("bedrock/anthropic.claude-3-5-sonnet-20241022-v2:0", True),
         ("bedrock/anthropic.claude-3-haiku-20240307-v1:0", True),
-        # Anthropic Haiku 4.5 variants (dot and dash)
-        ("claude-haiku-4.5", True),
+        # Anthropic 4.5 variants (dash only; official IDs use hyphens)
         ("claude-haiku-4-5", True),
-        ("us.anthropic.claude-haiku-4.5-20251001", True),
         ("us.anthropic.claude-haiku-4-5-20251001", True),
         ("bedrock/anthropic.claude-3-opus-20240229-v1:0", True),
-        # Anthropic 4.5 variants (dash and dot)
         ("claude-sonnet-4-5", True),
-        ("claude-sonnet-4.5", True),
+        ("claude-opus-4-5", True),
         # User-facing model names (no provider prefix)
         ("anthropic.claude-3-5-sonnet-20241022", True),
         ("anthropic.claude-3-haiku-20240307", True),
@@ -240,3 +240,71 @@ def test_force_string_serializer_full_model_names():
     assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
     # Groq-prefixed Kimi should force string serializer
     assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True
+
+
+@pytest.mark.parametrize(
+    "model,expected_send_reasoning",
+    [
+        ("kimi-k2-thinking", True),
+        ("kimi-k2-thinking-0905", True),
+        ("Kimi-K2-Thinking", True),  # Case insensitive
+        ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        ("kimi-k2-instruct", False),  # Different variant
+        ("gpt-4o", False),
+        ("claude-3-5-sonnet", False),
+        ("o1", False),
+        ("unknown-model", False),
+    ],
+)
+def test_send_reasoning_content_support(model, expected_send_reasoning):
+    """Test that models like kimi-k2-thinking require send_reasoning_content."""
+    features = get_features(model)
+    assert features.send_reasoning_content is expected_send_reasoning
+
+
+@pytest.mark.parametrize(
+    "model,expected_temperature",
+    [
+        # kimi-k2-thinking models should default to 1.0
+        ("kimi-k2-thinking", 1.0),
+        ("kimi-k2-thinking-0905", 1.0),
+        ("Kimi-K2-Thinking", 1.0),  # Case insensitive
+        ("moonshot/kimi-k2-thinking", 1.0),  # With provider prefix
+        ("litellm_proxy/kimi-k2-thinking", 1.0),  # With litellm proxy prefix
+        # All other models should default to 0.0
+        ("kimi-k2-instruct", 0.0),  # Different kimi variant
+        ("gpt-4", 0.0),
+        ("gpt-4o", 0.0),
+        ("gpt-4o-mini", 0.0),
+        ("claude-3-5-sonnet", 0.0),
+        ("claude-3-7-sonnet", 0.0),
+        ("gemini-1.5-pro", 0.0),
+        ("gemini-2.5-pro-experimental", 0.0),
+        ("o1", 0.0),
+        ("o1-mini", 0.0),
+        ("o3", 0.0),
+        ("deepseek-chat", 0.0),
+        ("llama-3.1-70b", 0.0),
+        ("azure/gpt-4", 0.0),
+        ("openai/gpt-4o", 0.0),
+        ("anthropic/claude-3-5-sonnet", 0.0),
+        ("unknown-model", 0.0),
+    ],
+)
+def test_get_default_temperature(model, expected_temperature):
+    """Test that get_default_temperature returns correct values for different models."""
+    assert get_default_temperature(model) == expected_temperature
+
+
+def test_get_default_temperature_fallback():
+    """Test that get_default_temperature returns 0.0 for unknown models."""
+    assert get_default_temperature("completely-unknown-model-12345") == 0.0
+    assert get_default_temperature("some-random-model") == 0.0
+
+
+def test_get_default_temperature_case_insensitive():
+    """Test that get_default_temperature is case insensitive."""
+    assert get_default_temperature("kimi-k2-thinking") == 1.0
+    assert get_default_temperature("KIMI-K2-THINKING") == 1.0
+    assert get_default_temperature("Kimi-K2-Thinking") == 1.0
+    assert get_default_temperature("KiMi-k2-ThInKiNg") == 1.0

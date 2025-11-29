@@ -18,8 +18,8 @@ import pytest
 from openhands.sdk import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.tools.terminal.definition import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
 )
 from openhands.tools.terminal.terminal import (
     TerminalCommandStatus,
@@ -44,7 +44,7 @@ def test_session_initialization(terminal_type):
             work_dir=temp_dir, terminal_type=terminal_type
         )
         session.initialize()
-        obs = session.execute(ExecuteBashAction(command="pwd"))
+        obs = session.execute(TerminalAction(command="pwd"))
 
         assert temp_dir in obs.text
         assert "[The command completed with exit code 0.]" in obs.metadata.suffix
@@ -65,10 +65,10 @@ def test_cwd_property(tmp_path, terminal_type):
     # Change directory and verify pwd updates
     random_dir = tmp_path / "random"
     random_dir.mkdir()
-    session.execute(ExecuteBashAction(command=f"cd {random_dir}"))
+    session.execute(TerminalAction(command=f"cd {random_dir}"))
 
     # For other implementations, just verify the command executed successfully
-    obs = session.execute(ExecuteBashAction(command="pwd"))
+    obs = session.execute(TerminalAction(command="pwd"))
     assert str(random_dir) in obs.text
 
     # Note: CWD tracking may vary between terminal implementations
@@ -85,7 +85,7 @@ def test_basic_command(terminal_type):
     session.initialize()
 
     # Test simple command
-    obs = session.execute(ExecuteBashAction(command="echo 'hello world'"))
+    obs = session.execute(TerminalAction(command="echo 'hello world'"))
 
     assert "hello world" in obs.text
     assert obs.metadata.suffix == "\n[The command completed with exit code 0.]"
@@ -94,7 +94,7 @@ def test_basic_command(terminal_type):
     assert session.prev_status == TerminalCommandStatus.COMPLETED
 
     # Test command with error
-    obs = session.execute(ExecuteBashAction(command="nonexistent_command"))
+    obs = session.execute(TerminalAction(command="nonexistent_command"))
 
     # Note: Exit code handling may vary between terminal implementations
     # The important thing is that the error message is captured
@@ -103,7 +103,7 @@ def test_basic_command(terminal_type):
 
     # Test multiple commands in sequence
     obs = session.execute(
-        ExecuteBashAction(command='echo "first" && echo "second" && echo "third"')
+        TerminalAction(command='echo "first" && echo "second" && echo "third"')
     )
     assert "first" in obs.text
     assert "second" in obs.text
@@ -123,11 +123,11 @@ def test_environment_variable_persistence(terminal_type):
     session.initialize()
 
     # Set an environment variable
-    obs = session.execute(ExecuteBashAction(command="export TEST_VAR='hello world'"))
+    obs = session.execute(TerminalAction(command="export TEST_VAR='hello world'"))
     assert obs.metadata.exit_code == 0
 
     # Use the environment variable in a subsequent command
-    obs = session.execute(ExecuteBashAction(command="echo $TEST_VAR"))
+    obs = session.execute(TerminalAction(command="echo $TEST_VAR"))
     assert "hello world" in obs.text
     assert obs.metadata.exit_code == 0
 
@@ -153,7 +153,7 @@ def test_environment_variable_inheritance_from_parent(terminal_type):
         session.initialize()
 
         # Check if the environment variable is available in the terminal
-        obs = session.execute(ExecuteBashAction(command=f"echo ${test_var_name}"))
+        obs = session.execute(TerminalAction(command=f"echo ${test_var_name}"))
         assert test_var_value in obs.text, (
             f"Expected '{test_var_value}' in output, but got: {obs.text}"
         )
@@ -176,7 +176,7 @@ def test_long_running_command_follow_by_execute():
 
     # Test command that produces output slowly
     obs = session.execute(
-        ExecuteBashAction(command="echo 1; sleep 3; echo 2; sleep 3; echo 3")
+        TerminalAction(command="echo 1; sleep 3; echo 2; sleep 3; echo 3")
     )
 
     assert "1" in obs.text  # First number should appear before timeout
@@ -186,7 +186,7 @@ def test_long_running_command_follow_by_execute():
     assert obs.metadata.prefix == ""
 
     # Continue watching output
-    obs = session.execute(ExecuteBashAction(command="", is_input=True))
+    obs = session.execute(TerminalAction(command="", is_input=True))
 
     assert "2" in obs.text
     assert obs.metadata.prefix == "[Below is the output of the previous command.]\n"
@@ -195,7 +195,7 @@ def test_long_running_command_follow_by_execute():
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
 
     # Test command that produces no output
-    obs = session.execute(ExecuteBashAction(command="sleep 15"))
+    obs = session.execute(TerminalAction(command="sleep 15"))
 
     assert "3" not in obs.text
     assert obs.metadata.prefix == "[Below is the output of the previous command.]\n"
@@ -206,7 +206,7 @@ def test_long_running_command_follow_by_execute():
     time.sleep(3)
 
     # Run it again, this time it should produce output and then start a new command
-    obs = session.execute(ExecuteBashAction(command="sleep 15"))
+    obs = session.execute(TerminalAction(command="sleep 15"))
 
     assert "3" in obs.text  # Should see the final output from the previous command
     assert obs.metadata.exit_code == -1  # -1 indicates new command is still running
@@ -225,7 +225,7 @@ def test_interactive_command(terminal_type):
 
     # Test interactive command with blocking=True
     obs = session.execute(
-        ExecuteBashAction(
+        TerminalAction(
             command="read -p 'Enter name: ' name && echo \"Hello $name\"",
         )
     )
@@ -237,7 +237,7 @@ def test_interactive_command(terminal_type):
     assert obs.metadata.prefix == ""
 
     # Send input
-    obs = session.execute(ExecuteBashAction(command="John", is_input=True))
+    obs = session.execute(TerminalAction(command="John", is_input=True))
 
     assert "Hello John" in obs.text
     assert obs.metadata.exit_code == 0
@@ -246,28 +246,28 @@ def test_interactive_command(terminal_type):
     assert session.prev_status == TerminalCommandStatus.COMPLETED
 
     # Test multiline command input
-    obs = session.execute(ExecuteBashAction(command="cat << EOF"))
+    obs = session.execute(TerminalAction(command="cat << EOF"))
 
     assert obs.metadata.exit_code == -1
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
     assert obs.metadata.suffix == get_no_change_timeout_suffix(3)
     assert obs.metadata.prefix == ""
 
-    obs = session.execute(ExecuteBashAction(command="line 1", is_input=True))
+    obs = session.execute(TerminalAction(command="line 1", is_input=True))
 
     assert obs.metadata.exit_code == -1
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
     assert obs.metadata.suffix == get_no_change_timeout_suffix(3)
     assert obs.metadata.prefix == "[Below is the output of the previous command.]\n"
 
-    obs = session.execute(ExecuteBashAction(command="line 2", is_input=True))
+    obs = session.execute(TerminalAction(command="line 2", is_input=True))
 
     assert obs.metadata.exit_code == -1
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
     assert obs.metadata.suffix == get_no_change_timeout_suffix(3)
     assert obs.metadata.prefix == "[Below is the output of the previous command.]\n"
 
-    obs = session.execute(ExecuteBashAction(command="EOF", is_input=True))
+    obs = session.execute(TerminalAction(command="EOF", is_input=True))
 
     assert "line 1" in obs.text and "line 2" in obs.text
     assert obs.metadata.exit_code == 0
@@ -287,7 +287,7 @@ def test_ctrl_c(terminal_type):
 
     # Start infinite loop
     obs = session.execute(
-        ExecuteBashAction(command="while true; do echo 'looping'; sleep 3; done"),
+        TerminalAction(command="while true; do echo 'looping'; sleep 3; done"),
     )
 
     assert "looping" in obs.text
@@ -297,7 +297,7 @@ def test_ctrl_c(terminal_type):
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
 
     # Send Ctrl+C
-    obs = session.execute(ExecuteBashAction(command="C-c", is_input=True))
+    obs = session.execute(TerminalAction(command="C-c", is_input=True))
 
     # Check that the process was interrupted (exit code can be 1 or 130
     # depending on the shell/OS)
@@ -318,13 +318,13 @@ def test_empty_command_error(terminal_type):
     session.initialize()
 
     # Test empty command without previous command
-    obs = session.execute(ExecuteBashAction(command=""))
+    obs = session.execute(TerminalAction(command=""))
 
     assert obs.is_error is True
     assert obs.text == "No previous running command to retrieve logs from."
     assert len(obs.to_llm_content) == 2
     assert isinstance(obs.to_llm_content[0], TextContent)
-    assert obs.to_llm_content[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
+    assert obs.to_llm_content[0].text == TerminalObservation.ERROR_MESSAGE_HEADER
     assert isinstance(obs.to_llm_content[1], TextContent)
     assert (
         "No previous running command to retrieve logs from."
@@ -353,7 +353,7 @@ def test_command_output_continuation(terminal_type):
     # Start a command that produces output slowly but with longer sleep time
     # to ensure we hit the timeout
     obs = session.execute(
-        ExecuteBashAction(command="for i in {1..5}; do echo $i; sleep 2; done")
+        TerminalAction(command="for i in {1..5}; do echo $i; sleep 2; done")
     )
 
     # Check if the command completed immediately or timed out
@@ -383,7 +383,7 @@ def test_command_output_continuation(terminal_type):
             len(numbers_seen) < 5
             or session.prev_status != TerminalCommandStatus.COMPLETED
         ):
-            obs = session.execute(ExecuteBashAction(command="", is_input=True))
+            obs = session.execute(TerminalAction(command="", is_input=True))
 
             # Check for numbers in the output
             for i in range(1, 6):
@@ -424,7 +424,7 @@ def test_long_output(terminal_type):
 
     # Generate a long output that may exceed buffer size
     obs = session.execute(
-        ExecuteBashAction(command='for i in {1..5000}; do echo "Line $i"; done')
+        TerminalAction(command='for i in {1..5000}; do echo "Line $i"; done')
     )
 
     assert "Line 1" in obs.text
@@ -443,7 +443,7 @@ def test_long_output_exceed_history_limit(terminal_type):
 
     # Generate a long output that may exceed buffer size
     obs = session.execute(
-        ExecuteBashAction(command='for i in {1..50000}; do echo "Line $i"; done')
+        TerminalAction(command='for i in {1..50000}; do echo "Line $i"; done')
     )
 
     assert "Previous command outputs are truncated" in obs.metadata.prefix
@@ -461,7 +461,7 @@ def test_multiline_command():
 
     # Test multiline command with PS2 prompt disabled
     obs = session.execute(
-        ExecuteBashAction(
+        TerminalAction(
             command="""if true; then
 echo "inside if"
 fi""",
@@ -490,21 +490,21 @@ def test_python_interactive_input(terminal_type):
     )
 
     # Start Python with the interactive script
-    obs = session.execute(ExecuteBashAction(command=f'python3 -c "{python_script}"'))
+    obs = session.execute(TerminalAction(command=f'python3 -c "{python_script}"'))
 
     assert "Enter your name:" in obs.text
     assert obs.metadata.exit_code == -1  # -1 indicates command is still running
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
 
     # Send first input (name)
-    obs = session.execute(ExecuteBashAction(command="Alice", is_input=True))
+    obs = session.execute(TerminalAction(command="Alice", is_input=True))
 
     assert "Enter your age:" in obs.text
     assert obs.metadata.exit_code == -1
     assert session.prev_status == TerminalCommandStatus.NO_CHANGE_TIMEOUT
 
     # Send second input (age)
-    obs = session.execute(ExecuteBashAction(command="25", is_input=True))
+    obs = session.execute(TerminalAction(command="25", is_input=True))
 
     assert "Hello Alice, you are 25 years old" in obs.text
     assert obs.metadata.exit_code == 0
@@ -516,7 +516,7 @@ def test_python_interactive_input(terminal_type):
 
 def _run_bash_action(session, command: str, **kwargs):
     """Helper function to execute a bash command and return the observation."""
-    action = ExecuteBashAction(command=command, **kwargs)
+    action = TerminalAction(command=command, **kwargs)
     obs = session.execute(action)
     logger.info(f"Command: {command}")
     output_text = obs.text if obs.content else ""

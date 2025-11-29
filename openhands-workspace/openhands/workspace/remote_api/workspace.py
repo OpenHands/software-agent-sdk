@@ -1,7 +1,7 @@
 """API-based remote workspace implementation using runtime API."""
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 from urllib.request import urlopen
 
 import httpx
@@ -46,6 +46,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
         description="Container image for the agent server. "
         "It must be a public image or in a registry accessible by runtime API."
     )
+    image_pull_policy: Literal["Always", "IfNotPresent", "Never"] = Field(
+        default="IfNotPresent",
+        description="Image pull policy for the API",
+    )
     session_id: str | None = Field(
         default_factory=lambda: f"agent-server-{uuid.uuid4()}",
         description="Session ID (auto-generated if None)",
@@ -66,10 +70,32 @@ class APIRemoteWorkspace(RemoteWorkspace):
     pause_on_close: bool = Field(
         default=False, description="Pause instead of stop on cleanup"
     )
+    target_type: Literal["binary", "source"] = Field(
+        default="binary",
+        description="Type of agent server target (binary or source)",
+    )
 
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
+
+    @property
+    def client(self) -> httpx.Client:
+        """Override client property to use api_timeout for HTTP requests."""
+        client = self._client
+        if client is None:
+            # Use api_timeout for the read timeout to allow longer operations
+            timeout = httpx.Timeout(
+                connect=10.0,
+                read=self.api_timeout,
+                write=10.0,
+                pool=10.0,
+            )
+            client = httpx.Client(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
+            self._client = client
+        return client
 
     @property
     def _api_headers(self):
@@ -112,8 +138,9 @@ class APIRemoteWorkspace(RemoteWorkspace):
         logger.info(f"Runtime ready at {self._runtime_url}")
         self.host = self._runtime_url.rstrip("/")
         self.api_key = self._session_api_key
-        self._client = None  # Reset HTTP client with new host and API key
-        _ = self.client  # Initialize client by accessing the property
+        # Reset HTTP client with new host and API key
+        self.reset_client()
+        # Verify client is properly initialized
         assert self.client is not None
         assert self.client.base_url == self.host
 
@@ -146,16 +173,20 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     def _start_runtime(self) -> None:
         """Start a new runtime."""
+        if self.target_type == "binary":
+            executable = "/usr/local/bin/openhands-agent-server"
+        else:
+            executable = "/agent-server/.venv/bin/python -m openhands.agent_server"
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {
             "image": self.server_image,
-            "command": "/usr/local/bin/openhands-agent-server --port 60000",
+            "command": f"{executable} --port 60000",
             "working_dir": "/",  # Match Dockerfile WORKDIR
             "environment": {},
             "session_id": self.session_id,
             "run_as_user": 10001,
             "fs_group": 10001,
-            # "environment": {"DEBUG": "true"},
+            "image_pull_policy": self.image_pull_policy,
         }
 
         if self.runtime_class:

@@ -165,7 +165,6 @@ def get_planning_agent(
         condenser=get_planning_condenser(
             llm=llm.model_copy(update={"usage_id": "planning_condenser"})
         ),
-        security_analyzer=None,
     )
 
     return agent
