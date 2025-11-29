@@ -67,7 +67,6 @@ from openhands.sdk.llm.exceptions import (
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
-    ImageContent,
     Message,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
@@ -927,13 +926,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         for message in messages:
             message.cache_enabled = self.is_caching_prompt_active()
-            # Enable vision per-message if either the model supports it or the
-            # message actually contains images (tool observations, etc.)
-            has_images = any(
-                isinstance(c, ImageContent) and getattr(c, "image_urls", None)
-                for c in message.content
-            )
-            message.vision_enabled = self.vision_is_active() or bool(has_images)
+            # Enable vision only if the model supports it. Do not infer from content
+            message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
             model_features = get_features(self.model)
             message.force_string_serializer = (
@@ -959,14 +953,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         msgs = copy.deepcopy(messages)
 
-        # Determine vision per-message to avoid dropping images.
+        # Determine vision based solely on model detection; do not infer from content.
         vision_active = self.vision_is_active()
         for m in msgs:
-            has_images = any(
-                isinstance(c, ImageContent) and getattr(c, "image_urls", None)
-                for c in m.content
-            )
-            m.vision_enabled = vision_active or bool(has_images)
+            m.vision_enabled = vision_active
 
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
