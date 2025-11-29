@@ -429,6 +429,7 @@ def test_history_expansion_disabled(terminal_type):
     session.close()
 
 
+@parametrize_terminal_types
 def test_long_output(terminal_type):
     session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
     session.initialize()
