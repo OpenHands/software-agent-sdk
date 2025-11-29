@@ -934,7 +934,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         for message in messages:
             message.cache_enabled = self.is_caching_prompt_active()
-            # Enable vision only if the model supports it. Do not infer from content
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
             model_features = get_features(self.model)
