@@ -542,6 +542,8 @@ def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_contex
     # Should contain the truncation notice
     assert "<TRUNCATED>" in claude_agent.content
     assert "exceeded the maximum length" in claude_agent.content
+    assert "claude.md" in claude_agent.content  # Should mention the filename
+    assert "You can read the full file if needed" in claude_agent.content
     
     # Should contain parts from beginning and end
     assert "Claude Instructions - Start" in claude_agent.content

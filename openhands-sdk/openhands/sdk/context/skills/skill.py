@@ -95,15 +95,15 @@ class Skill(BaseModel):
                 file_content,
                 truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
                 truncate_notice=(
-                    "\n\n<TRUNCATED><NOTE>This file exceeded the maximum length "
+                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the maximum length "
                     f"({THIRD_PARTY_SKILL_MAX_CHARS} characters) and has been truncated. "
-                    "Only the beginning and end are shown.</NOTE>\n\n"
+                    "Only the beginning and end are shown. You can read the full file if needed.</NOTE>\n\n"
                 ),
             )
             
             if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
                 logger.warning(
-                    f"Third-party skill file {path.name} ({len(file_content)} chars) "
+                    f"Third-party skill file {path} ({len(file_content)} chars) "
                     f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
                 )
             
