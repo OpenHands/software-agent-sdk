@@ -17,9 +17,14 @@ from openhands.sdk.context.skills.trigger import (
 )
 from openhands.sdk.context.skills.types import InputMetadata
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
+
+# Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
+# These files are always active, so we want to keep them reasonably sized
+THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 
 # Union type for all trigger types
 TriggerType = Annotated[
@@ -73,6 +78,8 @@ class Skill(BaseModel):
         ".cursorrules": "cursorrules",
         "agents.md": "agents",
         "agent.md": "agents",
+        "claude.md": "claude",
+        "gemini.md": "gemini",
     }
 
     @classmethod
@@ -82,9 +89,30 @@ class Skill(BaseModel):
 
         # Create Skill with None trigger (always active) if we recognized the file type
         if skill_name is not None:
+            # Truncate content if it exceeds the limit
+            # Third-party files are always active, so we want to keep them
+            # reasonably sized
+            truncated_content = maybe_truncate(
+                file_content,
+                truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
+                truncate_notice=(
+                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the "
+                    f"maximum length ({THIRD_PARTY_SKILL_MAX_CHARS} "
+                    f"characters) and has been truncated. Only the "
+                    f"beginning and end are shown. You can read the full "
+                    f"file if needed.</NOTE>\n\n"
+                ),
+            )
+
+            if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
+                logger.warning(
+                    f"Third-party skill file {path} ({len(file_content)} chars) "
+                    f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
+                )
+
             return Skill(
                 name=skill_name,
-                content=file_content,
+                content=truncated_content,
                 source=str(path),
                 trigger=None,
             )
