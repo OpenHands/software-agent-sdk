@@ -418,6 +418,18 @@ def test_command_output_continuation(terminal_type):
 
 
 @parametrize_terminal_types
+def test_history_expansion_disabled(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+
+    obs = session.execute(TerminalAction(command="echo A!B"))
+    assert "event not found" not in obs.text
+    assert "A!B" in obs.text
+
+    session.close()
+
+
+@parametrize_terminal_types
 def test_long_output(terminal_type):
     session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
     session.initialize()
