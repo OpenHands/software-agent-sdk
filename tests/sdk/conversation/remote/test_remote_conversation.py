@@ -495,6 +495,29 @@ class TestRemoteConversation:
             "Should have made a POST call to secrets endpoint"
         )
 
+        # Verify the payload format - secrets should be wrapped in StaticSecret objects
+        secrets_call = request_calls[0]
+        payload = secrets_call.kwargs.get("json", {})
+        assert "secrets" in payload
+
+        # Check that each secret is properly formatted as StaticSecret
+        sent_secrets = payload["secrets"]
+        assert "api_key" in sent_secrets
+        assert "token" in sent_secrets
+
+        # Verify StaticSecret format
+        api_key_secret = sent_secrets["api_key"]
+        assert isinstance(api_key_secret, dict)
+        assert api_key_secret["kind"] == "StaticSecret"
+        assert api_key_secret["value"] == "secret_value"
+        assert "description" in api_key_secret
+
+        token_secret = sent_secrets["token"]
+        assert isinstance(token_secret, dict)
+        assert token_secret["kind"] == "StaticSecret"
+        assert token_secret["value"] == "another_secret"
+        assert "description" in token_secret
+
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
@@ -529,6 +552,30 @@ class TestRemoteConversation:
         assert len(request_calls) >= 1, (
             "Should have made a POST call to secrets endpoint"
         )
+
+        # Verify the payload format - secrets should be wrapped in StaticSecret objects
+        secrets_call = request_calls[0]
+        payload = secrets_call.kwargs.get("json", {})
+        assert "secrets" in payload
+
+        # Check that each secret is properly formatted as StaticSecret
+        sent_secrets = payload["secrets"]
+        assert "api_key" in sent_secrets
+        assert "callable_secret" in sent_secrets
+
+        # Verify StaticSecret format for string secret
+        api_key_secret = sent_secrets["api_key"]
+        assert isinstance(api_key_secret, dict)
+        assert api_key_secret["kind"] == "StaticSecret"
+        assert api_key_secret["value"] == "string_secret"
+        assert "description" in api_key_secret
+
+        # Verify StaticSecret format for callable secret (should be resolved)
+        callable_secret = sent_secrets["callable_secret"]
+        assert isinstance(callable_secret, dict)
+        assert callable_secret["kind"] == "StaticSecret"
+        assert callable_secret["value"] == "callable_secret_value"
+        assert "description" in callable_secret
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
