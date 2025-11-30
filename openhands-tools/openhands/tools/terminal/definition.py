@@ -1,6 +1,7 @@
 """Execute bash tool implementation."""
 
 import os
+import platform
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
@@ -188,7 +189,7 @@ class TerminalObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.
+TOOL_DESCRIPTION_FOR_UNIX = """Execute a bash command in the terminal within a persistent shell session.
 
 
 ### Command Execution
@@ -216,6 +217,39 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 ### Terminal Reset
 * Terminal reset: If the terminal becomes unresponsive, you can set the "reset" parameter to `true` to create a new terminal session. This will terminate the current session and start fresh.
 * Warning: Resetting the terminal will lose all previously set environment variables, working directory changes, and any running processes. Use this only when the terminal stops responding to commands.
+"""  # noqa
+
+
+TOOL_DESCRIPTION_FOR_WINDOWS = """Execute a PowerShell command in the terminal within a persistent shell session.
+
+
+### Command Execution
+* One command at a time: You can only execute one PowerShell command at a time. If you need to run multiple commands sequentially, use `;` to chain them together.
+* Bash compatibility: Basic bash commands like `&&` and `||` are automatically converted to PowerShell `;` separator, though conditional execution semantics are not preserved.
+* Persistent session: Commands execute in a persistent PowerShell session where environment variables, modules, and working directory persist between commands.
+* Soft timeout: Commands have a soft timeout of 10 seconds, once that's reached, you have the option to continue or interrupt the command (see section below for details)
+* PowerShell syntax: Use native PowerShell cmdlets (e.g., `Get-ChildItem`, `Set-Location`) or common aliases (e.g., `ls`, `cd`, `dir`) for best results.
+
+### Long-running Commands
+* For commands that may run indefinitely, run them in the background using PowerShell jobs, e.g. `Start-Job -ScriptBlock { python app.py } | Out-File server.log`.
+* For commands that may run for a long time (e.g. installation or testing commands), or commands that run for a fixed amount of time (e.g. Start-Sleep), you should set the "timeout" parameter of your function call to an appropriate value.
+* If a command returns exit code `-1`, this means the process hit the soft timeout and is not yet finished. By setting `is_input` to `true`, you can:
+  - Send empty `command` to retrieve additional logs
+  - Send text (set `command` to the text) to STDIN of the running process
+  - Send control commands like `C-c` (Ctrl+C) to interrupt the process
+  - If you do C-c, you can re-start the process with a longer "timeout" parameter to let it run to completion
+
+### Best Practices
+* Directory verification: Before creating new directories or files, first verify the parent directory exists and is the correct location (use `Test-Path`).
+* Directory management: Try to maintain working directory by using absolute paths and avoiding excessive use of `cd` or `Set-Location`.
+* Path separators: PowerShell handles both forward slashes `/` and backslashes `\\` in paths, but backslashes are native to Windows.
+
+### Output Handling
+* Output truncation: If the output exceeds a maximum length, it will be truncated before being returned.
+
+### Terminal Reset
+* Terminal reset: If the terminal becomes unresponsive, you can set the "reset" parameter to `true` to create a new PowerShell session. This will terminate the current session and start fresh.
+* Warning: Resetting the terminal will lose all previously loaded modules, environment variables, working directory changes, and any running processes. Use this only when the terminal stops responding to commands.
 """  # noqa
 
 
@@ -265,12 +299,17 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 shell_path=shell_path,
             )
 
+        if platform.system() == "Windows":
+            tool_description = TOOL_DESCRIPTION_FOR_WINDOWS
+        else:
+            tool_description = TOOL_DESCRIPTION_FOR_UNIX
+
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
                 action_type=TerminalAction,
                 observation_type=TerminalObservation,
-                description=TOOL_DESCRIPTION,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="terminal",
                     readOnlyHint=False,
