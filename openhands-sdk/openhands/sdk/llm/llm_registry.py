@@ -82,7 +82,7 @@ class LLMRegistry:
         if usage_id in self._usage_to_llm:
             message = (
                 f"Usage ID '{usage_id}' already exists in registry. "
-                "Use a different usage_id on the LLM (previously service_id) or "
+                "Use a different usage_id on the LLM or "
                 "call get() to retrieve the existing LLM."
             )
             raise ValueError(message)

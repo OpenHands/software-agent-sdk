@@ -215,6 +215,8 @@ def test_supports_stop_words_false_models(model):
 @pytest.mark.parametrize(
     "model,expected_responses",
     [
+        ("gpt-5.1", True),
+        ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
         ("openai/gpt-5-mini", True),
         ("codex-mini-latest", True),
@@ -235,6 +237,33 @@ def test_force_string_serializer_full_model_names():
     should only match when provider-prefixed with groq/.
     """
     assert get_features("DeepSeek-V3.2-Exp").force_string_serializer is True
+    assert get_features("GLM-4.5").force_string_serializer is True
+    # Provider-agnostic Kimi should not force string serializer
+    assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False
+    # Groq-prefixed Kimi should force string serializer
+    assert get_features("groq/kimi-k2-instruct-0905").force_string_serializer is True
+
+
+@pytest.mark.parametrize(
+    "model,expected_retention",
+    [
+        ("gpt-5.1", True),
+        ("openai/gpt-5.1-codex-mini", True),
+        ("gpt-5", True),
+        ("openai/gpt-5-mini", True),
+        ("gpt-4o", False),
+        ("openai/gpt-4.1", True),
+        ("litellm_proxy/gpt-4.1", True),
+        ("litellm_proxy/openai/gpt-4.1", True),
+        ("litellm_proxy/openai/gpt-5", True),
+        ("litellm_proxy/openai/gpt-5-mini", True),
+    ],
+)
+def test_prompt_cache_retention_support(model, expected_retention):
+    features = get_features(model)
+    assert features.supports_prompt_cache_retention is expected_retention
+
+    # piggyback on this test to verify that force_string_serializer is correctly set
     assert get_features("GLM-4.5").force_string_serializer is True
     # Provider-agnostic Kimi should not force string serializer
     assert get_features("Kimi K2-Instruct-0905").force_string_serializer is False

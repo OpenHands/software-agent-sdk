@@ -45,8 +45,8 @@ def connected_registry_and_stats(mock_llm_registry, conversation_stats):
 
 def test_get_combined_metrics(conversation_stats):
     """Test that combined metrics are calculated correctly."""
-    # Add multiple services with metrics
-    service1 = "service1"
+    # Add multiple usage groups with metrics
+    usage1 = "usage1"
     metrics1 = Metrics(model_name="gpt-4")
     metrics1.add_cost(0.05)
     metrics1.add_token_usage(
@@ -58,7 +58,7 @@ def test_get_combined_metrics(conversation_stats):
         response_id="resp1",
     )
 
-    service2 = "service2"
+    usage2 = "usage2"
     metrics2 = Metrics(model_name="gpt-3.5")
     metrics2.add_cost(0.02)
     metrics2.add_token_usage(
@@ -70,8 +70,8 @@ def test_get_combined_metrics(conversation_stats):
         response_id="resp2",
     )
 
-    conversation_stats.usage_to_metrics[service1] = metrics1
-    conversation_stats.usage_to_metrics[service2] = metrics2
+    conversation_stats.usage_to_metrics[usage1] = metrics1
+    conversation_stats.usage_to_metrics[usage2] = metrics2
 
     # Get combined metrics
     combined = conversation_stats.get_combined_metrics()
@@ -119,30 +119,30 @@ def test_register_llm_with_new_usage(conversation_stats):
             retry_max_wait=2,
         )
 
-        # Create a registry event
-        service_id = "new-service"
+        # Create a registry event for this usage
+        usage_id = "new-service"
         event = RegistryEvent(llm=llm)
 
         # Register the LLM
         conversation_stats.register_llm(event)
 
-        # Verify the service was registered
-        assert service_id in conversation_stats.usage_to_metrics
-        assert conversation_stats.usage_to_metrics[service_id] is llm.metrics
+        # Verify the usage was registered
+        assert usage_id in conversation_stats.usage_to_metrics
+        assert conversation_stats.usage_to_metrics[usage_id] is llm.metrics
 
 
 def test_register_llm_with_restored_metrics(conversation_stats):
     """Test registering an LLM usage with restored metrics."""
     # Create restored metrics
-    service_id = "restored-service"
+    usage_id = "restored-service"
     restored_metrics = Metrics(model_name="gpt-4")
     restored_metrics.add_cost(0.1)
-    conversation_stats.usage_to_metrics = {service_id: restored_metrics}
+    conversation_stats.usage_to_metrics = {usage_id: restored_metrics}
 
     # Patch the LLM class to avoid actual API calls
     with patch("openhands.sdk.llm.llm.litellm_completion"):
         llm = LLM(
-            usage_id=service_id,
+            usage_id=usage_id,
             model="gpt-4o",
             api_key=SecretStr("test_key"),
             num_retries=2,
@@ -156,13 +156,13 @@ def test_register_llm_with_restored_metrics(conversation_stats):
         # Register the LLM
         conversation_stats.register_llm(event)
 
-        # Verify the service was registered with restored metrics
-        assert service_id in conversation_stats.usage_to_metrics
-        assert conversation_stats.usage_to_metrics[service_id] is llm.metrics
+        # Verify the usage was registered with restored metrics
+        assert usage_id in conversation_stats.usage_to_metrics
+        assert conversation_stats.usage_to_metrics[usage_id] is llm.metrics
         assert llm.metrics is not None
         assert llm.metrics.accumulated_cost == 0.1  # Restored cost
 
-        assert service_id in conversation_stats._restored_usage_ids
+        assert usage_id in conversation_stats._restored_usage_ids
 
 
 def test_llm_registry_notifications(connected_registry_and_stats):
@@ -170,11 +170,11 @@ def test_llm_registry_notifications(connected_registry_and_stats):
     mock_llm_registry, conversation_stats = connected_registry_and_stats
 
     # Create a new LLM through the registry
-    service_id = "test-service"
+    usage_id = "test-usage"
 
     # Create LLM directly
     llm = LLM(
-        usage_id=service_id,
+        usage_id=usage_id,
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -185,9 +185,9 @@ def test_llm_registry_notifications(connected_registry_and_stats):
     # Add LLM to registry (this should trigger the notification)
     mock_llm_registry.add(llm)
 
-    # Verify the service was registered in conversation stats
-    assert service_id in conversation_stats.usage_to_metrics
-    assert conversation_stats.usage_to_metrics[service_id] is llm.metrics
+    # Verify the usage was registered in conversation stats
+    assert usage_id in conversation_stats.usage_to_metrics
+    assert conversation_stats.usage_to_metrics[usage_id] is llm.metrics
 
     # Add some metrics to the LLM
     assert llm.metrics is not None
@@ -202,16 +202,16 @@ def test_llm_registry_notifications(connected_registry_and_stats):
     )
 
     # Verify the metrics are reflected in conversation stats
-    assert conversation_stats.usage_to_metrics[service_id].accumulated_cost == 0.05
+    assert conversation_stats.usage_to_metrics[usage_id].accumulated_cost == 0.05
     assert (
         conversation_stats.usage_to_metrics[
-            service_id
+            usage_id
         ].accumulated_token_usage.prompt_tokens
         == 100
     )
     assert (
         conversation_stats.usage_to_metrics[
-            service_id
+            usage_id
         ].accumulated_token_usage.completion_tokens
         == 50
     )
@@ -228,12 +228,12 @@ def test_multiple_llm_usages(connected_registry_and_stats):
     mock_llm_registry, conversation_stats = connected_registry_and_stats
 
     # Create multiple LLMs through the registry
-    service1 = "service1"
-    service2 = "service2"
+    usage1 = "usage1"
+    usage2 = "usage2"
 
     # Create LLMs directly
     llm1 = LLM(
-        usage_id=service1,
+        usage_id=usage1,
         model="gpt-4o",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -242,7 +242,7 @@ def test_multiple_llm_usages(connected_registry_and_stats):
     )
 
     llm2 = LLM(
-        usage_id=service2,
+        usage_id=usage2,
         model="gpt-3.5-turbo",
         api_key=SecretStr("test_key"),
         num_retries=2,
@@ -277,13 +277,14 @@ def test_multiple_llm_usages(connected_registry_and_stats):
         response_id="resp2",
     )
 
-    # Verify services were registered in conversation stats
-    assert service1 in conversation_stats.usage_to_metrics
-    assert service2 in conversation_stats.usage_to_metrics
+    # Verify usages were registered in conversation stats
+    assert usage1 in conversation_stats.usage_to_metrics
+    assert usage2 in conversation_stats.usage_to_metrics
+    assert usage2 in conversation_stats.usage_to_metrics
 
     # Verify individual metrics
-    assert conversation_stats.usage_to_metrics[service1].accumulated_cost == 0.05
-    assert conversation_stats.usage_to_metrics[service2].accumulated_cost == 0.02
+    assert conversation_stats.usage_to_metrics[usage1].accumulated_cost == 0.05
+    assert conversation_stats.usage_to_metrics[usage2].accumulated_cost == 0.02
 
     # Get combined metrics and verify
     combined = conversation_stats.get_combined_metrics()
@@ -298,12 +299,12 @@ def test_multiple_llm_usages(connected_registry_and_stats):
 def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
     """
     Test that reproduces the bug where del self.restored_metrics
-    deletes entire dict instead of specific service.
+    deletes entire dict instead of specific usage.
     """
 
     # Create restored metrics for multiple usages
-    service_id_1 = "service-1"
-    service_id_2 = "service-2"
+    usage_id_1 = "usage-1"
+    usage_id_2 = "usage-2"
 
     restored_metrics_1 = Metrics(model_name="gpt-4")
     restored_metrics_1.add_cost(0.1)
@@ -311,17 +312,17 @@ def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
     restored_metrics_2 = Metrics(model_name="gpt-3.5")
     restored_metrics_2.add_cost(0.05)
 
-    # Set up restored metrics for both services
+    # Set up restored metrics for both usages
     conversation_stats.usage_to_metrics = {
-        service_id_1: restored_metrics_1,
-        service_id_2: restored_metrics_2,
+        usage_id_1: restored_metrics_1,
+        usage_id_2: restored_metrics_2,
     }
 
     # Patch the LLM class to avoid actual API calls
     with patch("openhands.sdk.llm.llm.litellm_completion"):
         # Register first LLM
         llm_1 = LLM(
-            usage_id=service_id_1,
+            usage_id=usage_id_1,
             model="gpt-4o",
             api_key=SecretStr("test_key"),
             num_retries=2,
@@ -331,18 +332,18 @@ def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
         event_1 = RegistryEvent(llm=llm_1)
         conversation_stats.register_llm(event_1)
 
-        # Verify first service was registered with restored metrics
-        assert service_id_1 in conversation_stats.usage_to_metrics
+        # Verify first usage was registered with restored metrics
+        assert usage_id_1 in conversation_stats.usage_to_metrics
         assert llm_1.metrics is not None
         assert llm_1.metrics.accumulated_cost == 0.1
 
-        # After registering first service,
-        # restored_metrics should still not contain service_id_2
-        assert service_id_2 not in conversation_stats._restored_usage_ids
+        # After registering first usage,
+        # restored_metrics should still not contain usage_id_2
+        assert usage_id_2 not in conversation_stats._restored_usage_ids
 
         # Register second LLM - this should also work with restored metrics
         llm_2 = LLM(
-            usage_id=service_id_2,
+            usage_id=usage_id_2,
             model="gpt-3.5-turbo",
             api_key=SecretStr("test_key"),
             num_retries=2,
@@ -352,11 +353,11 @@ def test_register_llm_with_multiple_restored_usage_ids(conversation_stats):
         event_2 = RegistryEvent(llm=llm_2)
         conversation_stats.register_llm(event_2)
 
-        # Verify second service was registered with restored metrics
-        assert service_id_2 in conversation_stats.usage_to_metrics
+        # Verify second usage was registered with restored metrics
+        assert usage_id_2 in conversation_stats.usage_to_metrics
         assert llm_2.metrics is not None
         assert llm_2.metrics.accumulated_cost == 0.05
 
-        # After both services are marked restored
-        assert service_id_2 in conversation_stats._restored_usage_ids
+        # After both usages are marked restored
+        assert usage_id_2 in conversation_stats._restored_usage_ids
         assert len(conversation_stats._restored_usage_ids) == 2
