@@ -4,12 +4,13 @@ from fastapi import APIRouter
 
 from openhands.sdk.tool.registry import list_registered_tools
 from openhands.tools.preset.default import register_default_tools
-from openhands.tools.preset.planning import register_planning_tools
 
 
 tool_router = APIRouter(prefix="/tools", tags=["Tools"])
+# Register default tools for backward compatibility
+# Planning tools and other custom tools are now dynamically registered
+# when creating a RemoteConversation
 register_default_tools(enable_browser=True)
-register_planning_tools()
 
 
 # Tool listing
