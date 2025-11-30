@@ -26,18 +26,16 @@ import threading
 import tomllib
 from contextlib import chdir
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.logger import IN_CI, get_logger, rolling_log_view
+from openhands.sdk.workspace import PlatformType, TargetType
 
 
 logger = get_logger(__name__)
 
 VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
-TargetType = Literal["binary", "binary-minimal", "source", "source-minimal"]
-PlatformType = Literal["linux/amd64", "linux/arm64"]
 
 
 # --- helpers ---
