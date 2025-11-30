@@ -227,9 +227,6 @@ class Agent(AgentBase):
             isinstance(c, TextContent) and c.text.strip() for c in message.content
         )
 
-        did_emit_message = False
-        handled_tool_calls = False
-
         if message.tool_calls and len(message.tool_calls) > 0:
             if not all(isinstance(c, TextContent) for c in message.content):
                 logger.warning(
@@ -264,24 +261,47 @@ class Agent(AgentBase):
 
             # Handle confirmation mode - exit early if actions need confirmation
             if self._requires_user_confirmation(state, action_events):
+                # Emit VLLM token ids if available before returning
+                if (
+                    "return_token_ids" in self.llm.litellm_extra_body
+                ) and self.llm.litellm_extra_body["return_token_ids"]:
+                    token_event = TokenEvent(
+                        source="agent",
+                        prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
+                        response_token_ids=llm_response.raw_response["choices"][0][
+                            "provider_specific_fields"
+                        ]["token_ids"],
+                    )
+                    on_event(token_event)
                 return
 
             if action_events:
                 self._execute_actions(conversation, action_events, on_event)
-                handled_tool_calls = True
+
+            # Emit VLLM token ids if available before returning
+            if (
+                "return_token_ids" in self.llm.litellm_extra_body
+            ) and self.llm.litellm_extra_body["return_token_ids"]:
+                token_event = TokenEvent(
+                    source="agent",
+                    prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
+                    response_token_ids=llm_response.raw_response["choices"][0][
+                        "provider_specific_fields"
+                    ]["token_ids"],
+                )
+                on_event(token_event)
+            return
 
         # No tool calls - emit message event for reasoning or content responses
-        if not handled_tool_calls:
-            if not has_reasoning and not has_content:
-                logger.warning("LLM produced empty response - continuing agent loop")
+        if not has_reasoning and not has_content:
+            logger.warning("LLM produced empty response - continuing agent loop")
 
-            msg_event = MessageEvent(
-                source="agent",
-                llm_message=message,
-                llm_response_id=llm_response.id,
-            )
-            on_event(msg_event)
-            did_emit_message = True
+        msg_event = MessageEvent(
+            source="agent",
+            llm_message=message,
+            llm_response_id=llm_response.id,
+        )
+        on_event(msg_event)
 
         # If using VLLM, we can get the raw prompt and response tokens
         # that can be useful for RL training.
@@ -299,7 +319,7 @@ class Agent(AgentBase):
 
         # Finish conversation if LLM produced content (awaits user input)
         # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
-        if did_emit_message and has_content:
+        if has_content:
             logger.debug("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
