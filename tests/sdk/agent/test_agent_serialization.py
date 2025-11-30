@@ -131,6 +131,82 @@ def test_agent_supports_nested_polymorphic_json_serialization() -> None:
     assert deserialized_container.agents[1].model_dump() == agent2.model_dump()
 
 
+def test_agent_system_message_sets_is_gpt5_context_when_gpt5(tmp_path, monkeypatch):
+    """AgentBase.system_message should render default template with is_gpt5=True.
+
+    We no longer switch templates; instead, the default template can conditionally
+    include GPT-5 specific sections via a Jinja variable `is_gpt5`.
+    """
+
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    default_template = prompts_dir / "system_prompt.j2"
+
+    # Use a minimal template that reflects the is_gpt5 flag
+    default_template.write_text(
+        "{{ 'IS_GPT5' if is_gpt5 else 'NOT_GPT5' }}", encoding="utf-8"
+    )
+
+    def _prompt_dir(self) -> str:  # type: ignore[override]
+        return str(prompts_dir)
+
+    monkeypatch.setattr(Agent, "prompt_dir", property(_prompt_dir))
+
+    llm = LLM(model="gpt-5-mini", usage_id="test-gpt5-agent")
+    agent = Agent(llm=llm, tools=[])
+
+    assert agent.system_message == "IS_GPT5"
+
+
+def test_agent_system_message_uses_default_prompt_when_not_gpt5(tmp_path, monkeypatch):
+    """Non-GPT-5 models should render with is_gpt5=False in default template."""
+
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    default_template = prompts_dir / "system_prompt.j2"
+
+    default_template.write_text(
+        "{{ 'IS_GPT5' if is_gpt5 else 'NOT_GPT5' }}", encoding="utf-8"
+    )
+
+    def _prompt_dir(self) -> str:  # type: ignore[override]
+        return str(prompts_dir)
+
+    monkeypatch.setattr(Agent, "prompt_dir", property(_prompt_dir))
+
+    llm = LLM(model="gpt-4o", usage_id="test-gpt4-agent")
+    agent = Agent(llm=llm, tools=[])
+
+    assert agent.system_message == "NOT_GPT5"
+
+
+def test_agent_system_message_respects_custom_prompt_filename(tmp_path, monkeypatch):
+    """If a custom prompt filename is set, render it with is_gpt5 in context."""
+
+    prompts_dir = tmp_path / "prompts"
+    prompts_dir.mkdir()
+    custom_template = prompts_dir / "custom_prompt.j2"
+
+    # The custom template should still get the flag in context
+    custom_template.write_text(
+        "CUSTOM_{{ 'GPT5' if is_gpt5 else 'OTHER' }}", encoding="utf-8"
+    )
+
+    def _prompt_dir(self) -> str:  # type: ignore[override]
+        return str(prompts_dir)
+
+    monkeypatch.setattr(Agent, "prompt_dir", property(_prompt_dir))
+
+    llm = LLM(model="gpt-5-mini", usage_id="test-gpt5-custom-prompt")
+    agent = Agent(
+        llm=llm,
+        tools=[],
+        system_prompt_filename="custom_prompt.j2",
+    )
+
+    assert agent.system_message == "CUSTOM_GPT5"
+
+
 def test_agent_model_validate_json_dict() -> None:
     """Test that Agent.model_validate works with dict from JSON."""
     # Create agent
