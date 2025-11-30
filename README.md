@@ -7,9 +7,12 @@
 
 
 <div align="center">
-  <a href="https://docs.openhands.dev/sdk"><img src="https://img.shields.io/badge/Documentation-000?logo=googledocs&logoColor=FFE165&style=for-the-badge" alt="Check out the documentation"></a>
   <a href="https://github.com/OpenHands/software-agent-sdk/blob/main/LICENSE"><img src="https://img.shields.io/github/license/OpenHands/software-agent-sdk?style=for-the-badge&color=blue" alt="MIT License"></a>
   <a href="https://all-hands.dev/joinslack"><img src="https://img.shields.io/badge/Slack-Join%20Us-red?logo=slack&logoColor=white&style=for-the-badge" alt="Join our Slack community"></a>
+  <br>
+  <a href="https://docs.openhands.dev/sdk"><img src="https://img.shields.io/badge/Documentation-000?logo=googledocs&logoColor=FFE165&style=for-the-badge" alt="Check out the documentation"></a>
+  <a href="https://arxiv.org/abs/2511.03690"><img src="https://img.shields.io/badge/Paper-000?logoColor=FFE165&logo=arxiv&style=for-the-badge" alt="Tech Report"></a>
+  <a href="https://docs.google.com/spreadsheets/d/1wOUdFCMyY6Nt0AIqF705KN4JKOWgeI4wUGUP60krXXs/edit?gid=811504672#gid=811504672"><img src="https://img.shields.io/badge/SWEBench-72.8-000?logoColor=FFE165&style=for-the-badge" alt="Benchmark Score"></a>
   <br>
   <!-- Keep these links. Translations will automatically update with the README. -->
   <a href="https://www.readme-i18n.com/OpenHands/software-agent-sdk?lang=de">Deutsch</a> |
@@ -24,36 +27,54 @@
   <hr>
 </div>
 
-The OpenHands SDK allows you to build applications with agents that write software. This SDK also powers [OpenHands](https://github.com/OpenHands/OpenHands), an all-batteries-included coding agent that you can access through a GUI, CLI, or API.
+The OpenHands Software Agent SDK is a set of Python and REST APIs for **building agents that work with code**.
 
-## Features
+You can use the OpenHands Software Agent SDK for:
+* One-off tasks, like building a README for your repo
+* Routine maintenance tasks, like updating dependencies
+* Major tasks that involve multiple agents, like refactors and rewrites
 
-- **Single Python API**: Unified interface for building coding agents with minimal boilerplate
-- **Pre-defined Tools**: Built-in tools for bash commands, file editing, task tracking, and web browsing
-- **REST-based Agent Server**: Deploy agents as scalable web services with WebSocket support for real-time interactions
+Importantly, agents can either use the local machine as their workspace, or run inside ephemeral workspaces
+(e.g. in Docker or Kubernetes) using the Agent Server.
 
-## Why OpenHands Agent SDK?
+You can even use the SDK to build new developer experiences: it’s the engine behind the
+[OpenHands CLI](https://github.com/OpenHands/OpenHands-CLI) and [OpenHands Cloud](https://github.com/OpenHands/OpenHands).
 
-- **Emphasis on coding**: Purpose-built for software development tasks with specialized tools and workflows
-- **State-of-the-Art Performance**: Powered by advanced LLMs and optimized for real-world coding scenarios
-- **Free and Open Source**: MIT licensed with an active community and transparent development
+Get started with some [examples](https://docs.openhands.dev/sdk/guides/hello-world) or [check out the docs](https://docs.openhands.dev/sdk) to learn more.
 
 ## Quick Start
 
 Here's what building with the SDK looks like:
 
 ```python
-from openhands.sdk import LLM, Conversation
-from openhands.tools.preset.default import get_default_agent
+import os
 
-# Configure LLM and create agent
-llm = LLM(model="openhands/claude-sonnet-4-5-20250929", api_key=api_key)
-agent = get_default_agent(llm=llm)
+from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
-# Start a conversation
-conversation = Conversation(agent=agent, workspace="/path/to/project")
-conversation.send_message("Write 3 facts about this project into FACTS.txt.")
+
+llm = LLM(
+    model="anthropic/claude-sonnet-4-5-20250929",
+    api_key=os.getenv("LLM_API_KEY"),
+)
+
+agent = Agent(
+    llm=llm,
+    tools=[
+        Tool(name=TerminalTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
+    ],
+)
+
+cwd = os.getcwd()
+conversation = Conversation(agent=agent, workspace=cwd)
+
+conversation.send_message("Write 3 facts about the current project into FACTS.txt.")
 conversation.run()
+print("All done!")
 ```
 
 For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).
@@ -87,3 +108,17 @@ For development setup, testing, and contribution guidelines, see [DEVELOPMENT.md
 - [Join Slack](https://openhands.dev/joinslack) - Connect with the OpenHands community
 - [GitHub Repository](https://github.com/OpenHands/agent-sdk) - Source code and issues
 - [Documentation](https://docs.openhands.dev/sdk) - Complete documentation
+
+## Cite
+
+```
+@misc{wang2025openhandssoftwareagentsdk,
+      title={The OpenHands Software Agent SDK: A Composable and Extensible Foundation for Production Agents}, 
+      author={Xingyao Wang and Simon Rosenberg and Juan Michelini and Calvin Smith and Hoang Tran and Engel Nyst and Rohit Malhotra and Xuhui Zhou and Valerie Chen and Robert Brennan and Graham Neubig},
+      year={2025},
+      eprint={2511.03690},
+      archivePrefix={arXiv},
+      primaryClass={cs.SE},
+      url={https://arxiv.org/abs/2511.03690}, 
+}
+```

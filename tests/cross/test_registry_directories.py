@@ -10,14 +10,17 @@ from pydantic import SecretStr
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation import Conversation, LocalConversation
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.conversation.types import ConversationCallbackType
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.event.llm_convertible import SystemPromptEvent
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.tool.registry import resolve_tool
 from openhands.sdk.tool.spec import Tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
 
 class DummyAgent(AgentBase):
@@ -38,7 +41,10 @@ class DummyAgent(AgentBase):
         on_event(event)
 
     def step(
-        self, conversation: LocalConversation, on_event: ConversationCallbackType
+        self,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         pass
 
@@ -54,7 +60,7 @@ def register_tools():
     """Register tools for testing."""
     from openhands.sdk.tool import register_tool
 
-    register_tool("BashTool", BashTool)
+    register_tool("TerminalTool", TerminalTool)
     register_tool("FileEditorTool", FileEditorTool)
     register_tool("TaskTrackerTool", TaskTrackerTool)
 
@@ -73,8 +79,8 @@ def test_resolve_tool_with_conversation_directories(test_agent):
             workspace=working_dir,
         )
 
-        # Test BashTool
-        bash_tool = Tool(name="BashTool")
+        # Test TerminalTool
+        bash_tool = Tool(name="TerminalTool")
         bash_tools = resolve_tool(bash_tool, conv_state=conversation._state)
         assert len(bash_tools) == 1
         # Type ignore needed for test-specific executor access

@@ -9,6 +9,8 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    AskAgentRequest,
+    AskAgentResponse,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -16,13 +18,14 @@ from openhands.agent_server.models import (
     GenerateTitleResponse,
     SendMessageRequest,
     SetConfirmationPolicyRequest,
+    SetSecurityAnalyzerRequest,
     StartConversationRequest,
     Success,
     UpdateConversationRequest,
     UpdateSecretsRequest,
 )
 from openhands.sdk import LLM, Agent, TextContent, Tool
-from openhands.sdk.conversation.state import AgentExecutionStatus
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -39,7 +42,7 @@ START_CONVERSATION_EXAMPLES = [
                 api_key=SecretStr("your-api-key-here"),
             ),
             tools=[
-                Tool(name="BashTool"),
+                Tool(name="TerminalTool"),
                 Tool(name="FileEditorTool"),
                 Tool(name="TaskTrackerTool"),
             ],
@@ -66,8 +69,8 @@ async def search_conversations(
         Query(title="The max number of results in the page", gt=0, lte=100),
     ] = 100,
     status: Annotated[
-        AgentExecutionStatus | None,
-        Query(title="Optional filter by agent execution status"),
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
     ] = None,
     sort_order: Annotated[
         ConversationSortOrder,
@@ -86,8 +89,8 @@ async def search_conversations(
 @conversation_router.get("/count")
 async def count_conversations(
     status: Annotated[
-        AgentExecutionStatus | None,
-        Query(title="Optional filter by agent execution status"),
+        ConversationExecutionStatus | None,
+        Query(title="Optional filter by conversation execution status"),
     ] = None,
     conversation_service: ConversationService = Depends(get_conversation_service),
 ) -> int:
@@ -237,6 +240,23 @@ async def set_conversation_confirmation_policy(
     return Success()
 
 
+@conversation_router.post(
+    "/{conversation_id}/security_analyzer",
+    responses={404: {"description": "Item not found"}},
+)
+async def set_conversation_security_analyzer(
+    conversation_id: UUID,
+    request: SetSecurityAnalyzerRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Set the security analyzer for a conversation."""
+    event_service = await conversation_service.get_event_service(conversation_id)
+    if event_service is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND)
+    await event_service.set_security_analyzer(request.security_analyzer)
+    return Success()
+
+
 @conversation_router.patch(
     "/{conversation_id}", responses={404: {"description": "Item not found"}}
 )
@@ -271,3 +291,19 @@ async def generate_conversation_title(
     if title is None:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
     return GenerateTitleResponse(title=title)
+
+
+@conversation_router.post(
+    "/{conversation_id}/ask_agent",
+    responses={404: {"description": "Item not found"}},
+)
+async def ask_agent(
+    conversation_id: UUID,
+    request: AskAgentRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> AskAgentResponse:
+    """Ask the agent a simple question without affecting conversation state."""
+    response = await conversation_service.ask_agent(conversation_id, request.question)
+    if response is None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return AskAgentResponse(response=response)

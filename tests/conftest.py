@@ -1,12 +1,60 @@
 """Common test fixtures and utilities."""
 
+import uuid
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
 from pydantic import SecretStr
 
+from openhands.sdk import Agent
+from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolExecutor
+from openhands.sdk.workspace import LocalWorkspace
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("examples")
+    group.addoption(
+        "--run-examples",
+        action="store_true",
+        default=False,
+        help="Execute example scripts. Disabled by default for faster test runs.",
+    )
+    group.addoption(
+        "--examples-results-dir",
+        action="store",
+        default=None,
+        help=(
+            "Directory to store per-example JSON results "
+            "(defaults to .example-test-results)."
+        ),
+    )
+
+
+@pytest.fixture(scope="session")
+def examples_enabled(pytestconfig: pytest.Config) -> bool:
+    return bool(pytestconfig.getoption("--run-examples"))
+
+
+@pytest.fixture(scope="session")
+def examples_results_dir(pytestconfig: pytest.Config) -> Path:
+    configured = pytestconfig.getoption("--examples-results-dir")
+    result_dir = (
+        Path(configured)
+        if configured is not None
+        else REPO_ROOT / ".example-test-results"
+    )
+    result_dir.mkdir(parents=True, exist_ok=True)
+    if not hasattr(pytestconfig, "workerinput"):
+        for existing in result_dir.glob("*.json"):
+            existing.unlink()
+    return result_dir
 
 
 @pytest.fixture
@@ -20,6 +68,26 @@ def mock_llm():
         retry_min_wait=1,
         retry_max_wait=2,
     )
+
+
+@pytest.fixture
+def mock_conversation_state(mock_llm, tmp_path):
+    """Create a standard mock ConversationState for testing."""
+    agent = Agent(llm=mock_llm)
+    workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+    state = ConversationState(
+        id=uuid.uuid4(),
+        workspace=workspace,
+        persistence_dir=str(tmp_path / ".state"),
+        agent=agent,
+    )
+
+    # Set up filestore for state persistence
+    state._fs = InMemoryFileStore()
+    state._autosave_enabled = False
+
+    return state
 
 
 @pytest.fixture

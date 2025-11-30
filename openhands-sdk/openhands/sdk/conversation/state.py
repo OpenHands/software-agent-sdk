@@ -17,6 +17,7 @@ from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObserva
 from openhands.sdk.event.base import Event
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -28,18 +29,18 @@ from openhands.sdk.workspace.base import BaseWorkspace
 logger = get_logger(__name__)
 
 
-class AgentExecutionStatus(str, Enum):
-    """Enum representing the current execution state of the agent."""
+class ConversationExecutionStatus(str, Enum):
+    """Enum representing the current execution state of the conversation."""
 
-    IDLE = "idle"  # Agent is ready to receive tasks
-    RUNNING = "running"  # Agent is actively processing
-    PAUSED = "paused"  # Agent execution is paused by user
+    IDLE = "idle"  # Conversation is ready to receive tasks
+    RUNNING = "running"  # Conversation is actively processing
+    PAUSED = "paused"  # Conversation execution is paused by user
     WAITING_FOR_CONFIRMATION = (
-        "waiting_for_confirmation"  # Agent is waiting for user confirmation
+        "waiting_for_confirmation"  # Conversation is waiting for user confirmation
     )
-    FINISHED = "finished"  # Agent has completed the current task
-    ERROR = "error"  # Agent encountered an error (optional for future use)
-    STUCK = "stuck"  # Agent is stuck in a loop or unable to proceed
+    FINISHED = "finished"  # Conversation has completed the current task
+    ERROR = "error"  # Conversation encountered an error (optional for future use)
+    STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
 
 
 class ConversationState(OpenHandsModel):
@@ -77,8 +78,14 @@ class ConversationState(OpenHandsModel):
     )
 
     # Enum-based state management
-    agent_status: AgentExecutionStatus = Field(default=AgentExecutionStatus.IDLE)
+    execution_status: ConversationExecutionStatus = Field(
+        default=ConversationExecutionStatus.IDLE
+    )
     confirmation_policy: ConfirmationPolicyBase = NeverConfirm()
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None,
+        description="Optional security analyzer to evaluate action risks.",
+    )
 
     activated_knowledge_skills: list[str] = Field(
         default_factory=list,
@@ -202,6 +209,8 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
+        # Record existing analyzer configuration in state
+        state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()

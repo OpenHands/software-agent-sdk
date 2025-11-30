@@ -12,9 +12,9 @@ from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_source import LookupSecret, SecretSource
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
-from openhands.tools.execute_bash.definition import ExecuteBashAction
-from openhands.tools.execute_bash.impl import BashExecutor
+from openhands.tools.terminal import TerminalTool
+from openhands.tools.terminal.definition import TerminalAction
+from openhands.tools.terminal.impl import TerminalExecutor
 
 
 # -----------------------
@@ -29,8 +29,8 @@ def llm() -> LLM:
 
 @pytest.fixture
 def tools() -> list[Tool]:
-    register_tool("BashTool", BashTool)
-    return [Tool(name="BashTool")]
+    register_tool("TerminalTool", TerminalTool)
+    return [Tool(name="TerminalTool")]
 
 
 @pytest.fixture
@@ -44,10 +44,10 @@ def conversation(agent: Agent, tmp_path) -> LocalConversation:
 
 
 @pytest.fixture
-def bash_executor(conversation: LocalConversation) -> BashExecutor:
+def terminal_executor(conversation: LocalConversation) -> TerminalExecutor:
     tools_map = conversation.agent.tools_map
-    bash_tool = tools_map["execute_bash"]
-    return cast(BashExecutor, bash_tool.executor)
+    terminal_tool = tools_map["terminal"]
+    return cast(TerminalExecutor, terminal_tool.executor)
 
 
 @pytest.fixture
@@ -61,7 +61,7 @@ def conversation_no_bash(agent_no_bash: Agent, tmp_path) -> LocalConversation:
 
 
 def test_agent_configures_bash_tools_env_provider(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
     """Test that bash executor works with conversation secrets."""
     # Add secrets to conversation
@@ -73,7 +73,7 @@ def test_agent_configures_bash_tools_env_provider(
     )
 
     # Get the bash tool from agent
-    bash_tool = agent.tools_map["execute_bash"]
+    bash_tool = agent.tools_map["terminal"]
 
     assert bash_tool is not None
     assert bash_tool.executor is not None
@@ -88,7 +88,7 @@ def test_agent_configures_bash_tools_env_provider(
 
 
 def test_agent_env_provider_with_callable_secrets(
-    conversation: LocalConversation, bash_executor: BashExecutor
+    conversation: LocalConversation, terminal_executor: TerminalExecutor
 ):
     """Test that conversation secrets work with callable secrets."""
 
@@ -112,7 +112,7 @@ def test_agent_env_provider_with_callable_secrets(
 
 
 def test_agent_env_provider_handles_exceptions(
-    conversation: LocalConversation, bash_executor: BashExecutor
+    conversation: LocalConversation, terminal_executor: TerminalExecutor
 ):
     """Test that conversation secrets handle exceptions gracefully."""
 
@@ -144,7 +144,7 @@ def test_agent_env_provider_handles_exceptions(
 
 
 def test_agent_env_provider_no_matches(
-    conversation: LocalConversation, bash_executor: BashExecutor
+    conversation: LocalConversation, terminal_executor: TerminalExecutor
 ):
     """Test conversation secrets when command has no secret matches."""
 
@@ -169,7 +169,7 @@ def test_agent_without_bash_throws_warning(llm):
 
 
 def test_agent_secrets_integration_workflow(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
     """Test complete workflow of conversation secrets integration."""
 
@@ -215,7 +215,7 @@ def test_agent_secrets_integration_workflow(
 
 
 def test_mask_secrets(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
     """Test that bash executor masks secrets when conversation is passed."""
 
@@ -232,22 +232,22 @@ def test_mask_secrets(
     )
 
     try:
-        action = ExecuteBashAction(command="echo $API_KEY")
-        result = bash_executor(action, conversation=conversation)
-        assert "test-api-key" not in result.output
-        assert "<secret-hidden>" in result.output
+        action = TerminalAction(command="echo $API_KEY")
+        result = terminal_executor(action, conversation=conversation)
+        assert "test-api-key" not in result.text
+        assert "<secret-hidden>" in result.text
 
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
-        result = bash_executor(action, conversation=conversation)
-        assert "dynamic-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        action = TerminalAction(command="echo $DB_PASSWORD")
+        result = terminal_executor(action, conversation=conversation)
+        assert "dynamic-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
     finally:
-        bash_executor.close()
+        terminal_executor.close()
 
 
 def test_mask_changing_secrets(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
     class MyChangingDynamicSecretSource(SecretSource):
         counter: int = 0
@@ -263,22 +263,22 @@ def test_mask_changing_secrets(
     )
 
     try:
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
-        result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        action = TerminalAction(command="echo $DB_PASSWORD")
+        result = terminal_executor(action, conversation=conversation)
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
-        result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        action = TerminalAction(command="echo $DB_PASSWORD")
+        result = terminal_executor(action, conversation=conversation)
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
     finally:
-        bash_executor.close()
+        terminal_executor.close()
 
 
 def test_masking_persists(
-    conversation: LocalConversation, bash_executor: BashExecutor, agent: Agent
+    conversation: LocalConversation, terminal_executor: TerminalExecutor, agent: Agent
 ):
     class MyChangingFailingDynamicSecretSource(SecretSource):
         counter: int = 0
@@ -300,17 +300,17 @@ def test_masking_persists(
     )
 
     try:
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
-        result = bash_executor(action, conversation=conversation)
+        action = TerminalAction(command="echo $DB_PASSWORD")
+        result = terminal_executor(action, conversation=conversation)
         print(result)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
 
-        action = ExecuteBashAction(command="echo $DB_PASSWORD")
-        result = bash_executor(action, conversation=conversation)
-        assert "changing-secret" not in result.output
-        assert "<secret-hidden>" in result.output
+        action = TerminalAction(command="echo $DB_PASSWORD")
+        result = terminal_executor(action, conversation=conversation)
+        assert "changing-secret" not in result.text
+        assert "<secret-hidden>" in result.text
         assert dynamic_secret.raised_on_second
 
     finally:
-        bash_executor.close()
+        terminal_executor.close()

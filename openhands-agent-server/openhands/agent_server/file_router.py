@@ -30,9 +30,10 @@ bash_event_service = get_default_bash_event_service()
 @file_router.post("/upload/{path:path}")
 async def upload_file(
     path: Annotated[str, FastApiPath(alias="path", description="Absolute file path.")],
-    file: UploadFile = File(...),
+    file: Annotated[UploadFile, File(...)],
 ) -> Success:
     """Upload a file to the workspace."""
+    logger.info(f"Uploading file: {path}")
     try:
         target_path = Path(path)
         if not target_path.is_absolute():
@@ -65,6 +66,7 @@ async def download_file(
     path: Annotated[str, FastApiPath(description="Absolute file path.")],
 ) -> FileResponse:
     """Download a file from the workspace."""
+    logger.info(f"Downloading file: {path}")
     try:
         target_path = Path(path)
         if not target_path.is_absolute():

@@ -4,9 +4,10 @@ from openhands.tools.delegate.definition import (
     DelegateAction,
     DelegateObservation,
     DelegateTool,
-    delegate_tool,
 )
 from openhands.tools.delegate.impl import DelegateExecutor
+from openhands.tools.delegate.registration import register_agent
+from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 
 __all__ = [
@@ -14,5 +15,6 @@ __all__ = [
     "DelegateObservation",
     "DelegateExecutor",
     "DelegateTool",
-    "delegate_tool",
+    "DelegationVisualizer",
+    "register_agent",
 ]

@@ -1,7 +1,7 @@
 """Streamlit app to explore OpenHands conversation logs.
 
 Usage:
-    streamlit run examples/conversation_viewer.py
+    streamlit run scripts/conversation_viewer.py
 
 The viewer expects a directory containing conversation folders. By default we
 look for ``.conversations`` next to the repository root (the location created by
@@ -31,9 +31,7 @@ from typing import Any
 import streamlit as st
 
 
-ENV_ROOT = os.getenv(
-    "OPENHANDS_CONVERSATIONS_ROOT", "/home/xingyaow/.openhands/conversation"
-)
+ENV_ROOT = os.getenv("OPENHANDS_CONVERSATIONS_ROOT")
 DEFAULT_CONVERSATIONS_ROOT = (
     Path(ENV_ROOT).expanduser()
     if ENV_ROOT

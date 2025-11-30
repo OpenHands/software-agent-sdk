@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -11,11 +12,16 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.agent_server.utils import utc_now
-from openhands.sdk import LLM, Agent, Event, Message, get_logger
+from openhands.sdk import LLM, Agent, AgentBase, Event, Message, get_logger
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
+from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import ConfirmationPolicyBase
 from openhands.sdk.utils.async_utils import AsyncCallbackWrapper
 from openhands.sdk.utils.cipher import Cipher
@@ -81,10 +87,18 @@ class EventService:
         page_id: str | None = None,
         limit: int = 100,
         kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
         sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
     ) -> EventPage:
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Convert datetime to ISO string for comparison (ISO strings are comparable)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         # Collect all events
         all_events = []
@@ -97,6 +111,25 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
+                    continue
+
+                # Apply body filter if provided (case-insensitive substring match)
+                if body is not None:
+                    if not self._event_matches_body(event, body):
+                        continue
+
+                # Apply timestamp filters if provided (ISO string comparison)
+                if (
+                    timestamp_gte_str is not None
+                    and event.timestamp < timestamp_gte_str
+                ):
+                    continue
+                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                    continue
+
                 all_events.append(event)
 
         # Sort events based on sort_order
@@ -131,10 +164,18 @@ class EventService:
     async def count_events(
         self,
         kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
     ) -> int:
         """Count events matching the given filters."""
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Convert datetime to ISO string for comparison (ISO strings are comparable)
+        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
+        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
         count = 0
         with self._conversation._state as state:
@@ -146,16 +187,60 @@ class EventService:
                     != kind
                 ):
                     continue
+
+                # Apply source filter if provided
+                if source is not None and event.source != source:
+                    continue
+
+                # Apply body filter if provided (case-insensitive substring match)
+                if body is not None:
+                    if not self._event_matches_body(event, body):
+                        continue
+
+                # Apply timestamp filters if provided (ISO string comparison)
+                if (
+                    timestamp_gte_str is not None
+                    and event.timestamp < timestamp_gte_str
+                ):
+                    continue
+                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+                    continue
+
                 count += 1
 
         return count
 
+    def _event_matches_body(self, event: Event, body: str) -> bool:
+        """Check if event's message content matches body filter (case-insensitive)."""
+        # Import here to avoid circular imports
+        from openhands.sdk.event.llm_convertible.message import MessageEvent
+        from openhands.sdk.llm.message import content_to_str
+
+        # Only check MessageEvent instances for body content
+        if not isinstance(event, MessageEvent):
+            return False
+
+        # Extract text content from the message
+        text_parts = content_to_str(event.llm_message.content)
+
+        # Also check extended content if present
+        if event.extended_content:
+            extended_text_parts = content_to_str(event.extended_content)
+            text_parts.extend(extended_text_parts)
+
+        # Also check reasoning content if present
+        if event.reasoning_content:
+            text_parts.append(event.reasoning_content)
+
+        # Combine all text content and perform case-insensitive substring match
+        full_text = " ".join(text_parts).lower()
+        return body.lower() in full_text
+
     async def batch_get_events(self, event_ids: list[str]) -> list[Event | None]:
         """Given a list of ids, get events (Or none for any which were not found)"""
-        results = []
-        for event_id in event_ids:
-            result = await self.get_event(event_id)
-            results.append(result)
+        results = await asyncio.gather(
+            *[self.get_event(event_id) for event_id in event_ids]
+        )
         return results
 
     async def send_message(self, message: Message, run: bool = False):
@@ -165,7 +250,7 @@ class EventService:
         await loop.run_in_executor(None, self._conversation.send_message, message)
         if run:
             with self._conversation.state as state:
-                run = state.agent_status != AgentExecutionStatus.RUNNING
+                run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
             loop.run_in_executor(None, self._conversation.run)
 
@@ -195,6 +280,67 @@ class EventService:
     async def unsubscribe_from_events(self, subscriber_id: UUID) -> bool:
         return self._pub_sub.unsubscribe(subscriber_id)
 
+    def _emit_event_from_thread(self, event: Event) -> None:
+        """Helper to safely emit events from non-async contexts (e.g., callbacks).
+
+        This schedules event emission in the main event loop, making it safe to call
+        from callbacks that may run in different threads. Events are emitted through
+        the conversation's normal event flow to ensure they are persisted.
+        """
+        if self._main_loop and self._main_loop.is_running() and self._conversation:
+            # Capture conversation reference for closure
+            conversation = self._conversation
+
+            # Wrap _on_event with lock acquisition to ensure thread-safe access
+            # to conversation state and event log during concurrent operations
+            def locked_on_event():
+                with conversation._state:
+                    conversation._on_event(event)
+
+            # Run the locked callback in an executor to ensure the event is
+            # both persisted and sent to WebSocket subscribers
+            self._main_loop.run_in_executor(None, locked_on_event)
+
+    def _setup_llm_log_streaming(self, agent: AgentBase) -> None:
+        """Configure LLM log callbacks to stream logs via events."""
+        for llm in agent.get_all_llms():
+            if not llm.log_completions:
+                continue
+
+            # Capture variables for closure
+            usage_id = llm.usage_id
+            model_name = llm.model
+
+            def log_callback(
+                filename: str, log_data: str, uid=usage_id, model=model_name
+            ) -> None:
+                """Callback to emit LLM completion logs as events."""
+                event = LLMCompletionLogEvent(
+                    filename=filename,
+                    log_data=log_data,
+                    model_name=model,
+                    usage_id=uid,
+                )
+                self._emit_event_from_thread(event)
+
+            llm.telemetry.set_log_completions_callback(log_callback)
+
+    def _setup_stats_streaming(self, agent: AgentBase) -> None:
+        """Configure stats update callbacks to stream stats changes via events."""
+
+        def stats_callback() -> None:
+            """Callback to emit stats updates."""
+            # Publish only the stats field to avoid sending entire state
+            if not self._conversation:
+                return
+            state = self._conversation._state
+            with state:
+                event = ConversationStateUpdateEvent(key="stats", value=state.stats)
+            self._emit_event_from_thread(event)
+
+        for llm in agent.get_all_llms():
+            llm.telemetry.set_stats_update_callback(stats_callback)
+
     async def start(self):
         # Store the main event loop for cross-thread communication
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_running_loop()
@@ -205,6 +351,7 @@ class EventService:
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
         agent = Agent.model_validate(self.stored.agent.model_dump())
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
@@ -215,7 +362,7 @@ class EventService:
             ],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
-            visualize=False,
+            visualizer=None,
             secrets=self.stored.secrets,
         )
 
@@ -226,6 +373,12 @@ class EventService:
         # Register state change callback to automatically publish updates
         self._conversation._state.set_on_state_change(self._conversation._on_event)
 
+        # Setup LLM log streaming for remote execution
+        self._setup_llm_log_streaming(self._conversation.agent)
+
+        # Setup stats streaming for remote execution
+        self._setup_stats_streaming(self._conversation.agent)
+
         # Publish initial state update
         await self._publish_state_update()
 
@@ -235,6 +388,8 @@ class EventService:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, self._conversation.run)
+        # Publish state update after run completes to ensure stats are updated
+        await self._publish_state_update()
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
@@ -246,6 +401,8 @@ class EventService:
         if self._conversation:
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._conversation.pause)
+            # Publish state update after pause to ensure stats are updated
+            await self._publish_state_update()
 
     async def update_secrets(self, secrets: dict[str, SecretValue]):
         """Update secrets in the conversation."""
@@ -261,6 +418,17 @@ class EventService:
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             None, self._conversation.set_confirmation_policy, policy
+        )
+
+    async def set_security_analyzer(
+        self, security_analyzer: SecurityAnalyzerBase | None
+    ):
+        """Set the security analyzer for the conversation."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.set_security_analyzer, security_analyzer
         )
 
     async def close(self):
@@ -295,6 +463,17 @@ class EventService:
             None, self._conversation.generate_title, resolved_llm, max_length
         )
 
+    async def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple question without affecting conversation state.
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._conversation.ask_agent, question)
+
     async def get_state(self) -> ConversationState:
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -307,12 +486,9 @@ class EventService:
 
         state = self._conversation._state
         with state:
-            # Create state update event with current state information
             state_update_event = ConversationStateUpdateEvent.from_conversation_state(
                 state
             )
-
-            # Publish the state update event
             await self._pub_sub(state_update_event)
 
     async def __aenter__(self):
@@ -322,3 +498,6 @@ class EventService:
     async def __aexit__(self, exc_type, exc_value, traceback):
         await self.save_meta()
         await self.close()
+
+    def is_open(self) -> bool:
+        return bool(self._conversation)

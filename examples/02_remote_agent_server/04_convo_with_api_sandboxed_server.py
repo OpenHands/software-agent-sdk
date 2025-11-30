@@ -34,7 +34,7 @@ assert api_key, "LLM_API_KEY required"
 
 llm = LLM(
     usage_id="agent",
-    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -45,10 +45,17 @@ if not runtime_api_key:
     exit(1)
 
 
+# If GITHUB_SHA is set (e.g. running in CI of a PR), use that to ensure consistency
+# Otherwise, use the latest image from main
+server_image_sha = os.getenv("GITHUB_SHA") or "main"
+server_image = f"ghcr.io/openhands/agent-server:{server_image_sha[:7]}-python-amd64"
+logger.info(f"Using server image: {server_image}")
+
 with APIRemoteWorkspace(
     runtime_api_url=os.getenv("RUNTIME_API_URL", "https://runtime.eval.all-hands.dev"),
     runtime_api_key=runtime_api_key,
-    server_image="ghcr.io/openhands/agent-server:main-python",
+    server_image=server_image,
+    image_pull_policy="Always",
 ) as workspace:
     agent = get_default_agent(llm=llm, cli_mode=True)
     received_events: list = []
@@ -64,7 +71,7 @@ with APIRemoteWorkspace(
     logger.info(f"Command completed: {result.exit_code}, {result.stdout}")
 
     conversation = Conversation(
-        agent=agent, workspace=workspace, callbacks=[event_callback], visualize=True
+        agent=agent, workspace=workspace, callbacks=[event_callback]
     )
     assert isinstance(conversation, RemoteConversation)
 
@@ -79,5 +86,7 @@ with APIRemoteWorkspace(
 
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         conversation.close()

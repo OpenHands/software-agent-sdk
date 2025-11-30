@@ -25,8 +25,8 @@ from openhands.sdk.event.llm_convertible import (
     ObservationEvent,
 )
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 class TestHelloWorld:
@@ -111,7 +111,7 @@ class TestHelloWorld:
                                 "id": "call_1",
                                 "type": "function",
                                 "function": {
-                                    "name": "str_replace_editor",
+                                    "name": "file_editor",
                                     "arguments": f'{{"command": "create", '
                                     f'"path": "{hello_path}", '
                                     f'"file_text": "print(\\"Hello, World!\\")"}}',
@@ -165,11 +165,11 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("BashTool", BashTool)
-        register_tool("FileEditorTool", FileEditorTool)
+        register_tool("terminal", TerminalTool)
+        register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="BashTool"),
-            Tool(name="FileEditorTool"),
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
         ]
 
         # Agent setup
@@ -285,11 +285,11 @@ class TestHelloWorld:
         )
 
         # Tools setup with temporary directory - use registry + Tool as in runtime
-        register_tool("BashTool", BashTool)
-        register_tool("FileEditorTool", FileEditorTool)
+        register_tool("terminal", TerminalTool)
+        register_tool("file_editor", FileEditorTool)
         tools = [
-            Tool(name="BashTool"),
-            Tool(name="FileEditorTool"),
+            Tool(name="terminal"),
+            Tool(name="file_editor"),
         ]
 
         # Create agent and conversation

@@ -12,7 +12,10 @@ from openhands.agent_server.models import (
     StoredConversation,
 )
 from openhands.sdk import LLM, Agent, Conversation, Message
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -56,6 +59,40 @@ def mock_conversation_with_events():
         )
         for index in range(1, 6)
     ]
+
+    state.events = events
+    state.__enter__ = MagicMock(return_value=state)
+    state.__exit__ = MagicMock(return_value=None)
+    conversation._state = state
+
+    return conversation
+
+
+@pytest.fixture
+def mock_conversation_with_timestamped_events():
+    """Create a mock conversation with events having specific timestamps for testing."""
+    conversation = MagicMock(spec=Conversation)
+    state = MagicMock(spec=ConversationState)
+
+    # Create events with specific ISO format timestamps
+    # These timestamps are in chronological order
+    timestamps = [
+        "2025-01-01T10:00:00.000000",
+        "2025-01-01T11:00:00.000000",
+        "2025-01-01T12:00:00.000000",
+        "2025-01-01T13:00:00.000000",
+        "2025-01-01T14:00:00.000000",
+    ]
+
+    events = []
+    for index, timestamp in enumerate(timestamps, 1):
+        event = MessageEvent(
+            id=f"event{index}",
+            source="user",
+            llm_message=Message(role="user"),
+            timestamp=timestamp,
+        )
+        events.append(event)
 
     state.events = events
     state.__enter__ = MagicMock(return_value=state)
@@ -286,6 +323,115 @@ class TestEventServiceSearchEvents:
         assert len(result.items) == 3
         assert result.next_page_id is None  # No more events available
 
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_gte_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamp__gte (greater than or equal)."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 12:00:00 (should return events 3, 4, 5)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 3
+        assert result.items[0].id == "event3"
+        assert result.items[1].id == "event4"
+        assert result.items[2].id == "event5"
+        # All returned events should have timestamp >= filter value
+        filter_iso = filter_time.isoformat()
+        for event in result.items:
+            assert event.timestamp >= filter_iso
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_lt_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamp__lt (less than)."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events < 13:00:00 (should return events 1, 2, 3)
+        filter_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.search_events(timestamp__lt=filter_time)
+
+        assert len(result.items) == 3
+        assert result.items[0].id == "event1"
+        assert result.items[1].id == "event2"
+        assert result.items[2].id == "event3"
+        # All returned events should have timestamp < filter value
+        filter_iso = filter_time.isoformat()
+        for event in result.items:
+            assert event.timestamp < filter_iso
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_range_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with both timestamp__gte and timestamp__lt."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events between 11:00:00 and 13:00:00 (should return events 2, 3)
+        gte_time = datetime(2025, 1, 1, 11, 0, 0)
+        lt_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.search_events(
+            timestamp__gte=gte_time, timestamp__lt=lt_time
+        )
+
+        assert len(result.items) == 2
+        assert result.items[0].id == "event2"
+        assert result.items[1].id == "event3"
+        # All returned events should be within the range
+        gte_iso = gte_time.isoformat()
+        lt_iso = lt_time.isoformat()
+        for event in result.items:
+            assert event.timestamp >= gte_iso
+            assert event.timestamp < lt_iso
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_with_timezone_aware(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timezone-aware datetime."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 12:00:00 UTC (should return events 3, 4, 5)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 3
+        assert result.items[0].id == "event3"
+        assert result.items[1].id == "event4"
+        assert result.items[2].id == "event5"
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_no_matches(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamps that don't match any events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 15:00:00 (should return no events)
+        filter_time = datetime(2025, 1, 1, 15, 0, 0)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 0
+        assert result.next_page_id is None
+
+    @pytest.mark.asyncio
+    async def test_search_events_timestamp_filter_all_events(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test filtering events with timestamps that include all events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Filter events >= 09:00:00 (should return all events)
+        filter_time = datetime(2025, 1, 1, 9, 0, 0)
+        result = await event_service.search_events(timestamp__gte=filter_time)
+
+        assert len(result.items) == 5
+        assert result.items[0].id == "event1"
+        assert result.items[4].id == "event5"
+
 
 class TestEventServiceCountEvents:
     """Test cases for EventService.count_events method."""
@@ -344,6 +490,81 @@ class TestEventServiceCountEvents:
         result = await event_service.count_events(kind="NonExistentEvent")
         assert result == 0
 
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_gte_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamp__gte filter."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 12:00:00 (should return 3)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_lt_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamp__lt filter."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events < 13:00:00 (should return 3)
+        filter_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.count_events(timestamp__lt=filter_time)
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_range_filter(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with both timestamp filters."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events between 11:00:00 and 13:00:00 (should return 2)
+        gte_time = datetime(2025, 1, 1, 11, 0, 0)
+        lt_time = datetime(2025, 1, 1, 13, 0, 0)
+        result = await event_service.count_events(
+            timestamp__gte=gte_time, timestamp__lt=lt_time
+        )
+        assert result == 2
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_filter_with_timezone_aware(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timezone-aware datetime."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 12:00:00 UTC (should return 3)
+        filter_time = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 3
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_filter_no_matches(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamps that don't match any events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 15:00:00 (should return 0)
+        filter_time = datetime(2025, 1, 1, 15, 0, 0)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_timestamp_filter_all_events(
+        self, event_service, mock_conversation_with_timestamped_events
+    ):
+        """Test counting events with timestamps that include all events."""
+        event_service._conversation = mock_conversation_with_timestamped_events
+
+        # Count events >= 09:00:00 (should return 5)
+        filter_time = datetime(2025, 1, 1, 9, 0, 0)
+        result = await event_service.count_events(timestamp__gte=filter_time)
+        assert result == 5
+
 
 class TestEventServiceSendMessage:
     """Test cases for EventService.send_message method."""
@@ -367,7 +588,7 @@ class TestEventServiceSendMessage:
         # Mock conversation and its methods
         conversation = MagicMock()
         state = MagicMock()
-        state.agent_status = AgentExecutionStatus.IDLE
+        state.execution_status = ConversationExecutionStatus.IDLE
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
@@ -431,7 +652,7 @@ class TestEventServiceSendMessage:
         # Mock conversation and its methods
         conversation = MagicMock()
         state = MagicMock()
-        state.agent_status = AgentExecutionStatus.RUNNING
+        state.execution_status = ConversationExecutionStatus.RUNNING
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
@@ -463,7 +684,7 @@ class TestEventServiceSendMessage:
         # Mock conversation and its methods
         conversation = MagicMock()
         state = MagicMock()
-        state.agent_status = AgentExecutionStatus.IDLE
+        state.execution_status = ConversationExecutionStatus.IDLE
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
@@ -526,3 +747,198 @@ class TestEventServiceSendMessage:
             mock_loop.run_in_executor.assert_any_call(
                 None, conversation.send_message, system_message
             )
+
+
+class TestEventServiceIsOpen:
+    """Test cases for EventService.is_open method."""
+
+    def test_is_open_when_conversation_is_none(self, event_service):
+        """Test is_open returns False when _conversation is None."""
+        event_service._conversation = None
+        assert not event_service.is_open()
+
+    def test_is_open_when_conversation_exists(self, event_service):
+        """Test is_open returns True when _conversation exists."""
+        conversation = MagicMock(spec=Conversation)
+        event_service._conversation = conversation
+        assert event_service.is_open()
+
+    def test_is_open_when_conversation_is_falsy(self, event_service):
+        """Test is_open returns False when _conversation is falsy."""
+        # Test with various falsy values
+        falsy_values = [None, False, 0, "", [], {}]
+
+        for falsy_value in falsy_values:
+            event_service._conversation = falsy_value
+            assert not event_service.is_open(), f"Expected False for {falsy_value}"
+
+    def test_is_open_when_conversation_is_truthy(self, event_service):
+        """Test is_open returns True when _conversation is truthy."""
+        # Test with various truthy values
+        truthy_values = [
+            MagicMock(spec=Conversation),
+            "some_string",
+            1,
+            [1, 2, 3],
+            {"key": "value"},
+            True,
+        ]
+
+        for truthy_value in truthy_values:
+            event_service._conversation = truthy_value
+            assert event_service.is_open(), f"Expected True for {truthy_value}"
+
+
+class TestEventServiceBodyFiltering:
+    """Test cases for EventService body filtering functionality."""
+
+    def test_event_matches_body_with_message_event(self, event_service):
+        """Test _event_matches_body with MessageEvent containing text content."""
+        from openhands.sdk.llm.message import TextContent
+
+        # Create a MessageEvent with text content
+        message = Message(role="user", content=[TextContent(text="Hello world")])
+        event = MessageEvent(id="test", source="user", llm_message=message)
+
+        # Test case-insensitive matching
+        assert event_service._event_matches_body(event, "hello")
+        assert event_service._event_matches_body(event, "WORLD")
+        assert event_service._event_matches_body(event, "Hello world")
+        assert event_service._event_matches_body(event, "llo wor")
+
+        # Test non-matching
+        assert not event_service._event_matches_body(event, "goodbye")
+        assert not event_service._event_matches_body(event, "xyz")
+
+    def test_event_matches_body_with_non_message_event(self, event_service):
+        """Test _event_matches_body with non-MessageEvent (should return False)."""
+        from openhands.sdk.event.user_action import PauseEvent
+
+        # Create a non-MessageEvent
+        event = PauseEvent(id="test")
+
+        # Should always return False for non-MessageEvent
+        assert not event_service._event_matches_body(event, "any text")
+        assert not event_service._event_matches_body(event, "")
+
+    def test_event_matches_body_with_empty_content(self, event_service):
+        """Test _event_matches_body with MessageEvent containing empty content."""
+        # Create a MessageEvent with empty content
+        message = Message(role="user", content=[])
+        event = MessageEvent(id="test", source="user", llm_message=message)
+
+        # Should not match any non-empty text
+        assert not event_service._event_matches_body(event, "any text")
+        # Empty string should match empty content (empty string contains empty string)
+        assert event_service._event_matches_body(event, "")
+
+    @pytest.mark.asyncio
+    async def test_search_events_with_body_filter_integration(self, event_service):
+        """Test search_events with body filter using real MessageEvents."""
+        from openhands.sdk.llm.message import TextContent
+
+        # Create a conversation with MessageEvents containing different text
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Hello world")]
+                ),
+            ),
+            MessageEvent(
+                id="event2",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="How can I help?")]
+                ),
+            ),
+            MessageEvent(
+                id="event3",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Create a Python script")]
+                ),
+            ),
+        ]
+
+        state.events = events
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        # Test filtering by "hello" (should match event1)
+        result = await event_service.search_events(body="hello")
+        assert len(result.items) == 1
+        assert result.items[0].id == "event1"
+
+        # Test filtering by "python" (should match event3)
+        result = await event_service.search_events(body="python")
+        assert len(result.items) == 1
+        assert result.items[0].id == "event3"
+
+        # Test filtering by "help" (should match event2)
+        result = await event_service.search_events(body="help")
+        assert len(result.items) == 1
+        assert result.items[0].id == "event2"
+
+        # Test filtering by non-matching text
+        result = await event_service.search_events(body="nonexistent")
+        assert len(result.items) == 0
+
+    @pytest.mark.asyncio
+    async def test_count_events_with_body_filter_integration(self, event_service):
+        """Test count_events with body filter using real MessageEvents."""
+        from openhands.sdk.llm.message import TextContent
+
+        # Create a conversation with MessageEvents containing different text
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Hello world")]
+                ),
+            ),
+            MessageEvent(
+                id="event2",
+                source="agent",
+                llm_message=Message(
+                    role="assistant", content=[TextContent(text="Hello there")]
+                ),
+            ),
+            MessageEvent(
+                id="event3",
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text="Create a Python script")]
+                ),
+            ),
+        ]
+
+        state.events = events
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        # Test counting by "hello" (should match 2 events)
+        result = await event_service.count_events(body="hello")
+        assert result == 2
+
+        # Test counting by "python" (should match 1 event)
+        result = await event_service.count_events(body="python")
+        assert result == 1
+
+        # Test counting by non-matching text
+        result = await event_service.count_events(body="nonexistent")
+        assert result == 0

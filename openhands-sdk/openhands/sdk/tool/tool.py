@@ -1,6 +1,14 @@
+import re
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any, ClassVar, Protocol, Self, TypeVar
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    ClassVar,
+    Protocol,
+    Self,
+    TypeVar,
+)
 
 from litellm import (
     ChatCompletionToolParam,
@@ -33,6 +41,20 @@ if TYPE_CHECKING:
 ActionT = TypeVar("ActionT", bound=Action)
 ObservationT = TypeVar("ObservationT", bound=Observation)
 _action_types_with_risk: dict[type, type] = {}
+
+
+def _camel_to_snake(name: str) -> str:
+    """Convert CamelCase to snake_case.
+
+    Examples:
+        TerminalTool -> bash_tool
+        FileEditorTool -> file_editor_tool
+        XMLHttpRequest -> xml_http_request
+    """
+    # Insert underscore before uppercase letters (except the first one)
+    s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", name)
+    # Insert underscore before uppercase letters that follow lowercase letters
+    return re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1).lower()
 
 
 class ToolAnnotations(BaseModel):
@@ -122,20 +144,52 @@ class ExecutableTool(Protocol):
         ...
 
 
-class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
-    """Tool that wraps an executor function with input/output validation and schema.
+class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
+    """Base class for all tool implementations.
 
+    This class serves as a base for the discriminated union of all tool types.
+    All tools must inherit from this class and implement the .create() method for
+    proper initialization with executors and parameters.
+
+    Features:
     - Normalize input/output schemas (class or dict) into both model+schema.
     - Validate inputs before execute.
     - Coerce outputs only if an output model is defined; else return vanilla JSON.
     - Export MCP tool description.
+
+    Examples:
+        Simple tool with no parameters:
+            class FinishTool(ToolDefinition[FinishAction, FinishObservation]):
+                @classmethod
+                def create(cls, conv_state=None, **params):
+                    return [cls(name="finish", ..., executor=FinishExecutor())]
+
+        Complex tool with initialization parameters:
+            class TerminalTool(ToolDefinition[TerminalAction,
+                TerminalObservation]):
+                @classmethod
+                def create(cls, conv_state, **params):
+                    executor = TerminalExecutor(
+                        working_dir=conv_state.workspace.working_dir,
+                        **params,
+                    )
+                    return [cls(name="terminal", ..., executor=executor)]
     """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         frozen=True, arbitrary_types_allowed=True
     )
 
-    name: str
+    # Automatic tool naming - set by __init_subclass__
+    name: ClassVar[str] = ""
+
+    def __init_subclass__(cls, **kwargs):
+        """Automatically set name from class name when subclass is created."""
+        super().__init_subclass__(**kwargs)
+        # Only set automatically if not explicitly defined in the current class
+        if "name" not in cls.__dict__:
+            cls.name = _camel_to_snake(cls.__name__).removesuffix("_tool")
+
     description: str
     action_type: type[Action] = Field(repr=False)
     observation_type: type[Observation] | None = Field(default=None, repr=False)
@@ -151,15 +205,21 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     @classmethod
     @abstractmethod
     def create(cls, *args, **kwargs) -> Sequence[Self]:
-        """Create a sequence of Tool instances. Placeholder for subclasses.
+        """Create a sequence of Tool instances.
 
-        This can be overridden in subclasses to provide custom initialization logic
-            (e.g., typically initializing the executor with parameters).
+        This method must be implemented by all subclasses to provide custom
+        initialization logic, typically initializing the executor with parameters
+        from conv_state and other optional parameters.
+
+        Args:
+            *args: Variable positional arguments (typically conv_state as first arg).
+            **kwargs: Optional parameters for tool initialization.
 
         Returns:
             A sequence of Tool instances. Even single tools are returned as a sequence
             to provide a consistent interface and eliminate union return types.
         """
+        raise NotImplementedError("ToolDefinition subclasses must implement .create()")
 
     @computed_field(return_type=str, alias="title")
     @property
@@ -366,36 +426,21 @@ class ToolBase[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
     @classmethod
     def resolve_kind(cls, kind: str) -> type:
+        """Resolve a kind string to its corresponding tool class.
+
+        Args:
+            kind: The name of the tool class to resolve
+
+        Returns:
+            The tool class corresponding to the kind
+
+        Raises:
+            ValueError: If the kind is unknown
+        """
         for subclass in get_known_concrete_subclasses(cls):
             if subclass.__name__ == kind:
                 return subclass
-        # Fallback to "ToolDefinition" for unknown type
-        return ToolDefinition
-
-
-class ToolDefinition[ActionT, ObservationT](ToolBase[ActionT, ObservationT]):
-    """Concrete tool class that inherits from ToolBase.
-
-    This class serves as a concrete implementation of ToolBase for cases where
-    you want to create a tool instance directly without implementing a custom
-    subclass. Built-in tools (like FinishTool, ThinkTool) are instantiated
-    directly from this class, while more complex tools (like BashTool,
-    FileEditorTool) inherit from this class and provide their own create()
-    method implementations.
-    """
-
-    @classmethod
-    def create(cls, *args, **kwargs) -> Sequence[Self]:
-        """Create a sequence of ToolDefinition instances.
-
-        TODO https://github.com/OpenHands/agent-sdk/issues/493
-        Refactor this - the ToolDefinition class should not have a concrete create()
-        implementation. Built-in tools should be refactored to not rely on this
-        method, and then this should be made abstract with @abstractmethod.
-        """
-        raise NotImplementedError(
-            "ToolDefinition.create() should be implemented by subclasses"
-        )
+        raise ValueError(f"Unknown kind '{kind}' for {cls}")
 
 
 def _create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:

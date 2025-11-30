@@ -4,25 +4,36 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.conversation.visualizer import (
-    ConversationVisualizer,
-    create_default_visualizer,
+    ConversationVisualizerBase,
+    DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
     MessageEvent,
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.laminar import observe
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
@@ -36,8 +47,9 @@ class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
     _state: ConversationState
-    _visualizer: ConversationVisualizer | None
+    _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
+    _on_token: ConversationTokenCallbackType | None
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
@@ -46,14 +58,16 @@ class LocalConversation(BaseConversation):
     def __init__(
         self,
         agent: AgentBase,
-        workspace: str | LocalWorkspace,
-        persistence_dir: str | None = None,
+        workspace: str | Path | LocalWorkspace,
+        persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
-        visualize: bool = True,
-        name_for_visualization: str | None = None,
+        visualizer: (
+            type[ConversationVisualizerBase] | ConversationVisualizerBase | None
+        ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         **_: object,
     ):
@@ -61,29 +75,39 @@ class LocalConversation(BaseConversation):
 
         Args:
             agent: The agent to use for the conversation
-            workspace: Working directory for agent operations and tool execution
-            persistence_dir: Directory for persisting conversation state and events
+            workspace: Working directory for agent operations and tool execution.
+                Can be a string path, Path object, or LocalWorkspace instance.
+            persistence_dir: Directory for persisting conversation state and events.
+                Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
+            token_callbacks: Optional list of callbacks invoked for streaming deltas
             max_iteration_per_run: Maximum number of iterations per run
-            visualize: Whether to enable default visualization. If True, adds
-                      a default visualizer callback. If False, relies on
-                      application to provide visualization through callbacks.
-            name_for_visualization: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking.
+            visualizer: Visualization configuration. Can be:
+                       - ConversationVisualizerBase subclass: Class to instantiate
+                         (default: ConversationVisualizer)
+                       - ConversationVisualizerBase instance: Use custom visualizer
+                       - None: No visualization
             stuck_detection: Whether to enable stuck detection
         """
+        super().__init__()  # Initialize with span tracking
+        # Mark cleanup as initiated as early as possible to avoid races or partially
+        # initialized instances during interpreter shutdown.
+        self._cleanup_initiated = False
+
         self.agent = agent
-        if isinstance(workspace, str):
+        if isinstance(workspace, (str, Path)):
+            # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
         assert isinstance(workspace, LocalWorkspace), (
             "workspace must be a LocalWorkspace instance"
         )
         self.workspace = workspace
-        if not Path(self.workspace.working_dir).exists():
-            Path(self.workspace.working_dir).mkdir(parents=True, exist_ok=True)
+        ws_path = Path(self.workspace.working_dir)
+        if not ws_path.exists():
+            ws_path.mkdir(parents=True, exist_ok=True)
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()
@@ -103,18 +127,34 @@ class LocalConversation(BaseConversation):
             self._state.events.append(e)
 
         composed_list = (callbacks if callbacks else []) + [_default_callback]
-        # Add default visualizer if requested
-        if visualize:
-            self._visualizer = create_default_visualizer(
-                conversation_stats=self._state.stats,
-                name_for_visualization=name_for_visualization,
-            )
+        # Handle visualization configuration
+        if isinstance(visualizer, ConversationVisualizerBase):
+            # Use custom visualizer instance
+            self._visualizer = visualizer
+            # Initialize the visualizer with conversation state
+            self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
-            # visualize should happen first for visibility
+            # visualizer should happen first for visibility
+        elif isinstance(visualizer, type) and issubclass(
+            visualizer, ConversationVisualizerBase
+        ):
+            # Instantiate the visualizer class with appropriate parameters
+            self._visualizer = visualizer()
+            # Initialize with state
+            self._visualizer.initialize(self._state)
+            composed_list = [self._visualizer.on_event] + composed_list
+            # visualizer should happen first for visibility
         else:
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
+        self._on_token = (
+            BaseConversation.compose_callbacks(token_callbacks)
+            if token_callbacks
+            else None
+        )
+
         self.max_iteration_per_run = max_iteration_per_run
 
         # Initialize stuck detector
@@ -135,8 +175,8 @@ class LocalConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._cleanup_initiated = False
         atexit.register(self.close)
+        self._start_observability_span(str(desired_id))
 
     @property
     def id(self) -> ConversationID:
@@ -163,12 +203,17 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
-    def send_message(self, message: str | Message) -> None:
+    @observe(name="conversation.send_message")
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
 
         Args:
             message: Either a string (which will be converted to a user message)
                     or a Message object
+            sender: Optional identifier of the sender. Can be used to track
+                   message origin in multi-agent scenarios. For example, when
+                   one agent delegates to another, the sender can be set to
+                   identify which agent is sending the message.
         """
         # Convert string to Message if needed
         if isinstance(message, str):
@@ -178,9 +223,9 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
-            if self._state.agent_status == AgentExecutionStatus.FINISHED:
-                self._state.agent_status = (
-                    AgentExecutionStatus.IDLE
+            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+                self._state.execution_status = (
+                    ConversationExecutionStatus.IDLE
                 )  # now we have a new message
 
             # TODO: We should add test cases for all these scenarios
@@ -211,9 +256,11 @@ class LocalConversation(BaseConversation):
                 llm_message=message,
                 activated_skills=activated_skill_names,
                 extended_content=extended_content,
+                sender=sender,
             )
             self._on_event(user_msg_event)
 
+    @observe(name="conversation.run")
     def run(self) -> None:
         """Runs the conversation until the agent finishes.
 
@@ -228,11 +275,12 @@ class LocalConversation(BaseConversation):
         """
 
         with self._state:
-            if self._state.agent_status in [
-                AgentExecutionStatus.IDLE,
-                AgentExecutionStatus.PAUSED,
+            if self._state.execution_status in [
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.ERROR,
             ]:
-                self._state.agent_status = AgentExecutionStatus.RUNNING
+                self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
         try:
@@ -242,10 +290,10 @@ class LocalConversation(BaseConversation):
                     # Pause attempts to acquire the state lock
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
-                    if self._state.agent_status in [
-                        AgentExecutionStatus.FINISHED,
-                        AgentExecutionStatus.PAUSED,
-                        AgentExecutionStatus.STUCK,
+                    if self._state.execution_status in [
+                        ConversationExecutionStatus.FINISHED,
+                        ConversationExecutionStatus.PAUSED,
+                        ConversationExecutionStatus.STUCK,
                     ]:
                         break
 
@@ -255,18 +303,23 @@ class LocalConversation(BaseConversation):
 
                         if is_stuck:
                             logger.warning("Stuck pattern detected.")
-                            self._state.agent_status = AgentExecutionStatus.STUCK
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.STUCK
+                            )
                             continue
 
                     # clear the flag before calling agent.step() (user approved)
                     if (
-                        self._state.agent_status
-                        == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+                        self._state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                     ):
-                        self._state.agent_status = AgentExecutionStatus.RUNNING
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.RUNNING
+                        )
 
-                    # step must mutate the SAME state object
-                    self.agent.step(self, on_event=self._on_event)
+                    self.agent.step(
+                        self, on_event=self._on_event, on_token=self._on_token
+                    )
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -278,14 +331,27 @@ class LocalConversation(BaseConversation):
                     # 4. Run loop continues to next iteration and processes the message
                     # 5. Without this design, concurrent messages would be lost
                     if (
-                        self.state.agent_status
-                        == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+                        self.state.execution_status
+                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                         or iteration >= self.max_iteration_per_run
                     ):
                         break
         except Exception as e:
+            self._state.execution_status = ConversationExecutionStatus.ERROR
+
+            # Add an error event
+            self._on_event(
+                ConversationErrorEvent(
+                    source="environment",
+                    code=e.__class__.__name__,
+                    detail=str(e),
+                )
+            )
+
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
+        finally:
+            self._end_observability_span()
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -304,10 +370,10 @@ class LocalConversation(BaseConversation):
         with self._state:
             # Always clear the agent_waiting_for_confirmation flag
             if (
-                self._state.agent_status
-                == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+                self._state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
             ):
-                self._state.agent_status = AgentExecutionStatus.IDLE
+                self._state.execution_status = ConversationExecutionStatus.IDLE
 
             if not pending_actions:
                 logger.warning("No pending actions to reject")
@@ -335,16 +401,16 @@ class LocalConversation(BaseConversation):
         effect until the current LLM call completes.
         """
 
-        if self._state.agent_status == AgentExecutionStatus.PAUSED:
+        if self._state.execution_status == ConversationExecutionStatus.PAUSED:
             return
 
         with self._state:
             # Only pause when running or idle
             if (
-                self._state.agent_status == AgentExecutionStatus.IDLE
-                or self._state.agent_status == AgentExecutionStatus.RUNNING
+                self._state.execution_status == ConversationExecutionStatus.IDLE
+                or self._state.execution_status == ConversationExecutionStatus.RUNNING
             ):
-                self._state.agent_status = AgentExecutionStatus.PAUSED
+                self._state.execution_status = ConversationExecutionStatus.PAUSED
                 pause_event = PauseEvent()
                 self._on_event(pause_event)
                 logger.info("Agent execution pause requested")
@@ -362,22 +428,97 @@ class LocalConversation(BaseConversation):
         secret_registry.update_secrets(secrets)
         logger.info(f"Added {len(secrets)} secrets to conversation")
 
+    def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
+        """Set the security analyzer for the conversation."""
+        with self._state:
+            self._state.security_analyzer = analyzer
+
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
         if self._cleanup_initiated:
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
+        try:
+            self._end_observability_span()
+        except AttributeError:
+            # Object may be partially constructed; span fields may be missing.
+            pass
         for tool in self.agent.tools_map.values():
             try:
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
             except NotImplementedError:
-                # Tool has no executor, skip it
+                # Tool has no executor, skip it without erroring
                 continue
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
 
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        # Import here to avoid circular imports
+        from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+
+        template_dir = (
+            Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
+        )
+
+        question_text = render_template(
+            str(template_dir), "ask_agent_template.j2", question=question
+        )
+
+        # Create a user message with the context-aware question
+        user_message = Message(
+            role="user",
+            content=[TextContent(text=question_text)],
+        )
+
+        messages = prepare_llm_messages(
+            self.state.events, additional_messages=[user_message]
+        )
+
+        # Get or create the specialized ask-agent LLM
+        try:
+            question_llm = self.llm_registry.get("ask-agent-llm")
+        except KeyError:
+            question_llm = self.agent.llm.model_copy(
+                update={
+                    "usage_id": "ask-agent-llm",
+                },
+                deep=True,
+            )
+            self.llm_registry.add(question_llm)
+
+        # Pass agent tools so LLM can understand tool_calls in conversation history
+        response = make_llm_completion(
+            question_llm, messages, tools=list(self.agent.tools_map.values())
+        )
+
+        message = response.message
+
+        # Extract the text content from the LLMResponse message
+        if message.content and len(message.content) > 0:
+            # Look for the first TextContent in the response
+            for content in response.message.content:
+                if isinstance(content, TextContent):
+                    return content.text
+
+        raise Exception("Failed to generate summary")
+
+    @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
 

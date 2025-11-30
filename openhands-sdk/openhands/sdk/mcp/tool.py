@@ -12,10 +12,10 @@ import mcp.types
 from litellm import ChatCompletionToolParam
 from pydantic import Field, ValidationError
 
-from openhands.sdk.llm import TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
+from openhands.sdk.observability.laminar import observe
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -50,6 +50,7 @@ class MCPToolExecutor(ToolExecutor):
         self.tool_name = tool_name
         self.client = client
 
+    @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
         async with self.client:
             assert self.client.is_connected(), "MCP client is not connected."
@@ -67,8 +68,8 @@ class MCPToolExecutor(ToolExecutor):
             except Exception as e:
                 error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
-                return MCPToolObservation(
-                    content=[TextContent(text=error_msg)],
+                return MCPToolObservation.from_text(
+                    text=error_msg,
                     is_error=True,
                     tool_name=self.tool_name,
                 )
@@ -107,9 +108,8 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     if mcp_action_type:
         return mcp_action_type
 
-    mcp_action_type = Schema.from_mcp_schema(
-        f"{to_camel_case(action_type.name)}Action", action_type.inputSchema
-    )
+    model_name = f"MCP{to_camel_case(action_type.name)}Action"
+    mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
     _mcp_dynamic_action_type[action_type.name] = mcp_action_type
     return mcp_action_type
 
@@ -118,6 +118,11 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
     """MCP Tool that wraps an MCP client and provides tool functionality."""
 
     mcp_tool: mcp.types.Tool = Field(description="The MCP tool definition.")
+
+    @property
+    def name(self) -> str:  # type: ignore[override]
+        """Return the MCP tool name instead of the class name."""
+        return self.mcp_tool.name
 
     def __call__(
         self,
@@ -147,8 +152,8 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
             # Surface validation errors as an observation instead of crashing
             error_msg = f"Validation error for MCP tool '{self.name}' args: {e}"
             logger.error(error_msg, exc_info=True)
-            return MCPToolObservation(
-                content=[TextContent(text=error_msg)],
+            return MCPToolObservation.from_text(
+                text=error_msg,
                 is_error=True,
                 tool_name=self.name,
             )
@@ -200,21 +205,17 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
                 else None
             )
 
-            return [
-                cls(
-                    name=mcp_tool.name,
-                    description=mcp_tool.description or "No description provided",
-                    action_type=MCPToolAction,
-                    observation_type=MCPToolObservation,
-                    annotations=annotations,
-                    meta=mcp_tool.meta,
-                    executor=MCPToolExecutor(
-                        tool_name=mcp_tool.name, client=mcp_client
-                    ),
-                    # pass-through fields (enabled by **extra in Tool.create)
-                    mcp_tool=mcp_tool,
-                )
-            ]
+            tool_instance = cls(
+                description=mcp_tool.description or "No description provided",
+                action_type=MCPToolAction,
+                observation_type=MCPToolObservation,
+                annotations=annotations,
+                meta=mcp_tool.meta,
+                executor=MCPToolExecutor(tool_name=mcp_tool.name, client=mcp_client),
+                # pass-through fields (enabled by **extra in Tool.create)
+                mcp_tool=mcp_tool,
+            )
+            return [tool_instance]
         except ValidationError as e:
             logger.error(
                 f"Validation error creating MCPTool for {mcp_tool.name}: "

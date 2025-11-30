@@ -12,9 +12,36 @@ from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspac
 
 
 class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
-    """Remote Workspace Implementation."""
+    """Remote workspace implementation that connects to an OpenHands agent server.
+
+    RemoteWorkspace provides access to a sandboxed environment running on a remote
+    OpenHands agent server. This is the recommended approach for production deployments
+    as it provides better isolation and security.
+
+    Example:
+        >>> workspace = RemoteWorkspace(
+        ...     host="https://agent-server.example.com",
+        ...     working_dir="/workspace"
+        ... )
+        >>> with workspace:
+        ...     result = workspace.execute_command("ls -la")
+        ...     content = workspace.read_file("README.md")
+    """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
+
+    def reset_client(self) -> None:
+        """Reset the HTTP client to force re-initialization.
+
+        This is useful when connection parameters (host, api_key) have changed
+        and the client needs to be recreated with new values.
+        """
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+        self._client = None
 
     @property
     def client(self) -> httpx.Client:
@@ -26,7 +53,9 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             # - write: 10 seconds to send request
             # - pool: 10 seconds to get connection from pool
             timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
-            client = httpx.Client(base_url=self.host, timeout=timeout)
+            client = httpx.Client(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
             self._client = client
         return client
 

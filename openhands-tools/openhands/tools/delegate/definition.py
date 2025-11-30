@@ -1,11 +1,12 @@
 """Delegate tool definitions for OpenHands agents."""
 
+import pathlib
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
-from openhands.sdk.llm.message import ImageContent, TextContent
+from openhands.sdk.context.prompts import render_template
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -17,6 +18,8 @@ from openhands.sdk.tool.tool import (
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
 
+
+PROMPT_DIR = pathlib.Path(__file__).parent / "templates"
 
 CommandLiteral = Literal["spawn", "delegate"]
 
@@ -32,6 +35,14 @@ class DelegateAction(Action):
         description="Required parameter of `spawn` command. "
         "List of identifiers to initialize sub-agents with.",
     )
+    agent_types: list[str] | None = Field(
+        default=None,
+        description=(
+            "Optional parameter of `spawn` command. "
+            "List of agent types for each ID (e.g., ['researcher', 'programmer']). "
+            "If omitted or blank for an ID, the default general-purpose agent is used."
+        ),
+    )
     tasks: dict[str, str] | None = Field(
         default=None,
         description=(
@@ -44,51 +55,7 @@ class DelegateAction(Action):
 class DelegateObservation(Observation):
     """Observation from delegation operations."""
 
-    command: CommandLiteral = Field(
-        description="The command that was executed. Either `spawn` or `delegate`."
-    )
-    message: str = Field(description="Result message from the operation")
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        """Get the observation content to show to the agent."""
-        return [TextContent(text=self.message)]
-
-
-TOOL_DESCRIPTION = """Delegation tool for spawning sub-agents and delegating tasks to them.
-
-This tool provides two commands:
-
-**spawn**: Initialize sub-agents with meaningful identifiers
-- Use descriptive identifiers that make sense for your use case (e.g., 'refactoring', 'run_tests', 'research')
-- Each identifier creates a separate sub-agent conversation
-- Example: `{{"command": "spawn", "ids": ["research", "implementation", "testing"]}}`
-
-**delegate**: Send tasks to specific sub-agents and wait for results
-- Use a dictionary mapping sub-agent identifiers to task descriptions
-- This is a blocking operation - waits for all sub-agents to complete
-- Returns a single observation containing results from all sub-agents
-- Example: `{{"command": "delegate", "tasks": {{"research": "Find best practices for async code", "implementation": "Refactor the MyClass class"}}}}`
-
-**Important Notes:**
-- Identifiers used in delegate must match those used in spawn
-- All operations are blocking and return comprehensive results
-- Sub-agents work in the same workspace as the main agent: {workspace_path}
-"""  # noqa
-
-delegate_tool = ToolDefinition(
-    name="delegate",
-    action_type=DelegateAction,
-    observation_type=DelegateObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="delegate",
-        readOnlyHint=False,
-        destructiveHint=False,
-        idempotentHint=False,
-        openWorldHint=True,
-    ),
-)
+    command: CommandLiteral = Field(description="The command that was executed")
 
 
 class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
@@ -111,10 +78,18 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         """
         # Import here to avoid circular imports
         from openhands.tools.delegate.impl import DelegateExecutor
+        from openhands.tools.delegate.registration import get_factory_info
 
-        # Create dynamic description with workspace info
-        tool_description = TOOL_DESCRIPTION.format(
-            workspace_path=conv_state.workspace.working_dir
+        # Get agent info
+        agent_types_info = get_factory_info()
+
+        # Create dynamic description with workspace and agent type info
+        workspace_path = conv_state.workspace.working_dir
+        tool_description = render_template(
+            prompt_dir=str(PROMPT_DIR),
+            template_name="delegate_tool_description.j2",
+            agent_types_info=agent_types_info,
+            workspace_path=workspace_path,
         )
 
         # Initialize the executor without parent conversation
@@ -124,11 +99,16 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name=delegate_tool.name,
-                description=tool_description,
                 action_type=DelegateAction,
                 observation_type=DelegateObservation,
-                annotations=delegate_tool.annotations,
+                description=tool_description,
+                annotations=ToolAnnotations(
+                    title="delegate",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
                 executor=executor,
             )
         ]
