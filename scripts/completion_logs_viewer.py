@@ -229,8 +229,6 @@ def main() -> None:
         if msg_type == "function_call":
             name = msg.get("name", "")
             label = f"{label} - {name}".strip()
-        if msg_type == "function_call_output":
-            label = f"{label} - output"
         with st.expander(label, expanded=False):
             render_message(msg)
 
