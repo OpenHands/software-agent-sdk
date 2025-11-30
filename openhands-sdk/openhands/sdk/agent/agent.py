@@ -119,21 +119,6 @@ class Agent(AgentBase):
             )
             on_event(event)
 
-    def _emit_vllm_tokens_if_enabled(
-        self, llm_response: LLMResponse, on_event: ConversationCallbackType
-    ) -> None:
-        if (
-            "return_token_ids" in self.llm.litellm_extra_body
-        ) and self.llm.litellm_extra_body["return_token_ids"]:
-            token_event = TokenEvent(
-                source="agent",
-                prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
-                response_token_ids=llm_response.raw_response["choices"][0][
-                    "provider_specific_fields"
-                ]["token_ids"],
-            )
-            on_event(token_event)
-
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -283,7 +268,7 @@ class Agent(AgentBase):
                 self._execute_actions(conversation, action_events, on_event)
 
             # Emit VLLM token ids if enabled before returning
-            self._emit_vllm_tokens_if_enabled(llm_response, on_event)
+            self._maybe_emit_vllm_tokens(llm_response, on_event)
             return
 
         # No tool calls - emit message event for reasoning or content responses
@@ -298,7 +283,7 @@ class Agent(AgentBase):
         on_event(msg_event)
 
         # Emit VLLM token ids if enabled
-        self._emit_vllm_tokens_if_enabled(llm_response, on_event)
+        self._maybe_emit_vllm_tokens(llm_response, on_event)
 
         # Finish conversation if LLM produced content (awaits user input)
         # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
@@ -530,3 +515,18 @@ class Agent(AgentBase):
         if tool.name == FinishTool.name:
             state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
+
+    def _maybe_emit_vllm_tokens(
+        self, llm_response: LLMResponse, on_event: ConversationCallbackType
+    ) -> None:
+        if (
+            "return_token_ids" in self.llm.litellm_extra_body
+        ) and self.llm.litellm_extra_body["return_token_ids"]:
+            token_event = TokenEvent(
+                source="agent",
+                prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
+                response_token_ids=llm_response.raw_response["choices"][0][
+                    "provider_specific_fields"
+                ]["token_ids"],
+            )
+            on_event(token_event)
