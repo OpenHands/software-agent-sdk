@@ -132,6 +132,60 @@ jobs:
                   path: coverage-tools.dat
                   if-no-files-found: warn
 
+    tools-tests-windows:
+        runs-on: windows-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with: {fetch-depth: 0}
+
+            - name: Detect tools changes
+              id: changed
+              uses: tj-actions/changed-files@v47
+              with:
+                  files: |
+                      openhands-tools/**
+                      tests/tools/**
+                      pyproject.toml
+                      uv.lock
+                      .github/workflows/tests.yml
+
+            - name: Install uv
+              if: steps.changed.outputs.any_changed == 'true'
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install deps
+              if: steps.changed.outputs.any_changed == 'true'
+              run: uv sync --frozen --group dev
+
+            - name: Run Windows terminal tests with coverage
+              if: steps.changed.outputs.any_changed == 'true'
+              run: |
+                  # Clean up any existing coverage file
+                  if (Test-Path .coverage) { Remove-Item .coverage }
+                  $env:CI = "true"
+                  uv run python -m pytest -vvs `
+                    --cov=openhands-tools `
+                    --cov-report=term-missing `
+                    --cov-fail-under=0 `
+                    --cov-config=pyproject.toml `
+                    tests/tools/terminal/test_windows_terminal.py
+                  # Rename coverage file for upload
+                  if (Test-Path .coverage) {
+                    Move-Item .coverage coverage-tools-windows.dat
+                    Write-Host "Windows tools coverage file prepared for upload"
+                  }
+
+            - name: Upload Windows tools coverage
+              if: steps.changed.outputs.any_changed == 'true' && always()
+              uses: actions/upload-artifact@v5
+              with:
+                  name: coverage-tools-windows
+                  path: coverage-tools-windows.dat
+                  if-no-files-found: warn
+
     agent-server-tests:
         runs-on: blacksmith-2vcpu-ubuntu-2404
         steps:
@@ -244,7 +298,7 @@ jobs:
 
     coverage-report:
         runs-on: blacksmith-2vcpu-ubuntu-2404
-        needs: [sdk-tests, tools-tests, agent-server-tests, cross-tests]
+        needs: [sdk-tests, tools-tests, tools-tests-windows, agent-server-tests, cross-tests]
         if: always() && github.event_name == 'pull_request'
         steps:
             - name: Checkout
@@ -274,7 +328,9 @@ jobs:
                     if [[ "$dat_file" == *coverage-sdk.dat ]]; then
                       cp "$dat_file" .coverage.sdk
                     elif [[ "$dat_file" == *coverage-tools.dat ]]; then
-                      cp "$dat_file" .coverage.tools  
+                      cp "$dat_file" .coverage.tools
+                    elif [[ "$dat_file" == *coverage-tools-windows.dat ]]; then
+                      cp "$dat_file" .coverage.tools-windows
                     elif [[ "$dat_file" == *coverage-cross.dat ]]; then
                       cp "$dat_file" .coverage.cross
                     fi
