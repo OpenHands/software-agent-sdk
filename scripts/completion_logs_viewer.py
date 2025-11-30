@@ -22,13 +22,11 @@ from typing import Any
 
 import streamlit as st
 
+from openhands.sdk.logger import ENV_LOG_DIR
+
 
 ENV_ROOT = os.getenv("OPENHANDS_COMPLETION_LOGS_ROOT")
-DEFAULT_LOG_ROOT = (
-    Path(ENV_ROOT).expanduser()
-    if ENV_ROOT
-    else Path(__file__).resolve().parents[1] / "output/Agent/logs"
-)
+DEFAULT_LOG_ROOT = Path(os.path.join(ENV_LOG_DIR, "completion_logs"))
 
 st.set_page_config(page_title="OpenHands Completion Logs Viewer", layout="wide")
 
@@ -119,8 +117,8 @@ def main() -> None:
         default_root = DEFAULT_LOG_ROOT
         root_from_params = params.get("root", str(default_root))
         if isinstance(root_from_params, list):
-            root_from_params = root_from_params[0] if root_from_params else str(
-                default_root
+            root_from_params = (
+                root_from_params[0] if root_from_params else str(default_root)
             )
         st.session_state["logs_root"] = root_from_params
 
