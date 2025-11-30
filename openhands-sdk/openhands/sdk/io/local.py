@@ -1,6 +1,7 @@
 import os
 import shutil
 
+from openhands.sdk.io.memory import InMemoryFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 
@@ -12,6 +13,7 @@ logger = get_logger(__name__)
 
 class LocalFileStore(FileStore):
     root: str
+    cache: InMemoryFileStore
 
     def __init__(self, root: str):
         if root.startswith("~"):
@@ -19,6 +21,7 @@ class LocalFileStore(FileStore):
         root = os.path.abspath(os.path.normpath(root))
         self.root = root
         os.makedirs(self.root, exist_ok=True)
+        self.cache = InMemoryFileStore()
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -32,6 +35,7 @@ class LocalFileStore(FileStore):
         # ensure sandboxing
         if os.path.commonpath([self.root, full]) != self.root:
             raise ValueError(f"path escapes filestore root: {path}")
+
         return full
 
     @observe(name="LocalFileStore.write", span_type="TOOL")
@@ -45,10 +49,22 @@ class LocalFileStore(FileStore):
             with open(full_path, "wb") as f:
                 f.write(contents)
 
+        self.cache.write(full_path, contents)
+
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
+
+        if full_path in self.cache.files:
+            return self.cache.read(full_path)
+
+        if not os.path.exists(full_path):
+            raise FileNotFoundError(path)
+        result: str
         with open(full_path, encoding="utf-8") as f:
-            return f.read()
+            result = f.read()
+
+        self.cache.write(full_path, result)
+        return result
 
     @observe(name="LocalFileStore.list", span_type="TOOL")
     def list(self, path: str) -> list[str]:
@@ -67,9 +83,12 @@ class LocalFileStore(FileStore):
 
     @observe(name="LocalFileStore.delete", span_type="TOOL")
     def delete(self, path: str) -> None:
+        has_exist: bool = True
+        full_path: str | None = None
         try:
             full_path = self.get_full_path(path)
             if not os.path.exists(full_path):
+                has_exist = False
                 logger.debug(f"Local path does not exist: {full_path}")
                 return
             if os.path.isfile(full_path):
@@ -80,3 +99,6 @@ class LocalFileStore(FileStore):
                 logger.debug(f"Removed local directory: {full_path}")
         except Exception as e:
             logger.error(f"Error clearing local file store: {str(e)}")
+        finally:
+            if has_exist and full_path is not None:
+                self.cache.delete(full_path)
