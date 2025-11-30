@@ -261,18 +261,6 @@ class Agent(AgentBase):
 
             # Handle confirmation mode - exit early if actions need confirmation
             if self._requires_user_confirmation(state, action_events):
-                # Emit VLLM token ids if available before returning
-                if (
-                    "return_token_ids" in self.llm.litellm_extra_body
-                ) and self.llm.litellm_extra_body["return_token_ids"]:
-                    token_event = TokenEvent(
-                        source="agent",
-                        prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
-                        response_token_ids=llm_response.raw_response["choices"][0][
-                            "provider_specific_fields"
-                        ]["token_ids"],
-                    )
-                    on_event(token_event)
                 return
 
             if action_events:
