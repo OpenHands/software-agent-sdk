@@ -739,7 +739,11 @@ def main(argv: list[str]) -> int:
                 fh.write(f"build_context={ctx}\n")
                 fh.write(f"dockerfile={ctx / 'Dockerfile'}\n")
                 fh.write(f"tags_csv={','.join(opts.all_tags)}\n")
-                fh.write(f"versioned_tags_csv={','.join(opts.versioned_tags)}\n")
+                # Only output versioned tags if they're being used
+                if opts.include_versioned_tag:
+                    fh.write(f"versioned_tags_csv={','.join(opts.versioned_tags)}\n")
+                else:
+                    fh.write("versioned_tags_csv=\n")
                 fh.write(f"base_image_slug={opts.base_image_slug}\n")
             logger.info("[build] Wrote outputs to $GITHUB_OUTPUT")
 
@@ -782,12 +786,14 @@ def main(argv: list[str]) -> int:
         short_sha: str,
         versioned_tags: list[str],
         tags_list: list[str],
+        include_versioned_tag: bool,
     ) -> None:
         """
         If running in GitHub Actions, append step outputs to $GITHUB_OUTPUT.
         - image: repo/name (no tag)
         - short_sha: 7-char SHA
         - versioned_tags_csv: comma-separated list of versioned tags
+          (empty if not enabled)
         - tags: multiline output (one per line)
         - tags_csv: single-line, comma-separated
         """
@@ -797,13 +803,23 @@ def main(argv: list[str]) -> int:
         with open(out_path, "a", encoding="utf-8") as fh:
             fh.write(f"image={image}\n")
             fh.write(f"short_sha={short_sha}\n")
-            fh.write(f"versioned_tags_csv={','.join(versioned_tags)}\n")
+            # Only output versioned tags if they're being used
+            if include_versioned_tag:
+                fh.write(f"versioned_tags_csv={','.join(versioned_tags)}\n")
+            else:
+                fh.write("versioned_tags_csv=\n")
             fh.write(f"tags_csv={','.join(tags_list)}\n")
             fh.write("tags<<EOF\n")
             fh.write("\n".join(tags_list) + "\n")
             fh.write("EOF\n")
 
-    _write_gha_outputs(opts.image, opts.short_sha, opts.versioned_tags, tags)
+    _write_gha_outputs(
+        opts.image,
+        opts.short_sha,
+        opts.versioned_tags,
+        tags,
+        opts.include_versioned_tag,
+    )
     return 0
 
 
