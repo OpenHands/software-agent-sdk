@@ -15,6 +15,8 @@ from openhands.sdk.tool import Tool
 from openhands.tools.preset.default import get_default_tools
 from openhands.tools.tom_consult import (
     SleeptimeComputeAction,
+    SleeptimeComputeTool,
+    TomConsultTool,
 )
 
 
@@ -23,8 +25,9 @@ api_key: str | None = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm: LLM = LLM(
-    model="openhands/claude-sonnet-4-5-20250929",
-    api_key=SecretStr(api_key),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    api_key=os.getenv("LLM_API_KEY"),
+    base_url=os.getenv("LLM_BASE_URL", None),
     usage_id="agent",
     drop_params=True,
 )
@@ -49,8 +52,8 @@ if llm.base_url:
     tom_params["api_base"] = llm.base_url
 
 # Add both Tom tools to the agent
-tools.append(Tool(name="TomConsultTool", params=tom_params))
-tools.append(Tool(name="SleeptimeComputeTool", params=tom_params))
+tools.append(Tool(name=TomConsultTool.name, params=tom_params))
+tools.append(Tool(name=SleeptimeComputeTool.name, params=tom_params))
 
 # Create agent with Tom capabilities
 # This agent can consult Tom for personalized guidance
