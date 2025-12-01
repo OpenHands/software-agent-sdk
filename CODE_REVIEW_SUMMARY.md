@@ -3,7 +3,7 @@
 ## What Was Done
 
 ### 1. Data Collection ✅
-- Used GitHub API to fetch code review history from OpenHands/software-agent-sdk
+- Used GitHub API to fetch code review history
 - Analyzed **153 review comments** across **37 pull requests**
 - Extracted both line-level comments and PR-level reviews
 - Focused on recent PRs (last 100) to capture current review patterns
@@ -12,7 +12,7 @@
 Identified key review principles through automated analysis:
 
 **Top Themes:**
-- **AI Delegation (24 instances)**: Frequent use of @OpenHands for implementation
+- **AI Delegation (24 instances)**: Frequent use of AI assistants for implementation
 - **Quick Approvals (19 instances)**: "LGTM!" for good code
 - **Testing Focus (16 instances)**: Pragmatic test coverage
 - **Code Suggestions (13 instances)**: Specific, actionable feedback
@@ -23,7 +23,7 @@ Identified key review principles through automated analysis:
 1. **Simplicity First** - "This feels a bit overcomplicated to me -- what's the use case?"
 2. **Pragmatic Testing** - Avoid duplicate tests, test real scenarios
 3. **Type Safety Without Compromise** - Fix types properly, avoid `# type: ignore`
-4. **AI-Assisted Development** - Leverage @OpenHands for implementation tasks
+4. **AI-Assisted Development** - Leverage AI assistants for implementation tasks
 5. **Backward Compatibility** - Evaluate breaking change impact carefully
 6. **Real Use Cases** - Always validate necessity and actual problems
 7. **Concise Communication** - Casual, direct, with emojis (👀 🤣 🤕)
@@ -34,7 +34,7 @@ Identified key review principles through automated analysis:
 
 **Trigger**: `/codereview`
 
-**Structure** (following OpenHands/OpenHands reference):
+**Structure**:
 - Frontmatter with trigger
 - PERSONA section
 - CORE PHILOSOPHY (5 key principles)
@@ -77,7 +77,7 @@ For a more critical, Linus-style review:
 |--------|---------------|----------------|
 | Tone | Casual, collaborative | Critical, direct |
 | Verbosity | Concise, often one-liners | Detailed analysis |
-| AI Usage | Heavy delegation to @OpenHands | Review-only, no delegation |
+| AI Usage | Heavy delegation to AI assistants | Review-only, no delegation |
 | Harshness | Constructive | Brutally honest |
 | Focus | Practical simplicity | Engineering fundamentals |
 
@@ -101,7 +101,7 @@ all the scenarios
 ```
 opps i forgot this before merging this PR 🤕
 
-@OpenHands please implement this and push to a separate PR
+Please implement this and push to a separate PR
 ```
 
 ### Type Safety

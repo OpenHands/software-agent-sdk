@@ -1,7 +1,7 @@
-# Code Review Analysis for xingyaoww
+# Code Review Analysis
 
 ## Overview
-This document summarizes the code review patterns and principles extracted from analyzing 153 review comments across 37 pull requests in the OpenHands/software-agent-sdk repository.
+This document summarizes the code review patterns and principles extracted from analyzing 153 review comments across 37 pull requests in the repository.
 
 ## Review Statistics
 
@@ -10,7 +10,7 @@ Based on analysis of recent code reviews:
 
 | Theme | Count | Description |
 |-------|-------|-------------|
-| AI Delegation | 24 | Frequently delegates tasks to @OpenHands |
+| AI Delegation | 24 | Frequently delegates tasks to AI assistants |
 | Approvals | 19 | Quick LGTM approvals for good PRs |
 | Testing | 16 | Comments about test coverage and quality |
 | Code Suggestions | 13 | Specific code improvement suggestions |
@@ -38,7 +38,7 @@ this request but rather read local file -- WDYT?"
 ### 2. **Pragmatic Testing**
 - Avoids duplicate test coverage: "i mean it doesn't seem necessary, the other file already tests all the scenarios"
 - Tests should verify actual logic, not library functionality
-- Delegates test writing to AI: "@OpenHands please add a test to verify [behavior]"
+- Delegates test writing to AI assistants
 - Focuses on real scenarios over theoretical edge cases
 
 **Example Reviews:**
@@ -46,7 +46,7 @@ this request but rather read local file -- WDYT?"
 "This test doesn't make a lot sense to me - the other file already covers this"
 ```
 ```
-"@OpenHands please add a test to make sure that happens"
+"Please add a test to make sure that happens"
 ```
 
 ### 3. **Type Safety Without Compromise**
@@ -62,18 +62,18 @@ with a few assert statements, do that instead."
 ```
 
 ### 4. **AI-Assisted Development (Signature Pattern)**
-- Frequently delegates implementation to @OpenHands (24 instances)
+- Frequently delegates implementation to AI assistants (24 instances)
 - Uses AI for: tests, implementations, follow-up PRs, code reviews
 - Comfortable with AI as part of the development workflow
-- Often requests roasted code reviews: "@OpenHands please do a /codereview-roasted"
+- Often requests roasted code reviews
 
 **Example Reviews:**
 ```
-"@OpenHands please implement this and push to a separate PR"
+"Please implement this and push to a separate PR"
 ```
 ```
 "opps i forgot this before merging this PR 🤕
-@OpenHands please implement this and push to a separate PR"
+Please implement this and push to a separate PR"
 ```
 
 ### 5. **Backward Compatibility Awareness**
@@ -138,8 +138,8 @@ WDYT? (What do you think?)
 
 ### Delegating Pattern
 ```
-@OpenHands please [task]
-@OpenHands please do a /codereview-roasted
+Please [task]
+Please do a /codereview-roasted
 ```
 
 ### Suggesting Pattern
@@ -161,7 +161,7 @@ Actually, [statement of issue]
 While the repository includes a "roasted" Linus-style code review microagent, the actual review style observed is:
 
 - **Less harsh**: More collaborative and constructive than Linus-style
-- **More delegating**: Heavily leverages AI (@OpenHands) for implementation
+- **More delegating**: Heavily leverages AI assistants for implementation
 - **Equally pragmatic**: Both focus on real problems over theoretical ones
 - **Less verbose**: Reviews are concise, often one-liners
 - **More casual**: Uses informal language and emojis
