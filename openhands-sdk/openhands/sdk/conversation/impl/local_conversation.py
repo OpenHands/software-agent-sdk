@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
@@ -13,7 +14,11 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
 from openhands.sdk.conversation.title_utils import generate_conversation_title
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -44,6 +49,7 @@ class LocalConversation(BaseConversation):
     _state: ConversationState
     _visualizer: ConversationVisualizerBase | None
     _on_event: ConversationCallbackType
+    _on_token: ConversationTokenCallbackType | None
     max_iteration_per_run: int
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
@@ -56,6 +62,7 @@ class LocalConversation(BaseConversation):
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
@@ -76,6 +83,7 @@ class LocalConversation(BaseConversation):
                       be used to identify the conversation. The user might want to
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
+            token_callbacks: Optional list of callbacks invoked for streaming deltas
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -141,6 +149,12 @@ class LocalConversation(BaseConversation):
             self._visualizer = None
 
         self._on_event = BaseConversation.compose_callbacks(composed_list)
+        self._on_token = (
+            BaseConversation.compose_callbacks(token_callbacks)
+            if token_callbacks
+            else None
+        )
+
         self.max_iteration_per_run = max_iteration_per_run
 
         # Initialize stuck detector
@@ -303,8 +317,9 @@ class LocalConversation(BaseConversation):
                             ConversationExecutionStatus.RUNNING
                         )
 
-                    # step must mutate the SAME state object
-                    self.agent.step(self, on_event=self._on_event)
+                    self.agent.step(
+                        self, on_event=self._on_event, on_token=self._on_token
+                    )
                     iteration += 1
 
                     # Check for non-finished terminal conditions
@@ -434,10 +449,74 @@ class LocalConversation(BaseConversation):
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
             except NotImplementedError:
-                # Tool has no executor, skip it
+                # Tool has no executor, skip it without erroring
                 continue
             except Exception as e:
                 logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
+
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        # Import here to avoid circular imports
+        from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
+
+        template_dir = (
+            Path(__file__).parent.parent.parent / "context" / "prompts" / "templates"
+        )
+
+        question_text = render_template(
+            str(template_dir), "ask_agent_template.j2", question=question
+        )
+
+        # Create a user message with the context-aware question
+        user_message = Message(
+            role="user",
+            content=[TextContent(text=question_text)],
+        )
+
+        messages = prepare_llm_messages(
+            self.state.events, additional_messages=[user_message]
+        )
+
+        # Get or create the specialized ask-agent LLM
+        try:
+            question_llm = self.llm_registry.get("ask-agent-llm")
+        except KeyError:
+            question_llm = self.agent.llm.model_copy(
+                update={
+                    "usage_id": "ask-agent-llm",
+                },
+                deep=True,
+            )
+            self.llm_registry.add(question_llm)
+
+        # Pass agent tools so LLM can understand tool_calls in conversation history
+        response = make_llm_completion(
+            question_llm, messages, tools=list(self.agent.tools_map.values())
+        )
+
+        message = response.message
+
+        # Extract the text content from the LLMResponse message
+        if message.content and len(message.content) > 0:
+            # Look for the first TextContent in the response
+            for content in response.message.content:
+                if isinstance(content, TextContent):
+                    return content.text
+
+        raise Exception("Failed to generate summary")
 
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:

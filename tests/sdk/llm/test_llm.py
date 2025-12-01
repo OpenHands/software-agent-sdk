@@ -1,4 +1,3 @@
-from typing import Any
 from unittest.mock import Mock, patch
 
 import pytest
@@ -56,16 +55,6 @@ def test_base_url_for_openhands_provider(mock_get):
     )
     assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
     mock_get.assert_called_once()
-
-
-def test_llm_service_id_alias_uses_usage_id():
-    legacy_kwargs: dict[str, Any] = {
-        "model": "alias-model",
-        "service_id": "legacy",
-    }
-    with pytest.warns(DeprecationWarning):
-        llm = LLM(**legacy_kwargs)  # type: ignore[arg-type]
-    assert llm.usage_id == "legacy"
 
 
 def test_token_usage_add():

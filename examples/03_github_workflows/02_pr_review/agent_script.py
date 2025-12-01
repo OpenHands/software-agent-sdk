@@ -131,7 +131,7 @@ def main():
         llm_config = {
             "model": model,
             "api_key": api_key,
-            "service_id": "pr_review_agent",
+            "usage_id": "pr_review_agent",
             "drop_params": True,
         }
 
