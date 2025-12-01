@@ -42,11 +42,6 @@ on:
                 required: false
                 default: main
                 type: string
-            pr_number:
-                description: (TEMPORARY) PR number for testing PR comments
-                required: false
-                default: ''
-                type: string
 
 
 env:
@@ -140,8 +135,7 @@ jobs:
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
                     # Convert ref to SHA for manual dispatch
                     SDK_SHA=$(git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
-                    # Use pr_number input if provided (temporary for testing)
-                    PR_NUMBER="${{ github.event.inputs.pr_number }}"
+                    PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
                       REASON="manual"
