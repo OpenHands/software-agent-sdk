@@ -123,13 +123,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     model: str = Field(default="claude-sonnet-4-20250514", description="Model name.")
     api_key: str | SecretStr | None = Field(default=None, description="API key.")
     base_url: str | None = Field(default=None, description="Custom base URL.")
-    env: str | None = Field(
-        default=None,
-        description=(
-            "Environment type: 'staging' or 'prod'. "
-            "Used to set base_url if not explicitly provided."
-        ),
-    )
     api_version: str | None = Field(
         default=None, description="API version (e.g., Azure)."
     )
@@ -364,11 +357,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             model_name = model_val.removeprefix("openhands/")
             d["model"] = f"litellm_proxy/{model_name}"
             # Set base_url based on env parameter (default to prod when env is unset)
-            d["base_url"] = (
-                "https://llm-proxy.staging.all-hands.dev/"
-                if d.get("env") and d.get("env") == "staging"
-                else "https://llm-proxy.app.all-hands.dev/"
-            )
+            d["base_url"] = d.get("base_url", "https://llm-proxy.app.all-hands.dev/")
 
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
