@@ -29,14 +29,10 @@ from openhands.agent_server.server_details_router import (
 )
 from openhands.agent_server.sockets import sockets_router
 from openhands.agent_server.tool_router import tool_router
-from openhands.agent_server.utils import patch_fastapi_discriminated_union_support
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import DEBUG, get_logger
 
-
-# Apply FastAPI patch for discriminated union support
-patch_fastapi_discriminated_union_support()
 
 logger = get_logger(__name__)
 

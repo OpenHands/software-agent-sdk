@@ -1,12 +1,16 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.llm.llm import LLM
 from openhands.sdk.llm.message import Message
 from openhands.sdk.observability.laminar import (
@@ -25,6 +29,13 @@ from openhands.sdk.workspace.base import BaseWorkspace
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.state import ConversationExecutionStatus
+
+
+CallbackType = TypeVar(
+    "CallbackType",
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 
 
 class ConversationStateProtocol(Protocol):
@@ -201,15 +212,41 @@ class BaseConversation(ABC):
 
     @staticmethod
     def get_persistence_dir(
-        persistence_base_dir: str, conversation_id: ConversationID
+        persistence_base_dir: str | Path, conversation_id: ConversationID
     ) -> str:
-        """Get the persistence directory for the conversation."""
+        """Get the persistence directory for the conversation.
+
+        Args:
+            persistence_base_dir: Base directory for persistence. Can be a string
+                path or Path object.
+            conversation_id: Unique conversation ID.
+
+        Returns:
+            String path to the conversation-specific persistence directory.
+            Always returns a normalized string path even if a Path was provided.
+        """
         return str(Path(persistence_base_dir) / conversation_id.hex)
 
+    @abstractmethod
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        ...
+
     @staticmethod
-    def compose_callbacks(
-        callbacks: Iterable[ConversationCallbackType],
-    ) -> ConversationCallbackType:
+    def compose_callbacks(callbacks: Iterable[CallbackType]) -> CallbackType:
         """Compose multiple callbacks into a single callback function.
 
         Args:
@@ -224,4 +261,4 @@ class BaseConversation(ABC):
                 if cb:
                     cb(event)
 
-        return composed
+        return cast(CallbackType, composed)

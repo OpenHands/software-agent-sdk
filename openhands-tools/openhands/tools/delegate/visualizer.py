@@ -3,14 +3,14 @@ Delegation-specific visualizer that shows sender/receiver information for
 multi-agent delegation.
 """
 
-from rich.panel import Panel
+from rich.console import Group
 
 from openhands.sdk.conversation.visualizer.default import (
     _ACTION_COLOR,
     _OBSERVATION_COLOR,
-    _PANEL_PADDING,
     _SYSTEM_COLOR,
     DefaultConversationVisualizer,
+    build_event_block,
 )
 from openhands.sdk.event import (
     ActionEvent,
@@ -99,9 +99,9 @@ class DelegationVisualizer(DefaultConversationVisualizer):
         spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", name)
         return spaced.title()
 
-    def _create_event_panel(self, event: Event) -> Panel | None:
+    def _create_event_block(self, event: Event) -> Group | None:
         """
-        Override event panel creation to add agent names to titles.
+        Override event block creation to add agent names to titles.
 
         For system prompts, actions, and observations, prepend the agent name
         (e.g., "Delegator Agent System Prompt", "Delegator Agent Action",
@@ -112,11 +112,11 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             event: The event to visualize
 
         Returns:
-            A Rich Panel with agent-specific title, or None if visualization fails
+            A Rich Group with agent-specific title, or None if visualization fails
         """
         # For message events, use our specialized handler
         if isinstance(event, MessageEvent):
-            return self._create_message_event_panel(event)
+            return self._create_message_event_block(event)
 
         # For system prompts, actions, and observations, add agent name to the title
         if isinstance(event, (SystemPromptEvent, ActionEvent, ObservationEvent)):
@@ -131,56 +131,38 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             agent_name = self._format_agent_name(self._name) if self._name else "Agent"
 
             if isinstance(event, SystemPromptEvent):
-                title = (
-                    f"[bold {_SYSTEM_COLOR}]{agent_name} Agent System Prompt"
-                    f"[/bold {_SYSTEM_COLOR}]"
-                )
-                return Panel(
-                    content,
+                title = f"{agent_name} Agent System Prompt"
+                return build_event_block(
+                    content=content,
                     title=title,
-                    border_style=_SYSTEM_COLOR,
-                    padding=_PANEL_PADDING,
-                    expand=True,
+                    title_color=_SYSTEM_COLOR,
                 )
             elif isinstance(event, ActionEvent):
                 # Check if action is None (non-executable)
                 if event.action is None:
-                    title = (
-                        f"[bold {_ACTION_COLOR}]{agent_name} Agent Action "
-                        f"(Not Executed)[/bold {_ACTION_COLOR}]"
-                    )
+                    title = f"{agent_name} Agent Action (Not Executed)"
                 else:
-                    title = (
-                        f"[bold {_ACTION_COLOR}]{agent_name} Agent Action"
-                        f"[/bold {_ACTION_COLOR}]"
-                    )
-                return Panel(
-                    content,
+                    title = f"{agent_name} Agent Action"
+                return build_event_block(
+                    content=content,
                     title=title,
+                    title_color=_ACTION_COLOR,
                     subtitle=self._format_metrics_subtitle(),
-                    border_style=_ACTION_COLOR,
-                    padding=_PANEL_PADDING,
-                    expand=True,
                 )
             else:  # ObservationEvent
-                title = (
-                    f"[bold {_OBSERVATION_COLOR}]{agent_name} Agent Observation"
-                    f"[/bold {_OBSERVATION_COLOR}]"
-                )
-                return Panel(
-                    content,
+                title = f"{agent_name} Agent Observation"
+                return build_event_block(
+                    content=content,
                     title=title,
-                    border_style=_OBSERVATION_COLOR,
-                    padding=_PANEL_PADDING,
-                    expand=True,
+                    title_color=_OBSERVATION_COLOR,
                 )
 
         # For all other event types, use the parent implementation
-        return super()._create_event_panel(event)
+        return super()._create_event_block(event)
 
-    def _create_message_event_panel(self, event: MessageEvent) -> Panel | None:
+    def _create_message_event_block(self, event: MessageEvent) -> Group | None:
         """
-        Create a panel for a message event with delegation-specific
+        Create a block for a message event with delegation-specific
         sender/receiver info.
 
         For user messages:
@@ -196,7 +178,7 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             event: The message event to visualize
 
         Returns:
-            A Rich Panel with delegation-aware title, or None if visualization fails
+            A Rich Group with delegation-aware title, or None if visualization fails
         """
         content = event.visualize
         if not content.plain.strip():
@@ -219,16 +201,10 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             if event.sender:
                 # Message from another agent (via delegation)
                 sender_display = self._format_agent_name(event.sender)
-                title_text = (
-                    f"[bold {role_color}]{sender_display} Agent Message to "
-                    f"{agent_name} Agent[/bold {role_color}]"
-                )
+                title = f"{sender_display} Agent Message to {agent_name} Agent"
             else:
                 # Regular user message
-                title_text = (
-                    f"[bold {role_color}]User Message to "
-                    f"{agent_name} Agent[/bold {role_color}]"
-                )
+                title = f"User Message to {agent_name} Agent"
         else:
             # For agent messages, derive recipient from last user message
             recipient = None
@@ -241,22 +217,14 @@ class DelegationVisualizer(DefaultConversationVisualizer):
             if recipient:
                 # Agent responding to another agent
                 recipient_display = self._format_agent_name(recipient)
-                title_text = (
-                    f"[bold {role_color}]{agent_name} Agent Message to "
-                    f"{recipient_display} Agent[/bold {role_color}]"
-                )
+                title = f"{agent_name} Agent Message to {recipient_display} Agent"
             else:
                 # Agent responding to user
-                title_text = (
-                    f"[bold {role_color}]Message from {agent_name} Agent to User"
-                    f"[/bold {role_color}]"
-                )
+                title = f"Message from {agent_name} Agent to User"
 
-        return Panel(
-            content,
-            title=title_text,
+        return build_event_block(
+            content=content,
+            title=title,
+            title_color=role_color,
             subtitle=self._format_metrics_subtitle(),
-            border_style=role_color,
-            padding=(1, 2),
-            expand=True,
         )
