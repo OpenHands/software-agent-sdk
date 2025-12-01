@@ -1,6 +1,6 @@
 # PR Review Workflow
 
-This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this` or when openhands-agent is added as a reviewer, OpenHands will analyze the changes and provide detailed, constructive feedback.
+This example demonstrates how to set up a GitHub Actions workflow for automated pull request reviews using the OpenHands agent SDK. When a PR is labeled with `review-this`, OpenHands will analyze the changes and provide detailed, constructive feedback.
 
 ## Files
 
@@ -11,9 +11,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 
 ## Features
 
-- **Automatic Trigger**: Reviews are triggered when:
-  - The `review-this` label is added to a PR, OR
-  - openhands-agent is requested as a reviewer
+- **Automatic Trigger**: Reviews are triggered when the `review-this` label is added to a PR
 - **Comprehensive Analysis**: Analyzes code changes in context of the entire repository
 - **Detailed Feedback**: Provides structured review comments covering:
   - Overall assessment of changes
@@ -69,21 +67,11 @@ Create a `review-this` label in your repository:
 
 ### Triggering a Review
 
-There are two ways to trigger an automated review of a pull request:
-
-#### Option 1: Using Labels
+To trigger an automated review of a pull request:
 
 1. Open the pull request you want reviewed
 2. Add the `review-this` label to the PR
 3. The workflow will automatically start and analyze the changes
 4. Review comments will be posted to the PR when complete
 
-#### Option 2: Requesting a Reviewer (Recommended)
-
-1. Open the pull request you want reviewed
-2. Click on "Reviewers" in the right sidebar
-3. Search for and select "openhands-agent" as a reviewer
-4. The workflow will automatically start and analyze the changes
-5. Review comments will be posted to the PR when complete
-
-**Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+**Note**: Adding labels requires write access to the repository, ensuring only authorized users can trigger the AI review.
