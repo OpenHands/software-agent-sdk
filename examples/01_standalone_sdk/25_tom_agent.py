@@ -11,10 +11,11 @@ import os
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, Conversation
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.preset.default import get_default_tools, register_default_tools
-from openhands.tools.tom_consult import SleeptimeComputeTool, TomConsultTool
-from openhands.tools.tom_consult.action import SleeptimeComputeAction
+from openhands.sdk.tool import Tool
+from openhands.tools.preset.default import get_default_tools
+from openhands.tools.tom_consult import (
+    SleeptimeComputeAction,
+)
 
 
 # Configure LLM
@@ -28,12 +29,8 @@ llm: LLM = LLM(
     drop_params=True,
 )
 
-# Register tools (default tools + Tom tools)
-register_default_tools(enable_browser=False)  # CLI mode, no browser
-register_tool("TomConsultTool", TomConsultTool)
-register_tool("SleeptimeComputeTool", SleeptimeComputeTool)
-
 # Build tools list with Tom tools
+# Note: Tom tools are automatically registered on import (PR #862)
 tools = get_default_tools(enable_browser=False)
 
 # Configure Tom tools with parameters

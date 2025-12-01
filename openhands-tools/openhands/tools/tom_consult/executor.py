@@ -15,9 +15,10 @@ from openhands.sdk.event import (
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Observation, ToolExecutor
-from openhands.tools.tom_consult.action import ConsultTomAction, SleeptimeComputeAction
-from openhands.tools.tom_consult.observation import (
+from openhands.tools.tom_consult.definition import (
+    ConsultTomAction,
     ConsultTomObservation,
+    SleeptimeComputeAction,
     SleeptimeComputeObservation,
 )
 
