@@ -53,6 +53,9 @@ class MockConversation(BaseConversation):
     def update_secrets(self, secrets: Any) -> None:
         pass
 
+    def ask_agent(self, question: str) -> str:
+        return "Mock response"
+
 
 def test_base_conversation_span_management():
     """Test that BaseConversation properly manages span state to prevent double-ending."""  # noqa: E501
