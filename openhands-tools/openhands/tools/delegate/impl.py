@@ -5,11 +5,11 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.response_utils import get_agent_final_response
-from openhands.sdk.conversation.visualizer import ConversationVisualizerBase
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
-from openhands.tools.preset.default import get_default_agent
+from openhands.tools.delegate.registration import get_agent_factory
+from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 
 if TYPE_CHECKING:
@@ -68,22 +68,38 @@ class DelegateExecutor(ToolExecutor):
                 is_error=True,
             )
 
+    @staticmethod
+    def _format_agent_label(agent_id: str, agent_type: str) -> str:
+        """Compose a friendly label for logging and user messages."""
+        type_suffix = " (default)" if agent_type == "default" else f" ({agent_type})"
+        return f"{agent_id}{type_suffix}"
+
+    def _resolve_agent_type(self, action: "DelegateAction", index: int) -> str:
+        """Get the agent type for a given index, defaulting to the general agent."""
+        if not action.agent_types or index >= len(action.agent_types):
+            return "default"
+        return action.agent_types[index].strip() or "default"
+
     def _spawn_agents(self, action: "DelegateAction") -> DelegateObservation:
-        """Spawn sub-agents with user-friendly identifiers.
-
-        Args:
-            action: DelegateAction with command="spawn" containing list of string
-                   identifiers (e.g., ['lodging', 'activities'])
-
-        Returns:
-            DelegateObservation indicating success/failure and which agents were spawned
-        """
+        """Spawn sub-agents with optional agent types."""
         if not action.ids:
             return DelegateObservation.from_text(
                 text="At least one ID is required for spawn action",
                 command=action.command,
                 is_error=True,
             )
+
+        # Validate agent_types if provided
+        if action.agent_types is not None:
+            if len(action.agent_types) > len(action.ids):
+                return DelegateObservation.from_text(
+                    text=(
+                        f"agent_types length ({len(action.agent_types)}) "
+                        f"cannot exceed ids length ({len(action.ids)})"
+                    ),
+                    command=action.command,
+                    is_error=True,
+                )
 
         if len(self._sub_agents) + len(action.ids) > self._max_children:
             return DelegateObservation.from_text(
@@ -100,37 +116,48 @@ class DelegateExecutor(ToolExecutor):
             parent_conversation = self.parent_conversation
             parent_llm = parent_conversation.agent.llm
             parent_visualizer = parent_conversation._visualizer
-
             workspace_path = parent_conversation.state.workspace.working_dir
 
-            for agent_id in action.ids:
-                # Create a sub-agent with the specified ID
-                worker_agent = get_default_agent(
-                    llm=parent_llm.model_copy(
-                        update={"service_id": f"sub_agent_{agent_id}"}
-                    ),
-                )
+            resolved_agent_types = [
+                self._resolve_agent_type(action, i) for i in range(len(action.ids))
+            ]
 
-                if isinstance(parent_visualizer, ConversationVisualizerBase):
-                    sub_visualizer = parent_visualizer.__class__(name=agent_id)
-                elif isinstance(parent_visualizer, type) and issubclass(
-                    parent_visualizer, ConversationVisualizerBase
-                ):
-                    sub_visualizer = parent_visualizer(name=agent_id)
+            for agent_id, agent_type in zip(action.ids, resolved_agent_types):
+                factory = get_agent_factory(agent_type)
+                worker_agent = factory.factory_func(parent_llm)
+
+                if isinstance(parent_visualizer, DelegationVisualizer):
+                    sub_visualizer = DelegationVisualizer(
+                        name=agent_id,
+                        highlight_regex=parent_visualizer._highlight_patterns,
+                        skip_user_messages=parent_visualizer._skip_user_messages,
+                    )
                 else:
                     sub_visualizer = None
 
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
                     workspace=workspace_path,
-                    visualize=sub_visualizer,
+                    visualizer=sub_visualizer,
                 )
 
                 self._sub_agents[agent_id] = sub_conversation
-                logger.info(f"Spawned sub-agent with ID: {agent_id}")
 
-            agent_list = ", ".join(action.ids)
-            message = f"Successfully spawned {len(action.ids)} sub-agents: {agent_list}"
+                # Log what type of agent was created
+                logger.info(
+                    f"Spawned sub-agent '{self._format_agent_label(agent_id, agent_type)}'"  # noqa: E501
+                )
+
+            # Create success message with details
+            agent_details = [
+                self._format_agent_label(agent_id, agent_type)
+                for agent_id, agent_type in zip(action.ids, resolved_agent_types)
+            ]
+
+            message = (
+                f"Successfully spawned {len(action.ids)} sub-agents: "
+                f"{', '.join(agent_details)}"
+            )
             return DelegateObservation.from_text(
                 text=message,
                 command=action.command,
@@ -180,11 +207,25 @@ class DelegateExecutor(ToolExecutor):
             results = {}
             errors = {}
 
-            def run_task(agent_id: str, conversation: LocalConversation, task: str):
+            # Get the parent agent's name from the visualizer
+            parent_conversation = self.parent_conversation
+            parent_name = None
+            if hasattr(parent_conversation, "_visualizer"):
+                visualizer = parent_conversation._visualizer
+                if isinstance(visualizer, DelegationVisualizer):
+                    parent_name = visualizer._name
+
+            def run_task(
+                agent_id: str,
+                conversation: LocalConversation,
+                task: str,
+                parent_name: str | None,
+            ):
                 """Run a single task on a sub-agent."""
                 try:
                     logger.info(f"Sub-agent {agent_id} starting task: {task[:100]}...")
-                    conversation.send_message(task)
+                    # Pass raw parent_name - visualizer handles formatting
+                    conversation.send_message(task, sender=parent_name)
                     conversation.run()
 
                     # Extract the final response using get_agent_final_response
@@ -208,7 +249,7 @@ class DelegateExecutor(ToolExecutor):
                 conversation = self._sub_agents[agent_id]
                 thread = threading.Thread(
                     target=run_task,
-                    args=(agent_id, conversation, task),
+                    args=(agent_id, conversation, task, parent_name),
                     name=f"Task-{agent_id}",
                 )
                 threads.append(thread)

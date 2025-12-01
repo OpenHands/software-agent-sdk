@@ -21,11 +21,13 @@ from openhands.sdk.llm import (
     LLM,
     ImageContent,
     LLMRegistry,
+    LLMStreamChunk,
     Message,
     RedactedThinkingBlock,
     RegistryEvent,
     TextContent,
     ThinkingBlock,
+    TokenCallbackType,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import (
@@ -58,6 +60,8 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMStreamChunk",
+    "TokenCallbackType",
     "ConversationStats",
     "RegistryEvent",
     "Message",

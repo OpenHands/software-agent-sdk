@@ -12,8 +12,8 @@ from openhands.tools.terminal.constants import (
     TIMEOUT_MESSAGE_TEMPLATE,
 )
 from openhands.tools.terminal.definition import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal.interface import (
@@ -134,7 +134,7 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
-    ) -> ExecuteBashObservation:
+    ) -> TerminalObservation:
         """Handle a completed command."""
         is_special_key = self._is_special_key(command)
         assert len(ps1_matches) >= 1, (
@@ -186,7 +186,7 @@ class TerminalSession(TerminalSessionBase):
         self.prev_status = TerminalCommandStatus.COMPLETED
         self.prev_output = ""  # Reset previous command output
         self._ready_for_next_command()
-        return ExecuteBashObservation.from_text(
+        return TerminalObservation.from_text(
             command=command,
             text=command_output,
             metadata=metadata,
@@ -197,7 +197,7 @@ class TerminalSession(TerminalSessionBase):
         command: str,
         terminal_content: str,
         ps1_matches: list[re.Match],
-    ) -> ExecuteBashObservation:
+    ) -> TerminalObservation:
         """Handle a command that timed out due to no output change."""
         self.prev_status = TerminalCommandStatus.NO_CHANGE_TIMEOUT
         if len(ps1_matches) != 1:
@@ -220,7 +220,7 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        return ExecuteBashObservation.from_text(
+        return TerminalObservation.from_text(
             command=command,
             text=command_output,
             metadata=metadata,
@@ -232,7 +232,7 @@ class TerminalSession(TerminalSessionBase):
         terminal_content: str,
         ps1_matches: list[re.Match],
         timeout: float,
-    ) -> ExecuteBashObservation:
+    ) -> TerminalObservation:
         """Handle a command that timed out due to hard timeout."""
         self.prev_status = TerminalCommandStatus.HARD_TIMEOUT
         if len(ps1_matches) != 1:
@@ -255,7 +255,7 @@ class TerminalSession(TerminalSessionBase):
             metadata,
             continue_prefix="[Below is the output of the previous command.]\n",
         )
-        return ExecuteBashObservation.from_text(
+        return TerminalObservation.from_text(
             command=command,
             text=command_output,
             metadata=metadata,
@@ -294,7 +294,7 @@ class TerminalSession(TerminalSessionBase):
         logger.debug(f"COMBINED OUTPUT: {combined_output}")
         return combined_output
 
-    def execute(self, action: ExecuteBashAction) -> ExecuteBashObservation:
+    def execute(self, action: TerminalAction) -> TerminalObservation:
         """Execute a command using the terminal backend."""
         if not self._initialized:
             raise RuntimeError("Unified session is not initialized")
@@ -312,13 +312,13 @@ class TerminalSession(TerminalSessionBase):
             TerminalCommandStatus.HARD_TIMEOUT,
         }:
             if command == "":
-                return ExecuteBashObservation.from_text(
+                return TerminalObservation.from_text(
                     text="No previous running command to retrieve logs from.",
                     command=command,
                     is_error=True,
                 )
             if is_input:
-                return ExecuteBashObservation.from_text(
+                return TerminalObservation.from_text(
                     text="No previous running command to interact with.",
                     command=command,
                     is_error=True,
@@ -330,7 +330,7 @@ class TerminalSession(TerminalSessionBase):
             commands_list = "\n".join(
                 f"({i + 1}) {cmd}" for i, cmd in enumerate(splited_commands)
             )
-            return ExecuteBashObservation.from_text(
+            return TerminalObservation.from_text(
                 text=(
                     "Cannot execute multiple commands at once.\n"
                     "Please run each command separately OR chain them into a single "
@@ -388,7 +388,7 @@ class TerminalSession(TerminalSessionBase):
                 metadata,
                 continue_prefix="[Below is the output of the previous command.]\n",
             )
-            obs = ExecuteBashObservation.from_text(
+            obs = TerminalObservation.from_text(
                 command=command,
                 text=command_output,
                 metadata=metadata,

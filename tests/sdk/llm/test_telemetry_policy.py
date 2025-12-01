@@ -6,10 +6,10 @@ from litellm.types.utils import ModelResponse
 from openhands.sdk.llm import LLM, Message, TextContent
 
 
-# Chat path: only extra_body policy: forward only for litellm_proxy, drop otherwise
+# Chat path: extra_body policy: always forward if provided, let provider validate
 
 
-def test_chat_non_proxy_drops_extra_body():
+def test_chat_forwards_extra_body_for_all_models():
     llm = LLM(
         model="cerebras/llama-3.3-70b", usage_id="u1", litellm_extra_body={"k": "v"}
     )
@@ -28,13 +28,14 @@ def test_chat_non_proxy_drops_extra_body():
             model="cerebras/llama-3.3-70b",
             object="chat.completion",
         )
-        llm.completion(messages=messages, extra_body={"x": 1}, metadata={"m": 1})
+        llm.completion(messages=messages, metadata={"m": 1})
         mock_call.assert_called_once()
         kwargs = mock_call.call_args[1]
-        assert "extra_body" not in kwargs
+        # extra_body should be forwarded even for non-proxy models
+        assert kwargs.get("extra_body") == {"k": "v"}
 
 
-def test_chat_proxy_forwards_extra_body_only():
+def test_chat_proxy_forwards_extra_body():
     eb = {"cluster": "c1", "route": "r1"}
     llm = LLM(model="litellm_proxy/gpt-4o", usage_id="u1", litellm_extra_body=eb)
     messages = [Message(role="user", content=[TextContent(text="Hi")])]
@@ -61,7 +62,7 @@ def test_chat_proxy_forwards_extra_body_only():
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
-def test_responses_non_proxy_drops_extra_body(mock_responses):
+def test_responses_forwards_extra_body_for_all_models(mock_responses):
     llm = LLM(
         model="cerebras/llama-3.3-70b", usage_id="u1", litellm_extra_body={"k": "v"}
     )
@@ -82,15 +83,15 @@ def test_responses_non_proxy_drops_extra_body(mock_responses):
         messages,
         store=False,
         include=["text.output_text"],
-        extra_body={"x": 1},
         metadata={"m": 1},
     )
     kwargs = mock_responses.call_args[1]
-    assert "extra_body" not in kwargs
+    # extra_body should be forwarded even for non-proxy models
+    assert kwargs.get("extra_body") == {"k": "v"}
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
-def test_responses_proxy_forwards_extra_body_only(mock_responses):
+def test_responses_proxy_forwards_extra_body(mock_responses):
     eb = {"cluster": "c1", "route": "r1"}
     llm = LLM(model="litellm_proxy/gpt-4o", usage_id="u1", litellm_extra_body=eb)
     messages = [Message(role="user", content=[TextContent(text="Hi")])]

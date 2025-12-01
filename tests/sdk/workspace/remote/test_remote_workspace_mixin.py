@@ -402,8 +402,7 @@ def test_file_download_generator_basic_flow(temp_dir):
     # Get download request
     download_kwargs = next(generator)
     assert download_kwargs["method"] == "GET"
-    assert download_kwargs["url"] == "/api/file/download"
-    assert download_kwargs["params"]["file_path"] == "/remote/file.txt"
+    assert download_kwargs["url"] == "/api/file/download//remote/file.txt"
     assert download_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
 
     # Send response and get result
@@ -437,7 +436,7 @@ def test_file_download_generator_with_path_objects(temp_dir):
     generator = mixin._file_download_generator(Path("/remote/file.txt"), destination)
 
     download_kwargs = next(generator)
-    assert download_kwargs["params"]["file_path"] == "/remote/file.txt"
+    assert download_kwargs["url"] == "/api/file/download//remote/file.txt"
 
 
 def test_file_download_generator_creates_directories(temp_dir):

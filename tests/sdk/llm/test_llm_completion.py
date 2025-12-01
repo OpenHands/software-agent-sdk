@@ -2,15 +2,17 @@
 
 from collections.abc import Sequence
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
-from litellm import ChatCompletionMessageToolCall
+from litellm import ChatCompletionMessageToolCall, CustomStreamWrapper
 from litellm.types.utils import (
     Choices,
+    Delta,
     Function,
     Message as LiteLLMMessage,
     ModelResponse,
+    StreamingChoices,
     Usage,
 )
 from pydantic import SecretStr
@@ -107,14 +109,218 @@ def test_llm_completion_basic(mock_completion):
 
 
 def test_llm_streaming_not_supported(default_config):
-    """Test that streaming is not supported in the basic LLM class."""
+    """Test that streaming requires an on_token callback."""
     llm = default_config
 
     messages = [Message(role="user", content=[TextContent(text="Hello")])]
 
-    # Streaming should raise an error
-    with pytest.raises(ValueError, match="Streaming is not supported"):
+    # Streaming without callback should raise an error
+    with pytest.raises(ValueError, match="Streaming requires an on_token callback"):
         llm.completion(messages=messages, stream=True)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+def test_llm_completion_streaming_with_callback(mock_stream_builder, mock_completion):
+    """Test that streaming with on_token callback works correctly."""
+
+    # Create stream chunks
+    chunk1 = ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content="Hello", role="assistant"),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    chunk2 = ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(content=" world!", role=None),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    chunk3 = ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason="stop",
+                index=0,
+                delta=Delta(content=None, role=None),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    # Create a mock stream wrapper
+    mock_stream = MagicMock(spec=CustomStreamWrapper)
+    mock_stream.__iter__.return_value = iter([chunk1, chunk2, chunk3])
+    mock_completion.return_value = mock_stream
+
+    # Mock the stream builder to return a complete response
+    final_response = create_mock_response("Hello world!")
+    mock_stream_builder.return_value = final_response
+
+    # Create LLM
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+    )
+
+    # Track chunks received by callback
+    received_chunks = []
+
+    def on_token(chunk):
+        received_chunks.append(chunk)
+
+    messages = [Message(role="user", content=[TextContent(text="Hello")])]
+    response = llm.completion(messages=messages, stream=True, on_token=on_token)
+
+    # Verify callback was invoked for each chunk
+    assert len(received_chunks) == 3
+    assert received_chunks[0] == chunk1
+    assert received_chunks[1] == chunk2
+    assert received_chunks[2] == chunk3
+
+    # Verify stream builder was called to assemble final response
+    mock_stream_builder.assert_called_once()
+
+    # Verify final response
+    assert response.message.role == "assistant"
+    assert isinstance(response.message.content[0], TextContent)
+    assert response.message.content[0].text == "Hello world!"
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+@patch("openhands.sdk.llm.llm.litellm.stream_chunk_builder")
+def test_llm_completion_streaming_with_tools(mock_stream_builder, mock_completion):
+    """Test streaming completion with tool calls."""
+
+    # Create stream chunks with tool call
+    chunk1 = ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(
+                    role="assistant",
+                    content=None,
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {"name": "test_tool", "arguments": ""},
+                        }
+                    ],
+                ),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    chunk2 = ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason=None,
+                index=0,
+                delta=Delta(
+                    content=None,
+                    tool_calls=[
+                        {
+                            "index": 0,
+                            "function": {"arguments": '{"param": "value"}'},
+                        }
+                    ],
+                ),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    chunk3 = ModelResponse(
+        id="chatcmpl-test",
+        choices=[
+            StreamingChoices(
+                finish_reason="tool_calls",
+                index=0,
+                delta=Delta(content=None),
+            )
+        ],
+        created=1234567890,
+        model="gpt-4o",
+        object="chat.completion.chunk",
+    )
+
+    # Create mock stream
+    mock_stream = MagicMock(spec=CustomStreamWrapper)
+    mock_stream.__iter__.return_value = iter([chunk1, chunk2, chunk3])
+    mock_completion.return_value = mock_stream
+
+    # Mock final response with tool call
+    final_response = create_mock_response("I'll use the tool")
+    final_response.choices[0].message.tool_calls = [  # type: ignore
+        ChatCompletionMessageToolCall(
+            id="call_123",
+            type="function",
+            function=Function(
+                name="test_tool",
+                arguments='{"param": "value"}',
+            ),
+        )
+    ]
+    mock_stream_builder.return_value = final_response
+
+    llm = LLM(
+        usage_id="test-llm",
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+    )
+
+    received_chunks = []
+
+    def on_token(chunk):
+        received_chunks.append(chunk)
+
+    messages = [Message(role="user", content=[TextContent(text="Use test_tool")])]
+    tools = list(_MockTool.create())
+
+    response = llm.completion(
+        messages=messages, tools=tools, stream=True, on_token=on_token
+    )
+
+    # Verify chunks were received
+    assert len(received_chunks) == 3
+
+    # Verify final response has tool call
+    assert response.message.tool_calls is not None
+    assert len(response.message.tool_calls) == 1
+    assert response.message.tool_calls[0].name == "test_tool"
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

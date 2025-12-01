@@ -584,7 +584,6 @@ def test_security_risk_field_with_live_server(
     This is a regression test spawning a real agent server to ensure end-to-end
     functionality of security_risk field handling.
     """
-    from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
     # Track which completion call we're on to control behavior
     call_count = {"count": 0}
@@ -673,13 +672,12 @@ def test_security_risk_field_with_live_server(
         LLM, "completion", fake_completion_with_tool_calls, raising=True
     )
 
-    # Create an Agent with LLMSecurityAnalyzer
+    # Create an Agent (security analyzer functionality has been deprecated and removed)
     # Using empty tools list since tools need to be registered in the server
     llm = LLM(model="gpt-4", api_key=SecretStr("test"))
     agent = Agent(
         llm=llm,
         tools=[],
-        security_analyzer=LLMSecurityAnalyzer(),
     )
 
     workspace = RemoteWorkspace(

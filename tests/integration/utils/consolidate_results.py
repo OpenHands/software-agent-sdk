@@ -11,7 +11,7 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 
 from tests.integration.utils.format_costs import format_cost
 
@@ -54,7 +54,7 @@ def process_result_file(filepath):
 
 def generate_report(results, trigger_text, commit_sha):
     """Generate the consolidated markdown report."""
-    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    timestamp = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
 
     # Calculate total cost
     total_cost = sum(result.get("total_cost", 0.0) for result in results)

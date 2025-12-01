@@ -30,6 +30,19 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
 
     _client: httpx.Client | None = PrivateAttr(default=None)
 
+    def reset_client(self) -> None:
+        """Reset the HTTP client to force re-initialization.
+
+        This is useful when connection parameters (host, api_key) have changed
+        and the client needs to be recreated with new values.
+        """
+        if self._client is not None:
+            try:
+                self._client.close()
+            except Exception:
+                pass
+        self._client = None
+
     @property
     def client(self) -> httpx.Client:
         client = self._client

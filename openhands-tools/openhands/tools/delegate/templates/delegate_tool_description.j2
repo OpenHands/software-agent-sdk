@@ -1,0 +1,26 @@
+Delegation tool for spawning sub-agents and delegating tasks to them.
+
+This tool provides two commands:
+
+**spawn**: Initialize sub-agents with meaningful identifiers and optional types
+- Use descriptive identifiers that make sense for your use case (e.g., 'refactoring', 'run_tests', 'research')
+- Optionally specify agent types for specialized capabilities
+- Each identifier creates a separate sub-agent conversation
+- Examples:
+{% raw %}  - Default agents: {"command": "spawn", "ids": ["research", "implementation"]}
+  - Specialized agents: {"command": "spawn", "ids": ["research", "code"], "agent_types": ["researcher", "programmer"]}
+  - Mixed types: {"command": "spawn", "ids": ["research", "generic"], "agent_types": ["researcher"]}  # unspecified entries fall back to the default agent{% endraw %}
+
+**delegate**: Send tasks to specific sub-agents and wait for results
+- Use a dictionary mapping sub-agent identifiers to task descriptions
+- This is a blocking operation - waits for all sub-agents to complete
+- Returns a single observation containing results from all sub-agents
+- Example: {% raw %}{"command": "delegate", "tasks": {"research": "Find best practices for async code", "implementation": "Refactor the MyClass class"}}{% endraw %}
+
+{{ agent_types_info }}
+
+**Important Notes:**
+- Identifiers used in delegate must match those used in spawn
+- All operations are blocking and return comprehensive results
+- Sub-agents work in the same workspace as the main agent: {{ workspace_path }}
+- If you omit an agent type for an ID, a default general-purpose agent is used

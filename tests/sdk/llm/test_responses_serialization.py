@@ -8,6 +8,35 @@ from openhands.sdk.llm.message import (
 )
 
 
+def test_function_call_and_output_paired():
+    # Assistant emits a function_call; tool returns an output for same id
+    tc = MessageToolCall(
+        id="abc123", name="apply_patch", arguments="{}", origin="responses"
+    )
+    m_assistant = Message(
+        role="assistant", content=[TextContent(text="")], tool_calls=[tc]
+    )
+    m_tool = Message(
+        role="tool",
+        tool_call_id="abc123",
+        name="apply_patch",
+        content=[TextContent(text="done")],
+    )
+
+    llm = LLM(model="gpt-5-mini")
+    _, inputs = llm.format_messages_for_responses([m_assistant, m_tool])
+
+    # Find function_call and function_call_output
+    fcs = [it for it in inputs if it.get("type") == "function_call"]
+    outs = [it for it in inputs if it.get("type") == "function_call_output"]
+
+    assert len(fcs) == 1 and len(outs) == 1
+    fc = fcs[0]
+    out = outs[0]
+    assert fc["call_id"].startswith("fc_")
+    assert out["call_id"] == fc["call_id"]
+
+
 def test_system_to_responses_value_instructions_concat():
     m1 = Message(role="system", content=[TextContent(text="A"), TextContent(text="B")])
     m2 = Message(role="system", content=[TextContent(text="C")])

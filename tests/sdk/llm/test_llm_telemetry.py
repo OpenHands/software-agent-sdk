@@ -779,3 +779,66 @@ class TestTelemetryEdgeCases:
             assert metrics.accumulated_cost == 0.0
             # Should NOT add zero cost to costs list (0.0 is falsy)
             assert len(basic_telemetry.metrics.costs) == 0
+
+
+class TestTelemetryCallbacks:
+    """Test callback functionality for log streaming and stats updates."""
+
+    def test_set_log_callback(self, basic_telemetry):
+        """Test setting log callback."""
+        callback_called = []
+
+        def log_callback(filename: str, log_data: str):
+            callback_called.append((filename, log_data))
+
+        basic_telemetry.set_log_completions_callback(log_callback)
+        assert basic_telemetry._log_completions_callback == log_callback
+
+        # Clear callback
+        basic_telemetry.set_log_completions_callback(None)
+        assert basic_telemetry._log_completions_callback is None
+
+    def test_set_stats_update_callback(self, basic_telemetry):
+        """Test setting stats update callback."""
+        callback_called = []
+
+        def stats_callback():
+            callback_called.append(True)
+
+        basic_telemetry.set_stats_update_callback(stats_callback)
+        assert basic_telemetry._stats_update_callback == stats_callback
+
+        # Clear callback
+        basic_telemetry.set_stats_update_callback(None)
+        assert basic_telemetry._stats_update_callback is None
+
+    def test_stats_update_callback_triggered_on_response(
+        self, basic_telemetry, mock_response
+    ):
+        """Test that stats update callback is triggered on response."""
+        callback_called = []
+
+        def stats_callback():
+            callback_called.append(True)
+
+        basic_telemetry.set_stats_update_callback(stats_callback)
+        basic_telemetry.on_request(None)
+        basic_telemetry.on_response(mock_response)
+
+        # Callback should be triggered once after response
+        assert len(callback_called) == 1
+
+    def test_stats_update_callback_exception_handling(
+        self, basic_telemetry, mock_response
+    ):
+        """Test that exceptions in stats callback don't break on_response."""
+
+        def failing_callback():
+            raise Exception("Callback failed")
+
+        basic_telemetry.set_stats_update_callback(failing_callback)
+        basic_telemetry.on_request(None)
+
+        # Should not raise exception even if callback fails
+        metrics = basic_telemetry.on_response(mock_response)
+        assert isinstance(metrics, Metrics)

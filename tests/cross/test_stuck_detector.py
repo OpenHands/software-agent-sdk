@@ -17,8 +17,8 @@ from openhands.sdk.llm import (
 )
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal.definition import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
 )
 
 
@@ -43,7 +43,7 @@ def test_history_too_short():
     action = ActionEvent(
         source="agent",
         thought=[TextContent(text="I need to run ls command")],
-        action=ExecuteBashAction(command="ls"),
+        action=TerminalAction(command="ls"),
         tool_name="terminal",
         tool_call_id="call_1",
         tool_call=MessageToolCall(
@@ -58,7 +58,7 @@ def test_history_too_short():
 
     observation = ObservationEvent(
         source="environment",
-        observation=ExecuteBashObservation.from_text(
+        observation=TerminalObservation.from_text(
             text="file1.txt\nfile2.txt",
             command="ls",
             exit_code=0,
@@ -94,7 +94,7 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
-            action=ExecuteBashAction(command="ls"),
+            action=TerminalAction(command="ls"),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
             tool_call=MessageToolCall(
@@ -109,7 +109,7 @@ def test_repeating_action_observation_not_stuck_less_than_4_repeats():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation.from_text(
+            observation=TerminalObservation.from_text(
                 text="file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
@@ -145,7 +145,7 @@ def test_repeating_action_observation_stuck():
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
-            action=ExecuteBashAction(command="ls"),
+            action=TerminalAction(command="ls"),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
             tool_call=MessageToolCall(
@@ -160,7 +160,7 @@ def test_repeating_action_observation_stuck():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation.from_text(
+            observation=TerminalObservation.from_text(
                 text="file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
@@ -197,7 +197,7 @@ def test_repeating_action_error_stuck():
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text="I need to run invalid_command")],
-            action=ExecuteBashAction(command="invalid_command"),
+            action=TerminalAction(command="invalid_command"),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
             tool_call=MessageToolCall(
@@ -288,7 +288,7 @@ def test_not_stuck_with_different_actions():
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text=f"I need to run {cmd} command")],
-            action=ExecuteBashAction(command=cmd),
+            action=TerminalAction(command=cmd),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
             tool_call=MessageToolCall(
@@ -303,7 +303,7 @@ def test_not_stuck_with_different_actions():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation.from_text(
+            observation=TerminalObservation.from_text(
                 text=f"output from {cmd}",
                 command=cmd,
                 exit_code=0,
@@ -339,7 +339,7 @@ def test_reset_after_user_message():
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
-            action=ExecuteBashAction(command="ls"),
+            action=TerminalAction(command="ls"),
             tool_name="terminal",
             tool_call_id=f"call_{i}",
             tool_call=MessageToolCall(
@@ -354,7 +354,7 @@ def test_reset_after_user_message():
 
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation.from_text(
+            observation=TerminalObservation.from_text(
                 text="file1.txt\nfile2.txt",
                 command="ls",
                 exit_code=0,
@@ -384,7 +384,7 @@ def test_reset_after_user_message():
     action = ActionEvent(
         source="agent",
         thought=[TextContent(text="I'll try pwd command")],
-        action=ExecuteBashAction(command="pwd"),
+        action=TerminalAction(command="pwd"),
         tool_name="terminal",
         tool_call_id="call_new",
         tool_call=MessageToolCall(
@@ -399,7 +399,7 @@ def test_reset_after_user_message():
 
     observation = ObservationEvent(
         source="environment",
-        observation=ExecuteBashObservation.from_text(
+        observation=TerminalObservation.from_text(
             text="/home/user", command="pwd", exit_code=0
         ),
         action_id=action.id,

@@ -50,7 +50,6 @@ agent = Agent(
     mcp_config=mcp_config,
     # This regex filters out all repomix tools except pack_codebase
     filter_tools_regex="^(?!repomix)(.*)|^repomix.*pack_codebase.*$",
-    security_analyzer=LLMSecurityAnalyzer(),
 )
 
 llm_messages = []  # collect raw LLM messages
@@ -67,6 +66,7 @@ conversation = Conversation(
     callbacks=[conversation_callback],
     workspace=cwd,
 )
+conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
 logger.info("Starting conversation with MCP integration...")
 conversation.send_message(

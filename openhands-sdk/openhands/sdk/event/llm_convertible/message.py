@@ -43,6 +43,13 @@ class MessageEvent(LLMConvertibleEvent):
     extended_content: list[TextContent] = Field(
         default_factory=list, description="List of content added by agent context"
     )
+    sender: str | None = Field(
+        default=None,
+        description=(
+            "Optional identifier of the sender. "
+            "Can be used to track message origin in multi-agent scenarios."
+        ),
+    )
 
     @property
     def reasoning_content(self) -> str:

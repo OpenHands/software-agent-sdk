@@ -1,4 +1,3 @@
-import warnings
 from collections.abc import Callable
 from typing import ClassVar
 from uuid import uuid4
@@ -10,17 +9,6 @@ from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
-
-
-SERVICE_TO_LLM_DEPRECATION_MSG = (
-    "LLMRegistry.service_to_llm is deprecated and will be removed in a future "
-    "release; use usage_to_llm instead."
-)
-
-LIST_SERVICES_DEPRECATION_MSG = (
-    "LLMRegistry.list_services is deprecated and will be removed in a future "
-    "release; use list_usage_ids instead."
-)
 
 
 class RegistryEvent(BaseModel):
@@ -81,15 +69,6 @@ class LLMRegistry:
 
         return self._usage_to_llm
 
-    @property
-    def service_to_llm(self) -> dict[str, LLM]:  # pragma: no cover - compatibility shim
-        warnings.warn(
-            SERVICE_TO_LLM_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
-        return self._usage_to_llm
-
     def add(self, llm: LLM) -> None:
         """Add an LLM instance to the registry.
 
@@ -103,14 +82,14 @@ class LLMRegistry:
         if usage_id in self._usage_to_llm:
             message = (
                 f"Usage ID '{usage_id}' already exists in registry. "
-                "Use a different usage_id on the LLM (previously service_id) or "
+                "Use a different usage_id on the LLM or "
                 "call get() to retrieve the existing LLM."
             )
             raise ValueError(message)
 
         self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))
-        logger.info(
+        logger.debug(
             f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )
 
@@ -140,14 +119,4 @@ class LLMRegistry:
     def list_usage_ids(self) -> list[str]:
         """List all registered usage IDs."""
 
-        return list(self._usage_to_llm.keys())
-
-    def list_services(self) -> list[str]:  # pragma: no cover - compatibility shim
-        """Deprecated alias for :meth:`list_usage_ids`."""
-
-        warnings.warn(
-            LIST_SERVICES_DEPRECATION_MSG,
-            DeprecationWarning,
-            stacklevel=2,
-        )
         return list(self._usage_to_llm.keys())

@@ -10,20 +10,22 @@ from unittest.mock import Mock
 
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.terminal import BashExecutor, TerminalTool
+from openhands.tools.terminal import TerminalExecutor, TerminalTool
 
 
 def test_conversation_close_calls_executor_close(mock_llm):
     """Test that Conversation.close() calls close() on all tool executors."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a BashExecutor with subprocess terminal to avoid tmux issues
-        bash_executor = BashExecutor(working_dir=temp_dir, terminal_type="subprocess")
-        bash_executor.close = Mock()
+        # Create a TerminalExecutor with subprocess terminal to avoid tmux issues
+        terminal_executor = TerminalExecutor(
+            working_dir=temp_dir, terminal_type="subprocess"
+        )
+        terminal_executor.close = Mock()
 
         def _make_tool(conv_state, **params):
             tools = TerminalTool.create(conv_state)
             tool = tools[0]
-            return [tool.model_copy(update={"executor": bash_executor})]
+            return [tool.model_copy(update={"executor": terminal_executor})]
 
         register_tool("test_terminal", _make_tool)
 
@@ -38,20 +40,22 @@ def test_conversation_close_calls_executor_close(mock_llm):
         conversation.close()
 
         # Verify that the executor's close method was called
-        bash_executor.close.assert_called_once()
+        terminal_executor.close.assert_called_once()
 
 
 def test_conversation_del_calls_close(mock_llm):
     """Test that Conversation.__del__() calls close()."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a BashExecutor with subprocess terminal to avoid tmux issues
-        bash_executor = BashExecutor(working_dir=temp_dir, terminal_type="subprocess")
-        bash_executor.close = Mock()
+        # Create a TerminalExecutor with subprocess terminal to avoid tmux issues
+        terminal_executor = TerminalExecutor(
+            working_dir=temp_dir, terminal_type="subprocess"
+        )
+        terminal_executor.close = Mock()
 
         def _make_tool(conv_state, **params):
             tools = TerminalTool.create(conv_state)
             tool = tools[0]
-            return [tool.model_copy(update={"executor": bash_executor})]
+            return [tool.model_copy(update={"executor": terminal_executor})]
 
         register_tool("test_terminal", _make_tool)
 
@@ -66,7 +70,7 @@ def test_conversation_del_calls_close(mock_llm):
         conversation.__del__()
 
         # Verify that the executor's close method was called
-        bash_executor.close.assert_called_once()
+        terminal_executor.close.assert_called_once()
 
 
 def test_conversation_close_handles_executor_exceptions(mock_llm):
@@ -74,15 +78,17 @@ def test_conversation_close_handles_executor_exceptions(mock_llm):
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create a mock LLM to avoid actual API calls
 
-        # Create a BashExecutor with subprocess terminal and make its close method
+        # Create a TerminalExecutor with subprocess terminal and make its close method
         # raise an exception
-        bash_executor = BashExecutor(working_dir=temp_dir, terminal_type="subprocess")
-        bash_executor.close = Mock(side_effect=Exception("Test exception"))
+        terminal_executor = TerminalExecutor(
+            working_dir=temp_dir, terminal_type="subprocess"
+        )
+        terminal_executor.close = Mock(side_effect=Exception("Test exception"))
 
         def _make_tool(conv_state, **params):
             tools = TerminalTool.create(conv_state)
             tool = tools[0]
-            return [tool.model_copy(update={"executor": bash_executor})]
+            return [tool.model_copy(update={"executor": terminal_executor})]
 
         register_tool("test_terminal", _make_tool)
 
@@ -122,30 +128,34 @@ def test_conversation_close_skips_none_executors(mock_llm):
         conversation.close()
 
 
-def test_bash_executor_close_calls_session_close():
-    """Test that BashExecutor.close() calls session.close()."""
+def test_terminal_executor_close_calls_session_close():
+    """Test that TerminalExecutor.close() calls session.close()."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a BashExecutor with subprocess terminal
-        bash_executor = BashExecutor(working_dir=temp_dir, terminal_type="subprocess")
+        # Create a TerminalExecutor with subprocess terminal
+        terminal_executor = TerminalExecutor(
+            working_dir=temp_dir, terminal_type="subprocess"
+        )
 
         # Mock the session's close method
-        bash_executor.session.close = Mock()
+        terminal_executor.session.close = Mock()
 
         # Call close on the executor
-        bash_executor.close()
+        terminal_executor.close()
 
         # Verify that session.close() was called
-        bash_executor.session.close.assert_called_once()
+        terminal_executor.session.close.assert_called_once()
 
 
-def test_bash_executor_close_handles_missing_session():
-    """Test that BashExecutor.close() handles missing session attribute."""
+def test_terminal_executor_close_handles_missing_session():
+    """Test that TerminalExecutor.close() handles missing session attribute."""
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create a BashExecutor with subprocess terminal
-        bash_executor = BashExecutor(working_dir=temp_dir, terminal_type="subprocess")
+        # Create a TerminalExecutor with subprocess terminal
+        terminal_executor = TerminalExecutor(
+            working_dir=temp_dir, terminal_type="subprocess"
+        )
 
         # Remove the session attribute
-        delattr(bash_executor, "session")
+        delattr(terminal_executor, "session")
 
         # This should not raise an exception
-        bash_executor.close()
+        terminal_executor.close()

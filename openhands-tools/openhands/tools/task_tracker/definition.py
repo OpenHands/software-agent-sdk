@@ -25,11 +25,14 @@ from openhands.sdk.tool import (
 
 logger = get_logger(__name__)
 
+# Type alias for task tracker status
+TaskTrackerStatusType = Literal["todo", "in_progress", "done"]
+
 
 class TaskItem(BaseModel):
     title: str = Field(..., description="A brief title for the task.")
     notes: str = Field("", description="Additional details or notes about the task.")
-    status: Literal["todo", "in_progress", "done"] = Field(
+    status: TaskTrackerStatusType = Field(
         "todo",
         description="The current status of the task. "
         "One of 'todo', 'in_progress', or 'done'.",

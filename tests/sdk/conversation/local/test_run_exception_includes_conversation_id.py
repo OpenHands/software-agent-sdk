@@ -5,11 +5,20 @@ import pytest
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.llm import LLM
 
 
 class FailingAgent(AgentBase):
-    def step(self, conversation, on_event):  # noqa: D401, ARG002
+    def step(
+        self,
+        conversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ):  # noqa: D401, ARG002
         """Intentionally fail to simulate an unexpected runtime error."""
         raise ValueError("boom")
 

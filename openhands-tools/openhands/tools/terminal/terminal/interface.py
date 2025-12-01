@@ -7,8 +7,8 @@ from openhands.tools.terminal.constants import (
     NO_CHANGE_TIMEOUT_SECONDS,
 )
 from openhands.tools.terminal.definition import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
 )
 
 
@@ -171,7 +171,7 @@ class TerminalSessionBase(ABC):
         """
 
     @abstractmethod
-    def execute(self, action: ExecuteBashAction) -> ExecuteBashObservation:
+    def execute(self, action: TerminalAction) -> TerminalObservation:
         """Execute a command in the terminal session.
 
         This method should execute the bash command specified in the action
@@ -181,7 +181,7 @@ class TerminalSessionBase(ABC):
             action: The bash action to execute containing the command and parameters.
 
         Returns:
-            ExecuteBashObservation with the command result including output,
+            TerminalObservation with the command result including output,
             exit code, and execution metadata.
         """
 

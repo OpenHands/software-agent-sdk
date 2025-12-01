@@ -36,7 +36,7 @@ class WebhookSpec(BaseModel):
 
     # General parameters
     event_buffer_size: int = Field(
-        default=10,
+        default=5,
         ge=1,
         description=(
             "The number of events to buffer locally before posting to the webhook"

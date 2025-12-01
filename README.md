@@ -27,36 +27,54 @@
   <hr>
 </div>
 
-The OpenHands SDK allows you to build applications with agents that write software. This SDK also powers [OpenHands](https://github.com/OpenHands/OpenHands), an all-batteries-included coding agent that you can access through a GUI, CLI, or API.
+The OpenHands Software Agent SDK is a set of Python and REST APIs for **building agents that work with code**.
 
-## Features
+You can use the OpenHands Software Agent SDK for:
+* One-off tasks, like building a README for your repo
+* Routine maintenance tasks, like updating dependencies
+* Major tasks that involve multiple agents, like refactors and rewrites
 
-- **Single Python API**: Unified interface for building coding agents with minimal boilerplate
-- **Pre-defined Tools**: Built-in tools for bash commands, file editing, task tracking, and web browsing
-- **REST-based Agent Server**: Deploy agents as scalable web services with WebSocket support for real-time interactions
+Importantly, agents can either use the local machine as their workspace, or run inside ephemeral workspaces
+(e.g. in Docker or Kubernetes) using the Agent Server.
 
-## Why OpenHands Agent SDK?
+You can even use the SDK to build new developer experiences: it’s the engine behind the
+[OpenHands CLI](https://github.com/OpenHands/OpenHands-CLI) and [OpenHands Cloud](https://github.com/OpenHands/OpenHands).
 
-- **Emphasis on coding**: Purpose-built for software development tasks with specialized tools and workflows
-- **State-of-the-Art Performance**: Powered by advanced LLMs and optimized for real-world coding scenarios
-- **Free and Open Source**: MIT licensed with an active community and transparent development
+Get started with some [examples](https://docs.openhands.dev/sdk/guides/hello-world) or [check out the docs](https://docs.openhands.dev/sdk) to learn more.
 
 ## Quick Start
 
 Here's what building with the SDK looks like:
 
 ```python
-from openhands.sdk import LLM, Conversation
-from openhands.tools.preset.default import get_default_agent
+import os
 
-# Configure LLM and create agent
-llm = LLM(model="openhands/claude-sonnet-4-5-20250929", api_key='...')
-agent = get_default_agent(llm=llm)
+from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.task_tracker import TaskTrackerTool
+from openhands.tools.terminal import TerminalTool
 
-# Start a conversation
-conversation = Conversation(agent=agent, workspace="/path/to/project")
-conversation.send_message("Write 3 facts about this project into FACTS.txt.")
+
+llm = LLM(
+    model="anthropic/claude-sonnet-4-5-20250929",
+    api_key=os.getenv("LLM_API_KEY"),
+)
+
+agent = Agent(
+    llm=llm,
+    tools=[
+        Tool(name=TerminalTool.name),
+        Tool(name=FileEditorTool.name),
+        Tool(name=TaskTrackerTool.name),
+    ],
+)
+
+cwd = os.getcwd()
+conversation = Conversation(agent=agent, workspace=cwd)
+
+conversation.send_message("Write 3 facts about the current project into FACTS.txt.")
 conversation.run()
+print("All done!")
 ```
 
 For installation instructions and detailed setup, see the [Getting Started Guide](https://docs.openhands.dev/sdk/getting-started).

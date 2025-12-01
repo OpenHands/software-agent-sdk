@@ -11,8 +11,8 @@ from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import TerminalTool
-from openhands.tools.terminal.definition import ExecuteBashAction
-from openhands.tools.terminal.impl import BashExecutor
+from openhands.tools.terminal.definition import TerminalAction
+from openhands.tools.terminal.impl import TerminalExecutor
 from openhands.tools.terminal.terminal import (
     SubprocessTerminal,
     TerminalSession,
@@ -40,7 +40,7 @@ def test_default_auto_detection():
         # TerminalTool always has an executor
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
 
         # Should always use TerminalSession now
         assert isinstance(executor.session, TerminalSession)
@@ -50,7 +50,7 @@ def test_default_auto_detection():
         assert terminal_type in ["TmuxTerminal", "SubprocessTerminal"]
 
         # Test that it works
-        action = ExecuteBashAction(command="echo 'Auto-detection test'")
+        action = TerminalAction(command="echo 'Auto-detection test'")
         obs = executor(action)
         assert "Auto-detection test" in obs.text
 
@@ -65,12 +65,12 @@ def test_forced_terminal_types():
         tool = tools[0]
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
         assert isinstance(executor.session, TerminalSession)
         assert isinstance(executor.session.terminal, SubprocessTerminal)
 
         # Test basic functionality
-        action = ExecuteBashAction(command="echo 'Subprocess test'")
+        action = TerminalAction(command="echo 'Subprocess test'")
         obs = tool.executor(action)
         assert obs.metadata.exit_code == 0
 
@@ -90,7 +90,7 @@ def test_unix_auto_detection(mock_system):
             tool = tools[0]
             assert tool.executor is not None
             executor = tool.executor
-            assert isinstance(executor, BashExecutor)
+            assert isinstance(executor, TerminalExecutor)
             assert isinstance(executor.session, TerminalSession)
             assert isinstance(executor.session.terminal, TmuxTerminal)
 
@@ -103,7 +103,7 @@ def test_unix_auto_detection(mock_system):
             tool = tools[0]
             assert tool.executor is not None
             executor = tool.executor
-            assert isinstance(executor, BashExecutor)
+            assert isinstance(executor, TerminalExecutor)
             assert isinstance(executor.session, TerminalSession)
             assert isinstance(executor.session.terminal, SubprocessTerminal)
 
@@ -121,7 +121,7 @@ def test_session_parameters():
 
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
         session = executor.session
         assert session.work_dir == temp_dir
         assert session.username == "testuser"
@@ -136,7 +136,7 @@ def test_backward_compatibility():
         tool = tools[0]
 
         assert tool.executor is not None
-        action = ExecuteBashAction(command="echo 'Backward compatibility test'")
+        action = TerminalAction(command="echo 'Backward compatibility test'")
         obs = tool.executor(action)
         assert "Backward compatibility test" in obs.text
         assert obs.metadata.exit_code == 0
@@ -150,7 +150,7 @@ def test_tool_metadata():
 
         assert tool.name == "terminal"
         assert tool.description is not None
-        assert tool.action_type == ExecuteBashAction
+        assert tool.action_type == TerminalAction
         assert hasattr(tool, "annotations")
 
 
@@ -165,11 +165,11 @@ def test_session_lifecycle():
         # Session should be initialized
         assert tool.executor is not None
         executor = tool.executor
-        assert isinstance(executor, BashExecutor)
+        assert isinstance(executor, TerminalExecutor)
         assert executor.session._initialized
 
         # Should be able to execute commands
-        action = ExecuteBashAction(command="echo 'Lifecycle test'")
+        action = TerminalAction(command="echo 'Lifecycle test'")
         obs = executor(action)
         assert obs.metadata.exit_code == 0
 

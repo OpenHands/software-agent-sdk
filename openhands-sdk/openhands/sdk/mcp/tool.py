@@ -108,9 +108,8 @@ def _create_mcp_action_type(action_type: mcp.types.Tool) -> type[Schema]:
     if mcp_action_type:
         return mcp_action_type
 
-    mcp_action_type = Schema.from_mcp_schema(
-        f"{to_camel_case(action_type.name)}Action", action_type.inputSchema
-    )
+    model_name = f"MCP{to_camel_case(action_type.name)}Action"
+    mcp_action_type = Schema.from_mcp_schema(model_name, action_type.inputSchema)
     _mcp_dynamic_action_type[action_type.name] = mcp_action_type
     return mcp_action_type
 

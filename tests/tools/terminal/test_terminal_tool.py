@@ -10,8 +10,8 @@ from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.llm import LLM
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.terminal import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
     TerminalTool,
 )
 
@@ -37,7 +37,7 @@ def test_bash_tool_initialization():
         # Check that the tool has the correct name and properties
         assert tool.name == "terminal"
         assert tool.executor is not None
-        assert tool.action_type == ExecuteBashAction
+        assert tool.action_type == TerminalAction
 
 
 def test_bash_tool_with_username():
@@ -50,7 +50,7 @@ def test_bash_tool_with_username():
         # Check that the tool has the correct name and properties
         assert tool.name == "terminal"
         assert tool.executor is not None
-        assert tool.action_type == ExecuteBashAction
+        assert tool.action_type == TerminalAction
 
 
 def test_bash_tool_execution():
@@ -61,14 +61,14 @@ def test_bash_tool_execution():
         tool = tools[0]
 
         # Create an action
-        action = ExecuteBashAction(command="echo 'Hello, World!'")
+        action = TerminalAction(command="echo 'Hello, World!'")
 
         # Execute the action
         result = tool(action)
 
         # Check the result
         assert result is not None
-        assert isinstance(result, ExecuteBashObservation)
+        assert isinstance(result, TerminalObservation)
         assert "Hello, World!" in result.text
 
 
@@ -80,13 +80,13 @@ def test_bash_tool_working_directory():
         tool = tools[0]
 
         # Create an action to check current directory
-        action = ExecuteBashAction(command="pwd")
+        action = TerminalAction(command="pwd")
 
         # Execute the action
         result = tool(action)
 
         # Check that the working directory is correct
-        assert isinstance(result, ExecuteBashObservation)
+        assert isinstance(result, TerminalObservation)
         assert temp_dir in result.text
 
 

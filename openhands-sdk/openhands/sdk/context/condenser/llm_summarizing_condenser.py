@@ -69,9 +69,10 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
 
+        # Do not pass extra_body explicitly. The LLM handles forwarding
+        # litellm_extra_body only when it is non-empty.
         llm_response = self.llm.completion(
             messages=messages,
-            extra_body=self.llm.litellm_extra_body,
         )
         # Extract summary from the LLMResponse message
         summary = None

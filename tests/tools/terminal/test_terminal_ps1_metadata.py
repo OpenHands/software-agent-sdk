@@ -6,7 +6,7 @@ from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_END,
 )
 from openhands.tools.terminal.definition import (
-    ExecuteBashObservation,
+    TerminalObservation,
 )
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 
@@ -268,12 +268,12 @@ def test_ps1_metadata_regex_pattern():
 
 
 def test_cmd_output_observation_properties():
-    """Test ExecuteBashObservation class properties"""
+    """Test TerminalObservation class properties"""
     from openhands.sdk.tool.schema import TextContent
 
     # Test with successful command
     metadata = CmdOutputMetadata(exit_code=0, pid=123)
-    obs = ExecuteBashObservation.from_text(
+    obs = TerminalObservation.from_text(
         text="file1\nfile2",
         command="ls",
         exit_code=0,
@@ -291,7 +291,7 @@ def test_cmd_output_observation_properties():
 
     # Test with failed command
     metadata = CmdOutputMetadata(exit_code=1, pid=456)
-    obs = ExecuteBashObservation.from_text(
+    obs = TerminalObservation.from_text(
         text="Command failed",
         command="invalid",
         exit_code=1,
@@ -303,7 +303,7 @@ def test_cmd_output_observation_properties():
     assert obs.is_error
     assert len(obs.to_llm_content) == 2
     assert isinstance(obs.to_llm_content[0], TextContent)
-    assert obs.to_llm_content[0].text == ExecuteBashObservation.ERROR_MESSAGE_HEADER
+    assert obs.to_llm_content[0].text == TerminalObservation.ERROR_MESSAGE_HEADER
     assert isinstance(obs.to_llm_content[1], TextContent)
     assert "Command failed" in obs.to_llm_content[1].text
 

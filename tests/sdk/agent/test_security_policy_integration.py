@@ -172,7 +172,7 @@ def test_non_llm_security_analyzer_still_includes_risk_assessment():
         def security_risk(self, action: ActionEvent) -> SecurityRisk:
             return SecurityRisk.LOW
 
-    # Create agent with non-LLM security analyzer
+    # Create agent (security analyzer functionality has been deprecated and removed)
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -180,7 +180,6 @@ def test_non_llm_security_analyzer_still_includes_risk_assessment():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=MockSecurityAnalyzer(),
     )
 
     # Get the system message

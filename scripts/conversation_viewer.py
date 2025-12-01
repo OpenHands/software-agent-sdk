@@ -1,7 +1,7 @@
 """Streamlit app to explore OpenHands conversation logs.
 
 Usage:
-    streamlit run examples/conversation_viewer.py
+    streamlit run scripts/conversation_viewer.py
 
 The viewer expects a directory containing conversation folders. By default we
 look for ``.conversations`` next to the repository root (the location created by

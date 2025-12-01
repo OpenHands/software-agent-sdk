@@ -1,0 +1,130 @@
+"""Integration tests that execute example scripts via pytest.
+
+These tests are disabled by default. Pass ``--run-examples`` to enable them.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+import time
+from collections.abc import Iterable
+from pathlib import Path
+
+import pytest
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+EXAMPLES_ROOT = REPO_ROOT / "examples"
+
+_TARGET_DIRECTORIES = (
+    EXAMPLES_ROOT / "01_standalone_sdk",
+    EXAMPLES_ROOT / "02_remote_agent_server",
+)
+
+# Examples that require interactive input or additional infrastructure.
+_EXCLUDED_EXAMPLES = {
+    "examples/01_standalone_sdk/01_hello_world.py",
+    "examples/01_standalone_sdk/04_confirmation_mode_example.py",
+    "examples/01_standalone_sdk/06_interactive_terminal_w_reasoning.py",
+    "examples/01_standalone_sdk/08_mcp_with_oauth.py",
+    "examples/01_standalone_sdk/15_browser_use.py",
+    "examples/01_standalone_sdk/16_llm_security_analyzer.py",
+    "examples/01_standalone_sdk/27_observability_laminar.py",
+    "examples/02_remote_agent_server/04_vscode_with_docker_sandboxed_server.py",
+}
+
+
+def _discover_examples() -> list[Path]:
+    candidates: list[Path] = []
+    for directory in _TARGET_DIRECTORIES:
+        if not directory.exists():
+            continue
+        candidates.extend(sorted(directory.glob("*.py")))
+    return candidates
+
+
+def _iter_examples() -> Iterable[Path]:
+    excluded = {_normalize_path(REPO_ROOT / p) for p in _EXCLUDED_EXAMPLES}
+    for example_path in _discover_examples():
+        normalized = _normalize_path(example_path)
+        if normalized in excluded:
+            continue
+        yield example_path
+
+
+def _normalize_path(path: Path) -> str:
+    return str(path.relative_to(REPO_ROOT)).replace(os.sep, "/")
+
+
+EXAMPLES = tuple(_iter_examples())
+
+
+@pytest.mark.parametrize("example_path", EXAMPLES, ids=_normalize_path)
+def test_example_scripts(
+    example_path: Path,
+    examples_enabled: bool,
+    examples_results_dir: Path,
+) -> None:
+    if not examples_enabled:
+        pytest.skip("Use --run-examples to execute example scripts.")
+
+    rel_path = example_path.relative_to(REPO_ROOT)
+    result_file = (
+        examples_results_dir
+        / f"{_normalize_path(example_path).replace('/', '__')}.json"
+    )
+
+    start = time.perf_counter()
+    env = os.environ.copy()
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    process = subprocess.run(  # noqa: S603
+        [sys.executable, str(example_path)],
+        cwd=str(REPO_ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    duration = time.perf_counter() - start
+
+    stdout = process.stdout
+    stderr = process.stderr
+
+    cost = None
+    for line in stdout.splitlines():
+        if line.startswith("EXAMPLE_COST:"):
+            cost = line.split("EXAMPLE_COST:", 1)[1].strip()
+            break
+
+    status = "passed"
+    failure_reason = None
+
+    if process.returncode != 0:
+        status = "failed"
+        failure_reason = f"Exit code {process.returncode}"
+    elif cost is None:
+        status = "failed"
+        failure_reason = "Missing EXAMPLE_COST marker in stdout"
+
+    result_payload = {
+        "example": _normalize_path(example_path),
+        "status": status,
+        "duration_seconds": duration,
+        "cost": cost,
+        "returncode": process.returncode,
+        "failure_reason": failure_reason,
+    }
+
+    result_file.write_text(json.dumps(result_payload, indent=2))
+
+    if status != "passed":
+        pytest.fail(
+            "Example script failed:\n"
+            f"Example: {rel_path}\n"
+            f"Reason: {failure_reason}\n"
+            f"Stdout:\n{stdout}\n"
+            f"Stderr:\n{stderr}"
+        )

@@ -20,6 +20,7 @@ recursive-include openhands-sdk py.typed
 # ==============================================================================
 include openhands-tools/pyproject.toml
 recursive-include openhands-tools *.py
+recursive-include openhands-tools *.j2
 recursive-include openhands-tools py.typed
 
 # ==============================================================================

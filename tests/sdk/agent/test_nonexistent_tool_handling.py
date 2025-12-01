@@ -14,7 +14,7 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.event import AgentErrorEvent, MessageEvent
+from openhands.sdk.event import ActionEvent, AgentErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 
 
@@ -232,7 +232,7 @@ def test_conversation_continues_after_tool_error():
                 object="chat.completion",
             )
         else:
-            # Second call: respond normally after seeing the error
+            # Second call: respond with finish tool
             return ModelResponse(
                 id="mock-response-2",
                 choices=[
@@ -240,11 +240,22 @@ def test_conversation_continues_after_tool_error():
                         index=0,
                         message=LiteLLMMessage(
                             role="assistant",
-                            content=(
-                                "I see there was an error. Let me respond normally now."
-                            ),
+                            content=None,
+                            tool_calls=[
+                                ChatCompletionMessageToolCall(
+                                    id="finish-call-1",
+                                    type="function",
+                                    function=Function(
+                                        name="finish",
+                                        arguments=(
+                                            '{"message": "I see there '
+                                            'was an error. Task completed."}'
+                                        ),
+                                    ),
+                                )
+                            ],
                         ),
-                        finish_reason="stop",
+                        finish_reason="tool_calls",
                     )
                 ],
                 created=0,
@@ -283,21 +294,18 @@ def test_conversation_continues_after_tool_error():
                 != ConversationExecutionStatus.FINISHED
             )
 
-        # Run second step - should continue normally
+        # Run second step - should call finish tool
         agent.step(conversation, on_event=event_callback)
 
-        # Verify we got a message event from the second response
-        message_events = [
+        # Verify we got an action event for the finish tool
+        action_events = [
             e
             for e in collected_events
-            if isinstance(e, MessageEvent) and e.source == "agent"
+            if isinstance(e, ActionEvent)
+            and e.source == "agent"
+            and e.tool_name == "finish"
         ]
-        assert len(message_events) == 1
-
-        message_event = message_events[0]
-        content_text = message_event.llm_message.content[0]
-        assert isinstance(content_text, TextContent)
-        assert "respond normally" in content_text.text
+        assert len(action_events) == 1
 
         # Now the conversation should be finished
         with conversation.state:
