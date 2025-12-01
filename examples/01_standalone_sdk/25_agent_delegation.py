@@ -196,4 +196,4 @@ print(f"EXAMPLE_COST (user-defined agents): {cost_2}")
 print("All done!")
 
 # Full example cost report for CI workflow
-print(f"EXAMPLE COST: {cost_1 + cost_2}")
+print(f"EXAMPLE_COST: {cost_1 + cost_2}")
