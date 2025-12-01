@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 import httpx  # noqa: F401
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -259,6 +258,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
+    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    prompt_cache_retention: str | None = Field(
+        default="24h",
+        description=(
+            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
+            "explicitly stripped for all other models."
+        ),
+    )
     extended_thinking_budget: int | None = Field(
         default=200_000,
         description="The budget tokens for extended thinking, "
@@ -275,7 +282,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     usage_id: str = Field(
         default="default",
-        validation_alias=AliasChoices("usage_id", "service_id"),
         serialization_alias="usage_id",
         description=(
             "Unique usage identifier for the LLM. Used for registry lookups, "

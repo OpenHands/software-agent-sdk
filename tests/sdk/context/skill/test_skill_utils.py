@@ -351,6 +351,209 @@ def test_load_skills_with_cursorrules(temp_skills_dir_with_cursorrules):
     assert cursorrules_agent.trigger is None
 
 
+@pytest.fixture
+def temp_skills_dir_with_context_files():
+    """Create a temporary directory with CLAUDE.md and GEMINI.md files."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+
+        # Create .openhands/skills directory structure
+        skills_dir = root / ".openhands" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create claude.md file in repository root (lowercase to match pattern)
+        claude_content = """# Claude-Specific Instructions
+
+These are instructions specifically for Claude AI."""
+        (root / "claude.md").write_text(claude_content)
+
+        # Create gemini.md file in repository root (lowercase to match pattern)
+        gemini_content = """# Gemini-Specific Instructions
+
+These are instructions specifically for Google Gemini AI."""
+        (root / "gemini.md").write_text(gemini_content)
+
+        # Create test repo agent
+        repo_agent = """---
+# type: repo
+version: 1.0.0
+agent: CodeActAgent
+---
+
+# Test Repository Agent
+
+Repository-specific test instructions.
+"""
+        (skills_dir / "repo.md").write_text(repo_agent)
+
+        yield root
+
+
+def test_load_skills_with_claude_gemini(temp_skills_dir_with_context_files):
+    """Test loading skills when claude.md and gemini.md files exist."""
+    skills_dir = temp_skills_dir_with_context_files / ".openhands" / "skills"
+
+    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+
+    # Verify that claude.md and gemini.md files were loaded as RepoSkills
+    assert len(repo_agents) == 3  # repo.md + claude.md + gemini.md
+    assert "repo" in repo_agents
+    assert "claude" in repo_agents
+    assert "gemini" in repo_agents
+
+    # Check CLAUDE.md agent
+    claude_agent = repo_agents["claude"]
+    assert claude_agent.trigger is None
+    assert claude_agent.name == "claude"
+    assert "Claude-Specific Instructions" in claude_agent.content
+    assert claude_agent.trigger is None
+
+    # Check GEMINI.md agent
+    gemini_agent = repo_agents["gemini"]
+    assert gemini_agent.trigger is None
+    assert gemini_agent.name == "gemini"
+    assert "Gemini-Specific Instructions" in gemini_agent.content
+    assert gemini_agent.trigger is None
+
+
+@pytest.fixture
+def temp_skills_dir_with_uppercase_context_files():
+    """Create a temporary directory with CLAUDE.MD and GEMINI.MD files (uppercase)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+
+        # Create .openhands/skills directory structure
+        skills_dir = root / ".openhands" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create CLAUDE.MD file in repository root (all uppercase)
+        claude_content = """# Claude-Specific Instructions
+
+These are instructions specifically for Claude AI."""
+        (root / "CLAUDE.MD").write_text(claude_content)
+
+        # Create GEMINI.MD file in repository root (all uppercase)
+        gemini_content = """# Gemini-Specific Instructions
+
+These are instructions specifically for Google Gemini AI."""
+        (root / "GEMINI.MD").write_text(gemini_content)
+
+        # Create test repo agent
+        repo_agent = """---
+# type: repo
+version: 1.0.0
+agent: CodeActAgent
+---
+
+# Test Repository Agent
+
+Repository-specific test instructions.
+"""
+        (skills_dir / "repo.md").write_text(repo_agent)
+
+        yield root
+
+
+def test_load_skills_with_uppercase_claude_gemini(
+    temp_skills_dir_with_uppercase_context_files,
+):
+    """Test loading skills when CLAUDE.MD and GEMINI.MD files exist (uppercase)."""
+    skills_dir = temp_skills_dir_with_uppercase_context_files / ".openhands" / "skills"
+
+    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+
+    # Verify that CLAUDE.MD and GEMINI.MD files were loaded as RepoSkills
+    assert len(repo_agents) == 3  # repo.md + CLAUDE.MD + GEMINI.MD
+    assert "repo" in repo_agents
+    assert "claude" in repo_agents
+    assert "gemini" in repo_agents
+
+    # Check CLAUDE.MD agent
+    claude_agent = repo_agents["claude"]
+    assert claude_agent.trigger is None
+    assert claude_agent.name == "claude"
+    assert "Claude-Specific Instructions" in claude_agent.content
+
+    # Check GEMINI.MD agent
+    gemini_agent = repo_agents["gemini"]
+    assert gemini_agent.trigger is None
+    assert gemini_agent.name == "gemini"
+    assert "Gemini-Specific Instructions" in gemini_agent.content
+
+
+@pytest.fixture
+def temp_skills_dir_with_large_context_file():
+    """Create a temporary directory with a very large CLAUDE.md file to test
+    truncation."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        root = Path(temp_dir)
+
+        # Create .openhands/skills directory structure
+        skills_dir = root / ".openhands" / "skills"
+        skills_dir.mkdir(parents=True, exist_ok=True)
+
+        # Create a very large CLAUDE.md file (15,000 chars, exceeds 10,000 limit)
+        # Pattern: repeat "CLAUDE INSTRUCTION X\n" many times
+        claude_content = "# Claude Instructions - Start\n\n"
+        for i in range(800):  # This will create ~15,000+ characters
+            claude_content += (
+                f"Claude instruction line {i:04d}: Follow this guideline carefully.\n"
+            )
+        claude_content += "\n# Claude Instructions - End\n"
+
+        (root / "claude.md").write_text(claude_content)
+
+        # Create test repo agent
+        repo_agent = """---
+# type: repo
+version: 1.0.0
+agent: CodeActAgent
+---
+
+# Test Repository Agent
+
+Repository-specific test instructions.
+"""
+        (skills_dir / "repo.md").write_text(repo_agent)
+
+        yield root, len(claude_content)
+
+
+def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_context_file):
+    """Test that large third-party skill files are truncated properly."""
+    from openhands.sdk.context.skills.skill import THIRD_PARTY_SKILL_MAX_CHARS
+
+    root, original_size = temp_skills_dir_with_large_context_file
+    skills_dir = root / ".openhands" / "skills"
+
+    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+
+    # Verify that CLAUDE.md file was loaded but truncated
+    assert len(repo_agents) == 2  # repo.md + claude.md
+    assert "claude" in repo_agents
+
+    # Check that content was truncated
+    claude_agent = repo_agents["claude"]
+    assert claude_agent.trigger is None
+    assert claude_agent.name == "claude"
+
+    # Content should be less than or equal to limit
+    assert len(claude_agent.content) <= THIRD_PARTY_SKILL_MAX_CHARS
+
+    # Should contain the truncation notice
+    assert "<TRUNCATED>" in claude_agent.content
+    assert "exceeded the maximum length" in claude_agent.content
+    assert "claude.md" in claude_agent.content  # Should mention the filename
+    assert "You can read the full file if needed" in claude_agent.content
+
+    # Should contain parts from beginning and end
+    assert "Claude Instructions - Start" in claude_agent.content
+    assert "Claude Instructions - End" in claude_agent.content
+
+    # Original file should have been larger
+    assert original_size > THIRD_PARTY_SKILL_MAX_CHARS
+
+
 def test_repo_skill_with_mcp_tools():
     """Test loading a repo skill with mcp_tools configuration."""
     # Create a repo skill with mcp_tools in frontmatter
