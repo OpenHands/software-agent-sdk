@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 import httpx  # noqa: F401
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -40,6 +39,7 @@ from typing import cast
 
 from litellm import (
     ChatCompletionToolParam,
+    CustomStreamWrapper,
     ResponseInputParam,
     completion as litellm_completion,
 )
@@ -72,6 +72,9 @@ from openhands.sdk.llm.message import (
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
+from openhands.sdk.llm.streaming import (
+    TokenCallbackType,
+)
 from openhands.sdk.llm.utils.metrics import Metrics, MetricsSnapshot
 from openhands.sdk.llm.utils.model_features import get_default_temperature, get_features
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
@@ -184,6 +187,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     ollama_base_url: str | None = Field(default=None)
 
+    stream: bool = Field(
+        default=False,
+        description=(
+            "Enable streaming responses from the LLM. "
+            "When enabled, the provided `on_token` callback in .completions "
+            "and .responses will be invoked for each chunk of tokens."
+        ),
+    )
     drop_params: bool = Field(default=True)
     modify_params: bool = Field(
         default=True,
@@ -240,6 +251,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
+    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    prompt_cache_retention: str | None = Field(
+        default="24h",
+        description=(
+            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
+            "explicitly stripped for all other models."
+        ),
+    )
     extended_thinking_budget: int | None = Field(
         default=200_000,
         description="The budget tokens for extended thinking, "
@@ -256,7 +275,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     usage_id: str = Field(
         default="default",
-        validation_alias=AliasChoices("usage_id", "service_id"),
         serialization_alias="usage_id",
         description=(
             "Unique usage identifier for the LLM. Used for registry lookups, "
@@ -338,7 +356,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("openhands/"):
             model_name = model_val.removeprefix("openhands/")
             d["model"] = f"litellm_proxy/{model_name}"
-            d["base_url"] = "https://llm-proxy.app.all-hands.dev/"
+            # Set base_url (default to the app proxy when base_url is unset)
+            d["base_url"] = d.get("base_url", "https://llm-proxy.app.all-hands.dev/")
 
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
@@ -447,6 +466,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Generate a completion from the language model.
@@ -466,9 +486,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             >>> response = llm.completion(messages)
             >>> print(response.content)
         """
-        # Check if streaming is requested
-        if kwargs.get("stream", False):
-            raise ValueError("Streaming is not supported")
+        enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if enable_streaming:
+            if on_token is None:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         # 1) serialize messages
         formatted_messages = self.format_messages_for_llm(messages)
@@ -531,7 +553,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self._telemetry.on_request(log_ctx=log_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
-            resp = self._transport_call(messages=formatted_messages, **final_kwargs)
+            resp = self._transport_call(
+                messages=formatted_messages,
+                **final_kwargs,
+                enable_streaming=enable_streaming,
+                on_token=on_token,
+            )
             raw_resp: ModelResponse | None = None
             if use_mock_tools:
                 raw_resp = copy.deepcopy(resp)
@@ -588,15 +615,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
+        on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
 
         Maps Message[] -> (instructions, input[]) and returns LLMResponse.
-        Non-stream only for v1.
         """
         # Streaming not yet supported
-        if kwargs.get("stream", False):
+        if kwargs.get("stream", False) or self.stream or on_token is not None:
             raise ValueError("Streaming is not supported for Responses API yet")
 
         # Build instructions + input list using dedicated Responses formatter
@@ -707,7 +734,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # Transport + helpers
     # =========================================================================
     def _transport_call(
-        self, *, messages: list[dict[str, Any]], **kwargs
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        enable_streaming: bool = False,
+        on_token: TokenCallbackType | None = None,
+        **kwargs,
     ) -> ModelResponse:
         # litellm.modify_params is GLOBAL; guard it for thread-safety
         with self._litellm_modify_params_ctx(self.modify_params):
@@ -729,6 +761,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     "ignore",
                     category=UserWarning,
                 )
+                warnings.filterwarnings(
+                    "ignore",
+                    category=DeprecationWarning,
+                    message="Accessing the 'model_fields' attribute.*",
+                )
                 # Extract api_key value with type assertion for type checker
                 api_key_value: str | None = None
                 if self.api_key:
@@ -747,6 +784,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     messages=messages,
                     **kwargs,
                 )
+                if enable_streaming and on_token is not None:
+                    assert isinstance(ret, CustomStreamWrapper)
+                    chunks = []
+                    for chunk in ret:
+                        on_token(chunk)
+                        chunks.append(chunk)
+                    ret = litellm.stream_chunk_builder(chunks, messages=messages)
+
                 assert isinstance(ret, ModelResponse), (
                     f"Expected ModelResponse, got {type(ret)}"
                 )

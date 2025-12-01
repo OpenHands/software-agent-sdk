@@ -20,7 +20,10 @@ from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import ConversationState, LocalConversation
-    from openhands.sdk.conversation.types import ConversationCallbackType
+    from openhands.sdk.conversation.types import (
+        ConversationCallbackType,
+        ConversationTokenCallbackType,
+    )
 
 
 logger = get_logger(__name__)
@@ -239,6 +242,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         self,
         conversation: "LocalConversation",
         on_event: "ConversationCallbackType",
+        on_token: "ConversationTokenCallbackType | None" = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -249,6 +253,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             LLM calls (role="assistant") and tool results (role="tool")
         4.1 If conversation is finished, set state.execution_status to FINISHED
         4.2 Otherwise, just return, Conversation will kick off the next step
+
+        If the underlying LLM supports streaming, partial deltas are forwarded to
+        ``on_token`` before the full response is returned.
 
         NOTE: state will be mutated in-place.
         """

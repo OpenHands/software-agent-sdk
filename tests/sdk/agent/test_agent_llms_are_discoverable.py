@@ -10,48 +10,48 @@ def check_usage_id_exists(usage_id: str, llms: list[LLM]):
 
 
 def test_automatic_llm_discovery():
-    llm_service_id = "main-agent"
-    agent = Agent(llm=LLM(model="test-model", usage_id=llm_service_id))
+    llm_usage_id = "main-agent"
+    agent = Agent(llm=LLM(model="test-model", usage_id=llm_usage_id))
 
     llms = list(agent.get_all_llms())
     assert len(llms) == 1
-    assert check_usage_id_exists(llm_service_id, llms)
+    assert check_usage_id_exists(llm_usage_id, llms)
 
 
 def test_automatic_llm_discovery_for_multiple_llms():
-    llm_service_id = "main-agent"
-    condenser_service_id = "condenser"
+    llm_usage_id = "main-agent"
+    condenser_usage_id = "condenser"
 
     condenser = LLMSummarizingCondenser(
-        llm=LLM(model="test-model", usage_id=condenser_service_id)
+        llm=LLM(model="test-model", usage_id=condenser_usage_id)
     )
 
     agent = Agent(
-        llm=LLM(model="test-model", usage_id=llm_service_id), condenser=condenser
+        llm=LLM(model="test-model", usage_id=llm_usage_id), condenser=condenser
     )
 
     llms = list(agent.get_all_llms())
     assert len(llms) == 2
-    assert check_usage_id_exists(llm_service_id, llms)
-    assert check_usage_id_exists(condenser_service_id, llms)
+    assert check_usage_id_exists(llm_usage_id, llms)
+    assert check_usage_id_exists(condenser_usage_id, llms)
 
 
 def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
     class CustomAgent(Agent):
         model_routers: list[LLM] = Field(default_factory=list)
 
-    llm_service_id = "main-agent"
-    router_service_id = "secondary_llm"
-    router_service_id_2 = "tertiary_llm"
-    condenser_service_id = "condenser"
+    llm_usage_id = "main-agent"
+    router_usage_id = "secondary_llm"
+    router_usage_id_2 = "tertiary_llm"
+    condenser_usage_id = "condenser"
 
     condenser = LLMSummarizingCondenser(
-        llm=LLM(model="test-model", usage_id=condenser_service_id)
+        llm=LLM(model="test-model", usage_id=condenser_usage_id)
     )
 
-    agent_llm = LLM(model="test-model", usage_id=llm_service_id)
-    router_llm = LLM(model="test-model", usage_id=router_service_id)
-    router_llm_2 = LLM(model="test-model", usage_id=router_service_id_2)
+    agent_llm = LLM(model="test-model", usage_id=llm_usage_id)
+    router_llm = LLM(model="test-model", usage_id=router_usage_id)
+    router_llm_2 = LLM(model="test-model", usage_id=router_usage_id_2)
 
     agent = CustomAgent(
         llm=agent_llm,
@@ -61,20 +61,20 @@ def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
 
     llms = list(agent.get_all_llms())
     assert len(llms) == 4
-    assert check_usage_id_exists(llm_service_id, llms)
-    assert check_usage_id_exists(router_service_id, llms)
-    assert check_usage_id_exists(router_service_id_2, llms)
-    assert check_usage_id_exists(condenser_service_id, llms)
+    assert check_usage_id_exists(llm_usage_id, llms)
+    assert check_usage_id_exists(router_usage_id, llms)
+    assert check_usage_id_exists(router_usage_id_2, llms)
+    assert check_usage_id_exists(condenser_usage_id, llms)
 
 
 def test_automatic_llm_discovery_with_multimodal_router():
     """Test that LLMs inside a MultimodalRouter are discovered correctly."""
-    primary_service_id = "primary-llm"
-    secondary_service_id = "secondary-llm"
+    primary_usage_id = "primary-llm"
+    secondary_usage_id = "secondary-llm"
 
     # Create LLMs for the router
-    primary_llm = LLM(model="test-primary-model", usage_id=primary_service_id)
-    secondary_llm = LLM(model="test-secondary-model", usage_id=secondary_service_id)
+    primary_llm = LLM(model="test-primary-model", usage_id=primary_usage_id)
+    secondary_llm = LLM(model="test-secondary-model", usage_id=secondary_usage_id)
 
     # Create MultimodalRouter with the LLMs
     multimodal_router = MultimodalRouter(
@@ -90,8 +90,8 @@ def test_automatic_llm_discovery_with_multimodal_router():
 
     # Only the raw LLMs inside the router should be found (not the router itself)
     assert len(llms) == 2
-    assert check_usage_id_exists(primary_service_id, llms)
-    assert check_usage_id_exists(secondary_service_id, llms)
+    assert check_usage_id_exists(primary_usage_id, llms)
+    assert check_usage_id_exists(secondary_usage_id, llms)
 
 
 def test_automatic_llm_discovery_with_llm_as_base_class():

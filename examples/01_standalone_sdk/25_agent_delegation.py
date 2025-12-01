@@ -81,8 +81,8 @@ conversation.send_message(
 conversation.run()
 
 # Report cost for simple delegation example
-cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (simple delegation): {cost}")
+cost_1 = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST (simple delegation): {cost_1}")
 
 print("Simple delegation example done!", "\n" * 20)
 
@@ -190,7 +190,10 @@ conversation.send_message(
 conversation.run()
 
 # Report cost for user-defined agent types example
-cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
-print(f"EXAMPLE_COST (user-defined agents): {cost}")
+cost_2 = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f"EXAMPLE_COST (user-defined agents): {cost_2}")
 
 print("All done!")
+
+# Full example cost report for CI workflow
+print(f"EXAMPLE_COST: {cost_1 + cost_2}")

@@ -98,7 +98,14 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # Always forward extra_body if provided; let the LLM provider validate
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
+        out["prompt_cache_retention"] = llm.prompt_cache_retention
+
+    # Pass through user-provided extra_body unchanged
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 

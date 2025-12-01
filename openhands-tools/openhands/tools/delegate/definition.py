@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field
 
 from openhands.sdk.context.prompts import render_template
+from openhands.sdk.tool import register_tool
 from openhands.sdk.tool.tool import (
     Action,
     Observation,
@@ -112,3 +113,7 @@ class DelegateTool(ToolDefinition[DelegateAction, DelegateObservation]):
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(DelegateTool.name, DelegateTool)
