@@ -129,8 +129,8 @@ class DockerWorkspace(RemoteWorkspace):
             if target is not None:
                 warn_deprecated(
                     "DockerWorkspace(target=...)",
-                    deprecated_in="1.2.0",
-                    removed_in="1.4.0",
+                    deprecated_in="1.3.0",
+                    removed_in="1.5.0",
                     details=_BASE_IMAGE_DEPRECATION_DETAILS,
                     stacklevel=3,
                 )
@@ -141,8 +141,8 @@ class DockerWorkspace(RemoteWorkspace):
 
         warn_deprecated(
             "DockerWorkspace(base_image=...)",
-            deprecated_in="1.2.0",
-            removed_in="1.4.0",
+            deprecated_in="1.3.0",
+            removed_in="1.5.0",
             details=_BASE_IMAGE_DEPRECATION_DETAILS,
             stacklevel=3,
         )
