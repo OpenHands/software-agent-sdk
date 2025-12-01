@@ -35,8 +35,9 @@ class DesktopService:
         user = env.get("USER") or env.get("USERNAME") or "openhands"
         home = Path(env.get("HOME") or f"/home/{user}")
         vnc_geometry = env.get("VNC_GEOMETRY", "1280x800")
-        novnc_proxy = Path("/usr/share/novnc/utils/novnc_proxy")
-        novnc_web = Path(env.get("NOVNC_WEB", "/opt/novnc-web"))
+        # Use websockify directly for token authentication support
+        websockify_bin = Path("/usr/bin/websockify")
+        novnc_web = Path("/usr/share/novnc")
 
         # --- Dirs & ownership (idempotent) ---
         try:
@@ -117,12 +118,12 @@ class DesktopService:
                 logger.error("vncserver failed with rc=%s", rc)
                 return False
 
-        # --- Start noVNC proxy (as our foreground/managed process) ---
-        # Equivalent to: pgrep -f "[n]ovnc_proxy .*--listen .*<port>"
+        # --- Start websockify/noVNC proxy (as our foreground/managed process) ---
+        # Check if websockify is already running on this port
         try:
-            novnc_running = (
+            websockify_running = (
                 subprocess.run(
-                    ["pgrep", "-f", rf"novnc_proxy .*--listen .*{self.novnc_port}"],
+                    ["pgrep", "-f", rf"websockify.*{self.novnc_port}"],
                     capture_output=True,
                     text=True,
                     timeout=3,
@@ -130,19 +131,19 @@ class DesktopService:
                 == 0
             )
         except Exception:
-            novnc_running = False
+            websockify_running = False
 
-        if novnc_running:
-            logger.info("noVNC already running on port %d", self.novnc_port)
+        if websockify_running:
+            logger.info("websockify already running on port %d", self.novnc_port)
             self._proc = None  # we didn't start it; don't own its lifecycle
         else:
-            if not novnc_proxy.exists():
-                logger.error("noVNC proxy not found at %s", novnc_proxy)
+            if not websockify_bin.exists():
+                logger.error("websockify not found at %s", websockify_bin)
                 return False
             logger.info(
                 (
-                    "Starting noVNC proxy on 0.0.0.0:%d with token authentication "
-                    "(token file: %s) ..."
+                    "Starting websockify/noVNC proxy on 0.0.0.0:%d with token "
+                    "authentication (token file: %s) ..."
                 ),
                 self.novnc_port,
                 self.token_file,
@@ -150,10 +151,9 @@ class DesktopService:
             try:
                 # Store this as the managed long-running process
                 # Use token-based authentication with TokenFile plugin
-                # Don't specify --vnc target; it comes from the token file
+                # Format: websockify [options] --token-plugin=CLASS [host:]port
                 self._proc = await asyncio.create_subprocess_exec(
-                    str(novnc_proxy),
-                    "--listen",
+                    str(websockify_bin),
                     f"0.0.0.0:{self.novnc_port}",
                     "--web",
                     str(novnc_web),
@@ -166,7 +166,7 @@ class DesktopService:
                     env=env,
                 )
             except Exception as e:
-                logger.error("Failed to start noVNC proxy: %s", e)
+                logger.error("Failed to start websockify: %s", e)
                 return False
 
         logger.info(
