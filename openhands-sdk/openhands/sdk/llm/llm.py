@@ -414,6 +414,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         return self
 
+    def _retry_listener_fn(
+        self, attempt_number: int, num_retries: int, _err: BaseException | None
+    ) -> None:
+        if self.retry_listener is not None:
+            self.retry_listener(attempt_number, num_retries, _err)
+        if self._telemetry is not None and _err is not None:
+            self._telemetry.on_error(_err)
+
     # =========================================================================
     # Serializers
     # =========================================================================
@@ -422,14 +430,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
-
-    def retry_listener_component(
-        self, attempt_number: int, num_retries: int, _err: BaseException | None
-    ) -> None:
-        if self.retry_listener is not None:
-            self.retry_listener(attempt_number, num_retries, _err)
-        if self._telemetry is not None and _err is not None:
-            self._telemetry.on_error(_err)
 
     # =========================================================================
     # Public API
@@ -555,7 +555,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener_component,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
@@ -675,7 +675,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener_component,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
             assert self._telemetry is not None
