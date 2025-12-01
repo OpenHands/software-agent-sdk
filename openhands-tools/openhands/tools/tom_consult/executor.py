@@ -5,9 +5,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tom_swe.memory.locations import get_usermodeling_dir
-from tom_swe.tom_agent import create_tom_agent
-
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.event import (
@@ -18,9 +15,10 @@ from openhands.sdk.event import (
 from openhands.sdk.io import FileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool import Observation, ToolExecutor
-from openhands.tools.tom_consult.action import ConsultTomAction, SleeptimeComputeAction
-from openhands.tools.tom_consult.observation import (
+from openhands.tools.tom_consult.definition import (
+    ConsultTomAction,
     ConsultTomObservation,
+    SleeptimeComputeAction,
     SleeptimeComputeObservation,
 )
 
@@ -72,6 +70,8 @@ class TomConsultExecutor(
         """Lazy initialization of Tom agent."""
         if self._tom_agent is None:
             from typing import cast
+
+            from tom_swe.tom_agent import create_tom_agent
 
             self._tom_agent = create_tom_agent(
                 file_store=cast(Any, self.file_store),
@@ -383,6 +383,8 @@ class TomConsultExecutor(
     def _load_processing_history(self) -> dict[str, Any]:
         """Load processing history for this user."""
         try:
+            from tom_swe.memory.locations import get_usermodeling_dir
+
             history_file = f"{get_usermodeling_dir(self.user_id)}/processed_sessions_timestamps.json"  # noqa: E501
             content = self.file_store.read(history_file)
             return json.loads(content)
@@ -395,6 +397,8 @@ class TomConsultExecutor(
     def _save_processing_history(self, session_ids: list[str]) -> None:
         """Save processing history for processed sessions."""
         try:
+            from tom_swe.memory.locations import get_usermodeling_dir
+
             history = self._load_processing_history()
             timestamp = datetime.now().isoformat()
 
