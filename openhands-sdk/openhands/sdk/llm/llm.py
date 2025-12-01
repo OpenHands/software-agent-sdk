@@ -356,7 +356,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("openhands/"):
             model_name = model_val.removeprefix("openhands/")
             d["model"] = f"litellm_proxy/{model_name}"
-            # Set base_url (default to prod when base_url is unset)
+            # Set base_url (default to the app proxy when base_url is unset)
             d["base_url"] = d.get("base_url", "https://llm-proxy.app.all-hands.dev/")
 
         # HF doesn't support the OpenAI default value for top_p (1)
