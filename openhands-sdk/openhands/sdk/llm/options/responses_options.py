@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
+from openhands.sdk.llm.utils.model_features import get_features
 
 
 def select_responses_options(
@@ -50,12 +51,15 @@ def select_responses_options(
         if llm.reasoning_summary:
             out["reasoning"]["summary"] = llm.reasoning_summary
 
-    # Only forward extra_body for litellm_proxy models
-    is_proxy = "litellm_proxy" in llm.model
-    if is_proxy:
-        if llm.litellm_extra_body:
-            out["extra_body"] = llm.litellm_extra_body
-    else:
-        out.pop("extra_body", None)
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
+        out["prompt_cache_retention"] = llm.prompt_cache_retention
+
+    # Pass through user-provided extra_body unchanged
+    if llm.litellm_extra_body:
+        out["extra_body"] = llm.litellm_extra_body
 
     return out

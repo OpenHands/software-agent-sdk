@@ -1,9 +1,14 @@
+from pathlib import Path
 from typing import TYPE_CHECKING, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -44,10 +49,11 @@ class Conversation:
         cls: type[Self],
         agent: AgentBase,
         *,
-        workspace: str | LocalWorkspace = "workspace/project",
-        persistence_dir: str | None = None,
+        workspace: str | Path | LocalWorkspace = "workspace/project",
+        persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
@@ -64,6 +70,7 @@ class Conversation:
         workspace: RemoteWorkspace,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
@@ -76,10 +83,11 @@ class Conversation:
         cls: type[Self],
         agent: AgentBase,
         *,
-        workspace: str | LocalWorkspace | RemoteWorkspace = "workspace/project",
-        persistence_dir: str | None = None,
+        workspace: str | Path | LocalWorkspace | RemoteWorkspace = "workspace/project",
+        persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
+        token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         visualizer: (
@@ -103,6 +111,7 @@ class Conversation:
                 agent=agent,
                 conversation_id=conversation_id,
                 callbacks=callbacks,
+                token_callbacks=token_callbacks,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
                 visualizer=visualizer,
@@ -114,6 +123,7 @@ class Conversation:
             agent=agent,
             conversation_id=conversation_id,
             callbacks=callbacks,
+            token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
             visualizer=visualizer,

@@ -314,14 +314,14 @@ class Message(BaseModel):
 
         # Add thinking blocks first (for Anthropic extended thinking)
         # Only add thinking blocks for assistant messages
+        thinking_blocks_dicts = []
         if self.role == "assistant":
             thinking_blocks = list(
                 self.thinking_blocks
             )  # Copy to avoid modifying original
-
             for thinking_block in thinking_blocks:
                 thinking_dict = thinking_block.model_dump()
-                content.append(thinking_dict)
+                thinking_blocks_dicts.append(thinking_dict)
 
         for item in self.content:
             # All content types now return list[dict[str, Any]]
@@ -345,6 +345,9 @@ class Message(BaseModel):
         message_dict: dict[str, Any] = {"content": content, "role": self.role}
         if role_tool_with_prompt_caching:
             message_dict["cache_control"] = {"type": "ephemeral"}
+
+        if thinking_blocks_dicts:
+            message_dict["thinking_blocks"] = thinking_blocks_dicts
 
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
@@ -450,20 +453,8 @@ class Message(BaseModel):
             return items
 
         if self.role == "assistant":
-            # Emit prior assistant content as a single message item using output_text
-            content_items: list[dict[str, Any]] = []
-            for c in self.content:
-                if isinstance(c, TextContent) and c.text:
-                    content_items.append({"type": "output_text", "text": c.text})
-            if content_items:
-                items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content_items,
-                    }
-                )
             # Include prior turn's reasoning item exactly as received (if any)
+            # Send reasoning first, followed by content and tool calls
             if self.responses_reasoning_item is not None:
                 ri = self.responses_reasoning_item
                 # Only send back if we have an id; required by the param schema
@@ -488,11 +479,26 @@ class Message(BaseModel):
                     if ri.status:
                         reasoning_item["status"] = ri.status
                     items.append(reasoning_item)
+
+            # Emit prior assistant content as a single message item using output_text
+            content_items: list[dict[str, Any]] = []
+            for c in self.content:
+                if isinstance(c, TextContent) and c.text:
+                    content_items.append({"type": "output_text", "text": c.text})
+            if content_items:
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": content_items,
+                    }
+                )
             # Emit assistant tool calls so subsequent function_call_output
             # can match call_id
             if self.tool_calls:
                 for tc in self.tool_calls:
                     items.append(tc.to_responses_dict())
+
             return items
 
         if self.role == "tool":
