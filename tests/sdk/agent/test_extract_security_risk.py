@@ -52,7 +52,7 @@ class MockSecurityServiceAgent(Agent):
                 object.__setattr__(self, "security_analyzer", None)
             except Exception:
                 pass
-        self.security_service = DefaultSecurityService(state)
+        self._security_service = DefaultSecurityService(state)
 
 
 def init_agent(agent: Agent):
@@ -143,9 +143,9 @@ def test_extract_security_risk(
 
     if should_raise:
         with pytest.raises(ValueError):
-            agent.security_service.extract_security_risk(arguments, tool_name, False)
+            agent._security_service.extract_security_risk(arguments, tool_name, False)
     else:
-        result = agent.security_service.extract_security_risk(
+        result = agent._security_service.extract_security_risk(
             arguments, tool_name, False
         )
         assert result == expected_result
@@ -172,7 +172,9 @@ def test_extract_security_risk_arguments_mutation():
     arguments = {"param1": "value1", "security_risk": "LOW", "param2": "value2"}
     original_args = arguments.copy()
 
-    result = agent.security_service.extract_security_risk(arguments, "test_tool", False)  # type: ignore
+    result = agent._security_service.extract_security_risk(
+        arguments, "test_tool", False
+    )  # type: ignore
 
     # Verify result
     assert result == SecurityRisk.LOW
@@ -199,7 +201,9 @@ def test_extract_security_risk_with_empty_arguments():
     init_agent(agent)
 
     arguments = {}
-    result = agent.security_service.extract_security_risk(arguments, "test_tool", False)  # type: ignore
+    result = agent._security_service.extract_security_risk(
+        arguments, "test_tool", False
+    )  # type: ignore
 
     # Should return UNKNOWN when no analyzer and no security_risk
     assert result == SecurityRisk.UNKNOWN
@@ -221,7 +225,7 @@ def test_extract_security_risk_with_read_only_tool():
 
     # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
     arguments = {"param1": "value1", "security_risk": "HIGH"}
-    result = agent.security_service.extract_security_risk(arguments, "test_tool", True)  # type: ignore
+    result = agent._security_service.extract_security_risk(arguments, "test_tool", True)  # type: ignore
 
     # Should return UNKNOWN when read_only_tool is True
     assert result == SecurityRisk.UNKNOWN

@@ -94,7 +94,7 @@ class Agent(AgentBase):
         super().init_state(state, on_event=on_event)
         # Build the security service based on the security analyzer and
         # confirmation policy from conversationState.
-        self.security_service = DefaultSecurityService(state)
+        self._security_service = DefaultSecurityService(state)
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
