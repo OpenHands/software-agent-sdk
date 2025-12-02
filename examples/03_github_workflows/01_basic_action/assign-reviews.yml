@@ -54,7 +54,7 @@ jobs:
                 1. First, check if the issue has already been triaged by verifying it does NOT have:
                    - The "enhancement" label
                    - Any "priority" label (priority:low, priority:medium, priority:high, etc.)
-                2. If the issue has already been triaged (has enhancement or priority label), SKIP it
+                2. If the issue has already been triaged (has enhancement or priority label), remove the needs-triage label
                 3. For issues that have NOT been triaged yet:
                    - Read the issue description and comments
                    - Determine if it requires maintainer attention by checking:
