@@ -10,7 +10,6 @@ Based on analysis of recent code reviews:
 
 | Theme | Count | Description |
 |-------|-------|-------------|
-| AI Delegation | 24 | Frequently delegates tasks to AI assistants |
 | Approvals | 19 | Quick LGTM approvals for good PRs |
 | Testing | 16 | Comments about test coverage and quality |
 | Code Suggestions | 13 | Specific code improvement suggestions |
@@ -38,15 +37,11 @@ this request but rather read local file -- WDYT?"
 ### 2. **Pragmatic Testing**
 - Avoids duplicate test coverage: "i mean it doesn't seem necessary, the other file already tests all the scenarios"
 - Tests should verify actual logic, not library functionality
-- Delegates test writing to AI assistants
 - Focuses on real scenarios over theoretical edge cases
 
 **Example Reviews:**
 ```
 "This test doesn't make a lot sense to me - the other file already covers this"
-```
-```
-"Please add a test to make sure that happens"
 ```
 
 ### 3. **Type Safety Without Compromise**
@@ -61,22 +56,7 @@ this request but rather read local file -- WDYT?"
 with a few assert statements, do that instead."
 ```
 
-### 4. **AI-Assisted Development (Signature Pattern)**
-- Frequently delegates implementation to AI assistants (24 instances)
-- Uses AI for: tests, implementations, follow-up PRs, code reviews
-- Comfortable with AI as part of the development workflow
-- Often requests roasted code reviews
-
-**Example Reviews:**
-```
-"Please implement this and push to a separate PR"
-```
-```
-"opps i forgot this before merging this PR 🤕
-Please implement this and push to a separate PR"
-```
-
-### 5. **Backward Compatibility Awareness**
+### 4. **Backward Compatibility Awareness**
 - Considers impact of breaking changes
 - Balances simplification benefits against user impact
 - Asks for toggles to maintain backward compatibility when possible
@@ -89,25 +69,25 @@ breaking changes. But i do see doing so would simplify our code and
 hopefully have minimal impact to users"
 ```
 
-### 6. **Concise and Casual Communication**
+### 5. **Concise and Casual Communication**
 - Uses informal language: "lgtm", "WDYT?", emojis (👀 🤣 🤕)
 - Quick approvals for good code: "LGTM!" or "lgtm!"
 - Direct questions without excessive politeness
 - Shows personality while maintaining professionalism
 
-### 7. **Focus on Real Use Cases**
+### 6. **Focus on Real Use Cases**
 - Always asks "what's the use case?"
 - Challenges features that solve imaginary problems
 - Validates necessity before accepting complexity
 - Pragmatic over theoretical
 
-### 8. **Code Quality Without Dogma**
+### 7. **Code Quality Without Dogma**
 - Prefers docstrings over inline comments for important context
 - Wants comments that explain "why", not "what"
 - Suggests refactoring when code grows complex
 - Removes redundant initializers and boilerplate
 
-### 9. **Repository-Specific Standards**
+### 8. **Repository-Specific Standards**
 From the review patterns, clear adherence to:
 - Using `pyright` over `mypy`
 - Running pre-commit hooks
@@ -136,12 +116,6 @@ Can we [alternative approach]?
 WDYT? (What do you think?)
 ```
 
-### Delegating Pattern
-```
-Please [task]
-Please do a /codereview-roasted
-```
-
 ### Suggesting Pattern
 Uses GitHub's suggestion syntax:
 ````
@@ -161,11 +135,9 @@ Actually, [statement of issue]
 While the repository includes a "roasted" Linus-style code review microagent, the actual review style observed is:
 
 - **Less harsh**: More collaborative and constructive than Linus-style
-- **More delegating**: Heavily leverages AI assistants for implementation
 - **Equally pragmatic**: Both focus on real problems over theoretical ones
 - **Less verbose**: Reviews are concise, often one-liners
 - **More casual**: Uses informal language and emojis
-- **AI-native**: Embraces AI as development partner, not just reviewer
 
 ## Implementation as Microagent
 
@@ -173,11 +145,10 @@ The microagent file created at `.openhands/microagents/code-review.md` captures 
 
 1. Matches the casual, pragmatic communication style
 2. Emphasizes simplicity and questioning complexity
-3. Includes AI delegation as a core pattern
-4. Focuses on type safety without compromise
-5. Validates real use cases before accepting features
-6. Provides concrete examples from actual reviews
-7. Maintains repository-specific conventions
+3. Focuses on type safety without compromise
+4. Validates real use cases before accepting features
+5. Provides concrete examples from actual reviews
+6. Maintains repository-specific conventions
 
 ## Usage
 

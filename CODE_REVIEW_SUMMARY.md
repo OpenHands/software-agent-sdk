@@ -12,7 +12,6 @@
 Identified key review principles through automated analysis:
 
 **Top Themes:**
-- **AI Delegation (24 instances)**: Frequent use of AI assistants for implementation
 - **Quick Approvals (19 instances)**: "LGTM!" for good code
 - **Testing Focus (16 instances)**: Pragmatic test coverage
 - **Code Suggestions (13 instances)**: Specific, actionable feedback
@@ -23,10 +22,9 @@ Identified key review principles through automated analysis:
 1. **Simplicity First** - "This feels a bit overcomplicated to me -- what's the use case?"
 2. **Pragmatic Testing** - Avoid duplicate tests, test real scenarios
 3. **Type Safety Without Compromise** - Fix types properly, avoid `# type: ignore`
-4. **AI-Assisted Development** - Leverage AI assistants for implementation tasks
-5. **Backward Compatibility** - Evaluate breaking change impact carefully
-6. **Real Use Cases** - Always validate necessity and actual problems
-7. **Concise Communication** - Casual, direct, with emojis (👀 🤣 🤕)
+4. **Backward Compatibility** - Evaluate breaking change impact carefully
+5. **Real Use Cases** - Always validate necessity and actual problems
+6. **Concise Communication** - Casual, direct, with emojis (👀 🤣 🤕)
 
 ### 4. Microagent File Created ✅
 
@@ -37,13 +35,13 @@ Identified key review principles through automated analysis:
 **Structure**:
 - Frontmatter with trigger
 - PERSONA section
-- CORE PHILOSOPHY (5 key principles)
+- CORE PHILOSOPHY (4 key principles)
 - REVIEW FRAMEWORK (4 key questions)
-- CODE REVIEW SCENARIOS (7 scenarios with examples)
+- CODE REVIEW SCENARIOS (6 scenarios with examples)
 - REVIEW OUTPUT FORMAT (templates)
 - COMMUNICATION STYLE
 - SPECIFIC REPOSITORY PATTERNS
-- EXAMPLE REVIEWS (6 real examples)
+- EXAMPLE REVIEWS (4 real examples)
 
 ### 5. Documentation Created ✅
 
@@ -77,7 +75,6 @@ For a more critical, Linus-style review:
 |--------|---------------|----------------|
 | Tone | Casual, collaborative | Critical, direct |
 | Verbosity | Concise, often one-liners | Detailed analysis |
-| AI Usage | Heavy delegation to AI assistants | Review-only, no delegation |
 | Harshness | Constructive | Brutally honest |
 | Focus | Practical simplicity | Engineering fundamentals |
 
@@ -95,13 +92,6 @@ this request but rather read local file -- WDYT?
 ```
 This test doesn't make a lot sense to me - the other file already tests 
 all the scenarios
-```
-
-### AI Delegation
-```
-opps i forgot this before merging this PR 🤕
-
-Please implement this and push to a separate PR
 ```
 
 ### Type Safety
@@ -123,8 +113,8 @@ confirmed working!
 - **Total PRs Analyzed**: 100 recent PRs
 - **PRs with Reviews**: 37
 - **Total Review Items**: 153
-- **Most Common Theme**: AI Delegation (24 instances)
-- **Approval Rate**: 19 quick approvals observed
+- **Most Common Theme**: Quick Approvals (19 instances)
+- **Focus Areas**: Testing (16 instances), Code Suggestions (13 instances), Simplicity (5+ instances)
 
 ## Files in This Repository
 
