@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import Annotated, ClassVar
+from typing import ClassVar
 
 import pytest
 from litellm import BaseModel
@@ -15,7 +15,6 @@ from pydantic import (
 
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
-    kind_of,
 )
 
 
@@ -81,27 +80,27 @@ class AnimalPack(BaseModel):
 
 def test_serializable_type_expected() -> None:
     serializable_type = Animal.get_serializable_type()
-    
+
     # Check that it's an Annotated type with a Union and Discriminator
-    assert hasattr(serializable_type, '__metadata__')
+    assert hasattr(serializable_type, "__metadata__")
     assert len(serializable_type.__metadata__) == 1
     discriminator = serializable_type.__metadata__[0]
     assert isinstance(discriminator, Discriminator)
-    
+
     # Check that the union contains the expected types
     union_type = serializable_type.__args__[0]
     union_args = union_type.__args__
-    
+
     # Extract the types from the annotated types
     types = []
     tags = []
     for arg in union_args:
-        if hasattr(arg, '__metadata__') and len(arg.__metadata__) == 1:
+        if hasattr(arg, "__metadata__") and len(arg.__metadata__) == 1:
             tag = arg.__metadata__[0]
             if isinstance(tag, Tag):
                 types.append(arg.__args__[0])
                 tags.append(tag.tag)
-    
+
     assert set(types) == {Cat, Dog, Wolf}
     assert set(tags) == {"Cat", "Dog", "Wolf"}
 
@@ -228,7 +227,6 @@ def test_enhanced_error_message_with_validation():
 
 
 def test_dynamic_field_error():
-
     class Tiger(Cat):
         pass
 
