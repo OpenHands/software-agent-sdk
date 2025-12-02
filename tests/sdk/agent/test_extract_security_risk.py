@@ -45,13 +45,7 @@ class MockSecurityServiceAgent(Agent):
 
         NOTE: state will be mutated in-place.
         """
-        if self.security_analyzer and not state.security_analyzer:
-            state.security_analyzer = self.security_analyzer
-            # 2) Clear on the immutable model (allowed via object.__setattr__)
-            try:
-                object.__setattr__(self, "security_analyzer", None)
-            except Exception:
-                pass
+
         self._security_service = DefaultSecurityService(state)
 
 
@@ -76,18 +70,14 @@ def mock_llm():
 @pytest.fixture
 def agent_with_llm_analyzer(mock_llm):
     """Create an agent with LLMSecurityAnalyzer."""
-    agent = MockSecurityServiceAgent(
-        llm=mock_llm, security_analyzer=LLMSecurityAnalyzer()
-    )
+    agent = MockSecurityServiceAgent(llm=mock_llm)
     return agent
 
 
 @pytest.fixture
 def agent_with_non_llm_analyzer(mock_llm):
     """Create an agent with non-LLM security analyzer."""
-    agent = MockSecurityServiceAgent(
-        llm=mock_llm, security_analyzer=MockNonLLMAnalyzer()
-    )
+    agent = MockSecurityServiceAgent(llm=mock_llm)
     return agent
 
 
@@ -219,8 +209,7 @@ def test_extract_security_risk_with_read_only_tool():
             api_key=SecretStr("test-key"),
             base_url="http://test",
         ),
-        security_analyzer=LLMSecurityAnalyzer(),
-    )
+        )
     init_agent(agent)
 
     # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
