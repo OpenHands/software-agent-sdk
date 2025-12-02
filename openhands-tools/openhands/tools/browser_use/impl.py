@@ -39,7 +39,7 @@ def _check_chromium_available() -> str | None:
     playwright_cache_candidates = [
         Path.home() / ".cache" / "ms-playwright",
         Path.home() / "Library" / "Caches" / "ms-playwright",
-        Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright", # Windows
+        Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright",  # Windows
     ]
     for playwright_cache in playwright_cache_candidates:
         if playwright_cache.exists():
