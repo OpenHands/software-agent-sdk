@@ -194,6 +194,7 @@ class TestBrowserExecutorE2E:
         assert not result.is_error
         # Check for interactive elements which are reliably present
         assert "Click Me" in result.text
+        assert "Browser Test Page" in result.text
 
     def test_get_state_with_screenshot(
         self, browser_executor: BrowserToolExecutor, test_server: str
