@@ -39,13 +39,11 @@ def detect_platform():
 # 2) Create a Docker-based remote workspace that will set up and manage
 #    the Docker container automatically. Use `DockerWorkspace` with a pre-built
 #    image or `DockerDevWorkspace` to automatically build the image on-demand.
-platform_str = detect_platform()
-arch = "arm64" if "arm" in platform_str else "amd64"
 with DockerWorkspace(
     # use pre-built image for faster startup
-    server_image=f"ghcr.io/openhands/agent-server:main-python-{arch}",
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8010,
-    platform=platform_str,
+    platform=detect_platform(),
 ) as workspace:
     # 3) Create agent
     agent = get_default_agent(

@@ -34,12 +34,10 @@ def detect_platform():
 # Create a Docker-based remote workspace with extra ports for browser access.
 # Use `DockerWorkspace` with a pre-built image or `DockerDevWorkspace` to
 # automatically build the image on-demand.
-platform_str = detect_platform()
-arch = "arm64" if "arm" in platform_str else "amd64"
 with DockerWorkspace(
-    server_image=f"ghcr.io/openhands/agent-server:main-python-{arch}",
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8011,
-    platform=platform_str,
+    platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
 ) as workspace:
     """Extra ports allows you to check localhost:8012 for VNC"""

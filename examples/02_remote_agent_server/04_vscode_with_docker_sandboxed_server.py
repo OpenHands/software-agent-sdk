@@ -22,9 +22,8 @@ llm = LLM(
     api_key=SecretStr(api_key),
 )
 
+
 # Create a Docker-based remote workspace with extra ports for VSCode access
-
-
 def detect_platform():
     """Detects the correct Docker platform string."""
     import platform
