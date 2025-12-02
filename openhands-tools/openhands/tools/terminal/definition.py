@@ -28,7 +28,7 @@ from openhands.tools.terminal.constants import (
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 
 
-class ExecuteBashAction(Action):
+class TerminalAction(Action):
     """Schema for bash command execution."""
 
     command: str = Field(
@@ -78,7 +78,7 @@ class ExecuteBashAction(Action):
         return content
 
 
-class ExecuteBashObservation(Observation):
+class TerminalObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
     command: str | None = Field(
@@ -95,6 +95,10 @@ class ExecuteBashObservation(Observation):
         default_factory=CmdOutputMetadata,
         description="Additional metadata captured from PS1 after command execution.",
     )
+    full_output_save_dir: str | None = Field(
+        default=None,
+        description="Directory where full output files are saved",
+    )
 
     @property
     def command_id(self) -> int | None:
@@ -109,7 +113,7 @@ class ExecuteBashObservation(Observation):
         if self.is_error:
             llm_content.append(TextContent(text=self.ERROR_MESSAGE_HEADER))
 
-        # ExecuteBashObservation always has content as a single TextContent
+        # TerminalObservation always has content as a single TextContent
         content_text = self.text
 
         ret = f"{self.metadata.prefix}{content_text}{self.metadata.suffix}"
@@ -119,7 +123,15 @@ class ExecuteBashObservation(Observation):
             ret += f"\n[Python interpreter: {self.metadata.py_interpreter_path}]"
         if self.metadata.exit_code != -1:
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
-        llm_content.append(TextContent(text=maybe_truncate(ret, MAX_CMD_OUTPUT_SIZE)))
+
+        # Use enhanced truncation with file saving if working directory is available
+        truncated_text = maybe_truncate(
+            content=ret,
+            truncate_after=MAX_CMD_OUTPUT_SIZE,
+            save_dir=self.full_output_save_dir,
+            tool_prefix="bash",
+        )
+        llm_content.append(TextContent(text=truncated_text))
 
         return llm_content
 
@@ -132,7 +144,7 @@ class ExecuteBashObservation(Observation):
             text.append("❌ ", style="red bold")
             text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
-        # ExecuteBashObservation always has content as a single TextContent
+        # TerminalObservation always has content as a single TextContent
         content_text = self.text
 
         if content_text:
@@ -219,8 +231,8 @@ TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent
 """  # noqa
 
 
-class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
-    """A ToolDefinition subclass that automatically initializes a BashExecutor with auto-detection."""  # noqa: E501
+class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
+    """A ToolDefinition subclass that automatically initializes a TerminalExecutor with auto-detection."""  # noqa: E501
 
     @classmethod
     def create(
@@ -249,7 +261,7 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
                        If None, will auto-detect bash from PATH.
         """
         # Import here to avoid circular imports
-        from openhands.tools.terminal.impl import BashExecutor
+        from openhands.tools.terminal.impl import TerminalExecutor
 
         working_dir = conv_state.workspace.working_dir
         if not os.path.isdir(working_dir):
@@ -257,19 +269,20 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
         # Initialize the executor
         if executor is None:
-            executor = BashExecutor(
+            executor = TerminalExecutor(
                 working_dir=working_dir,
                 username=username,
                 no_change_timeout_seconds=no_change_timeout_seconds,
                 terminal_type=terminal_type,
                 shell_path=shell_path,
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
             )
 
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
-                action_type=ExecuteBashAction,
-                observation_type=ExecuteBashObservation,
+                action_type=TerminalAction,
+                observation_type=TerminalObservation,
                 description=TOOL_DESCRIPTION,
                 annotations=ToolAnnotations(
                     title="terminal",
@@ -285,3 +298,50 @@ class TerminalTool(ToolDefinition[ExecuteBashAction, ExecuteBashObservation]):
 
 # Automatically register the tool when this module is imported
 register_tool(TerminalTool.name, TerminalTool)
+
+
+# Deprecated aliases for backward compatibility
+class ExecuteBashAction(TerminalAction):
+    """Deprecated: Use TerminalAction instead.
+
+    This class is deprecated and will be removed in version 1.5.0.
+    Please use TerminalAction instead.
+    """
+
+    def __init__(self, **data):  # type: ignore[no-untyped-def]
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "ExecuteBashAction",
+            deprecated_in="1.2.0",
+            removed_in="1.5.0",
+            details=(
+                "Use TerminalAction instead. ExecuteBashAction is an "
+                "alias for TerminalAction and will be removed in version 1.5.0."
+            ),
+            stacklevel=3,
+        )
+        super().__init__(**data)
+
+
+class ExecuteBashObservation(TerminalObservation):
+    """Deprecated: Use TerminalObservation instead.
+
+    This class is deprecated and will be removed in version 1.5.0.
+    Please use TerminalObservation instead.
+    """
+
+    def __init__(self, **data):  # type: ignore[no-untyped-def]
+        from openhands.sdk.utils.deprecation import warn_deprecated
+
+        warn_deprecated(
+            "ExecuteBashObservation",
+            deprecated_in="1.2.0",
+            removed_in="1.5.0",
+            details=(
+                "Use TerminalObservation instead. ExecuteBashObservation is an "
+                "alias for TerminalObservation and will be removed in version 1.5.0."
+            ),
+            stacklevel=3,
+        )
+        super().__init__(**data)

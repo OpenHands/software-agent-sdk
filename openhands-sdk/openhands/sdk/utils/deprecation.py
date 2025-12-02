@@ -112,7 +112,55 @@ def warn_deprecated(
     warnings.warn(warning, stacklevel=stacklevel)
 
 
+def warn_cleanup(
+    workaround: str,
+    *,
+    cleanup_by: str | date,
+    current_version: str | None = None,
+    details: str = "",
+    stacklevel: int = 2,
+) -> None:
+    """Emit a warning for temporary workarounds that need cleanup by a deadline.
+
+    Use this helper for temporary code that addresses upstream issues, compatibility
+    shims, or other workarounds that should be removed once external conditions
+    change (e.g., when a library adds support for a feature, or when an API
+    stabilizes). The deprecation check workflow will fail when the cleanup deadline
+    is reached, ensuring the workaround is removed before the specified version or
+    date.
+
+    Args:
+        workaround: Description of the temporary workaround
+        cleanup_by: Version string or date when this workaround must be removed
+        current_version: Override the detected package version (for testing)
+        details: Additional context about why cleanup is needed
+        stacklevel: Stack level for warning emission
+    """
+    current_version = current_version or _current_version()
+
+    should_cleanup = False
+    if isinstance(cleanup_by, date):
+        should_cleanup = date.today() >= cleanup_by
+    else:
+        try:
+            current = pkg_version.parse(current_version)
+            target = pkg_version.parse(str(cleanup_by))
+            should_cleanup = current >= target
+        except pkg_version.InvalidVersion:
+            pass
+
+    if should_cleanup:
+        message = (
+            f"Cleanup required: {workaround}. "
+            f"This workaround was scheduled for removal by {cleanup_by}."
+        )
+        if details:
+            message += f" {details}"
+        warnings.warn(message, UserWarning, stacklevel=stacklevel)
+
+
 __all__ = [
     "deprecated",
     "warn_deprecated",
+    "warn_cleanup",
 ]
