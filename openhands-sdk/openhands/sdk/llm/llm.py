@@ -888,8 +888,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         return (
             supports_vision(model_for_caps)
             or supports_vision(model_for_caps.split("/")[-1])
-            or supports_vision(self.model)
-            or supports_vision(self.model.split("/")[-1])
             or (
                 self._model_info is not None
                 and self._model_info.get("supports_vision", False)
