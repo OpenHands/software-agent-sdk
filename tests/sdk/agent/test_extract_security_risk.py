@@ -15,7 +15,6 @@ from openhands.sdk.conversation.types import ConversationCallbackType
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.security_service import (
     DefaultSecurityService,
@@ -208,8 +207,8 @@ def test_extract_security_risk_with_read_only_tool():
             model="test-model",
             api_key=SecretStr("test-key"),
             base_url="http://test",
-        ),
         )
+    )
     init_agent(agent)
 
     # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
