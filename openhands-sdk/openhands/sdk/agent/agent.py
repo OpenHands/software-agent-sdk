@@ -1,6 +1,6 @@
 import json
 
-from pydantic import Field, ValidationError, model_validator
+from pydantic import ValidationError, model_validator
 
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
@@ -71,15 +71,6 @@ class Agent(AgentBase):
         >>> agent = Agent(llm=llm, tools=tools)
     """
 
-    security_service: DefaultSecurityService | None = Field(
-        default=None,
-        description="Based on the Security Analyzer and Confirmation Policy "
-        " from conversationState, we conduct a security analysis of the "
-        "relevant actions.",
-        examples=[{"kind": "DefaultSecurityService"}],
-        exclude=True,
-    )
-
     @model_validator(mode="before")
     @classmethod
     def _add_security_prompt_as_default(cls, data):
@@ -103,14 +94,7 @@ class Agent(AgentBase):
         super().init_state(state, on_event=on_event)
         # Build the security service based on the security analyzer and
         # confirmation policy from conversationState.
-        try:
-            object.__setattr__(
-                self,
-                "security_service",
-                DefaultSecurityService(state),
-            )
-        except Exception as e:
-            raise ValueError(f"Could not set Agent.security_service:{e}")
+        self.security_service = DefaultSecurityService(state)
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 

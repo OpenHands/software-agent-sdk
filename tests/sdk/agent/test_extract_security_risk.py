@@ -52,14 +52,7 @@ class MockSecurityServiceAgent(Agent):
                 object.__setattr__(self, "security_analyzer", None)
             except Exception:
                 pass
-        try:
-            object.__setattr__(
-                self,
-                "security_service",
-                DefaultSecurityService(state),
-            )
-        except Exception as e:
-            raise ValueError(f"Could not set Agent.security_service:{e}")
+        self.security_service = DefaultSecurityService(state)
 
 
 def init_agent(agent: Agent):
