@@ -1,5 +1,6 @@
 """Browser tool executor implementation using browser-use MCP server wrapper."""
 
+import asyncio
 import json
 import logging
 import os
@@ -176,9 +177,25 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     def __call__(
         self,
         action: BrowserAction,
-        conversation: "LocalConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,
     ):
-        """Submit an action to run in the background loop and wait for result."""
+        """Submit an action to run in the background loop and wait for result.
+
+        When a main event loop is available from the conversation context,
+        browser operations are scheduled on that loop instead of using an
+        isolated AsyncExecutor. This improves compatibility with event-driven
+        libraries like browser_use that require proper event propagation.
+        """
+        # Try to use main event loop from conversation if available
+        main_loop = getattr(conversation, "main_event_loop", None)
+        if main_loop is not None and main_loop.is_running():
+            # Schedule on main event loop for better browser_use compatibility
+            future = asyncio.run_coroutine_threadsafe(
+                self._execute_action(action), main_loop
+            )
+            return future.result(timeout=300.0)
+
+        # Fallback to AsyncExecutor for standalone usage
         return self._async_executor.run_async(
             self._execute_action, action, timeout=300.0
         )

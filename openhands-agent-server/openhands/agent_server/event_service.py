@@ -364,6 +364,7 @@ class EventService:
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
+            main_event_loop=self._main_loop,
         )
 
         # Set confirmation mode if enabled

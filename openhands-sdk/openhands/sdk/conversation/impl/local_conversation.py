@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import uuid
 from collections.abc import Mapping
@@ -69,6 +70,7 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        main_event_loop: asyncio.AbstractEventLoop | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -96,6 +98,9 @@ class LocalConversation(BaseConversation):
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+
+        # Store reference to main event loop for async tool execution (e.g., browser)
+        self.main_event_loop = main_event_loop
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
