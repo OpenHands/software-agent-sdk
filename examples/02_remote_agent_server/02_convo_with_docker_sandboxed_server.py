@@ -11,7 +11,7 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.tools.preset.default import get_default_agent
-from openhands.workspace import DockerDevWorkspace
+from openhands.workspace import DockerWorkspace
 
 
 logger = get_logger(__name__)
@@ -37,14 +37,15 @@ def detect_platform():
 
 
 # 2) Create a Docker-based remote workspace that will set up and manage
-#    the Docker container automatically
-with DockerDevWorkspace(
-    # dynamically build agent-server image
-    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+#    the Docker container automatically. Use `DockerWorkspace` with a pre-built
+#    image or `DockerDevWorkspace` to automatically build the image on-demand.
+platform_str = detect_platform()
+arch = "arm64" if "arm" in platform_str else "amd64"
+with DockerWorkspace(
     # use pre-built image for faster startup
-    # server_image="ghcr.io/openhands/agent-server:main-python",
+    server_image=f"ghcr.io/openhands/agent-server:main-python-{arch}",
     host_port=8010,
-    platform=detect_platform(),
+    platform=platform_str,
 ) as workspace:
     # 3) Create agent
     agent = get_default_agent(

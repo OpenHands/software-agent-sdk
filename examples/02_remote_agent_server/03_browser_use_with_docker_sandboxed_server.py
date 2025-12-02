@@ -7,7 +7,7 @@ from pydantic import SecretStr
 from openhands.sdk import LLM, Conversation, get_logger
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.tools.preset.default import get_default_agent
-from openhands.workspace import DockerDevWorkspace
+from openhands.workspace import DockerWorkspace
 
 
 logger = get_logger(__name__)
@@ -31,11 +31,15 @@ def detect_platform():
     return "linux/amd64"
 
 
-# Create a Docker-based remote workspace with extra ports for browser access
-with DockerDevWorkspace(
-    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+# Create a Docker-based remote workspace with extra ports for browser access.
+# Use `DockerWorkspace` with a pre-built image or `DockerDevWorkspace` to
+# automatically build the image on-demand.
+platform_str = detect_platform()
+arch = "arm64" if "arm" in platform_str else "amd64"
+with DockerWorkspace(
+    server_image=f"ghcr.io/openhands/agent-server:main-python-{arch}",
     host_port=8011,
-    platform=detect_platform(),
+    platform=platform_str,
     extra_ports=True,  # Expose extra ports for VSCode and VNC
 ) as workspace:
     """Extra ports allows you to check localhost:8012 for VNC"""
