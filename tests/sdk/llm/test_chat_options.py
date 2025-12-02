@@ -16,6 +16,8 @@ class DummyLLM:
     extended_thinking_budget: int | None = None
     safety_settings: list[dict[str, Any]] | None = None
     litellm_extra_body: dict[str, Any] | None = None
+    # Align with LLM default; only emitted for models that support it
+    prompt_cache_retention: str | None = "24h"
 
 
 def test_opus_4_5_uses_effort_and_beta_header_and_strips_temp_top_p():
