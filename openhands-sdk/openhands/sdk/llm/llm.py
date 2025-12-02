@@ -171,11 +171,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
     )
-    model_real_name: str | None = Field(
+    model_canonical_name: str | None = Field(
         default=None,
         description=(
-            "Optional canonical model id for capability lookups when the configured "
-            "model name is proxied or aliased."
+            "Optional canonical model name for feature registry lookups. "
+            "The OpenHands SDK maintains a model feature registry that "
+            "maps model names to capabilities (e.g., vision support, "
+            "prompt caching, responses API support). When using proxied or "
+            "aliased model identifiers, set this field to the canonical "
+            "model name (e.g., 'openai/gpt-4o') to ensure correct "
+            "capability detection. If not provided, the 'model' field "
+            "will be used for capability lookups."
         ),
     )
     extra_headers: dict[str, str] | None = Field(
@@ -818,7 +824,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     def _model_name_for_capabilities(self) -> str:
         """Return canonical name for capability lookups (e.g., vision support)."""
-        return self.model_real_name or self.model
+        return self.model_canonical_name or self.model
 
     def _init_model_info_and_caps(self) -> None:
         self._model_info = get_litellm_model_info(

@@ -15,8 +15,8 @@ class DummyFeatures:
         self.send_reasoning_content = False
 
 
-def test_model_real_name_used_for_capabilities(monkeypatch):
-    """Proxy/aliased model uses model_real_name for capability + feature lookups."""
+def test_model_canonical_name_used_for_capabilities(monkeypatch):
+    """Proxy/aliased model uses model_canonical_name for capability lookups."""
 
     model_info_calls: list[str] = []
     vision_calls: list[str] = []
@@ -44,7 +44,7 @@ def test_model_real_name_used_for_capabilities(monkeypatch):
 
     real_llm = LLM(model="openai/gpt-5-mini")
     proxy_llm = LLM(
-        model="proxy/test-renamed-model", model_real_name="openai/gpt-5-mini"
+        model="proxy/test-renamed-model", model_canonical_name="openai/gpt-5-mini"
     )
 
     # Model info and vision support come from the canonical model name
@@ -53,7 +53,7 @@ def test_model_real_name_used_for_capabilities(monkeypatch):
     assert real_llm.vision_is_active() is True
     assert proxy_llm.vision_is_active() is True
 
-    # Feature lookups (prompt cache / responses API) also respect model_real_name
+    # Feature lookups (prompt cache / responses API) also respect model_canonical_name
     assert real_llm.is_caching_prompt_active() is True
     assert proxy_llm.is_caching_prompt_active() is True
     assert real_llm.uses_responses_api() is True
@@ -65,11 +65,11 @@ def test_model_real_name_used_for_capabilities(monkeypatch):
     assert "openai/gpt-5-mini" in feature_calls
 
 
-def test_model_real_name_with_real_model_info():
+def test_model_canonical_name_with_real_model_info():
     """Integration-style check using litellm's built-in model info."""
 
     base = LLM(model="gpt-4o-mini")
-    proxied = LLM(model="proxy/test-renamed-model", model_real_name="gpt-4o-mini")
+    proxied = LLM(model="proxy/test-renamed-model", model_canonical_name="gpt-4o-mini")
 
     # Model info and derived flags should align with the canonical model
     assert proxied.model_info == base.model_info
