@@ -24,11 +24,20 @@ class DummyLLM(LLM):
 
         from litellm.types.utils import ModelResponse
 
-        from openhands.sdk.llm import LLMResponse
+        from openhands.sdk.llm import LLMResponse, TextContent
         from openhands.sdk.llm.utils.metrics import MetricsSnapshot, TokenUsage
 
+        # Return a non-empty summary when used by the condenser (usage_id == "cond").
+        # Otherwise, return an empty assistant message to keep agent logic simple.
+        if getattr(self, "usage_id", None) == "cond":
+            message = Message(
+                role="assistant", content=[TextContent(text="TEST SUMMARY")]
+            )
+        else:
+            message = Message(role="assistant", content=[])
+
         return LLMResponse(
-            message=Message(role="assistant", content=[]),
+            message=message,
             metrics=MetricsSnapshot(
                 model_name="test",
                 accumulated_cost=0.0,
@@ -52,8 +61,6 @@ def test_send_message_with_slash_condense_emits_request():
 
 def test_condense_request_triggers_condenser_on_next_step():
     llm = DummyLLM()
-    # Configure condenser to satisfy validator: keep_first < max_size // 2 - 1
-    # With max_size=10 and keep_first=2, condensation is allowed.
     condenser = LLMSummarizingCondenser(
         llm=llm.model_copy(update={"usage_id": "cond"}), max_size=10, keep_first=2
     )
@@ -64,11 +71,14 @@ def test_condense_request_triggers_condenser_on_next_step():
         convo.send_message(f"msg {i}")
         convo.run()
 
+    # Issue the condensation request and run once to process it
     convo.send_message("/condense please")
-
     convo.run()
 
-    assert any(isinstance(e, Condensation) for e in convo.state.events)
+    # Verify a Condensation event was produced, and it includes a summary
+    conds = [e for e in convo.state.events if isinstance(e, Condensation)]
+    assert conds, "No Condensation event found"
+    assert any(c.summary for c in conds), "Condensation event missing summary"
 
 
 def test_condense_skill_trigger_name():

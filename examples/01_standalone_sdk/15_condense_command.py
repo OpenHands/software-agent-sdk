@@ -83,6 +83,30 @@ def main():
     convo.send_message("/condense")
     convo.run()
 
+    # Inspect events to verify condensation completed and summary exists
+    from openhands.sdk.event.condenser import Condensation, CondensationSummaryEvent
+
+    conds = [e for e in convo.state.events if isinstance(e, Condensation)]
+    summaries = [
+        e for e in convo.state.events if isinstance(e, CondensationSummaryEvent)
+    ]
+    if conds:
+        print("Found Condensation event(s):", len(conds))
+        for i, c in enumerate(conds, 1):
+            has_summary = bool(c.summary)
+            print(f"  Condensation #{i}: forgotten={len(c.forgotten_event_ids)}")
+            print("    has_summary=", has_summary)
+            if c.summary:
+                print("  Summary (truncated to 200 chars):", c.summary[:200])
+    else:
+        print("No Condensation event found.")
+
+    if summaries:
+        print("Found CondensationSummaryEvent(s):", len(summaries))
+        print("Example summary (truncated to 200 chars):", summaries[-1].summary[:200])
+    else:
+        print("No CondensationSummaryEvent found.")
+
     print("Finished. Total LLM messages collected:", len(llm_messages))
 
 
