@@ -252,11 +252,16 @@ jobs:
                   SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
 
+                  # Extract versioned tags CSV for consolidation
+                  VERSIONED_TAGS_CSV=$(grep '^versioned_tags_csv=' $GITHUB_OUTPUT | cut -d= -f2- || echo "")
+                  echo "versioned_tags_csv=$VERSIONED_TAGS_CSV" >> $GITHUB_OUTPUT
+
                   # Verify outputs
                   echo "=== Build outputs ==="
                   echo "Build context: $(grep '^build_context=' $GITHUB_OUTPUT | cut -d= -f2-)"
                   echo "Tags: $TAGS"
                   echo "Short SHA: $SHORT_SHA"
+                  echo "Versioned tags: $VERSIONED_TAGS_CSV"
                   echo "===================="
 
             - name: Build & Push with Blacksmith (${{ matrix.variant }}-${{ matrix.arch }})
@@ -301,6 +306,7 @@ jobs:
                     "image": "${{ env.IMAGE }}",
                     "short_sha": "${{ steps.prep.outputs.short_sha }}",
                     "tags": "${{ steps.prep.outputs.tags }}",
+                    "versioned_tags_csv": "${{ steps.prep.outputs.versioned_tags_csv }}",
                     "platform": "${{ env.PLATFORM }}"
                   }
                   EOF
@@ -385,6 +391,29 @@ jobs:
                       echo "✓ Latest multi-arch manifest created: ${IMAGE}:${LATEST_TAG}"
                       
                       MANIFEST_TAG="${MANIFEST_TAG},${LATEST_TAG}"
+                  fi
+
+                  # Create versioned manifests if triggered by a git tag
+                  # Extract versioned tags from build info (format: "1.2.0-python,1.2.0-java")
+                  VERSIONED_TAGS_CSV=$(jq -r '.versioned_tags_csv' build-info/${VARIANT}-amd64.json)
+                  if [ -n "$VERSIONED_TAGS_CSV" ] && [ "$VERSIONED_TAGS_CSV" != "null" ] && [ "$VERSIONED_TAGS_CSV" != "" ]; then
+                      echo "Found versioned tags: $VERSIONED_TAGS_CSV"
+                      # Split CSV and create manifest for each versioned tag
+                      IFS=',' read -ra VERSIONED_TAGS <<< "$VERSIONED_TAGS_CSV"
+                      for VERSIONED_TAG in "${VERSIONED_TAGS[@]}"; do
+                          if [ -n "$VERSIONED_TAG" ]; then
+                              echo "Creating versioned multi-arch manifest: ${IMAGE}:${VERSIONED_TAG}"
+                              docker buildx imagetools create -t ${IMAGE}:${VERSIONED_TAG} \
+                                ${IMAGE}:${VERSIONED_TAG}-amd64 \
+                                ${IMAGE}:${VERSIONED_TAG}-arm64
+                              
+                              echo "Inspecting versioned multi-arch manifest:"
+                              docker buildx imagetools inspect ${IMAGE}:${VERSIONED_TAG}
+                              echo "✓ Versioned multi-arch manifest created: ${IMAGE}:${VERSIONED_TAG}"
+                              
+                              MANIFEST_TAG="${MANIFEST_TAG},${VERSIONED_TAG}"
+                          fi
+                      done
                   fi
 
                   # Save manifest info for consolidation
