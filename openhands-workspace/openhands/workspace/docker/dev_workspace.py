@@ -56,7 +56,7 @@ class DockerDevWorkspace(DockerWorkspace):
             )
         return self
 
-    def _get_image(self) -> str:
+    def get_image(self) -> str:
         """Build the image if base_image is provided, otherwise use server_image.
 
         This overrides the parent method to add on-the-fly image building

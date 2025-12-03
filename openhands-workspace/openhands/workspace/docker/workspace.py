@@ -195,12 +195,12 @@ class DockerWorkspace(RemoteWorkspace):
 
     def model_post_init(self, context: Any) -> None:
         """Set up the Docker container and initialize the remote workspace."""
-        # Subclasses should call _get_image() to get the image to use
+        # Subclasses should call get_image() to get the image to use
         # This allows them to build or prepare the image before container startup
-        image = self._get_image()
+        image = self.get_image()
         self._start_container(image, context)
 
-    def _get_image(self) -> str:
+    def get_image(self) -> str:
         """Get the Docker image to use for the container.
 
         Subclasses can override this to provide custom image resolution logic
