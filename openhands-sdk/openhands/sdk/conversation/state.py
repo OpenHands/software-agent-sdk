@@ -265,18 +265,11 @@ class ConversationState(OpenHandsModel):
                         ConversationStateUpdateEvent,
                     )
 
-                    # For ConversationStats, use snapshot serialization to avoid
-                    # sending lengthy lists over WebSocket
-                    if isinstance(value, ConversationStats):
-                        serialized_value = value.model_dump(
-                            mode="json", context={"use_snapshot": True}
-                        )
-                    else:
-                        serialized_value = value
-
                     # Create a ConversationStateUpdateEvent with the changed field
+                    # The event's field validator handles ConversationStats
+                    # serialization automatically
                     state_update_event = ConversationStateUpdateEvent(
-                        key=name, value=serialized_value
+                        key=name, value=value
                     )
                     callback(state_update_event)
                 except Exception:
