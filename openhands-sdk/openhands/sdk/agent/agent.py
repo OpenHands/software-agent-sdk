@@ -285,13 +285,6 @@ class Agent(AgentBase):
         # Emit VLLM token ids if enabled
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
-        # Finish conversation if LLM produced content (awaits user input)
-        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
-        if has_content:
-            logger.debug("LLM produced a message response - awaits user input")
-            state.execution_status = ConversationExecutionStatus.FINISHED
-            return
-
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> bool:
