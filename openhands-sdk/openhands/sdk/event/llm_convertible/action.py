@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from pydantic import Field
 from rich.text import Text
@@ -15,6 +16,10 @@ from openhands.sdk.llm import (
 )
 from openhands.sdk.security import risk
 from openhands.sdk.tool.schema import Action
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.critic.base import CriticResult
 
 
 class ActionEvent(LLMConvertibleEvent):
@@ -65,6 +70,11 @@ class ActionEvent(LLMConvertibleEvent):
         description="The LLM's assessment of the safety risk of this action.",
     )
 
+    critic_result: "CriticResult | None" = Field(
+        default=None,
+        description="Optional critic evaluation of this action and preceding history.",
+    )
+
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this action event."""
@@ -104,6 +114,14 @@ class ActionEvent(LLMConvertibleEvent):
             # When action is None (non-executable), show the function call
             content.append("Function call:\n", style="bold")
             content.append(f"- {self.tool_call.name} ({self.tool_call.id})\n")
+
+        # Display critic result if available
+        if self.critic_result is not None:
+            content.append("\nCritic Score: ", style="bold")
+            score_style = "green" if self.critic_result.success else "yellow"
+            content.append(f"{self.critic_result.score:.3f}", style=score_style)
+            if self.critic_result.message:
+                content.append(f" - {self.critic_result.message}")
 
         return content
 

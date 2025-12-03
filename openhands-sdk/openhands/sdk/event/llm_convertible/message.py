@@ -1,6 +1,6 @@
 import copy
 from collections.abc import Sequence
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import ConfigDict, Field
 from rich.text import Text
@@ -15,6 +15,10 @@ from openhands.sdk.llm import (
     ThinkingBlock,
     content_to_str,
 )
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.critic.base import CriticResult
 
 
 class MessageEvent(LLMConvertibleEvent):
@@ -49,6 +53,11 @@ class MessageEvent(LLMConvertibleEvent):
             "Optional identifier of the sender. "
             "Can be used to track message origin in multi-agent scenarios."
         ),
+    )
+
+    critic_result: "CriticResult | None" = Field(
+        default=None,
+        description="Optional critic evaluation of this message and preceding history.",
     )
 
     @property
@@ -100,6 +109,14 @@ class MessageEvent(LLMConvertibleEvent):
                 "\n\nPrompt Extension based on Agent Context:\n", style="bold"
             )
             content.append(" ".join(text_parts))
+
+        # Display critic result if available
+        if self.critic_result is not None:
+            content.append("\n\nCritic Score: ", style="bold")
+            score_style = "green" if self.critic_result.success else "yellow"
+            content.append(f"{self.critic_result.score:.3f}", style=score_style)
+            if self.critic_result.message:
+                content.append(f" - {self.critic_result.message}")
 
         return content
 

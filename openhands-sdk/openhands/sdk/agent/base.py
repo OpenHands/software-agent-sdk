@@ -4,7 +4,7 @@ import sys
 import warnings
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
 
@@ -23,6 +23,7 @@ from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 if TYPE_CHECKING:
     from openhands.sdk.conversation import ConversationState, LocalConversation
     from openhands.sdk.conversation.types import ConversationCallbackType
+    from openhands.sdk.critic.base import CriticBase
 
 logger = get_logger(__name__)
 
@@ -151,6 +152,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 "keep_first": 10,
             }
         ],
+    )
+
+    critic: "CriticBase | None" = Field(
+        default=None,
+        description=(
+            "Optional critic to evaluate agent actions and messages in real-time."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+
+    critic_evaluation_mode: Literal["finish_and_message", "all_actions"] = Field(
+        default="finish_and_message",
+        description=(
+            "When to run critic evaluation:\n"
+            "- 'finish_and_message': Evaluate on FinishAction and agent"
+            " MessageEvent (default)\n"
+            "- 'all_actions': Evaluate after every agent action"
+        ),
     )
 
     # Runtime materialized tools; private and non-serializable
