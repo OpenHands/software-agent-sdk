@@ -266,8 +266,6 @@ class ConversationState(OpenHandsModel):
                     )
 
                     # Create a ConversationStateUpdateEvent with the changed field
-                    # The event's field validator handles ConversationStats
-                    # serialization automatically
                     state_update_event = ConversationStateUpdateEvent(
                         key=name, value=value
                     )
