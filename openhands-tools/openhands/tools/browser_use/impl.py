@@ -35,34 +35,10 @@ def _check_chromium_available() -> str | None:
         if path := shutil.which(binary):
             return path
 
-    # Check common Windows installation paths
-    windows_chrome_paths = []
-    env_vars = [
-        ("PROGRAMFILES", "C:\\Program Files"),
-        ("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
-        ("LOCALAPPDATA", ""),
-    ]
-    windows_browsers = [
-        ("Google", "Chrome", "Application", "chrome.exe"),
-        ("Microsoft", "Edge", "Application", "msedge.exe"),
-    ]
-
-    for env_var, default in env_vars:
-        for vendor, browser, app_dir, executable in windows_browsers:
-            base_path = Path(os.environ.get(env_var, default))
-            if base_path:
-                windows_chrome_paths.append(
-                    base_path / vendor / browser / app_dir / executable
-                )
-    for chrome_path in windows_chrome_paths:
-        if chrome_path.exists():
-            return str(chrome_path)
-
     # Check Playwright-installed Chromium
     playwright_cache_candidates = [
         Path.home() / ".cache" / "ms-playwright",  # Linux
         Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
-        Path(os.environ.get("LOCALAPPDATA", "")) / "ms-playwright",  # Windows
     ]
 
     for playwright_cache in playwright_cache_candidates:
@@ -78,7 +54,6 @@ def _check_chromium_available() -> str | None:
                     / "Contents"
                     / "MacOS"
                     / "Chromium",  # macOS
-                    chromium_dir / "chrome-win" / "chrome.exe",  # Windows
                 ]
                 for p in possible_paths:
                     if p.exists():
