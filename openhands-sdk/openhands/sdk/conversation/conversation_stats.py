@@ -30,22 +30,13 @@ class ConversationStats(BaseModel):
         # Get the default serialization
         data = serializer(self)
 
-        # Replace each Metrics with its snapshot
-        if "usage_to_metrics" in data and isinstance(data["usage_to_metrics"], dict):
+        # Replace each Metrics with its snapshot using the get_snapshot() method
+        if "usage_to_metrics" in data:
             usage_to_snapshots = {}
-            for usage_id, metrics in data["usage_to_metrics"].items():
-                if isinstance(metrics, dict):
-                    # Convert to MetricsSnapshot format (remove lists)
-                    usage_to_snapshots[usage_id] = {
-                        "model_name": metrics.get("model_name"),
-                        "accumulated_cost": metrics.get("accumulated_cost"),
-                        "max_budget_per_task": metrics.get("max_budget_per_task"),
-                        "accumulated_token_usage": metrics.get(
-                            "accumulated_token_usage"
-                        ),
-                    }
-                else:
-                    usage_to_snapshots[usage_id] = metrics
+            for usage_id, metrics in self.usage_to_metrics.items():
+                # Use Metrics.get_snapshot() to convert to MetricsSnapshot
+                snapshot = metrics.get_snapshot()
+                usage_to_snapshots[usage_id] = snapshot.model_dump()
 
             data["usage_to_metrics"] = usage_to_snapshots
 
