@@ -1,3 +1,4 @@
+import logging
 import time
 from importlib.metadata import version
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel
 server_details_router = APIRouter(prefix="", tags=["Server Details"])
 _start_time = time.time()
 _last_event_time = time.time()
+_logger = logging.getLogger(__name__)
 
 
 class ServerInfo(BaseModel):
@@ -41,3 +43,9 @@ async def get_server_info() -> ServerInfo:
         uptime=int(now - _start_time),
         idle_time=int(now - _last_event_time),
     )
+
+
+@server_details_router.get("/test-logging")
+async def test_logging(level: int, msg: str) -> str:
+    _logger.log(level, msg)
+    return msg
