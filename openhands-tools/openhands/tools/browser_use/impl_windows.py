@@ -37,8 +37,9 @@ def _check_chromium_available_windows() -> str | None:
 
     for env_var, default in env_vars:
         for vendor, browser, app_dir, executable in windows_browsers:
-            base_path = Path(os.environ.get(env_var, default))
-            if base_path:
+            base_path_str = os.environ.get(env_var, default)
+            if base_path_str:
+                base_path = Path(base_path_str)
                 windows_chrome_paths.append(
                     base_path / vendor / browser / app_dir / executable
                 )
