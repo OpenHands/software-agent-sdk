@@ -110,6 +110,7 @@ def setup_logging(
     # Only add ours if there isn't already a comparable stream handler.
     has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
 
+    root.warning(f"logger.py:setup_logging:has_stream: {has_stream}")
     if not has_stream:
         if ENV_JSON or IN_CI:
             # JSON console handler
@@ -157,7 +158,7 @@ def setup_logging(
             )
             fh.setFormatter(logging.Formatter(log_fmt))
         root.addHandler(fh)
-    root.warning(f"Log level was set to {lvl}")
+    root.warning(f"logger.py:setup_logging:level_set_to: {lvl}")
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -185,6 +186,6 @@ def get_logger(name: str) -> logging.Logger:
 
 
 # Auto-configure if desired
-logging.getLogger().warning(f"logger.py loaded: {ENV_AUTO_CONFIG}")
+logging.getLogger().warning(f"logger.py:loaded: {ENV_AUTO_CONFIG}")
 if ENV_AUTO_CONFIG:
     setup_logging()
