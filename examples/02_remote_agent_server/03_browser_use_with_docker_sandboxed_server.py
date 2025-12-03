@@ -41,7 +41,7 @@ def detect_platform():
 #        platform=detect_platform(),
 #    ) as workspace:
 with DockerWorkspace(
-    server_image="ghcr.io/openhands/agent-server:latest-python",
+    server_image="ghcr.io/openhands/agent-server:main-python",
     host_port=8011,
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC

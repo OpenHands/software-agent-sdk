@@ -47,7 +47,7 @@ def detect_platform():
 #    ) as workspace:
 with DockerWorkspace(
     # use pre-built image for faster startup
-    server_image="ghcr.io/openhands/agent-server:latest-python",
+    server_image="ghcr.io/openhands/agent-server:main-python",
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:
