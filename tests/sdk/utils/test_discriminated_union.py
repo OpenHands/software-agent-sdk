@@ -1,5 +1,5 @@
 from abc import ABC
-from typing import Annotated, ClassVar
+from typing import ClassVar
 
 import pytest
 from litellm import BaseModel
@@ -15,7 +15,6 @@ from pydantic import (
 
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
-    kind_of,
 )
 
 
@@ -81,13 +80,29 @@ class AnimalPack(BaseModel):
 
 def test_serializable_type_expected() -> None:
     serializable_type = Animal.get_serializable_type()
-    expected_serializable_type = Annotated[
-        Annotated[Cat, Tag("Cat")]
-        | Annotated[Dog, Tag("Dog")]
-        | Annotated[Wolf, Tag("Wolf")],
-        Discriminator(kind_of),
-    ]
-    assert serializable_type == expected_serializable_type
+
+    # Check that it's an Annotated type with a Union and Discriminator
+    assert hasattr(serializable_type, "__metadata__")
+    assert len(serializable_type.__metadata__) == 1
+    discriminator = serializable_type.__metadata__[0]
+    assert isinstance(discriminator, Discriminator)
+
+    # Check that the union contains the expected types
+    union_type = serializable_type.__args__[0]
+    union_args = union_type.__args__
+
+    # Extract the types from the annotated types
+    types = []
+    tags = []
+    for arg in union_args:
+        if hasattr(arg, "__metadata__") and len(arg.__metadata__) == 1:
+            tag = arg.__metadata__[0]
+            if isinstance(tag, Tag):
+                types.append(arg.__args__[0])
+                tags.append(tag.tag)
+
+    assert set(types) == {Cat, Dog, Wolf}
+    assert set(tags) == {"Cat", "Dog", "Wolf"}
 
 
 def test_json_schema() -> None:
@@ -175,3 +190,48 @@ def test_duplicate_kind():
 
         class Cat(Animal):
             pass
+
+
+def test_enhanced_error_message_for_unknown_kind():
+    """Test that resolve_kind provides a detailed error message for unknown kinds."""
+    # Test with an unknown kind
+    with pytest.raises(ValueError) as exc_info:
+        Animal.resolve_kind("UnknownAnimal")
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    assert "Unexpected kind 'UnknownAnimal' for Animal" in error_message
+    assert "Expected one of:" in error_message
+    assert "Cat" in error_message
+    assert "Dog" in error_message
+    assert "Wolf" in error_message
+    assert "OpenHandsModel instead of BaseModel" in error_message
+    assert "invalid schema has not been cached" in error_message
+
+
+def test_enhanced_error_message_with_validation():
+    """Test that the enhanced error message appears during model validation."""
+    # Create invalid data with unknown kind
+    invalid_data = {"kind": "UnknownAnimal", "name": "Test"}
+
+    with pytest.raises(ValueError) as exc_info:
+        Animal.model_validate(invalid_data)
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains expected components
+    assert "Unexpected kind 'UnknownAnimal' for Animal" in error_message
+    assert "Expected one of:" in error_message
+    assert "Cat, Dog, Wolf" in error_message
+
+
+def test_dynamic_field_error():
+    class Tiger(Cat):
+        pass
+
+    with pytest.raises(ValueError) as exc_info:
+        AnimalPack(members=[Tiger(name="Tony")])
+
+    error_message = str(exc_info.value)
+    assert "OpenHandsModel instead of BaseModel" in error_message
