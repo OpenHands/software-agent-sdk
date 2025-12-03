@@ -98,3 +98,7 @@ print("=" * 80)
 # conversation.send_message("Please index this conversation using sleeptime_compute")
 # conversation.run()
 # print("\nConversation indexed for user modeling!")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
