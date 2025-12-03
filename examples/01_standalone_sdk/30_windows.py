@@ -53,19 +53,22 @@ conversation = Conversation(
     agent=agent,
     callbacks=[conversation_callback],
     workspace=cwd,
+    visualizer=None,
 )
 
-conversation.send_message(
-    "Open https://openhands.dev/blog in the browser and summarize the key points "
-    "from the latest post."
-)
-conversation.run()
+try:
+    conversation.send_message(
+        "Open https://openhands.dev/blog in the browser and summarize the key points "
+        "from the latest post."
+    )
+    conversation.run()
+finally:
+    conversation.close()
 
 print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     preview = str(message)
-    logger.info("message_%s: %s", i, preview)
     print(f"Message {i}: {preview[:200]}")
 
 cost = llm.metrics.accumulated_cost
