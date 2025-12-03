@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr, model_serializer
+from pydantic import BaseModel, Field, PrivateAttr
 
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -20,17 +20,28 @@ class ConversationStats(BaseModel):
 
     _restored_usage_ids: set[str] = PrivateAttr(default_factory=set)
 
-    @model_serializer(mode="wrap")
-    def _serialize_with_snapshots(self, serializer: Any) -> dict[str, Any]:
+    def model_dump_snapshot(self, **kwargs: Any) -> dict[str, Any]:
         """Serialize metrics as snapshots to avoid sending lengthy lists.
 
-        This prevents sending the full costs, response_latencies, and token_usages
-        lists which grow with conversation length. Only accumulated values are sent.
-        """
-        # Get the default serialization
-        data = serializer(self)
+        This method is intended for use when sending data over WebSocket or
+        other network transmission where we want to minimize payload size.
+        It converts each Metrics object to a MetricsSnapshot, which excludes
+        the costs, response_latencies, and token_usages lists that grow with
+        conversation length.
 
-        # Replace each Metrics with its snapshot using the get_snapshot() method
+        For full data persistence (e.g., saving state to disk), use the
+        standard model_dump() method instead.
+
+        Args:
+            **kwargs: Additional arguments to pass to model_dump()
+
+        Returns:
+            Dictionary with metrics serialized as snapshots
+        """
+        # Get the default serialization with full metrics
+        data = self.model_dump(**kwargs)
+
+        # Replace each Metrics with its snapshot
         if "usage_to_metrics" in data:
             usage_to_snapshots = {}
             for usage_id, metrics in self.usage_to_metrics.items():
