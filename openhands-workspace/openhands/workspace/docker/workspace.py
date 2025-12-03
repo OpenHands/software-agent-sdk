@@ -11,7 +11,6 @@ from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr, model_validator
 
-from openhands.agent_server.docker.build import BuildOptions, build
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
 from openhands.sdk.utils.deprecation import warn_deprecated
@@ -164,6 +163,8 @@ class DockerWorkspace(RemoteWorkspace):
     def _build_image_from_base(
         *, base_image: str, target: TargetType, platform: PlatformType
     ) -> str:
+        from openhands.agent_server.docker.build import BuildOptions, build
+
         if "ghcr.io/openhands/agent-server" in base_image:
             raise RuntimeError(
                 "base_image cannot be a pre-built agent-server image. "
