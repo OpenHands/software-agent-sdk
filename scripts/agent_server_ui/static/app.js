@@ -602,12 +602,11 @@ class OpenHandsWebChat {
                     model: "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
                     base_url: "https://llm-proxy.app.all-hands.dev",
                     api_key: "secret"
-                },
-                tools: [
-                    { name: "TerminalTool", params: { } },
-                    { name: "FileEditorTool", params: { } },
-                    { name: "TaskTrackerTool", params: { } }
-                ]
+                }
+            },
+            workspace: {
+                kind: "LocalWorkspace",
+                working_dir: "workspace/project"
             }
         }, null, 2);
     }
