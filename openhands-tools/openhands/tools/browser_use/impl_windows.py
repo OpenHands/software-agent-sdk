@@ -31,11 +31,11 @@ class WindowsBrowserToolExecutor(BrowserToolExecutor):
                 return path
 
         # Check common Windows installation paths
-        windows_chrome_paths = []
+        # Short-circuit on first found browser for efficiency
         env_vars = [
             ("PROGRAMFILES", "C:\\Program Files"),
             ("PROGRAMFILES(X86)", "C:\\Program Files (x86)"),
-            ("LOCALAPPDATA", ""),
+            ("LOCALAPPDATA", None),  # Will skip if not set
         ]
         windows_browsers = [
             ("Google", "Chrome", "Application", "chrome.exe"),
@@ -43,17 +43,15 @@ class WindowsBrowserToolExecutor(BrowserToolExecutor):
         ]
 
         for env_var, default in env_vars:
-            for vendor, browser, app_dir, executable in windows_browsers:
-                base_path_str = os.environ.get(env_var, default)
-                if base_path_str:
-                    base_path = Path(base_path_str)
-                    windows_chrome_paths.append(
-                        base_path / vendor / browser / app_dir / executable
-                    )
+            base_path_str = os.environ.get(env_var, default)
+            if not base_path_str:
+                continue  # Skip if env var not set and no default
 
-        for chrome_path in windows_chrome_paths:
-            if chrome_path.exists():
-                return str(chrome_path)
+            base_path = Path(base_path_str)
+            for vendor, browser, app_dir, executable in windows_browsers:
+                chrome_path = base_path / vendor / browser / app_dir / executable
+                if chrome_path.exists():
+                    return str(chrome_path)
 
         # Check Playwright-installed Chromium (Windows path)
         localappdata = os.environ.get("LOCALAPPDATA", "")

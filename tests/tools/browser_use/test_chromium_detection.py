@@ -106,9 +106,15 @@ class TestChromiumDetection:
         def mock_exists(self):
             return str(self) in [str(mock_cache_dir), str(mock_chrome_path)]
 
+        def mock_environ_get(key, default=None):
+            """Mock environment variable getter for Windows-specific tests."""
+            if key == "LOCALAPPDATA":
+                return "C:/Users/user/AppData/Local"
+            return default
+
         with (
             patch("shutil.which", return_value=None),
-            patch("os.environ.get", return_value="C:/Users/user/AppData/Local"),
+            patch("os.environ.get", side_effect=mock_environ_get),
             patch.object(Path, "exists", mock_exists),
             patch.object(Path, "glob") as mock_glob,
         ):
