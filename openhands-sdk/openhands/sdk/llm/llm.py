@@ -171,6 +171,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
     )
+    model_canonical_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional canonical model name for feature registry lookups. "
+            "The OpenHands SDK maintains a model feature registry that "
+            "maps model names to capabilities (e.g., vision support, "
+            "prompt caching, responses API support). When using proxied or "
+            "aliased model identifiers, set this field to the canonical "
+            "model name (e.g., 'openai/gpt-4o') to ensure correct "
+            "capability detection. If not provided, the 'model' field "
+            "will be used for capability lookups."
+        ),
+    )
     extra_headers: dict[str, str] | None = Field(
         default=None,
         description="Optional HTTP headers to forward to LiteLLM requests.",
@@ -809,11 +822,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Capabilities, formatting, and info
     # =========================================================================
+    def _model_name_for_capabilities(self) -> str:
+        """Return canonical name for capability lookups (e.g., vision support)."""
+        return self.model_canonical_name or self.model
+
     def _init_model_info_and_caps(self) -> None:
         self._model_info = get_litellm_model_info(
             secret_api_key=self.api_key,
             base_url=self.base_url,
-            model=self.model,
+            model=self._model_name_for_capabilities(),
         )
 
         # Context window and max_output_tokens
@@ -873,9 +890,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # we can go with it, but we will need to keep an eye if model_info is correct for Vertex or other providers  # noqa: E501
         # remove when litellm is updated to fix https://github.com/BerriAI/litellm/issues/5608  # noqa: E501
         # Check both the full model name and the name after proxy prefix for vision support  # noqa: E501
+        model_for_caps = self._model_name_for_capabilities()
         return (
-            supports_vision(self.model)
-            or supports_vision(self.model.split("/")[-1])
+            supports_vision(model_for_caps)
+            or supports_vision(model_for_caps.split("/")[-1])
             or (
                 self._model_info is not None
                 and self._model_info.get("supports_vision", False)
@@ -894,13 +912,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return False
         # We don't need to look-up model_info, because
         # only Anthropic models need explicit caching breakpoints
-        return self.caching_prompt and get_features(self.model).supports_prompt_cache
+        return (
+            self.caching_prompt
+            and get_features(self._model_name_for_capabilities()).supports_prompt_cache
+        )
 
     def uses_responses_api(self) -> bool:
         """Whether this model uses the OpenAI Responses API path."""
 
         # by default, uses = supports
-        return get_features(self.model).supports_responses_api
+        return get_features(self._model_name_for_capabilities()).supports_responses_api
 
     @property
     def model_info(self) -> dict | None:
@@ -937,7 +958,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
-            model_features = get_features(self.model)
+            model_features = get_features(self._model_name_for_capabilities())
             message.force_string_serializer = (
                 self.force_string_serializer
                 if self.force_string_serializer is not None

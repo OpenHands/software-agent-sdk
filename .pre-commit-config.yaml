@@ -46,3 +46,11 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
+          - id: check-tool-registration
+            name: Check Tool subclass registration
+            entry: uv
+            args: [run, python, scripts/check_tool_registration.py]
+            language: system
+            types: [python]
+            pass_filenames: true
+            always_run: false
