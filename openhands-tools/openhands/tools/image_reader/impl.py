@@ -34,7 +34,7 @@ class ImageReaderExecutor(ToolExecutor[ImageReaderAction, ImageReaderObservation
     def __call__(
         self,
         action: ImageReaderAction,
-        conversation=None,  # conversation unused; retained for ToolExecutor signature
+        _conversation=None,  # retained for ToolExecutor signature
     ) -> ImageReaderObservation:
         resolved = self._resolve_path(action.path)
 
