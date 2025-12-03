@@ -4,7 +4,6 @@ import json
 import logging
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,8 +36,10 @@ def _check_chromium_available() -> str | None:
 
     # Check Playwright-installed Chromium
     playwright_cache_candidates = [
-        Path.home() / ".cache" / "ms-playwright",
-        Path.home() / "Library" / "Caches" / "ms-playwright",
+        Path.home() / ".cache" / "ms-playwright",  # Linux
+        Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
+        # Windows
+        Path.home() / "AppData" / "Local" / "ms-playwright",
     ]
     for playwright_cache in playwright_cache_candidates:
         if playwright_cache.exists():
@@ -59,33 +60,6 @@ def _check_chromium_available() -> str | None:
                     if p.exists():
                         return str(p)
     return None
-
-
-def _install_chromium() -> bool:
-    """Attempt to install Chromium via uvx playwright install."""
-    try:
-        # Check if uvx is available
-        if not shutil.which("uvx"):
-            logger.warning("uvx not found - cannot auto-install Chromium")
-            return False
-
-        logger.info("Attempting to install Chromium via uvx...")
-        result = subprocess.run(
-            ["uvx", "playwright", "install", "chromium", "--with-deps", "--no-shell"],
-            capture_output=True,
-            text=True,
-            timeout=300,  # 5 minutes timeout for installation
-        )
-
-        if result.returncode == 0:
-            logger.info("Chromium installation completed successfully")
-            return True
-        else:
-            logger.error(f"Chromium installation failed: {result.stderr}")
-            return False
-    except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
-        logger.error(f"Error during Chromium installation: {e}")
-        return False
 
 
 def _ensure_chromium_available() -> str:
