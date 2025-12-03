@@ -1,5 +1,10 @@
 """Test DockerWorkspace import and basic functionality."""
 
+import os
+import subprocess
+import sys
+from pathlib import Path
+
 
 def test_docker_workspace_import():
     """Test that DockerWorkspace can be imported from the new package."""
@@ -33,18 +38,33 @@ def test_docker_dev_workspace_inheritance():
 
 
 def test_docker_workspace_no_build_import():
-    """
-    Test that DockerWorkspace can be imported without SDK project root.
+    """DockerWorkspace import should not pull in build-time dependencies."""
+    code = (
+        "import importlib, sys\n"
+        "importlib.import_module('openhands.workspace')\n"
+        "print('1' if 'openhands.agent_server.docker.build' in sys.modules else '0')\n"
+    )
 
-    This is the key fix for issue #1196 - importing DockerWorkspace should not
-    require the SDK project root since it doesn't do any image building.
-    """
-    # This import should not raise any errors about SDK project root
+    env = os.environ.copy()
+    root = Path(__file__).resolve().parents[2]
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        str(root) if not pythonpath else f"{root}{os.pathsep}{pythonpath}"
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        check=True,
+        capture_output=True,
+        text=True,
+        env=env,
+        cwd=root,
+    )
+    assert result.stdout.strip() == "0"
+
     from openhands.workspace import DockerWorkspace
 
-    # Verify the class has the expected server_image field
     assert "server_image" in DockerWorkspace.model_fields
-    # Verify the class does NOT have base_image field
     assert "base_image" not in DockerWorkspace.model_fields
 
 
