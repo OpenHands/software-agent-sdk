@@ -11,12 +11,15 @@ from collections.abc import Callable
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Agent, BaseConversation, Conversation
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.security.confirmation_policy import ConfirmRisky
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 # Clean ^C exit: no stack trace noise
@@ -65,14 +68,14 @@ def run_until_finished_with_security(
     """
     Drive the conversation until FINISHED.
     - If WAITING_FOR_CONFIRMATION: ask the confirmer.
-        * On approve: set agent_status = IDLE (keeps original example’s behavior).
+        * On approve: set execution_status = IDLE (keeps original example’s behavior).
         * On reject: conversation.reject_pending_actions(...).
     - If WAITING but no pending actions: print warning and set IDLE (matches original).
     """
-    while conversation.state.agent_status != AgentExecutionStatus.FINISHED:
+    while conversation.state.execution_status != ConversationExecutionStatus.FINISHED:
         if (
-            conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         ):
             pending = ConversationState.get_unmatched_actions(conversation.state.events)
             if not pending:
@@ -91,7 +94,7 @@ def run_until_finished_with_security(
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="security-analyzer",
@@ -101,23 +104,21 @@ llm = LLM(
 )
 
 # Tools
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
 tools = [
     Tool(
-        name="BashTool",
+        name=TerminalTool.name,
     ),
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
 ]
 
-# Agent with security analyzer
-security_analyzer = LLMSecurityAnalyzer()
-agent = Agent(llm=llm, tools=tools, security_analyzer=security_analyzer)
+# Agent
+agent = Agent(llm=llm, tools=tools)
 
 # Conversation with persisted filestore
 conversation = Conversation(
     agent=agent, persistence_dir="./.conversations", workspace="."
 )
+conversation.set_security_analyzer(LLMSecurityAnalyzer())
 conversation.set_confirmation_policy(ConfirmRisky())
 
 print("\n1) Safe command (LOW risk - should execute automatically)...")

@@ -217,8 +217,21 @@ class Message(BaseModel):
     # - tool execution result (to LLM)
     tool_call_id: str | None = None
     name: str | None = None  # name of the tool
-    # force string serializer
-    force_string_serializer: bool = False
+    force_string_serializer: bool = Field(
+        default=False,
+        description=(
+            "Force using string content serializer when sending to LLM API. "
+            "Useful for providers that do not support list content, "
+            "like HuggingFace and Groq."
+        ),
+    )
+    send_reasoning_content: bool = Field(
+        default=False,
+        description=(
+            "Whether to include the full reasoning content when sending to the LLM. "
+            "Useful for models that support extended reasoning, like Kimi-K2-thinking."
+        ),
+    )
     # reasoning content (from reasoning models like o1, Claude thinking, DeepSeek R1)
     reasoning_content: str | None = Field(
         default=None,
@@ -269,6 +282,7 @@ class Message(BaseModel):
         # Assistant function_call(s)
         if self.role == "assistant" and self.tool_calls:
             message_dict["tool_calls"] = [tc.to_chat_dict() for tc in self.tool_calls]
+            self._remove_content_if_empty(message_dict)
 
         # Tool result (observation) threading
         if self.role == "tool" and self.tool_call_id is not None:
@@ -277,6 +291,10 @@ class Message(BaseModel):
             )
             message_dict["tool_call_id"] = self.tool_call_id
             message_dict["name"] = self.name
+
+        # Required for model like kimi-k2-thinking
+        if self.send_reasoning_content and self.reasoning_content:
+            message_dict["reasoning_content"] = self.reasoning_content
 
         return message_dict
 
@@ -296,14 +314,14 @@ class Message(BaseModel):
 
         # Add thinking blocks first (for Anthropic extended thinking)
         # Only add thinking blocks for assistant messages
+        thinking_blocks_dicts = []
         if self.role == "assistant":
             thinking_blocks = list(
                 self.thinking_blocks
             )  # Copy to avoid modifying original
-
             for thinking_block in thinking_blocks:
                 thinking_dict = thinking_block.model_dump()
-                content.append(thinking_dict)
+                thinking_blocks_dicts.append(thinking_dict)
 
         for item in self.content:
             # All content types now return list[dict[str, Any]]
@@ -328,8 +346,57 @@ class Message(BaseModel):
         if role_tool_with_prompt_caching:
             message_dict["cache_control"] = {"type": "ephemeral"}
 
+        if thinking_blocks_dicts:
+            message_dict["thinking_blocks"] = thinking_blocks_dicts
+
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
+
+    def _remove_content_if_empty(self, message_dict: dict[str, Any]) -> None:
+        """Remove empty text content entries from assistant tool-call messages.
+
+        Mutates the provided message_dict in-place:
+        - If content is a string of only whitespace, drop the 'content' key
+        - If content is a list, remove any text items with empty text; if the list
+          becomes empty, drop the 'content' key
+        """
+        if "content" not in message_dict:
+            return
+
+        content = message_dict["content"]
+
+        if isinstance(content, str):
+            if content.strip() == "":
+                message_dict.pop("content", None)
+            return
+
+        if isinstance(content, list):
+            normalized: list[Any] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    normalized.append(item)
+                    continue
+
+                if item.get("type") == "text":
+                    text_value = item.get("text", "")
+                    if isinstance(text_value, str):
+                        if text_value.strip() == "":
+                            continue
+                    else:
+                        raise ValueError(
+                            f"Text content item has non-string text value: "
+                            f"{text_value!r}"
+                        )
+
+                normalized.append(item)
+
+            if normalized:
+                message_dict["content"] = normalized
+            else:
+                message_dict.pop("content", None)
+            return
+
+        # Any other content shape is left as-is
 
     def to_responses_value(self, *, vision_enabled: bool) -> str | list[dict[str, Any]]:
         """Return serialized form.
@@ -386,20 +453,8 @@ class Message(BaseModel):
             return items
 
         if self.role == "assistant":
-            # Emit prior assistant content as a single message item using output_text
-            content_items: list[dict[str, Any]] = []
-            for c in self.content:
-                if isinstance(c, TextContent) and c.text:
-                    content_items.append({"type": "output_text", "text": c.text})
-            if content_items:
-                items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content_items,
-                    }
-                )
             # Include prior turn's reasoning item exactly as received (if any)
+            # Send reasoning first, followed by content and tool calls
             if self.responses_reasoning_item is not None:
                 ri = self.responses_reasoning_item
                 # Only send back if we have an id; required by the param schema
@@ -424,11 +479,26 @@ class Message(BaseModel):
                     if ri.status:
                         reasoning_item["status"] = ri.status
                     items.append(reasoning_item)
+
+            # Emit prior assistant content as a single message item using output_text
+            content_items: list[dict[str, Any]] = []
+            for c in self.content:
+                if isinstance(c, TextContent) and c.text:
+                    content_items.append({"type": "output_text", "text": c.text})
+            if content_items:
+                items.append(
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "content": content_items,
+                    }
+                )
             # Emit assistant tool calls so subsequent function_call_output
             # can match call_id
             if self.tool_calls:
                 for tc in self.tool_calls:
                     items.append(tc.to_responses_dict())
+
             return items
 
         if self.role == "tool":

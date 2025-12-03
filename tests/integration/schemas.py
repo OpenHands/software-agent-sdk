@@ -20,6 +20,7 @@ class TestResultData(BaseModel):
 
     success: bool
     reason: str | None = None
+    skipped: bool = False
 
 
 class TestInstanceResult(BaseModel):
@@ -46,6 +47,7 @@ class ModelTestResults(BaseModel):
     # Summary statistics
     total_tests: int
     successful_tests: int
+    skipped_tests: int
     success_rate: float
     total_cost: float
 
@@ -75,6 +77,7 @@ class ModelTestResults(BaseModel):
                     test_result=TestResultData(
                         success=output.test_result.success,
                         reason=output.test_result.reason,
+                        skipped=output.test_result.skipped,
                     ),
                     cost=output.cost,
                     error_message=output.error_message,
@@ -84,7 +87,12 @@ class ModelTestResults(BaseModel):
         # Calculate summary statistics
         total_tests = len(test_instances)
         successful_tests = sum(1 for t in test_instances if t.test_result.success)
-        success_rate = successful_tests / total_tests if total_tests > 0 else 0.0
+        skipped_tests = sum(1 for t in test_instances if t.test_result.skipped)
+        # Exclude skipped tests from success rate calculation
+        non_skipped_tests = total_tests - skipped_tests
+        success_rate = (
+            successful_tests / non_skipped_tests if non_skipped_tests > 0 else 0.0
+        )
         total_cost = sum(t.cost for t in test_instances)
 
         return cls(
@@ -94,6 +102,7 @@ class ModelTestResults(BaseModel):
             test_instances=test_instances,
             total_tests=total_tests,
             successful_tests=successful_tests,
+            skipped_tests=skipped_tests,
             success_rate=success_rate,
             total_cost=total_cost,
             eval_note=eval_note,
@@ -126,8 +135,13 @@ class ConsolidatedResults(BaseModel):
         # Calculate overall statistics
         total_tests_all = sum(r.total_tests for r in model_results)
         total_successful_all = sum(r.successful_tests for r in model_results)
+        total_skipped_all = sum(r.skipped_tests for r in model_results)
+        # Exclude skipped tests from overall success rate calculation
+        non_skipped_tests_all = total_tests_all - total_skipped_all
         overall_success_rate = (
-            total_successful_all / total_tests_all if total_tests_all > 0 else 0.0
+            total_successful_all / non_skipped_tests_all
+            if non_skipped_tests_all > 0
+            else 0.0
         )
         total_cost_all_models = sum(r.total_cost for r in model_results)
 

@@ -1,3 +1,5 @@
+import base64
+import mimetypes
 import os
 import re
 import shutil
@@ -7,6 +9,7 @@ from typing import get_args
 
 from binaryornot.check import is_binary
 
+from openhands.sdk import ImageContent, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.truncate import maybe_truncate
 from openhands.tools.file_editor.definition import (
@@ -35,6 +38,9 @@ from openhands.tools.file_editor.utils.shell import run_shell_cmd
 
 
 logger = get_logger(__name__)
+
+# Supported image extensions for viewing as base64-encoded content
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
 
 class FileEditor:
@@ -108,12 +114,12 @@ class FileEditor:
                 raise EditorToolParameterMissingError(command, "file_text")
             self.write_file(_path, file_text)
             self._history_manager.add_history(_path, file_text)
-            return FileEditorObservation(
+            return FileEditorObservation.from_text(
+                text=f"File created successfully at: {_path}",
                 command=command,
                 path=str(_path),
                 new_content=file_text,
                 prev_exist=False,
-                output=f"File created successfully at: {_path}",
             )
         elif command == "str_replace":
             if old_str is None:
@@ -253,9 +259,9 @@ class FileEditor:
             "Review the changes and make sure they are as expected. Edit the "
             "file again if necessary."
         )
-        return FileEditorObservation(
+        return FileEditorObservation.from_text(
+            text=success_message,
             command="str_replace",
-            output=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_content,
@@ -293,33 +299,67 @@ class FileEditor:
                 rf"-path '{path}/*/\.*' \) | sort",
                 truncate_notice=DIRECTORY_CONTENT_TRUNCATED_NOTICE,
             )
-            if not stderr:
-                # Add trailing slashes to directories
-                paths = stdout.strip().split("\n") if stdout.strip() else []
-                formatted_paths = []
-                for p in paths:
-                    if Path(p).is_dir():
-                        formatted_paths.append(f"{p}/")
-                    else:
-                        formatted_paths.append(p)
+            if stderr:
+                return FileEditorObservation.from_text(
+                    text=stderr,
+                    command="view",
+                    is_error=True,
+                    path=str(path),
+                    prev_exist=True,
+                )
+            # Add trailing slashes to directories
+            paths = stdout.strip().split("\n") if stdout.strip() else []
+            formatted_paths = []
+            for p in paths:
+                if Path(p).is_dir():
+                    formatted_paths.append(f"{p}/")
+                else:
+                    formatted_paths.append(p)
 
-                msg = [
-                    f"Here's the files and directories up to 2 levels deep in {path}, "
-                    "excluding hidden items:\n" + "\n".join(formatted_paths)
-                ]
-                if hidden_count > 0:
-                    msg.append(
-                        f"\n{hidden_count} hidden files/directories in this directory "
-                        f"are excluded. You can use 'ls -la {path}' to see them."
-                    )
-                stdout = "\n".join(msg)
-            return FileEditorObservation(
+            msg = [
+                f"Here's the files and directories up to 2 levels deep in {path}, "
+                "excluding hidden items:\n" + "\n".join(formatted_paths)
+            ]
+            if hidden_count > 0:
+                msg.append(
+                    f"\n{hidden_count} hidden files/directories in this directory "
+                    f"are excluded. You can use 'ls -la {path}' to see them."
+                )
+            stdout = "\n".join(msg)
+            return FileEditorObservation.from_text(
+                text=stdout,
                 command="view",
-                output=stdout,
-                error=stderr,
                 path=str(path),
                 prev_exist=True,
             )
+
+        # Check if the file is an image
+        file_extension = path.suffix.lower()
+        if file_extension in IMAGE_EXTENSIONS:
+            # Read image file as base64
+            try:
+                with open(path, "rb") as f:
+                    image_bytes = f.read()
+                image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+
+                mime_type, _ = mimetypes.guess_type(str(path))
+                if not mime_type or not mime_type.startswith("image/"):
+                    mime_type = "image/png"
+                output_msg = (
+                    f"Image file {path} read successfully. Displaying image content."
+                )
+                image_url = f"data:{mime_type};base64,{image_base64}"
+                return FileEditorObservation(
+                    command="view",
+                    content=[
+                        TextContent(text=output_msg),
+                        ImageContent(image_urls=[image_url]),
+                    ],
+                    path=str(path),
+                    prev_exist=True,
+                )
+            except Exception as e:
+                raise ToolError(f"Failed to read image file {path}: {e}") from None
 
         # Validate file and count lines
         self.validate_file(path)
@@ -330,9 +370,9 @@ class FileEditor:
             file_content = self.read_file(path)
             output = self._make_output(file_content, str(path), start_line)
 
-            return FileEditorObservation(
+            return FileEditorObservation.from_text(
+                text=output,
                 command="view",
-                output=output,
                 path=str(path),
                 prev_exist=True,
             )
@@ -383,10 +423,10 @@ class FileEditor:
         if warning_message:
             output = f"NOTE: {warning_message}\n{output}"
 
-        return FileEditorObservation(
+        return FileEditorObservation.from_text(
+            text=output,
             command="view",
             path=str(path),
-            output=output,
             prev_exist=True,
         )
 
@@ -496,9 +536,9 @@ class FileEditor:
             "Review the changes and make sure they are as expected (correct "
             "indentation, no duplicate lines, etc). Edit the file again if necessary."
         )
-        return FileEditorObservation(
+        return FileEditorObservation.from_text(
+            text=success_message,
             command="insert",
-            output=success_message,
             prev_exist=True,
             path=str(path),
             old_content=file_text,
@@ -565,12 +605,12 @@ class FileEditor:
 
         self.write_file(path, old_text)
 
-        return FileEditorObservation(
-            command="undo_edit",
-            output=(
+        return FileEditorObservation.from_text(
+            text=(
                 f"Last edit to {path} undone successfully. "
                 f"{self._make_output(old_text, str(path))}"
             ),
+            command="undo_edit",
             path=str(path),
             prev_exist=True,
             old_content=current_text,
@@ -603,8 +643,9 @@ class FileEditor:
                 ),
             )
 
-        # Check file type
-        if is_binary(str(path)):
+        # Check file type - allow image files
+        file_extension = path.suffix.lower()
+        if is_binary(str(path)) and file_extension not in IMAGE_EXTENSIONS:
             raise FileValidationError(
                 path=str(path),
                 reason=(

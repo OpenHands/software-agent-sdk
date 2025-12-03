@@ -16,14 +16,13 @@ from openhands.workspace import DockerWorkspace
 
 logger = get_logger(__name__)
 
-
 # 1) Ensure we have LLM API key
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -41,9 +40,9 @@ def detect_platform():
 #    the Docker container automatically
 with DockerWorkspace(
     # dynamically build agent-server image
-    # base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     # use pre-built image for faster startup
-    server_image="ghcr.io/openhands/agent-server:main-python",
+    # server_image="ghcr.io/openhands/agent-server:main-python",
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:
@@ -75,7 +74,6 @@ with DockerWorkspace(
         agent=agent,
         workspace=workspace,
         callbacks=[event_callback],
-        visualize=True,
     )
     assert isinstance(conversation, RemoteConversation)
 
@@ -89,7 +87,7 @@ with DockerWorkspace(
         logger.info("🚀 Running conversation...")
         conversation.run()
         logger.info("✅ First task completed!")
-        logger.info(f"Agent status: {conversation.state.agent_status}")
+        logger.info(f"Agent status: {conversation.state.execution_status}")
 
         # Wait for events to settle (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
@@ -101,6 +99,13 @@ with DockerWorkspace(
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
         logger.info("✅ Second task completed!")
+
+        # Report cost (must be before conversation.close())
+        conversation.state._cached_state = (
+            None  # Invalidate cache to fetch latest stats
+        )
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         print("\n🧹 Cleaning up conversation...")
         conversation.close()

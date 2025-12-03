@@ -1,6 +1,10 @@
 from unittest.mock import patch
 
-from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+import pytest
+from litellm.types.llms.openai import (
+    ResponseAPIUsage,
+    ResponsesAPIResponse,
+)
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
@@ -9,8 +13,9 @@ from openai.types.responses.response_reasoning_item import (
     Summary,
 )
 
-from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
+from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 
 
@@ -58,7 +63,7 @@ def test_from_llm_responses_output_parsing():
 
 
 def test_normalize_responses_kwargs_policy():
-    llm = LLM(model="gpt-5-mini")
+    llm = LLM(model="gpt-5-mini", reasoning_effort="high")
     # Use a model that is explicitly Responses-capable per model_features
 
     # enable encrypted reasoning and set max_output_tokens to test passthrough
@@ -75,12 +80,25 @@ def test_normalize_responses_kwargs_policy():
     assert set(out["include"]) >= {"text.output_text", "reasoning.encrypted_content"}
     # store default to False when None passed
     assert out["store"] is False
-    # reasoning config defaulted
+    # reasoning config with effort only (no summary for unverified orgs)
     r = out["reasoning"]
     assert r["effort"] in {"low", "medium", "high", "none"}
-    assert r["summary"] == "detailed"
+    assert "summary" not in r  # Summary not included to support unverified orgs
     # max_output_tokens preserved
     assert out["max_output_tokens"] == 128
+
+
+def test_normalize_responses_kwargs_with_summary():
+    """Test reasoning_summary is included when set (verified orgs)."""
+    llm = LLM(model="gpt-5-mini", reasoning_effort="high", reasoning_summary="detailed")
+
+    out = select_responses_options(
+        llm, {"temperature": 0.3}, include=["text.output_text"], store=None
+    )
+    # Verify reasoning includes both effort and summary when summary is set
+    r = out["reasoning"]
+    assert r["effort"] == "high"
+    assert r["summary"] == "detailed"
 
 
 @patch("openhands.sdk.llm.llm.litellm_responses")
@@ -117,3 +135,42 @@ def test_llm_responses_end_to_end(mock_responses_call):
     ]
     # Telemetry should have recorded usage (one entry)
     assert len(llm._telemetry.metrics.token_usages) == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.1-codex-mini",
+        "openai/gpt-5.1-codex-mini",
+    ],
+)
+def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
+    llm = LLM(model=model, reasoning_effort=None)
+    out = select_responses_options(llm, {}, include=None, store=None)
+    # When reasoning_effort is None, there should be no 'reasoning' key
+    assert "reasoning" not in out
+
+
+def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gpt():
+    # GPT-5+ should include prompt_cache_retention as a top-level arg
+    llm_51 = LLM(model="openai/gpt-5.1-codex-mini")
+    opts_51_chat = select_chat_options(llm_51, {}, has_tools=False)
+    assert opts_51_chat.get("prompt_cache_retention") == "24h"
+
+    opts_51_resp = select_responses_options(llm_51, {}, include=None, store=None)
+    assert opts_51_resp.get("prompt_cache_retention") == "24h"
+
+    llm_5 = LLM(model="openai/gpt-5-mini")
+    opts_5_chat = select_chat_options(llm_5, {}, has_tools=False)
+    assert opts_5_chat.get("prompt_cache_retention") == "24h"
+
+    opts_5_resp = select_responses_options(llm_5, {}, include=None, store=None)
+    assert opts_5_resp.get("prompt_cache_retention") == "24h"
+
+    # Non-GPT-5.1 should not include it at all
+    llm_other = LLM(model="gpt-4o")
+    opts_other_chat = select_chat_options(llm_other, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_other_chat
+
+    opts_other_resp = select_responses_options(llm_other, {}, include=None, store=None)
+    assert "prompt_cache_retention" not in opts_other_resp

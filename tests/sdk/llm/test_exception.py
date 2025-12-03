@@ -61,9 +61,7 @@ def test_llm_context_window_exceed_error_default():
 
     error = LLMContextWindowExceedError()
     expected_message = "Conversation history longer than LLM context window limit. "
-    expected_message += (
-        "Consider turning on enable_history_truncation config to avoid this error"
-    )
+    expected_message += "Consider enabling a condenser or shortening inputs."
     assert str(error) == expected_message
     assert error.message == expected_message
 

@@ -50,7 +50,6 @@ class FIFOLock:
         Returns:
             True if lock was acquired, False otherwise.
         """
-        me = threading.Condition(self._mutex)
         ident = threading.get_ident()
         start = time.monotonic()
 
@@ -60,20 +59,26 @@ class FIFOLock:
                 self._count += 1
                 return True
 
+            if self._owner is None and not self._waiters:
+                self._owner = ident
+                self._count = 1
+                return True
+
+            if not blocking:
+                # Give up immediately
+                return False
+
             # Add to wait queue
+            me = threading.Condition(self._mutex)
             self._waiters.append(me)
 
             while True:
                 # If I'm at the front of the queue and nobody owns it → acquire
                 if self._waiters[0] is me and self._owner is None:
+                    self._waiters.popleft()
                     self._owner = ident
                     self._count = 1
                     return True
-
-                if not blocking:
-                    # Give up immediately
-                    self._waiters.remove(me)
-                    return False
 
                 if timeout >= 0:
                     remaining = timeout - (time.monotonic() - start)
@@ -95,11 +100,12 @@ class FIFOLock:
         with self._mutex:
             if self._owner != ident:
                 raise RuntimeError("Cannot release lock not owned by current thread")
-
+            assert self._count >= 1, (
+                "When releasing the resource, the count must be >= 1"
+            )
             self._count -= 1
             if self._count == 0:
                 self._owner = None
-                self._waiters.popleft()
                 if self._waiters:
                     self._waiters[0].notify()
 

@@ -41,7 +41,8 @@ jobs:
                 Find all open PRs where:
                 1. The PR is waiting for review (there are no open review comments or change requests)
                 2. The PR is in a "clean" state (CI passing, no merge conflicts)
-                3. The PR has had no activity (comments, commits, reviews) for more than 3 days.
+                3. The PR is not marked as draft (draft: false)
+                4. The PR has had no activity (comments, commits, reviews) for more than 3 days.
 
                 In this case, send a message to the reviewers:
                 [Automatic Post]: This PR seems to be currently waiting for review.
@@ -50,7 +51,7 @@ jobs:
                 # Need Author Action
 
                 Find all open PRs where the most recent change or comment was made on the pull
-                request more than 5 days ago. Then do the following in order:
+                request more than 5 days ago (use 14 days if the PR is marked as draft).
 
                 And send a message to the author:
 
@@ -74,8 +75,8 @@ jobs:
                 [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame information.
                 Thanks in advance for the help!
 
-            LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-            LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+            LLM_MODEL: <YOUR_LLM_MODEL>
+            LLM_BASE_URL: <YOUR_LLM_BASE_URL>
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5

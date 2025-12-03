@@ -13,8 +13,8 @@ from openhands.sdk import (
     TextContent,
     get_logger,
 )
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.execute_bash import BashTool
+from openhands.sdk.tool import Tool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -22,7 +22,7 @@ logger = get_logger(__name__)
 # Configure LLM using LLMRegistry
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 
 # Create LLM instance
@@ -42,8 +42,7 @@ llm = llm_registry.get("agent")
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-tools = [Tool(name="BashTool")]
+tools = [Tool(name=TerminalTool.name)]
 
 # Agent
 agent = Agent(llm=llm, tools=tools)
@@ -76,14 +75,16 @@ same_llm = llm_registry.get("agent")
 print(f"Same LLM instance: {llm is same_llm}")
 
 # Demonstrate requesting a completion directly from an LLM
-completion_response = llm.completion(
+resp = llm.completion(
     messages=[
         Message(role="user", content=[TextContent(text="Say hello in one word.")])
     ]
 )
-# Access the response content
-if completion_response.choices and completion_response.choices[0].message:  # type: ignore
-    content = completion_response.choices[0].message.content  # type: ignore
-    print(f"Direct completion response: {content}")
-else:
-    print("No response content available")
+# Access the response content via OpenHands LLMResponse
+msg = resp.message
+texts = [c.text for c in msg.content if isinstance(c, TextContent)]
+print(f"Direct completion response: {texts[0] if texts else str(msg)}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

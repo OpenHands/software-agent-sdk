@@ -7,8 +7,12 @@ from collections.abc import Callable
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, BaseConversation, Conversation
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm, NeverConfirm
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -56,10 +60,10 @@ def run_until_finished(conversation: BaseConversation, confirmer: Callable) -> N
     on reject, call reject_pending_actions().
     Preserves original error if agent waits but no actions exist.
     """
-    while conversation.state.agent_status != AgentExecutionStatus.FINISHED:
+    while conversation.state.execution_status != ConversationExecutionStatus.FINISHED:
         if (
-            conversation.state.agent_status
-            == AgentExecutionStatus.WAITING_FOR_CONFIRMATION
+            conversation.state.execution_status
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         ):
             pending = ConversationState.get_unmatched_actions(conversation.state.events)
             if not pending:
@@ -79,7 +83,7 @@ def run_until_finished(conversation: BaseConversation, confirmer: Callable) -> N
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",
@@ -88,11 +92,14 @@ llm = LLM(
     api_key=SecretStr(api_key),
 )
 
+agent = get_default_agent(llm=llm)
+conversation = Conversation(agent=agent, workspace=os.getcwd())
+
+# Conditionally add security analyzer based on environment variable
 add_security_analyzer = bool(os.getenv("ADD_SECURITY_ANALYZER", "").strip())
 if add_security_analyzer:
     print("Agent security analyzer added.")
-agent = get_default_agent(llm=llm, add_security_analyzer=add_security_analyzer)
-conversation = Conversation(agent=agent, workspace=os.getcwd())
+    conversation.set_security_analyzer(LLMSecurityAnalyzer())
 
 # 1) Confirmation mode ON
 conversation.set_confirmation_policy(AlwaysConfirm())
@@ -125,7 +132,7 @@ print("\n=== Example Complete ===")
 print("Key points:")
 print(
     "- conversation.run() creates actions; confirmation mode "
-    "sets agent_status=WAITING_FOR_CONFIRMATION"
+    "sets execution_status=WAITING_FOR_CONFIRMATION"
 )
 print("- User confirmation is handled via a single reusable function")
 print("- Rejection uses conversation.reject_pending_actions() and the loop continues")

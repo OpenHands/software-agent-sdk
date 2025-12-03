@@ -1,5 +1,7 @@
 import io
 import re
+import shutil
+import subprocess
 from itertools import chain
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
@@ -15,9 +17,14 @@ from openhands.sdk.context.skills.trigger import (
 )
 from openhands.sdk.context.skills.types import InputMetadata
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
+
+# Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
+# These files are always active, so we want to keep them reasonably sized
+THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 
 # Union type for all trigger types
 TriggerType = Annotated[
@@ -37,7 +44,16 @@ class Skill(BaseModel):
 
     name: str
     content: str
-    trigger: TriggerType | None
+    trigger: TriggerType | None = Field(
+        default=None,
+        description=(
+            "Skills use triggers to determine when they should be activated. "
+            "None implies skill is always active. "
+            "Other implementations include KeywordTrigger (activated by a "
+            "keyword in a Message) and TaskTrigger (activated by specific tasks "
+            "and may require user input)"
+        ),
+    )
     source: str | None = Field(
         default=None,
         description=(
@@ -62,6 +78,8 @@ class Skill(BaseModel):
         ".cursorrules": "cursorrules",
         "agents.md": "agents",
         "agent.md": "agents",
+        "claude.md": "claude",
+        "gemini.md": "gemini",
     }
 
     @classmethod
@@ -71,9 +89,30 @@ class Skill(BaseModel):
 
         # Create Skill with None trigger (always active) if we recognized the file type
         if skill_name is not None:
+            # Truncate content if it exceeds the limit
+            # Third-party files are always active, so we want to keep them
+            # reasonably sized
+            truncated_content = maybe_truncate(
+                file_content,
+                truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
+                truncate_notice=(
+                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the "
+                    f"maximum length ({THIRD_PARTY_SKILL_MAX_CHARS} "
+                    f"characters) and has been truncated. Only the "
+                    f"beginning and end are shown. You can read the full "
+                    f"file if needed.</NOTE>\n\n"
+                ),
+            )
+
+            if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
+                logger.warning(
+                    f"Third-party skill file {path} ({len(file_content)} chars) "
+                    f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
+                )
+
             return Skill(
                 name=skill_name,
-                content=file_content,
+                content=truncated_content,
                 source=str(path),
                 trigger=None,
             )
@@ -307,3 +346,224 @@ def load_skills_from_dir(
         f"{[*repo_skills.keys(), *knowledge_skills.keys()]}"
     )
     return repo_skills, knowledge_skills
+
+
+# Default user skills directories (in order of priority)
+USER_SKILLS_DIRS = [
+    Path.home() / ".openhands" / "skills",
+    Path.home() / ".openhands" / "microagents",  # Legacy support
+]
+
+
+def load_user_skills() -> list[Skill]:
+    """Load skills from user's home directory.
+
+    Searches for skills in ~/.openhands/skills/ and ~/.openhands/microagents/
+    (legacy). Skills from both directories are merged, with skills/ taking
+    precedence for duplicate names.
+
+    Returns:
+        List of Skill objects loaded from user directories.
+        Returns empty list if no skills found or loading fails.
+    """
+    all_skills = []
+    seen_names = set()
+
+    for skills_dir in USER_SKILLS_DIRS:
+        if not skills_dir.exists():
+            logger.debug(f"User skills directory does not exist: {skills_dir}")
+            continue
+
+        try:
+            logger.debug(f"Loading user skills from {skills_dir}")
+            repo_skills, knowledge_skills = load_skills_from_dir(skills_dir)
+
+            # Merge repo and knowledge skills
+            for skills_dict in [repo_skills, knowledge_skills]:
+                for name, skill in skills_dict.items():
+                    if name not in seen_names:
+                        all_skills.append(skill)
+                        seen_names.add(name)
+                    else:
+                        logger.warning(
+                            f"Skipping duplicate skill '{name}' from {skills_dir}"
+                        )
+
+        except Exception as e:
+            logger.warning(f"Failed to load user skills from {skills_dir}: {str(e)}")
+
+    logger.debug(
+        f"Loaded {len(all_skills)} user skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills
+
+
+# Public skills repository configuration
+PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
+PUBLIC_SKILLS_BRANCH = "main"
+
+
+def _get_skills_cache_dir() -> Path:
+    """Get the local cache directory for public skills repository.
+
+    Returns:
+        Path to the skills cache directory (~/.openhands/cache/skills).
+    """
+    cache_dir = Path.home() / ".openhands" / "cache" / "skills"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return cache_dir
+
+
+def _update_skills_repository(
+    repo_url: str,
+    branch: str,
+    cache_dir: Path,
+) -> Path | None:
+    """Clone or update the local skills repository.
+
+    Args:
+        repo_url: URL of the skills repository.
+        branch: Branch name to use.
+        cache_dir: Directory where the repository should be cached.
+
+    Returns:
+        Path to the local repository if successful, None otherwise.
+    """
+    repo_path = cache_dir / "public-skills"
+
+    try:
+        if repo_path.exists() and (repo_path / ".git").exists():
+            logger.debug(f"Updating skills repository at {repo_path}")
+            try:
+                subprocess.run(
+                    ["git", "fetch", "origin"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                    timeout=30,
+                )
+                subprocess.run(
+                    ["git", "reset", "--hard", f"origin/{branch}"],
+                    cwd=repo_path,
+                    check=True,
+                    capture_output=True,
+                    timeout=10,
+                )
+                logger.debug("Skills repository updated successfully")
+            except subprocess.TimeoutExpired:
+                logger.warning("Git pull timed out, using existing cached repository")
+            except subprocess.CalledProcessError as e:
+                logger.warning(
+                    f"Failed to update repository: {e.stderr.decode()}, "
+                    f"using existing cached version"
+                )
+        else:
+            logger.info(f"Cloning public skills repository from {repo_url}")
+            if repo_path.exists():
+                shutil.rmtree(repo_path)
+
+            subprocess.run(
+                [
+                    "git",
+                    "clone",
+                    "--depth",
+                    "1",
+                    "--branch",
+                    branch,
+                    repo_url,
+                    str(repo_path),
+                ],
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+            logger.debug(f"Skills repository cloned to {repo_path}")
+
+        return repo_path
+
+    except subprocess.TimeoutExpired:
+        logger.warning(f"Git operation timed out for {repo_url}")
+        return None
+    except subprocess.CalledProcessError as e:
+        logger.warning(
+            f"Failed to clone/update repository {repo_url}: {e.stderr.decode()}"
+        )
+        return None
+    except Exception as e:
+        logger.warning(f"Error managing skills repository: {str(e)}")
+        return None
+
+
+def load_public_skills(
+    repo_url: str = PUBLIC_SKILLS_REPO,
+    branch: str = PUBLIC_SKILLS_BRANCH,
+) -> list[Skill]:
+    """Load skills from the public OpenHands skills repository.
+
+    This function maintains a local git clone of the public skills registry at
+    https://github.com/OpenHands/skills. On first run, it clones the repository
+    to ~/.openhands/skills-cache/. On subsequent runs, it pulls the latest changes
+    to keep the skills up-to-date. This approach is more efficient than fetching
+    individual files via HTTP.
+
+    Args:
+        repo_url: URL of the skills repository. Defaults to the official
+            OpenHands skills repository.
+        branch: Branch name to load skills from. Defaults to 'main'.
+
+    Returns:
+        List of Skill objects loaded from the public repository.
+        Returns empty list if loading fails.
+
+    Example:
+        >>> from openhands.sdk.context import AgentContext
+        >>> from openhands.sdk.context.skills import load_public_skills
+        >>>
+        >>> # Load public skills
+        >>> public_skills = load_public_skills()
+        >>>
+        >>> # Use with AgentContext
+        >>> context = AgentContext(skills=public_skills)
+    """
+    all_skills = []
+
+    try:
+        # Get or update the local repository
+        cache_dir = _get_skills_cache_dir()
+        repo_path = _update_skills_repository(repo_url, branch, cache_dir)
+
+        if repo_path is None:
+            logger.warning("Failed to access public skills repository")
+            return all_skills
+
+        # Load skills from the local repository
+        skills_dir = repo_path / "skills"
+        if not skills_dir.exists():
+            logger.warning(f"Skills directory not found in repository: {skills_dir}")
+            return all_skills
+
+        # Find all .md files in the skills directory
+        md_files = [f for f in skills_dir.rglob("*.md") if f.name != "README.md"]
+
+        logger.info(f"Found {len(md_files)} skill files in public skills repository")
+
+        # Load each skill file
+        for skill_file in md_files:
+            try:
+                skill = Skill.load(
+                    path=skill_file,
+                    skill_dir=repo_path,
+                )
+                all_skills.append(skill)
+                logger.debug(f"Loaded public skill: {skill.name}")
+            except Exception as e:
+                logger.warning(f"Failed to load skill from {skill_file.name}: {str(e)}")
+                continue
+
+    except Exception as e:
+        logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
+
+    logger.info(
+        f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills

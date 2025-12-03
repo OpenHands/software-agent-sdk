@@ -3,8 +3,8 @@ from collections.abc import Sequence
 from pydantic import Field
 from rich.text import Text
 
-from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
-from openhands.sdk.event.types import EventID, SourceType, ToolCallID
+from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
+from openhands.sdk.event.types import SourceType, ToolCallID
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
@@ -52,11 +52,11 @@ class ActionEvent(LLMConvertibleEvent):
         ),
     )
     llm_response_id: EventID = Field(
-        ...,
         description=(
-            "Groups related actions from same LLM response. This helps in tracking "
-            "and managing results of parallel function calling from the same LLM "
-            "response."
+            "Completion or Response ID of the LLM response that generated this event"
+            "E.g., Can be used to group related actions from same LLM response. "
+            "This helps in tracking and managing results of parallel function calling "
+            "from the same LLM response."
         ),
     )
 

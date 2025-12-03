@@ -16,9 +16,13 @@ from openhands.agent_server.models import (
     StoredConversation,
     UpdateConversationRequest,
 )
+from openhands.agent_server.utils import safe_rmtree as _safe_rmtree
 from openhands.sdk import LLM, Agent
 from openhands.sdk.conversation.secret_source import SecretSource, StaticSecret
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -89,7 +93,7 @@ class TestConversationServiceSearchConversations:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -101,7 +105,7 @@ class TestConversationServiceSearchConversations:
 
         assert len(result.items) == 1
         assert result.items[0].id == conversation_id
-        assert result.items[0].agent_status == AgentExecutionStatus.IDLE
+        assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
         assert result.next_page_id is None
 
     @pytest.mark.asyncio
@@ -111,9 +115,9 @@ class TestConversationServiceSearchConversations:
         conversations = []
         for i, status in enumerate(
             [
-                AgentExecutionStatus.IDLE,
-                AgentExecutionStatus.RUNNING,
-                AgentExecutionStatus.FINISHED,
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.RUNNING,
+                ConversationExecutionStatus.FINISHED,
             ]
         ):
             stored_conv = StoredConversation(
@@ -133,7 +137,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=status,
+                execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -143,21 +147,21 @@ class TestConversationServiceSearchConversations:
 
         # Test filtering by IDLE status
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.IDLE
+            execution_status=ConversationExecutionStatus.IDLE
         )
         assert len(result.items) == 1
-        assert result.items[0].agent_status == AgentExecutionStatus.IDLE
+        assert result.items[0].execution_status == ConversationExecutionStatus.IDLE
 
         # Test filtering by RUNNING status
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.RUNNING
+            execution_status=ConversationExecutionStatus.RUNNING
         )
         assert len(result.items) == 1
-        assert result.items[0].agent_status == AgentExecutionStatus.RUNNING
+        assert result.items[0].execution_status == ConversationExecutionStatus.RUNNING
 
         # Test filtering by non-existent status
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.ERROR
+            execution_status=ConversationExecutionStatus.ERROR
         )
         assert len(result.items) == 0
 
@@ -187,7 +191,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=AgentExecutionStatus.IDLE,
+                execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -262,7 +266,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=AgentExecutionStatus.IDLE,
+                execution_status=ConversationExecutionStatus.IDLE,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -297,19 +301,19 @@ class TestConversationServiceSearchConversations:
         # Create conversations with mixed statuses and timestamps
         conversations_data = [
             (
-                AgentExecutionStatus.IDLE,
+                ConversationExecutionStatus.IDLE,
                 datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
             ),
             (
-                AgentExecutionStatus.RUNNING,
+                ConversationExecutionStatus.RUNNING,
                 datetime(2025, 1, 2, 12, 0, 0, tzinfo=UTC),
             ),
             (
-                AgentExecutionStatus.IDLE,
+                ConversationExecutionStatus.IDLE,
                 datetime(2025, 1, 3, 12, 0, 0, tzinfo=UTC),
             ),
             (
-                AgentExecutionStatus.FINISHED,
+                ConversationExecutionStatus.FINISHED,
                 datetime(2025, 1, 4, 12, 0, 0, tzinfo=UTC),
             ),
         ]
@@ -332,7 +336,7 @@ class TestConversationServiceSearchConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=status,
+                execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -341,7 +345,7 @@ class TestConversationServiceSearchConversations:
 
         # Filter by IDLE status and sort by CREATED_AT_DESC
         result = await conversation_service.search_conversations(
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             sort_order=ConversationSortOrder.CREATED_AT_DESC,
         )
 
@@ -360,7 +364,7 @@ class TestConversationServiceSearchConversations:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -409,7 +413,7 @@ class TestConversationServiceCountConversations:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -425,10 +429,10 @@ class TestConversationServiceCountConversations:
         """Test counting conversations with status filter."""
         # Create multiple conversations with different statuses
         statuses = [
-            AgentExecutionStatus.IDLE,
-            AgentExecutionStatus.RUNNING,
-            AgentExecutionStatus.FINISHED,
-            AgentExecutionStatus.IDLE,  # Another IDLE one
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.RUNNING,
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.IDLE,  # Another IDLE one
         ]
 
         for i, status in enumerate(statuses):
@@ -449,7 +453,7 @@ class TestConversationServiceCountConversations:
                 id=stored_conv.id,
                 agent=stored_conv.agent,
                 workspace=stored_conv.workspace,
-                agent_status=status,
+                execution_status=status,
                 confirmation_policy=stored_conv.confirmation_policy,
             )
             mock_service.get_state.return_value = mock_state
@@ -462,19 +466,19 @@ class TestConversationServiceCountConversations:
 
         # Test counting by IDLE status (should be 2)
         result = await conversation_service.count_conversations(
-            agent_status=AgentExecutionStatus.IDLE
+            execution_status=ConversationExecutionStatus.IDLE
         )
         assert result == 2
 
         # Test counting by RUNNING status (should be 1)
         result = await conversation_service.count_conversations(
-            agent_status=AgentExecutionStatus.RUNNING
+            execution_status=ConversationExecutionStatus.RUNNING
         )
         assert result == 1
 
         # Test counting by non-existent status (should be 0)
         result = await conversation_service.count_conversations(
-            agent_status=AgentExecutionStatus.ERROR
+            execution_status=ConversationExecutionStatus.ERROR
         )
         assert result == 0
 
@@ -514,7 +518,7 @@ class TestConversationServiceStartConversation:
                     id=uuid4(),
                     agent=request.agent,
                     workspace=request.workspace,
-                    agent_status=AgentExecutionStatus.IDLE,
+                    execution_status=ConversationExecutionStatus.IDLE,
                     confirmation_policy=request.confirmation_policy,
                 )
                 mock_event_service.get_state.return_value = mock_state
@@ -551,7 +555,7 @@ class TestConversationServiceStartConversation:
 
                 # Verify the result
                 assert result.id == mock_state.id
-                assert result.agent_status == AgentExecutionStatus.IDLE
+                assert result.execution_status == ConversationExecutionStatus.IDLE
 
     @pytest.mark.asyncio
     async def test_start_conversation_without_secrets(self, conversation_service):
@@ -576,7 +580,7 @@ class TestConversationServiceStartConversation:
                     id=uuid4(),
                     agent=request.agent,
                     workspace=request.workspace,
-                    agent_status=AgentExecutionStatus.IDLE,
+                    execution_status=ConversationExecutionStatus.IDLE,
                     confirmation_policy=request.confirmation_policy,
                 )
                 mock_event_service.get_state.return_value = mock_state
@@ -603,7 +607,7 @@ class TestConversationServiceStartConversation:
 
                 # Verify the result
                 assert result.id == mock_state.id
-                assert result.agent_status == AgentExecutionStatus.IDLE
+                assert result.execution_status == ConversationExecutionStatus.IDLE
 
     @pytest.mark.asyncio
     async def test_start_conversation_with_custom_id(self, conversation_service):
@@ -654,6 +658,176 @@ class TestConversationServiceStartConversation:
             assert result.id == custom_id
             assert not is_new
 
+    @pytest.mark.asyncio
+    async def test_start_conversation_reuse_checks_is_open(self, conversation_service):
+        """Test that conversation reuse checks if event service is open."""
+        custom_id = uuid4()
+
+        # Create a mock event service that exists but is not open
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = False
+        conversation_service._event_services[custom_id] = mock_event_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            # Mock the _start_event_service method to avoid actual startup
+            with patch.object(
+                conversation_service, "_start_event_service"
+            ) as mock_start:
+                mock_new_service = AsyncMock(spec=EventService)
+                mock_new_service.stored = StoredConversation(
+                    id=custom_id,
+                    agent=request.agent,
+                    workspace=request.workspace,
+                    confirmation_policy=request.confirmation_policy,
+                    initial_message=request.initial_message,
+                    metrics=None,
+                    created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+                    updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+                )
+                mock_state = ConversationState(
+                    id=custom_id,
+                    agent=request.agent,
+                    workspace=request.workspace,
+                    execution_status=ConversationExecutionStatus.IDLE,
+                    confirmation_policy=request.confirmation_policy,
+                )
+                mock_new_service.get_state.return_value = mock_state
+                mock_start.return_value = mock_new_service
+
+                result, is_new = await conversation_service.start_conversation(request)
+
+                # Should create a new conversation since existing one is not open
+                assert result.id == custom_id
+                assert is_new
+                mock_start.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_conversation_reuse_when_open(self, conversation_service):
+        """Test that conversation is reused when event service is open."""
+        custom_id = uuid4()
+
+        # Create a mock event service that exists and is open
+        mock_event_service = AsyncMock(spec=EventService)
+        mock_event_service.is_open.return_value = True
+        mock_event_service.stored = StoredConversation(
+            id=custom_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="workspace/project"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=custom_id,
+            agent=mock_event_service.stored.agent,
+            workspace=mock_event_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_event_service.stored.confirmation_policy,
+        )
+        mock_event_service.get_state.return_value = mock_state
+        conversation_service._event_services[custom_id] = mock_event_service
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            request = StartConversationRequest(
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                conversation_id=custom_id,
+            )
+
+            # Mock the _start_event_service method to ensure it's not called
+            with patch.object(
+                conversation_service, "_start_event_service"
+            ) as mock_start:
+                result, is_new = await conversation_service.start_conversation(request)
+
+                # Should reuse existing conversation since it's open
+                assert result.id == custom_id
+                assert not is_new
+                mock_start.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_event_service_failure_cleanup(self, conversation_service):
+        """Test that event service is cleaned up when startup fails."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stored = StoredConversation(
+                id=uuid4(),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                initial_message=None,
+                metrics=None,
+                created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+                updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+            )
+
+            # Mock EventService to simulate startup failure
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                mock_event_service = AsyncMock()
+                mock_event_service.start.side_effect = Exception("Startup failed")
+                mock_event_service.close = AsyncMock()
+                mock_event_service_class.return_value = mock_event_service
+
+                # Attempt to start event service should fail and clean up
+                with pytest.raises(Exception, match="Startup failed"):
+                    await conversation_service._start_event_service(stored)
+
+                # Verify cleanup was called
+                mock_event_service.close.assert_called_once()
+
+                # Verify event service was not stored
+                assert stored.id not in conversation_service._event_services
+
+    @pytest.mark.asyncio
+    async def test_start_event_service_success_stores_service(
+        self, conversation_service
+    ):
+        """Test that event service is stored only after successful startup."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            stored = StoredConversation(
+                id=uuid4(),
+                agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+                workspace=LocalWorkspace(working_dir=temp_dir),
+                confirmation_policy=NeverConfirm(),
+                initial_message=None,
+                metrics=None,
+                created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+                updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+            )
+
+            # Mock EventService to simulate successful startup
+            with patch(
+                "openhands.agent_server.conversation_service.EventService"
+            ) as mock_event_service_class:
+                mock_event_service = AsyncMock()
+                mock_event_service.start = AsyncMock()  # Successful startup
+                mock_event_service_class.return_value = mock_event_service
+
+                # Start event service should succeed
+                result = await conversation_service._start_event_service(stored)
+
+                # Verify startup was called
+                mock_event_service.start.assert_called_once()
+
+                # Verify event service was stored after successful startup
+                assert stored.id in conversation_service._event_services
+                assert (
+                    conversation_service._event_services[stored.id]
+                    == mock_event_service
+                )
+                assert result == mock_event_service
+
 
 class TestConversationServiceUpdateConversation:
     """Test cases for ConversationService.update_conversation method."""
@@ -670,7 +844,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -701,7 +875,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -753,7 +927,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -790,7 +964,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -822,7 +996,7 @@ class TestConversationServiceUpdateConversation:
             id=sample_stored_conversation.id,
             agent=sample_stored_conversation.agent,
             workspace=sample_stored_conversation.workspace,
-            agent_status=AgentExecutionStatus.IDLE,
+            execution_status=ConversationExecutionStatus.IDLE,
             confirmation_policy=sample_stored_conversation.confirmation_policy,
         )
         mock_service.get_state.return_value = mock_state
@@ -856,3 +1030,286 @@ class TestConversationServiceUpdateConversation:
 
         # Verify save_meta was called three times
         assert mock_service.save_meta.call_count == 3
+
+
+class TestConversationServiceDeleteConversation:
+    """Test cases for ConversationService.delete_conversation method."""
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_inactive_service(self, conversation_service):
+        """Test that delete_conversation raises ValueError when service is inactive."""
+        conversation_service._event_services = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await conversation_service.delete_conversation(uuid4())
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_not_found(self, conversation_service):
+        """Test delete_conversation with non-existent conversation ID."""
+        result = await conversation_service.delete_conversation(uuid4())
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_success(self, conversation_service):
+        """Test successful conversation deletion."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock the directory removal to avoid actual filesystem operations
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify event service was closed
+            mock_service.close.assert_called_once()
+
+            # Verify directories were removed
+            assert mock_rmtree.call_count == 1
+            mock_rmtree.assert_any_call(
+                "/tmp/test_conversation",
+                "conversation directory for " + str(conversation_id),
+            )
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_webhook_failure(self, conversation_service):
+        """Test delete_conversation continues when webhook notification fails."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+
+        # Make get_state raise an exception to simulate webhook failure
+        mock_service.get_state.side_effect = Exception("Webhook notification failed")
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock the directory removal
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            # Should still succeed despite webhook failure
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify event service was still closed
+            mock_service.close.assert_called_once()
+
+            # Verify directories were still removed
+            assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_close_failure(self, conversation_service):
+        """Test delete_conversation continues when event service close fails."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        # Make close raise an exception
+        mock_service.close.side_effect = Exception("Close failed")
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock the directory removal
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = True
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            # Should still succeed despite close failure
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify directories were still removed
+            assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_delete_conversation_directory_removal_failure(
+        self, conversation_service
+    ):
+        """Test delete_conversation succeeds even when directory removal fails."""
+        conversation_id = uuid4()
+
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = StoredConversation(
+            id=conversation_id,
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test_workspace"),
+            confirmation_policy=NeverConfirm(),
+            initial_message=None,
+            metrics=None,
+            created_at=datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC),
+            updated_at=datetime(2025, 1, 1, 12, 30, 0, tzinfo=UTC),
+        )
+        mock_state = ConversationState(
+            id=conversation_id,
+            agent=mock_service.stored.agent,
+            workspace=mock_service.stored.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=mock_service.stored.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        # Add to service
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock directory removal to fail (simulating permission errors)
+        with patch(
+            "openhands.agent_server.conversation_service.safe_rmtree"
+        ) as mock_rmtree:
+            mock_rmtree.return_value = False  # Simulate removal failure
+
+            result = await conversation_service.delete_conversation(conversation_id)
+
+            # Should still succeed - conversation is removed from tracking
+            assert result is True
+            assert conversation_id not in conversation_service._event_services
+
+            # Verify event service was closed
+            mock_service.close.assert_called_once()
+
+            # Verify removal was attempted
+            assert mock_rmtree.call_count == 1
+
+
+class TestSafeRmtree:
+    """Test cases for the _safe_rmtree helper function."""
+
+    def test_safe_rmtree_nonexistent_path(self):
+        """Test _safe_rmtree with non-existent path."""
+        result = _safe_rmtree("/nonexistent/path", "test directory")
+        assert result is True
+
+    def test_safe_rmtree_empty_path(self):
+        """Test _safe_rmtree with empty path."""
+        result = _safe_rmtree("", "test directory")
+        assert result is True
+
+        result = _safe_rmtree(None, "test directory")
+        assert result is True
+
+    def test_safe_rmtree_success(self):
+        """Test successful directory removal."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_dir = Path(temp_dir) / "test_subdir"
+            test_dir.mkdir()
+
+            # Create a test file
+            test_file = test_dir / "test.txt"
+            test_file.write_text("test content")
+
+            result = _safe_rmtree(str(test_dir), "test directory")
+            assert result is True
+            assert not test_dir.exists()
+
+    def test_safe_rmtree_permission_error(self):
+        """Test _safe_rmtree handles permission errors gracefully."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            mock_rmtree.side_effect = PermissionError("Permission denied")
+
+            with patch("os.path.exists", return_value=True):
+                result = _safe_rmtree("/test/path", "test directory")
+                assert result is False
+
+    def test_safe_rmtree_os_error(self):
+        """Test _safe_rmtree handles OS errors gracefully."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            mock_rmtree.side_effect = OSError("OS error")
+
+            with patch("os.path.exists", return_value=True):
+                result = _safe_rmtree("/test/path", "test directory")
+                assert result is False
+
+    def test_safe_rmtree_unexpected_error(self):
+        """Test _safe_rmtree handles unexpected errors gracefully."""
+        with patch("shutil.rmtree") as mock_rmtree:
+            mock_rmtree.side_effect = ValueError("Unexpected error")
+
+            with patch("os.path.exists", return_value=True):
+                result = _safe_rmtree("/test/path", "test directory")
+                assert result is False
+
+    def test_safe_rmtree_readonly_file_handling(self):
+        """Test _safe_rmtree handles read-only files."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            test_dir = Path(temp_dir) / "test_subdir"
+            test_dir.mkdir()
+
+            # Create a test file and make it read-only
+            test_file = test_dir / "readonly.txt"
+            test_file.write_text("readonly content")
+            test_file.chmod(0o444)  # Read-only
+
+            result = _safe_rmtree(str(test_dir), "test directory")
+            assert result is True
+            assert not test_dir.exists()

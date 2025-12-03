@@ -5,7 +5,7 @@ from typing import ClassVar
 from pydantic import ConfigDict, Field
 from rich.text import Text
 
-from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
+from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import (
     ImageContent,
@@ -28,6 +28,13 @@ class MessageEvent(LLMConvertibleEvent):
     llm_message: Message = Field(
         ..., description="The exact LLM message for this message event"
     )
+    llm_response_id: EventID | None = Field(
+        default=None,
+        description=(
+            "Completion or Response ID of the LLM response that generated this event"
+            "If the source != 'agent', this field is None"
+        ),
+    )
 
     # context extensions stuff / skill can go here
     activated_skills: list[str] = Field(
@@ -35,6 +42,13 @@ class MessageEvent(LLMConvertibleEvent):
     )
     extended_content: list[TextContent] = Field(
         default_factory=list, description="List of content added by agent context"
+    )
+    sender: str | None = Field(
+        default=None,
+        description=(
+            "Optional identifier of the sender. "
+            "Can be used to track message origin in multi-agent scenarios."
+        ),
     )
 
     @property

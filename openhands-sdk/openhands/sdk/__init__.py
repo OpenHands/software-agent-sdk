@@ -9,6 +9,7 @@ from openhands.sdk.conversation import (
     BaseConversation,
     Conversation,
     ConversationCallbackType,
+    ConversationExecutionStatus,
     LocalConversation,
     RemoteConversation,
 )
@@ -20,11 +21,13 @@ from openhands.sdk.llm import (
     LLM,
     ImageContent,
     LLMRegistry,
+    LLMStreamChunk,
     Message,
     RedactedThinkingBlock,
     RegistryEvent,
     TextContent,
     ThinkingBlock,
+    TokenCallbackType,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import (
@@ -37,7 +40,6 @@ from openhands.sdk.tool import (
     Action,
     Observation,
     Tool,
-    ToolBase,
     ToolDefinition,
     list_registered_tools,
     register_tool,
@@ -58,6 +60,8 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMStreamChunk",
+    "TokenCallbackType",
     "ConversationStats",
     "RegistryEvent",
     "Message",
@@ -67,7 +71,6 @@ __all__ = [
     "RedactedThinkingBlock",
     "Tool",
     "ToolDefinition",
-    "ToolBase",
     "AgentBase",
     "Agent",
     "Action",
@@ -82,6 +85,7 @@ __all__ = [
     "BaseConversation",
     "LocalConversation",
     "RemoteConversation",
+    "ConversationExecutionStatus",
     "ConversationCallbackType",
     "Event",
     "LLMConvertibleEvent",

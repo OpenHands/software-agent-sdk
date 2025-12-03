@@ -18,7 +18,9 @@ class RemoteWorkspaceMixinHelper(RemoteWorkspaceMixin):
 
 def test_remote_workspace_mixin_initialization():
     """Test RemoteWorkspaceMixin can be initialized with required parameters."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000", api_key="test-key")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     assert mixin.host == "http://localhost:8000"
     assert mixin.api_key == "test-key"
@@ -26,7 +28,9 @@ def test_remote_workspace_mixin_initialization():
 
 def test_remote_workspace_mixin_initialization_without_api_key():
     """Test RemoteWorkspaceMixin can be initialized without API key."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     assert mixin.host == "http://localhost:8000"
     assert mixin.api_key is None
@@ -35,14 +39,18 @@ def test_remote_workspace_mixin_initialization_without_api_key():
 def test_host_normalization_in_post_init():
     """Test that host URL is normalized by removing trailing slash in
     model_post_init."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000/")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000/", working_dir="workspace"
+    )
 
     assert mixin.host == "http://localhost:8000"
 
 
 def test_headers_property_with_api_key():
     """Test _headers property includes API key when present."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000", api_key="test-key")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     headers = mixin._headers
     assert headers == {"X-Session-API-Key": "test-key"}
@@ -50,7 +58,9 @@ def test_headers_property_with_api_key():
 
 def test_headers_property_without_api_key():
     """Test _headers property is empty when no API key."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     headers = mixin._headers
     assert headers == {}
@@ -58,7 +68,9 @@ def test_headers_property_without_api_key():
 
 def test_execute_command_generator_basic_flow():
     """Test _execute_command_generator basic successful flow."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000", api_key="test-key")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     # Mock responses
     start_response = Mock()
@@ -105,7 +117,9 @@ def test_execute_command_generator_basic_flow():
 
 def test_execute_command_generator_without_cwd():
     """Test _execute_command_generator works without cwd parameter."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     generator = mixin._execute_command_generator("echo hello", None, 30.0)
 
@@ -116,7 +130,9 @@ def test_execute_command_generator_without_cwd():
 
 def test_execute_command_generator_with_path_cwd():
     """Test _execute_command_generator works with Path object for cwd."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     generator = mixin._execute_command_generator("echo hello", Path("/tmp/test"), 30.0)
 
@@ -129,7 +145,9 @@ def test_execute_command_generator_with_path_cwd():
 @patch("time.time")
 def test_execute_command_generator_polling_loop(mock_time, mock_sleep):
     """Test _execute_command_generator polling loop behavior."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock time progression
     mock_time.side_effect = [0, 0.1, 0.2, 0.3]  # Simulate time passing
@@ -189,7 +207,9 @@ def test_execute_command_generator_polling_loop(mock_time, mock_sleep):
 @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
 def test_execute_command_generator_timeout(mock_time):
     """Test _execute_command_generator handles timeout correctly."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock time to simulate timeout
     mock_time.time.side_effect = [
@@ -237,7 +257,9 @@ def test_execute_command_generator_timeout(mock_time):
 
 def test_execute_command_generator_exception_handling():
     """Test _execute_command_generator handles exceptions correctly."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock response that raises an exception
     start_response = Mock()
@@ -263,19 +285,24 @@ def test_execute_command_generator_exception_handling():
 
 def test_file_upload_generator_basic_flow(temp_file):
     """Test _file_upload_generator basic successful flow."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000", api_key="test-key")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     # Mock successful response
     upload_response = Mock()
     upload_response.raise_for_status = Mock()
     upload_response.json.return_value = {"success": True, "file_size": 12}
 
+    destination = "/remote/file.txt"
     generator = mixin._file_upload_generator(temp_file, "/remote/file.txt")
 
     # Get upload request
     upload_kwargs = next(generator)
     assert upload_kwargs["method"] == "POST"
-    assert upload_kwargs["url"] == "http://localhost:8000/api/file/upload"
+    assert (
+        upload_kwargs["url"] == f"http://localhost:8000/api/file/upload/{destination}"
+    )
     assert upload_kwargs["data"]["destination_path"] == "/remote/file.txt"
     assert "file" in upload_kwargs["files"]
     assert upload_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
@@ -295,7 +322,9 @@ def test_file_upload_generator_basic_flow(temp_file):
 
 def test_file_upload_generator_with_path_objects(temp_file):
     """Test _file_upload_generator works with Path objects."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     upload_response = Mock()
     upload_response.raise_for_status = Mock()
@@ -309,7 +338,9 @@ def test_file_upload_generator_with_path_objects(temp_file):
 
 def test_file_upload_generator_file_not_found():
     """Test _file_upload_generator handles file not found error."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     generator = mixin._file_upload_generator(
         "/nonexistent/file.txt", "/remote/file.txt"
@@ -329,7 +360,9 @@ def test_file_upload_generator_file_not_found():
 
 def test_file_upload_generator_http_error():
     """Test _file_upload_generator handles HTTP errors."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     with patch("builtins.open", mock_open(read_data="test content")):
         upload_response = Mock()
@@ -354,7 +387,9 @@ def test_file_upload_generator_http_error():
 
 def test_file_download_generator_basic_flow(temp_dir):
     """Test _file_download_generator basic successful flow."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000", api_key="test-key")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     # Mock successful response
     download_response = Mock()
@@ -367,8 +402,7 @@ def test_file_download_generator_basic_flow(temp_dir):
     # Get download request
     download_kwargs = next(generator)
     assert download_kwargs["method"] == "GET"
-    assert download_kwargs["url"] == "/api/file/download"
-    assert download_kwargs["params"]["file_path"] == "/remote/file.txt"
+    assert download_kwargs["url"] == "/api/file/download//remote/file.txt"
     assert download_kwargs["headers"] == {"X-Session-API-Key": "test-key"}
 
     # Send response and get result
@@ -390,7 +424,9 @@ def test_file_download_generator_basic_flow(temp_dir):
 
 def test_file_download_generator_with_path_objects(temp_dir):
     """Test _file_download_generator works with Path objects."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     download_response = Mock()
     download_response.raise_for_status = Mock()
@@ -400,12 +436,14 @@ def test_file_download_generator_with_path_objects(temp_dir):
     generator = mixin._file_download_generator(Path("/remote/file.txt"), destination)
 
     download_kwargs = next(generator)
-    assert download_kwargs["params"]["file_path"] == "/remote/file.txt"
+    assert download_kwargs["url"] == "/api/file/download//remote/file.txt"
 
 
 def test_file_download_generator_creates_directories(temp_dir):
     """Test _file_download_generator creates parent directories."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     download_response = Mock()
     download_response.raise_for_status = Mock()
@@ -430,7 +468,9 @@ def test_file_download_generator_creates_directories(temp_dir):
 
 def test_file_download_generator_http_error():
     """Test _file_download_generator handles HTTP errors."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     download_response = Mock()
     download_response.raise_for_status.side_effect = httpx.HTTPStatusError(
@@ -456,7 +496,9 @@ def test_file_download_generator_http_error():
 
 def test_multiple_bash_output_events():
     """Test handling multiple BashOutput events in polling."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock responses
     start_response = Mock()
@@ -504,7 +546,9 @@ def test_multiple_bash_output_events():
 
 def test_non_bash_output_events_ignored():
     """Test that non-BashOutput events are ignored during polling."""
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", working_dir="workspace"
+    )
 
     # Mock responses
     start_response = Mock()
@@ -548,11 +592,13 @@ def test_start_bash_command_endpoint_used():
     """Test that the correct /api/bash/start_bash_command endpoint is used.
 
     This is a regression test for issue #866 where the wrong endpoint
-    (/api/bash/execute_bash_command) was being used, causing commands to timeout.
+    (/api/bash/terminal_command) was being used, causing commands to timeout.
     The correct endpoint is /api/bash/start_bash_command which starts a command
     asynchronously and returns immediately with a command ID that can be polled.
     """
-    mixin = RemoteWorkspaceMixinHelper(host="http://localhost:8000", api_key="test-key")
+    mixin = RemoteWorkspaceMixinHelper(
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+    )
 
     # Mock response for successful command start
     start_response = Mock()
@@ -580,11 +626,12 @@ def test_start_bash_command_endpoint_used():
     # Verify the correct endpoint is used for starting the command
     start_kwargs = next(generator)
     assert start_kwargs["method"] == "POST"
-    # This is the critical check - must use start_bash_command, not execute_bash_command
+    # This is the critical check - must use start_bash_command,
+    # not terminal_command
     assert start_kwargs["url"] == "http://localhost:8000/api/bash/start_bash_command"
     assert "start_bash_command" in start_kwargs["url"], (
         "Must use /api/bash/start_bash_command endpoint. "
-        "The /api/bash/execute_bash_command endpoint does not exist and causes "
+        "The /api/bash/terminal_command endpoint does not exist and causes "
         "timeouts."
     )
     assert start_kwargs["json"]["command"] == command

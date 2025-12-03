@@ -2,15 +2,19 @@ from abc import ABC
 from datetime import datetime
 from enum import Enum
 from typing import Literal
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from openhands.agent_server.utils import utc_now
+from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
 from openhands.sdk.conversation.secret_source import SecretSource
-from openhands.sdk.conversation.state import AgentExecutionStatus, ConversationState
+from openhands.sdk.conversation.state import (
+    ConversationExecutionStatus,
+    ConversationState,
+)
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -64,7 +68,7 @@ class StartConversationRequest(BaseModel):
         ...,
         description="Working directory for agent operations and tool execution",
     )
-    conversation_id: UUID | None = Field(
+    conversation_id: OpenHandsUUID | None = Field(
         default=None,
         description=(
             "Optional conversation ID. If not provided, a random UUID will be "
@@ -99,7 +103,7 @@ class StartConversationRequest(BaseModel):
 class StoredConversation(StartConversationRequest):
     """Stored details about a conversation"""
 
-    id: UUID
+    id: OpenHandsUUID
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
     )
@@ -129,7 +133,7 @@ class ConversationPage(BaseModel):
 
 class ConversationResponse(BaseModel):
     conversation_id: str
-    state: AgentExecutionStatus
+    state: ConversationExecutionStatus
 
 
 class ConfirmationResponseRequest(BaseModel):
@@ -162,6 +166,14 @@ class SetConfirmationPolicyRequest(BaseModel):
     policy: ConfirmationPolicyBase = Field(description="The confirmation policy to set")
 
 
+class SetSecurityAnalyzerRequest(BaseModel):
+    "Payload to set security analyzer for a conversation"
+
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        description="The security analyzer to set"
+    )
+
+
 class UpdateConversationRequest(BaseModel):
     """Payload to update conversation metadata."""
 
@@ -187,10 +199,22 @@ class GenerateTitleResponse(BaseModel):
     title: str = Field(description="The generated title for the conversation")
 
 
+class AskAgentRequest(BaseModel):
+    """Payload to ask the agent a simple question."""
+
+    question: str = Field(description="The question to ask the agent")
+
+
+class AskAgentResponse(BaseModel):
+    """Response containing the agent's answer."""
+
+    response: str = Field(description="The agent's response to the question")
+
+
 class BashEventBase(DiscriminatedUnionMixin, ABC):
     """Base class for all bash event types"""
 
-    id: UUID = Field(default_factory=uuid4)
+    id: OpenHandsUUID = Field(default_factory=uuid4)
     timestamp: datetime = Field(default_factory=utc_now)
 
 
@@ -213,7 +237,7 @@ class BashOutput(BashEventBase):
     depending on how large the output is.
     """
 
-    command_id: UUID
+    command_id: OpenHandsUUID
     order: int = Field(
         default=0, description="The order for this output, sequentially starting with 0"
     )

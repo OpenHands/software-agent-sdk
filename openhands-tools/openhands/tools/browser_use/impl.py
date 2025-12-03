@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.conversation import BaseConversation
+    from openhands.sdk.conversation import LocalConversation
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
@@ -121,6 +121,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _config: dict[str, Any]
     _initialized: bool
     _async_executor: AsyncExecutor
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -128,6 +129,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         allowed_domains: list[str] | None = None,
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
+        full_output_save_dir: str | None = None,
         **config,
     ):
         """Initialize BrowserToolExecutor with timeout protection.
@@ -137,10 +139,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             allowed_domains: List of allowed domains for browser operations
             session_timeout_minutes: Browser session timeout in minutes
             init_timeout_seconds: Timeout for browser initialization in seconds
+            full_output_save_dir: Absolute path to directory to save full output
+            logs and files, used when truncation is needed.
             **config: Additional configuration options
-
-        Raises:
-
         """
 
         def init_logic():
@@ -167,13 +168,15 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 f"Browser tool initialization timed out after {init_timeout_seconds}s"
             )
 
+        self.full_output_save_dir: str | None = full_output_save_dir
         self._initialized = False
         self._async_executor = AsyncExecutor()
+        self._cleanup_initiated = False
 
     def __call__(
         self,
         action: BrowserAction,
-        conversation: "BaseConversation | None" = None,  # noqa: ARG002
+        conversation: "LocalConversation | None" = None,  # noqa: ARG002
     ):
         """Submit an action to run in the background loop and wait for result."""
         return self._async_executor.run_async(
@@ -223,13 +226,25 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.close_tab(action.tab_id)
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
-                return BrowserObservation(output="", error=error_msg)
+                return BrowserObservation.from_text(
+                    text=error_msg,
+                    is_error=True,
+                    full_output_save_dir=self.full_output_save_dir,
+                )
 
-            return BrowserObservation(output=result)
+            return BrowserObservation.from_text(
+                text=result,
+                is_error=False,
+                full_output_save_dir=self.full_output_save_dir,
+            )
         except Exception as e:
             error_msg = f"Browser operation failed: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            return BrowserObservation(output="", error=error_msg)
+            logging.error(error_msg, exc_info=True)
+            return BrowserObservation.from_text(
+                text=error_msg,
+                is_error=True,
+                full_output_save_dir=self.full_output_save_dir,
+            )
 
     async def _ensure_initialized(self):
         """Ensure browser session is initialized."""
@@ -279,14 +294,21 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
                 # Return clean JSON + separate screenshot data
                 clean_json = json.dumps(result_data, indent=2)
-                return BrowserObservation(
-                    output=clean_json, screenshot_data=screenshot_data
+                return BrowserObservation.from_text(
+                    text=clean_json,
+                    is_error=False,
+                    screenshot_data=screenshot_data,
+                    full_output_save_dir=self.full_output_save_dir,
                 )
             except json.JSONDecodeError:
                 # If JSON parsing fails, return as-is
                 pass
 
-        return BrowserObservation(output=result_json)
+        return BrowserObservation.from_text(
+            text=result_json,
+            is_error=False,
+            full_output_save_dir=self.full_output_save_dir,
+        )
 
     # Tab Management
     async def list_tabs(self) -> str:
@@ -331,6 +353,9 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     def close(self):
         """Close the browser executor and cleanup resources."""
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
         try:
             # Run cleanup in the async executor with a shorter timeout
             self._async_executor.run_async(self.cleanup, timeout=30.0)

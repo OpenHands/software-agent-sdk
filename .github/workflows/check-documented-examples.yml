@@ -21,16 +21,28 @@ jobs:
         runs-on: ubuntu-latest
         steps:
             - name: Checkout agent-sdk repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
                   fetch-depth: 0
 
-            - name: Checkout docs repository
-              uses: actions/checkout@v4
+            - name: Checkout docs repository (try feature branch)
+              uses: actions/checkout@v5
+              continue-on-error: true
+              id: checkout-feature
               with:
                   repository: OpenHands/docs
                   path: docs
                   fetch-depth: 0
+                  ref: ${{ github.head_ref || github.ref_name }}
+
+            - name: Checkout docs repository (fallback to main)
+              if: steps.checkout-feature.outcome == 'failure'
+              uses: actions/checkout@v5
+              with:
+                  repository: OpenHands/docs
+                  path: docs
+                  fetch-depth: 0
+                  ref: main
 
             - name: Set up Python
               uses: actions/setup-python@v6
