@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr
+from pydantic import BaseModel, Field, PrivateAttr, model_serializer
 
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.llm.utils.metrics import Metrics
@@ -20,32 +20,34 @@ class ConversationStats(BaseModel):
 
     _restored_usage_ids: set[str] = PrivateAttr(default_factory=set)
 
-    def model_dump_snapshot(self, **kwargs: Any) -> dict[str, Any]:
-        """Serialize metrics as snapshots to avoid sending lengthy lists.
+    @model_serializer(mode="wrap")
+    def _serialize_with_context(self, serializer: Any, info: Any) -> dict[str, Any]:
+        """Serialize metrics based on context.
 
-        This method is intended for use when sending data over WebSocket or
-        other network transmission where we want to minimize payload size.
-        It converts each Metrics object to a MetricsSnapshot, which excludes
-        the costs, response_latencies, and token_usages lists that grow with
-        conversation length.
+        By default, preserves full metrics history including costs,
+        response_latencies, and token_usages lists for persistence.
 
-        For full data persistence (e.g., saving state to disk), use the
-        standard model_dump() method instead.
+        When context={'use_snapshot': True} is passed, converts Metrics to
+        MetricsSnapshot format to minimize payload size for network transmission.
 
         Args:
-            **kwargs: Additional arguments to pass to model_dump()
+            serializer: Pydantic's default serializer
+            info: Serialization info containing context
 
         Returns:
-            Dictionary with metrics serialized as snapshots
+            Dictionary with metrics serialized based on context
         """
-        # Get the default serialization with full metrics
-        data = self.model_dump(**kwargs)
+        # Get the default serialization
+        data = serializer(self)
 
-        # Replace each Metrics with its snapshot
-        if "usage_to_metrics" in data:
+        # Check if we should use snapshot serialization
+        context = info.context if info else None
+        use_snapshot = context.get("use_snapshot", False) if context else False
+
+        if use_snapshot and "usage_to_metrics" in data:
+            # Replace each Metrics with its snapshot
             usage_to_snapshots = {}
             for usage_id, metrics in self.usage_to_metrics.items():
-                # Use Metrics.get_snapshot() to convert to MetricsSnapshot
                 snapshot = metrics.get_snapshot()
                 usage_to_snapshots[usage_id] = snapshot.model_dump()
 

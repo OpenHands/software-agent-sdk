@@ -121,7 +121,7 @@ def test_stats_model_dump_preserves_full_history():
 
     stats.usage_to_metrics["default"] = metrics
 
-    # Use model_dump() - should preserve full history
+    # Use model_dump() without context - should preserve full history
     stats_dict = stats.model_dump(mode="json")
 
     assert "usage_to_metrics" in stats_dict
@@ -148,8 +148,8 @@ def test_stats_model_dump_preserves_full_history():
     assert metrics_data["accumulated_cost"] == pytest.approx(0.05)
 
 
-def test_stats_model_dump_snapshot_excludes_history():
-    """Test that model_dump_snapshot() excludes lengthy lists."""
+def test_stats_model_dump_with_snapshot_context_excludes_history():
+    """Test that model_dump() with use_snapshot context excludes lengthy lists."""
     # Create stats with multiple cost entries
     stats = ConversationStats()
     metrics = Metrics(model_name="gpt-4")
@@ -169,8 +169,8 @@ def test_stats_model_dump_snapshot_excludes_history():
 
     stats.usage_to_metrics["default"] = metrics
 
-    # Use model_dump_snapshot() - should exclude lists
-    stats_dict = stats.model_dump_snapshot(mode="json")
+    # Use model_dump() with snapshot context - should exclude lists
+    stats_dict = stats.model_dump(mode="json", context={"use_snapshot": True})
 
     assert "usage_to_metrics" in stats_dict
     assert "default" in stats_dict["usage_to_metrics"]
