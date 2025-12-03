@@ -267,7 +267,7 @@ class ConversationState(OpenHandsModel):
 
                     # For ConversationStats, use snapshot serialization to avoid
                     # sending lengthy lists over WebSocket
-                    if name == "stats" and isinstance(value, ConversationStats):
+                    if isinstance(value, ConversationStats):
                         serialized_value = value.model_dump(
                             mode="json", context={"use_snapshot": True}
                         )
