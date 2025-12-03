@@ -157,6 +157,7 @@ def setup_logging(
             )
             fh.setFormatter(logging.Formatter(log_fmt))
         root.addHandler(fh)
+    root.warning(f"Log level was set to {lvl}")
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -184,5 +185,6 @@ def get_logger(name: str) -> logging.Logger:
 
 
 # Auto-configure if desired
+logging.getLogger().warning(f"logger.py loaded: {ENV_AUTO_CONFIG}")
 if ENV_AUTO_CONFIG:
     setup_logging()
