@@ -45,6 +45,38 @@ class TestChromiumDetection:
             result = executor._check_chromium_available()
             assert result == "/usr/bin/google-chrome"
 
+    def test_check_chromium_available_standard_linux_path(self):
+        """Test detection via standard Linux installation paths."""
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+        chrome_path = Path("/usr/bin/google-chrome")
+
+        def mock_exists(self):
+            return str(self) == str(chrome_path)
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch.object(Path, "exists", mock_exists),
+        ):
+            result = executor._check_chromium_available()
+            assert result == str(chrome_path)
+
+    def test_check_chromium_available_standard_macos_path(self):
+        """Test detection via standard macOS installation paths."""
+        executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
+        chrome_path = Path(
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        )
+
+        def mock_exists(self):
+            return str(self) == str(chrome_path)
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch.object(Path, "exists", mock_exists),
+        ):
+            result = executor._check_chromium_available()
+            assert result == str(chrome_path)
+
     def test_check_chromium_available_playwright_linux(self):
         """Test detection of Playwright-installed Chromium on Linux."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)

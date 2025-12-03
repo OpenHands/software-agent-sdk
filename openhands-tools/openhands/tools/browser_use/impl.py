@@ -94,6 +94,21 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             if path := shutil.which(binary):
                 return path
 
+        # Check standard installation paths
+        standard_paths = [
+            # Linux
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            # macOS
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        for install_path in standard_paths:
+            p = Path(install_path)
+            if p.exists():
+                return str(p)
+
         # Check Playwright-installed Chromium
         playwright_cache_candidates = [
             Path.home() / ".cache" / "ms-playwright",  # Linux
