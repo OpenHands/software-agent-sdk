@@ -1,86 +1,17 @@
-# Temporarily disable problematic logging configuration BEFORE importing browser_use
-import logging
+from browser_use.dom.markdown_extractor import extract_clean_markdown
+
+from openhands.sdk import get_logger
+from openhands.tools.browser_use.logging_fix import LogSafeBrowserUseServer
 
 
-# Store original logging functions and state IMMEDIATELY
-_original_logging_disable = logging.disable
-_original_logging_basicConfig = logging.basicConfig
-_original_root_level = logging.root.level
-_original_root_handlers = logging.root.handlers.copy()
-
-
-def _noop_configure_mcp_server_logging():
-    """No-op replacement for _configure_mcp_server_logging to prevent interference."""
-    pass
-
-
-def _noop_ensure_all_loggers_use_stderr():
-    """No-op replacement for _ensure_all_loggers_use_stderr to prevent interference."""
-    pass
-
-
-def _noop_logging_disable(level):
-    """No-op replacement for logging.disable to prevent disabling logging."""
-    pass
-
-
-def _noop_logging_basicConfig(*args, **kwargs):
-    """No-op replacement for logging.basicConfig to prevent reconfiguration."""
-    pass
-
-
-# Replace the problematic functions BEFORE importing the module
-logging.disable = _noop_logging_disable
-logging.basicConfig = _noop_logging_basicConfig
-
-# Now import the modules - this will trigger problematic code but no-ops prevent issues
-import browser_use.mcp.server  # noqa: E402
-from browser_use.dom.markdown_extractor import extract_clean_markdown  # noqa: E402
-
-
-# Replace the functions in the imported module as well
-browser_use.mcp.server._configure_mcp_server_logging = (
-    _noop_configure_mcp_server_logging
-)
-browser_use.mcp.server._ensure_all_loggers_use_stderr = (
-    _noop_ensure_all_loggers_use_stderr
-)
-
-from browser_use.mcp.server import BrowserUseServer  # noqa: E402
-
-from openhands.sdk import get_logger  # noqa: E402
-
-
-# Get logger before restoring original state
 logger = get_logger(__name__)
 
-# Restore original logging functions and state after ALL imports
-logging.disable = _original_logging_disable
-logging.basicConfig = _original_logging_basicConfig
-logging.root.setLevel(_original_root_level)
-logging.root.handlers = _original_root_handlers
 
-
-class CustomBrowserUseServer(BrowserUseServer):
+class CustomBrowserUseServer(LogSafeBrowserUseServer):
     """
     Custom BrowserUseServer with a new tool for extracting web
     page's content in markdown.
     """
-
-    def __init__(self, session_timeout_minutes: int = 10):
-        # Temporarily replace the problematic function during initialization
-        original_ensure_stderr = browser_use.mcp.server._ensure_all_loggers_use_stderr
-        browser_use.mcp.server._ensure_all_loggers_use_stderr = (
-            _noop_ensure_all_loggers_use_stderr
-        )
-
-        try:
-            super().__init__(session_timeout_minutes)
-        finally:
-            # Restore the original function
-            browser_use.mcp.server._ensure_all_loggers_use_stderr = (
-                original_ensure_stderr
-            )
 
     async def _get_content(self, extract_links=False, start_from_char: int = 0) -> str:
         MAX_CHAR_LIMIT = 30000
