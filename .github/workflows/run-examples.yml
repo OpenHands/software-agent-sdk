@@ -20,15 +20,19 @@ permissions:
 
 jobs:
     test-examples:
-        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        needs: test-examples-windows
+        if: ${{ always() && (github.event.label.name == 'test-examples' || contains(fromJson('["workflow_dispatch","schedule"]'), github.event_name)) 
+            }}
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 60
         steps:
             - name: Wait for agent server to finish build
-              if: github.event_name == 'pull_request'
+              if: >
+                  github.event_name == 'pull_request' &&
+                  github.event.pull_request.head.repo.full_name == github.repository
               uses: lewagon/wait-on-check-action@v1.4.1
               with:
-                  ref: ${{ github.event.pull_request.head.ref }}
+                  ref: ${{ github.event.pull_request.head.sha }}
                   check-name: Build & Push (python-amd64)
                   repo-token: ${{ secrets.GITHUB_TOKEN }}
                   wait-interval: 10
@@ -48,6 +52,13 @@ jobs:
               uses: actions/setup-node@v4
               with:
                   node-version: '22'
+
+            - name: Download Windows example results
+              if: needs.test-examples-windows.result == 'success'
+              uses: actions/download-artifact@v4
+              with:
+                  name: examples-results-windows
+                  path: .windows-example-results
 
             - name: Install dependencies
               run: uv sync --frozen --group dev
@@ -129,7 +140,13 @@ jobs:
                   uv run pytest tests/examples/test_examples.py \
                       --run-examples \
                       --examples-results-dir "$RESULTS_DIR" \
-                      -n 4 || EXIT_CODE=$?
+                      -n 4 \
+                      -k "not 31_windows.py" \
+                      || EXIT_CODE=$?
+
+                  if [ -d ".windows-example-results" ]; then
+                      cp .windows-example-results/*.json "$RESULTS_DIR"/ || true
+                  fi
 
                   TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
                   WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
@@ -178,3 +195,60 @@ jobs:
                       **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
                       ${{ steps.read_report.outputs.report }}
+
+    test-examples-windows:
+        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        runs-on: windows-latest
+        timeout-minutes: 60
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v5
+              with:
+                  ref: ${{ github.event.pull_request.head.ref || github.ref }}
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  enable-cache: true
+
+            - name: Install Node.js
+              uses: actions/setup-node@v4
+              with:
+                  node-version: '22'
+
+            - name: Install dependencies
+              run: uv sync --frozen --group dev
+
+            - name: Run Windows example
+              shell: bash
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_MODEL: litellm_proxy/claude-haiku-4-5-20251001
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
+                  RUNTIME_API_KEY: ${{ secrets.RUNTIME_API_KEY }}
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  REPO_OWNER: ${{ github.repository_owner }}
+                  REPO_NAME: ${{ github.event.repository.name }}
+                  GITHUB_SHA: ${{ github.event.pull_request.head.sha }}
+              run: |
+                  RESULTS_DIR=".example-test-results"
+                  rm -rf "$RESULTS_DIR"
+                  mkdir -p "$RESULTS_DIR"
+
+                  uv run pytest tests/examples/test_examples.py \
+                      --run-examples \
+                      --examples-results-dir "$RESULTS_DIR" \
+                      -n auto \
+                      -k "31_windows.py"
+
+            - name: Upload Windows example results
+              if: always()
+              uses: actions/upload-artifact@v4
+              with:
+                  name: examples-results-windows
+                  path: .example-test-results
+                  include-hidden-files: true
+                  if-no-files-found: ignore
+

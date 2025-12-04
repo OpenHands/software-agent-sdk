@@ -14,8 +14,9 @@ class TestBrowserInitialization:
     def test_initialization_timeout_handling(self):
         """Test that initialization timeout is handled properly."""
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -35,8 +36,9 @@ class TestBrowserInitialization:
         mock_server = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -56,8 +58,9 @@ class TestBrowserInitialization:
         mock_server = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -77,8 +80,9 @@ class TestBrowserInitialization:
         mock_server = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -107,8 +111,9 @@ class TestBrowserInitialization:
         mock_server = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -126,8 +131,9 @@ class TestBrowserInitialization:
         mock_async_executor = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -146,8 +152,9 @@ class TestBrowserInitialization:
 
     def test_initialization_chromium_not_available(self):
         """Test initialization when Chromium is not available."""
-        with patch(
-            "openhands.tools.browser_use.impl._ensure_chromium_available",
+        with patch.object(
+            BrowserToolExecutor,
+            "_ensure_chromium_available",
             side_effect=Exception("Chromium not found"),
         ):
             with pytest.raises(Exception) as exc_info:
@@ -168,8 +175,9 @@ class TestBrowserInitialization:
         mock_async_executor.run_async.return_value = expected_result
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
@@ -196,8 +204,9 @@ class TestBrowserInitialization:
         mock_action = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(
