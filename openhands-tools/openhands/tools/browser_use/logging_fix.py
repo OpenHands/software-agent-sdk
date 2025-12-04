@@ -8,27 +8,41 @@ In the meantime, using this script rather than a direct import means that
 logging will still work in the agent server."""
 
 import logging
-
-import browser_use.mcp.server
+from dataclasses import dataclass, field
 
 
 def _noop(*args, **kwargs):
     """No-op replacement for functions"""
 
 
+@dataclass
+class _MockManager:
+    loggerDict: dict[str, logging.Logger] = field(default_factory=dict)
+
+
+@dataclass
+class _MockRoot:
+    handlers: list[logging.Handler] = field(default_factory=list)
+    manager: _MockManager = field(default_factory=_MockManager)
+
+    def __getattr__(self, name: str):
+        return _noop
+
+
 # Monkey patch
-browser_use.mcp.server._configure_mcp_server_logging = _noop
-browser_use.mcp.server._ensure_all_loggers_use_stderr = _noop
 _orig_disable = logging.disable
 _orig_basic_config = logging.basicConfig
+_orig_root = logging.root
 logging.disable = _noop
 logging.basicConfig = _noop
+logging.root = _MockRoot()
 try:
     from browser_use.mcp.server import BrowserUseServer  # noqa: E402
 finally:
     # Restore logging after import
     logging.disable = _orig_disable
     logging.basicConfig = _orig_basic_config
+    logging.root = _orig_root
 
 
 LogSafeBrowserUseServer = BrowserUseServer
