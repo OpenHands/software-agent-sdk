@@ -24,9 +24,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
     UpdateSecretsRequest,
 )
-from openhands.sdk import LLM, Agent, TextContent, Tool
+from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.preset.default import get_default_tools
 
 
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -41,17 +42,13 @@ START_CONVERSATION_EXAMPLES = [
                 model="your-model-provider/your-model-name",
                 api_key=SecretStr("your-api-key-here"),
             ),
-            tools=[
-                Tool(name="TerminalTool"),
-                Tool(name="FileEditorTool"),
-                Tool(name="TaskTrackerTool"),
-            ],
+            tools=get_default_tools(enable_browser=True),
         ),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         initial_message=SendMessageRequest(
             role="user", content=[TextContent(text="Flip a coin!")]
         ),
-    ).model_dump(exclude_defaults=True)
+    ).model_dump(exclude_defaults=True, mode="json")
 ]
 
 
