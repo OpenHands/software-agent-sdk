@@ -37,6 +37,9 @@ RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
 FROM builder AS binary-builder
 ARG USERNAME UID GID
 
+# Ensure latest GCC and libraries
+RUN gcc g++ libc6-dev libgcc-s1
+
 # We need --dev for pyinstaller
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
     uv sync --frozen --dev --no-editable
@@ -65,7 +68,7 @@ RUN set -eux; \
         # Install GCC 14 specifically
         # gcc-14 g++-14 libc6-dev libgcc-s1 \
         # Ensure latest GCC and libraries
-        gcc g++ libc6-dev libgcc-s1 \
+        # gcc g++ libc6-dev libgcc-s1 \
         # Docker dependencies
         apt-transport-https gnupg lsb-release; \
     \
