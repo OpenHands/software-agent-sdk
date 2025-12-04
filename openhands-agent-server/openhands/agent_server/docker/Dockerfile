@@ -62,10 +62,14 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget sudo apt-utils git jq tmux build-essential \
         coreutils util-linux procps findutils grep sed \
-        # Ensure latest GCC and libraries
-        # gcc g++ libc6-dev libgcc-s1 \
+        # Install GCC 14 specifically
+        gcc-14 g++-14 libc6-dev libgcc-s1 \
         # Docker dependencies
         apt-transport-https gnupg lsb-release; \
+    \
+    # Set GCC 14 as the default
+    update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100; \
+    update-alternatives --install /usr/bin/g++ g++ /usr/bin/g++-14 100; \
     \
     # Create user and group
     (getent group ${GID} || groupadd -g ${GID} ${USERNAME}); \
