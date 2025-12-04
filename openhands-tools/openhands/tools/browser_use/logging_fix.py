@@ -1,6 +1,11 @@
 """The browser_use server reconfigures logging for ALL loggers on import,
-overwriting any custom configuration we may have applied. Using this script
-rather than a direct import prevents that."""
+overwriting any custom configuration we may have applied.
+
+We have submitted a patch which should allow us to circumvent this problematic
+behavior: https://github.com/browser-use/browser-use/pull/3717
+
+In the meantime, using this script rather than a direct import means that
+logging will still work in the agent server."""
 
 import logging
 
