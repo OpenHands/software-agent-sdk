@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.12-nodejs22
+ARG BASE_IMAGE=nikolaik/python-nodejs:python3.14-nodejs25
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -190,7 +190,7 @@ ENV NOVNC_WEB=/usr/share/novnc \
 # Fix GCC compatibility issue: Chromium requires GCC_14.0 symbols but PyInstaller
 # bundles an older libgcc_s.so.1. Prioritize system libraries to resolve this.
 # Include both architectures - non-existent paths are safely ignored.
-ENV LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH}"
+# ENV LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH}"
 
 RUN chown -R ${USERNAME}:${USERNAME} ${NOVNC_WEB}
 # Override default XFCE wallpaper
