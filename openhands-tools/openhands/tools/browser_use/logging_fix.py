@@ -10,6 +10,20 @@ logging will still work in the agent server."""
 import logging
 from dataclasses import dataclass, field
 
+from openhands.sdk.utils.deprecation import warn_cleanup
+
+
+warn_cleanup(
+    "Monkey patching to prevent browser_use logging interference",
+    cleanup_by="1.5.0",
+    details=(
+        "This workaround should be removed once browser_use PR #3717 "
+        "(https://github.com/browser-use/browser-use/pull/3717) is merged "
+        "and released. The upstream fix will allow bypassing the "
+        "problematic logging configuration code."
+    ),
+)
+
 
 def _noop(*args, **kwargs):
     """No-op replacement for functions"""
