@@ -179,16 +179,18 @@ RUN set -eux; \
     $(if grep -q "ubuntu" /etc/os-release; then echo "chromium-browser"; else echo "chromium"; fi); \
   apt-get clean; rm -rf /var/lib/apt/lists/*
 
-# Fix GCC compatibility issue: Chromium requires GCC_14.0 symbols but PyInstaller
-# bundles an older libgcc_s.so.1. Prioritize system libraries to resolve this.
 ENV NOVNC_WEB=/usr/share/novnc \
     NOVNC_PORT=8002 \
     DISPLAY=:1 \
     VNC_GEOMETRY=1280x800 \
     CHROME_BIN=/usr/bin/chromium \
     PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium \
-    CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu" \
-    LD_LIBRARY_PATH="/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:${LD_LIBRARY_PATH}"
+    CHROMIUM_FLAGS="--no-sandbox --disable-dev-shm-usage --disable-gpu"
+
+# Fix GCC compatibility issue: Chromium requires GCC_14.0 symbols but PyInstaller
+# bundles an older libgcc_s.so.1. Prioritize system libraries to resolve this.
+# Include both architectures - non-existent paths are safely ignored.
+ENV LD_LIBRARY_PATH="/usr/lib/x86_64-linux-gnu:/lib/x86_64-linux-gnu:/usr/lib/aarch64-linux-gnu:/lib/aarch64-linux-gnu:${LD_LIBRARY_PATH}"
 
 RUN chown -R ${USERNAME}:${USERNAME} ${NOVNC_WEB}
 # Override default XFCE wallpaper
