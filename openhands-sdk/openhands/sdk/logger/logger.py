@@ -105,7 +105,14 @@ def setup_logging(
     keep = ENV_BACKUP_COUNT if backup_count is None else backup_count
 
     root = logging.getLogger()
+    old_level = root.level
     root.setLevel(lvl)
+
+    # Set the level for any existing logger with the same intial level
+    for logger in logging.root.manager.loggerDict.values():
+        if isinstance(logger, logging.Logger) and logger.level == old_level:
+            logger.setLevel(lvl)
+
     # Do NOT clear existing handlers; Uvicorn installs these before importing the app.
     # Only add ours if there isn't already a comparable stream handler.
     has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
@@ -157,6 +164,7 @@ def setup_logging(
             )
             fh.setFormatter(logging.Formatter(log_fmt))
         root.addHandler(fh)
+    root.warning(f"logger.py:setup_logging:level_set_to: {lvl}")
 
 
 def get_logger(name: str) -> logging.Logger:
