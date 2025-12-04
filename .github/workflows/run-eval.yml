@@ -127,7 +127,8 @@ jobs:
                     TRIGGER_DESCRIPTION="Label '${LABEL}' on PR #${PR_NUMBER}"
                   elif [ "${{ github.event_name }}" = "release" ]; then
                     EVAL_LIMIT=50
-                    SDK_SHA="${{ github.event.release.target_commitish }}"
+                    # Use tag instead of target_commitish because release branches are automatically deleted after merge
+                    SDK_SHA=$(git rev-parse "${{ github.event.release.tag_name }}")
                     PR_NUMBER=""
                     TRIGGER_DESCRIPTION="Release ${{ github.event.release.tag_name }}"
                   else

@@ -1,6 +1,12 @@
-"""Pydantic models for workspace operation results."""
+"""Pydantic models for workspace operation results and build types."""
+
+from typing import Literal
 
 from pydantic import BaseModel, Field
+
+
+TargetType = Literal["binary", "binary-minimal", "source", "source-minimal"]
+PlatformType = Literal["linux/amd64", "linux/arm64"]
 
 
 class CommandResult(BaseModel):

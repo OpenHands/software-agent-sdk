@@ -49,6 +49,14 @@ class ConversationStateUpdateEvent(Event):
 
     @field_validator("value")
     def validate_value(cls, value, info):
+        # Prevent circular import
+        from openhands.sdk.conversation.conversation_stats import ConversationStats
+
+        # For ConversationStats, use snapshot serialization to avoid
+        # sending lengthy lists over WebSocket
+        if isinstance(value, ConversationStats):
+            return value.model_dump(mode="json", context={"use_snapshot": True})
+
         key = info.data.get("key")
         if key is None:
             # Allow value without key for flexibility
