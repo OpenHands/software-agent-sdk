@@ -741,3 +741,39 @@ def test_async_agent_and_conversation_paths_are_observed():
     assert Agent.astep.__code__.co_name == "async_wrapper"
     assert LocalConversation.run.__code__.co_name == "sync_wrapper"
     assert LocalConversation.arun.__code__.co_name == "async_wrapper"
+
+
+def test_should_enable_observability_tolerates_dotenv_error():
+    """A failing dotenv lookup must not propagate out of the enablement check.
+
+    Regression test: get_env() previously let find_dotenv()/dotenv_values()
+    raise (AssertionError on old python-dotenv, OSError/FileNotFoundError on
+    newer versions when the CWD is gone). should_enable_observability() calls
+    get_env() and must stay safe when that happens.
+    """
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("openhands.sdk.observability.utils.dotenv_values") as mock_dotenv:
+            mock_dotenv.side_effect = FileNotFoundError(2, "No such file or directory")
+            with patch("lmnr.Laminar") as mock_laminar:
+                mock_laminar.is_initialized.return_value = False
+                assert should_enable_observability() is False
+
+
+def test_should_enable_observability_returns_true_when_env_set():
+    """should_enable_observability returns True when an observability env var is set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {"LMNR_PROJECT_API_KEY": "test_key"}, clear=True):
+        assert should_enable_observability() is True
+
+
+def test_should_enable_observability_returns_false_when_no_env():
+    """should_enable_observability returns False when no relevant env vars are set."""
+    from openhands.sdk.observability.laminar import should_enable_observability
+
+    with patch.dict(os.environ, {}, clear=True):
+        with patch("lmnr.Laminar") as mock_laminar:
+            mock_laminar.is_initialized.return_value = False
+            assert should_enable_observability() is False
