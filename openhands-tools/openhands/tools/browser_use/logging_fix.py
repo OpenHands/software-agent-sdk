@@ -37,7 +37,7 @@ logging.disable = _noop
 logging.basicConfig = _noop
 logging.root = _MockRoot()
 try:
-    from browser_use.mcp.server import BrowserUseServer  # noqa: E402
+    from browser_use.mcp import server  # noqa: E402
 finally:
     # Restore logging after import
     logging.disable = _orig_disable
@@ -45,4 +45,7 @@ finally:
     logging.root = _orig_root
 
 
-LogSafeBrowserUseServer = BrowserUseServer
+# This gets called on each init - so make sure it's a noop
+server._ensure_all_loggers_use_stderr = _noop()
+
+LogSafeBrowserUseServer = server.BrowserUseServer
