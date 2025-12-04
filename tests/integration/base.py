@@ -206,3 +206,136 @@ class BaseIntegrationTest(ABC):
         The workspace directory is torn down externally.
         Add any additional cleanup (git, server, ...) here if needed.
         """
+
+    # ===== Behavior Check Helper Methods =====
+    # These methods help verify agent behavior patterns and adherence to system messages
+
+    def find_tool_calls(self, tool_name: str) -> list[Event]:
+        """
+        Find all ActionEvents where a specific tool was called.
+
+        Args:
+            tool_name: Name of the tool to search for
+                (e.g., "FileEditorTool", "TerminalTool")
+
+        Returns:
+            List of ActionEvents matching the tool name
+        """
+        from openhands.sdk.event import ActionEvent
+
+        return [
+            event
+            for event in self.collected_events
+            if isinstance(event, ActionEvent) and event.tool_name == tool_name
+        ]
+
+    def find_file_editing_operations(self) -> list[Event]:
+        """
+        Find all file editing operations (create, str_replace, insert, undo_edit).
+
+        Excludes read-only operations like 'view'.
+
+        Returns:
+            List of ActionEvents that performed file editing
+        """
+        from openhands.sdk.event import ActionEvent
+
+        editing_operations = []
+        for event in self.collected_events:
+            if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
+                if event.action is not None:
+                    # Check if the command is an editing operation
+                    command = getattr(event.action, "command", None)
+                    if command in ["create", "str_replace", "insert", "undo_edit"]:
+                        editing_operations.append(event)
+        return editing_operations
+
+    def find_file_operations(self, file_pattern: str | None = None) -> list[Event]:
+        """
+        Find all file operations (both read and write).
+
+        Args:
+            file_pattern: Optional pattern to match against file paths
+                (e.g., "*.md", "README")
+
+        Returns:
+            List of ActionEvents that performed file operations
+        """
+        from openhands.sdk.event import ActionEvent
+
+        file_operations = []
+        for event in self.collected_events:
+            if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
+                if event.action is not None:
+                    path = getattr(event.action, "path", None)
+                    if file_pattern is None or (
+                        path and self._matches_pattern(path, file_pattern)
+                    ):
+                        file_operations.append(event)
+        return file_operations
+
+    def check_bash_command_used(self, command_pattern: str) -> list[Event]:
+        """
+        Check if agent used bash commands instead of specialized tools.
+
+        Args:
+            command_pattern: Pattern to search for in bash commands (e.g., "cat", "sed")
+
+        Returns:
+            List of ActionEvents where bash was used with the pattern
+        """
+        from openhands.sdk.event import ActionEvent
+
+        bash_commands = []
+        for event in self.collected_events:
+            if isinstance(event, ActionEvent) and event.tool_name == "TerminalTool":
+                if event.action is not None:
+                    command = getattr(event.action, "command", "")
+                    if command_pattern in command:
+                        bash_commands.append(event)
+        return bash_commands
+
+    def get_conversation_summary(self, max_length: int = 5000) -> str:
+        """
+        Get a summary of the conversation including agent thoughts and actions.
+
+        Args:
+            max_length: Maximum length of the summary
+
+        Returns:
+            String summary of the conversation
+        """
+        from openhands.sdk.event import ActionEvent, MessageEvent
+
+        summary_parts = []
+        for event in self.collected_events:
+            if isinstance(event, MessageEvent):
+                role = event.llm_message.role
+                from openhands.sdk.llm import TextContent as TextContentType
+
+                content = ""
+                if event.llm_message.content:
+                    content = " ".join(
+                        [
+                            c.text
+                            for c in event.llm_message.content
+                            if isinstance(c, TextContentType)
+                        ]
+                    )
+                if content:
+                    summary_parts.append(f"[{role.upper()}] {content[:500]}")
+            elif isinstance(event, ActionEvent):
+                thought = " ".join([t.text for t in event.thought])
+                tool = event.tool_name
+                summary_parts.append(f"[ACTION] Tool: {tool}, Thought: {thought[:300]}")
+
+        summary = "\n".join(summary_parts)
+        if len(summary) > max_length:
+            summary = summary[:max_length] + "..."
+        return summary
+
+    def _matches_pattern(self, path: str, pattern: str) -> bool:
+        """Helper to match file paths against patterns."""
+        import fnmatch
+
+        return fnmatch.fnmatch(path, pattern) or pattern in path
