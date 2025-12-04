@@ -164,7 +164,6 @@ def setup_logging(
             )
             fh.setFormatter(logging.Formatter(log_fmt))
         root.addHandler(fh)
-    root.warning(f"logger.py:setup_logging:level_set_to: {lvl}")
 
 
 def get_logger(name: str) -> logging.Logger:

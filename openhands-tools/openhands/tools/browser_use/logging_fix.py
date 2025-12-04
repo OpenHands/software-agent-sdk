@@ -29,7 +29,7 @@ class _MockRoot:
         return _noop
 
 
-# Monkey patch
+# Monkey patch before import
 _orig_disable = logging.disable
 _orig_basic_config = logging.basicConfig
 _orig_root = logging.root
