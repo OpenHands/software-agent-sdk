@@ -46,6 +46,6 @@ finally:
 
 
 # This gets called on each init - so make sure it's a noop
-server._ensure_all_loggers_use_stderr = _noop()
+server._ensure_all_loggers_use_stderr = _noop
 
 LogSafeBrowserUseServer = server.BrowserUseServer
