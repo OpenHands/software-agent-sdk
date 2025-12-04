@@ -32,6 +32,7 @@ class TestInstance(BaseModel):
 
     instance_id: str
     file_path: str
+    criticality: str = "critical"
     test_class: BaseIntegrationTest | None = None
 
 
@@ -41,6 +42,7 @@ class EvalOutput(BaseModel):
     instance_id: str
     test_result: TestResult
     llm_model: str
+    criticality: str = "critical"
     cost: float = 0.0
     error_message: str | None = None
     log_file_path: str | None = None
@@ -58,8 +60,21 @@ def load_integration_tests() -> list[TestInstance]:
     instances = []
     for test_file in test_files:
         instance_id = test_file.stem  # filename without extension
+
+        # Load the test class to get its criticality
+        try:
+            test_class_type = load_test_class(str(test_file))
+            criticality = getattr(test_class_type, "CRITICALITY", "critical")
+        except Exception:
+            # If we can't load the class, default to critical
+            criticality = "critical"
+
         instances.append(
-            TestInstance(instance_id=instance_id, file_path=str(test_file))
+            TestInstance(
+                instance_id=instance_id,
+                file_path=str(test_file),
+                criticality=criticality,
+            )
         )
 
     return instances
@@ -99,6 +114,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             instance_id=instance.instance_id,
             test_result=TestResult(success=False, reason="Failed to load test class"),
             llm_model=llm_config.get("model", "unknown"),
+            criticality=instance.criticality,
             error_message="Could not load test class",
         )
 
@@ -167,6 +183,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             instance_id=instance.instance_id,
             test_result=test_result,
             llm_model=llm_config.get("model", "unknown"),
+            criticality=instance.criticality,
             cost=llm_cost,
             log_file_path=log_file_path,
         )
@@ -182,6 +199,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
                 skipped=True,
             ),
             llm_model=llm_config.get("model", "unknown"),
+            criticality=instance.criticality,
             cost=0.0,
         )
 
@@ -193,6 +211,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
                 success=False, reason=f"Test execution failed: {str(e)}"
             ),
             llm_model=llm_config.get("model", "unknown"),
+            criticality=instance.criticality,
             error_message=str(e),
         )
     finally:

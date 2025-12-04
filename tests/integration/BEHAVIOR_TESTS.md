@@ -10,10 +10,17 @@ Both types of tests use the same infrastructure (`BaseIntegrationTest`) and run 
 
 ## Test Types
 
-| Type | Focus | Example |
-|------|-------|---------|
-| **Task Completion** | Agent successfully completes tasks | `t01_fix_simple_typo.py` - fixes typos in a file |
-| **Behavior** | Agent follows system guidelines | `t09_no_premature_implementation.py` - doesn't implement when asked for advice |
+| Type | Focus | Criticality | Example |
+|------|-------|-------------|---------|
+| **Task Completion** | Agent successfully completes tasks | `critical` | `t01_fix_simple_typo.py` - fixes typos in a file |
+| **Behavior** | Agent follows system guidelines | `ux` | `t09_no_premature_implementation.py` - doesn't implement when asked for advice |
+
+### Test Criticality Levels
+
+Tests are classified by criticality to distinguish between core functionality and UX improvements:
+
+- **`critical`**: Core functionality tests that must pass. These verify that the agent can successfully complete essential tasks. Failures in critical tests block releases.
+- **`ux`**: User experience tests that track quality improvements. These verify that the agent follows best practices and avoids annoying behaviors. Failures in UX tests don't block releases but should be addressed for optimal user experience.
 
 ## Behavior Tests
 
@@ -66,6 +73,7 @@ INSTRUCTION = "Your user prompt that might trigger undesirable behavior"
 
 class YourBehaviorTest(BaseIntegrationTest):
     INSTRUCTION: str = INSTRUCTION
+    CRITICALITY: str = "ux"  # Use "ux" for behavior tests, "critical" for task completion
 
     @property
     def tools(self) -> list[Tool]:
@@ -89,6 +97,8 @@ class YourBehaviorTest(BaseIntegrationTest):
 
         return TestResult(success=True, reason="Agent behaved correctly")
 ```
+
+**Note**: Set `CRITICALITY = "ux"` for behavior tests and `CRITICALITY = "critical"` for task completion tests. If not specified, tests default to `"critical"`.
 
 ### 2. Use Helper Methods
 

@@ -53,6 +53,7 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
     """Test that agent doesn't start implementing when asked for advice."""
 
     INSTRUCTION: str = INSTRUCTION
+    CRITICALITY: str = "ux"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

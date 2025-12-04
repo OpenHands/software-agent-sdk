@@ -6,6 +6,15 @@ This directory contains integration tests for the agent-sdk that use real LLM ca
 
 The integration tests are designed to verify that the agent-sdk works correctly with real LLM models by running complete workflows. Each test creates a temporary environment, provides the agent with specific tools, gives it an instruction, and then verifies the results.
 
+### Test Criticality
+
+Tests are classified by criticality level:
+
+- **`critical`** (default): Core functionality tests that must pass for releases. Examples include task completion tests like fixing typos, creating files, or running bash commands.
+- **`ux`**: User experience tests that track quality improvements. Examples include behavior tests that verify the agent doesn't create unnecessary files or start implementing prematurely.
+
+See [BEHAVIOR_TESTS.md](BEHAVIOR_TESTS.md) for more details on behavior testing and criticality levels.
+
 ## Directory Structure
 
 ```

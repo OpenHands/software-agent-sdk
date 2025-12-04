@@ -28,6 +28,7 @@ class TestInstanceResult(BaseModel):
 
     instance_id: str
     test_result: TestResultData
+    criticality: str = "critical"
     cost: float = 0.0
     error_message: str | None = None
 
@@ -79,6 +80,7 @@ class ModelTestResults(BaseModel):
                         reason=output.test_result.reason,
                         skipped=output.test_result.skipped,
                     ),
+                    criticality=output.criticality,
                     cost=output.cost,
                     error_message=output.error_message,
                 )
