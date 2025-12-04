@@ -63,7 +63,7 @@ RUN set -eux; \
         ca-certificates curl wget sudo apt-utils git jq tmux build-essential \
         coreutils util-linux procps findutils grep sed \
         # Ensure latest GCC and libraries
-        gcc g++ libc6-dev libgcc-s1 \
+        # gcc g++ libc6-dev libgcc-s1 \
         # Docker dependencies
         apt-transport-https gnupg lsb-release; \
     \
