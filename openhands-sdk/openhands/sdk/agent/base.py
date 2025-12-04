@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -142,7 +144,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
-    critic: "CriticBase | None" = Field(
+    critic: CriticBase | None = Field(
         default=None,
         description=(
             "Optional critic to evaluate agent actions and messages in real-time."
@@ -194,8 +196,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def init_state(
         self,
-        state: "ConversationState",
-        on_event: "ConversationCallbackType",  # noqa: ARG002
+        state: ConversationState,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -206,7 +208,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: "ConversationState"):
+    def _initialize(self, state: ConversationState):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._tools:
@@ -258,9 +260,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @abstractmethod
     def step(
         self,
-        conversation: "LocalConversation",
-        on_event: "ConversationCallbackType",
-        on_token: "ConversationTokenCallbackType | None" = None,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -278,7 +280,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
+    def resolve_diff_from_deserialized(self, persisted: AgentBase) -> AgentBase:
         """
         Return a new AgentBase instance equivalent to `persisted` but with
         explicitly whitelisted fields (e.g. api_key) taken from `self`.

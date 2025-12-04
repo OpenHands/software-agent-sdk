@@ -1,4 +1,3 @@
-import inspect
 import json
 import logging
 import os
@@ -23,7 +22,11 @@ _rebuild_required = True
 def _is_abstract(type_: type) -> bool:
     """Determine whether the class directly extends ABC or contains abstract methods"""
     try:
-        return inspect.isabstract(type_) or ABC in type_.__bases__
+        # Check if ABC is in bases or if class has abstract methods
+        # Use __abstractmethods__ directly to avoid triggering Pydantic's __getattr__
+        return ABC in type_.__bases__ or bool(
+            getattr(type_, "__abstractmethods__", None)
+        )
     except Exception:
         return False
 
@@ -43,10 +46,24 @@ def rebuild_all():
     """Rebuild all polymorphic classes."""
     global _rebuild_required
     _rebuild_required = False
+
+    # Provide critic types to namespace if available to resolve forward references
+    types_namespace = {}
+    try:
+        import sys
+
+        if "openhands.sdk.critic.base" in sys.modules:
+            from openhands.sdk.critic.base import CriticBase, CriticResult
+
+            types_namespace["CriticBase"] = CriticBase
+            types_namespace["CriticResult"] = CriticResult
+    except ImportError:
+        pass
+
     for cls in _get_all_subclasses(OpenHandsModel):
-        cls.model_rebuild(force=True)
+        cls.model_rebuild(force=True, _types_namespace=types_namespace)
     for cls in _get_all_subclasses(DiscriminatedUnionMixin):
-        cls.model_rebuild(force=True)
+        cls.model_rebuild(force=True, _types_namespace=types_namespace)
 
 
 def kind_of(obj) -> str:

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import copy
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, ClassVar
@@ -55,7 +57,7 @@ class MessageEvent(LLMConvertibleEvent):
         ),
     )
 
-    critic_result: "CriticResult | None" = Field(
+    critic_result: CriticResult | None = Field(
         default=None,
         description="Optional critic evaluation of this message and preceding history.",
     )

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -70,7 +72,7 @@ class ActionEvent(LLMConvertibleEvent):
         description="The LLM's assessment of the safety risk of this action.",
     )
 
-    critic_result: "CriticResult | None" = Field(
+    critic_result: CriticResult | None = Field(
         default=None,
         description="Optional critic evaluation of this action and preceding history.",
     )
