@@ -433,6 +433,8 @@ def generate_ground_truth(tokenizer_name: str = "Qwen/Qwen3-4B-Instruct-2507") -
     """
     try:
         from transformers import AutoTokenizer  # type: ignore
+        # This dependency is not included in pyproject.toml by default
+        # to avoid bloating the installation for users who don't need it.
     except ImportError as e:
         raise ImportError(
             "transformers is required to generate ground truth. "
