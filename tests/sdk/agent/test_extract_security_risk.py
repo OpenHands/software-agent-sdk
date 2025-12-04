@@ -15,6 +15,7 @@ from openhands.sdk.conversation.types import ConversationCallbackType
 from openhands.sdk.event import ActionEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
+from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.security.risk import SecurityRisk
 from openhands.sdk.security.security_service import (
     DefaultSecurityService,
@@ -48,10 +49,11 @@ class MockSecurityServiceAgent(Agent):
         self._security_service = DefaultSecurityService(state)
 
 
-def init_agent(agent: Agent):
+def init_agent(agent: Agent, security_analyzer: SecurityAnalyzerBase | None):
     state = ConversationState.create(
         id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
     )
+    state.security_analyzer = security_analyzer
     agent.init_state(state, lambda e: None)
 
 
@@ -70,21 +72,21 @@ def mock_llm():
 def agent_with_llm_analyzer(mock_llm):
     """Create an agent with LLMSecurityAnalyzer."""
     agent = MockSecurityServiceAgent(llm=mock_llm)
-    return agent
+    return agent, LLMSecurityAnalyzer()
 
 
 @pytest.fixture
 def agent_with_non_llm_analyzer(mock_llm):
     """Create an agent with non-LLM security analyzer."""
     agent = MockSecurityServiceAgent(llm=mock_llm)
-    return agent
+    return agent, MockNonLLMAnalyzer()
 
 
 @pytest.fixture
 def agent_without_analyzer(mock_llm):
     """Create an agent without security analyzer."""
     agent = MockSecurityServiceAgent(llm=mock_llm)
-    return agent
+    return agent, None
 
 
 @pytest.mark.parametrize(
@@ -120,8 +122,8 @@ def test_extract_security_risk(
 ):
     """Test _extract_security_risk method with various scenarios."""
     # Get the agent fixture
-    agent = request.getfixturevalue(agent_fixture)
-    init_agent(agent)
+    agent, security_analyzer = request.getfixturevalue(agent_fixture)
+    init_agent(agent, security_analyzer)
 
     # Prepare arguments
     arguments = {"some_param": "value"}
@@ -155,7 +157,7 @@ def test_extract_security_risk_arguments_mutation():
             base_url="http://test",
         )
     )
-    init_agent(agent)
+    init_agent(agent, None)
 
     # Test with security_risk present
     arguments = {"param1": "value1", "security_risk": "LOW", "param2": "value2"}
@@ -187,7 +189,7 @@ def test_extract_security_risk_with_empty_arguments():
             base_url="http://test",
         )
     )
-    init_agent(agent)
+    init_agent(agent, None)
 
     arguments = {}
     result = agent._security_service.extract_security_risk(
@@ -209,7 +211,7 @@ def test_extract_security_risk_with_read_only_tool():
             base_url="http://test",
         )
     )
-    init_agent(agent)
+    init_agent(agent, LLMSecurityAnalyzer())
 
     # Test with readOnlyHint=True - should return UNKNOWN regardless of security_risk
     arguments = {"param1": "value1", "security_risk": "HIGH"}
