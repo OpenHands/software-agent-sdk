@@ -8,9 +8,10 @@ def _write_repo_with_vendor_files(root: Path):
     # repo skill under .openhands/skills/repo.md
     skills_dir = root / ".openhands" / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
-    (skills_dir / "repo.md").write_text(
+    repo_text = (
         "---\n# type: repo\nversion: 1.0.0\nagent: CodeActAgent\n---\n\nRepo baseline\n"
     )
+    (skills_dir / "repo.md").write_text(repo_text)
 
     # vendor files in repo root
     (root / "claude.md").write_text("Claude-Specific Instructions")

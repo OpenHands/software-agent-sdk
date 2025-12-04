@@ -163,14 +163,10 @@ class Skill(BaseModel):
         path: str | Path,
         skill_dir: Path | None = None,
         file_content: str | None = None,
-        llm_model: str | None = None,
-        llm_model_canonical: str | None = None,
-    ) -> "Skill | None":
+    ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
         The agent's name is derived from its path relative to the skill_dir.
-        May return None when a vendor-specific third-party file (e.g., CLAUDE.md,
-        GEMINI.md) is not applicable to the provided model.
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -192,16 +188,6 @@ class Skill(BaseModel):
         # Handle third-party agent instruction files
         third_party_agent = cls._handle_third_party(path, file_content)
         if third_party_agent is not None:
-            # Model-gate vendor-specific files
-            if not cls.should_include_for_model(
-                third_party_agent.name,
-                llm_model=llm_model,
-                llm_model_canonical=llm_model_canonical,
-            ):
-                logger.info(
-                    f"Skipping vendor-specific instructions from {path} for model"
-                )
-                return None
             return third_party_agent
 
         file_io = io.StringIO(file_content)
@@ -382,14 +368,26 @@ def load_skills_from_dir(
     # Process all files in one loop
     for file in chain(special_files, md_files):
         try:
+            # Vendor gating for third-party files based on filename
+            fname = file.name.lower()
+            vendor_skill_name = Skill.PATH_TO_THIRD_PARTY_SKILL_NAME.get(fname)
+            if vendor_skill_name in (
+                "claude",
+                "gemini",
+            ) and not Skill.should_include_for_model(
+                vendor_skill_name,
+                llm_model=llm_model,
+                llm_model_canonical=llm_model_canonical,
+            ):
+                logger.info(
+                    f"Skipping vendor-specific instructions from {file} for model"
+                )
+                continue
+
             skill = Skill.load(
                 file,
                 skill_dir,
-                llm_model=llm_model,
-                llm_model_canonical=llm_model_canonical,
             )
-            if skill is None:
-                continue
             if skill.trigger is None:
                 repo_skills[skill.name] = skill
             else:
