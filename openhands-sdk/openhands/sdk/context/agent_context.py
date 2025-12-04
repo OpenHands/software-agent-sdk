@@ -123,7 +123,11 @@ class AgentContext(BaseModel):
             logger.warning(f"Failed to load public skills: {str(e)}")
         return self
 
-    def get_system_message_suffix(self) -> str | None:
+    def get_system_message_suffix(
+        self,
+        llm_model: str | None = None,
+        llm_model_canonical: str | None = None,
+    ) -> str | None:
         """Get the system message with repo skill content and custom suffix.
 
         Custom suffix can typically includes:
@@ -131,12 +135,45 @@ class AgentContext(BaseModel):
         - Runtime information (e.g., available hosts, current date)
         - Conversation instructions (e.g., user preferences, task details)
         - Repository-specific instructions (collected from repo skills)
+
+        When LLM model information is provided, apply model-specific filtering for
+        third-party repo rules:
+        - Load CLAUDE.md only for Anthropic/Claude models
+        - Load GEMINI.md only for Gemini models
         """
         repo_skills = [s for s in self.skills if s.trigger is None]
+
+        def _is_vendor(model: str | None, vendor: str) -> bool:
+            if not model:
+                return False
+            ml = model.lower()
+            if vendor == "claude":
+                return "claude" in ml or "anthropic" in ml
+            if vendor == "gemini":
+                return "gemini" in ml
+            return vendor in ml
+
+        is_claude = _is_vendor(llm_model, "claude") or _is_vendor(
+            llm_model_canonical, "claude"
+        )
+        is_gemini = _is_vendor(llm_model, "gemini") or _is_vendor(
+            llm_model_canonical, "gemini"
+        )
+
+        # Apply model-specific filtering for third-party instructions if model known
+        if llm_model or llm_model_canonical:
+            filtered_repo_skills: list[Skill] = []
+            for s in repo_skills:
+                if s.name == "claude" and not is_claude:
+                    continue
+                if s.name == "gemini" and not is_gemini:
+                    continue
+                filtered_repo_skills.append(s)
+            repo_skills = filtered_repo_skills
+
         logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
         # Build the workspace context information
         if repo_skills:
-            # TODO(test): add a test for this rendering to make sure they work
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
