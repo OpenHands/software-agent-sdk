@@ -65,6 +65,7 @@ class LocalConversation(BaseConversation):
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        enable_action_summaries: bool = False,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -85,12 +86,16 @@ class LocalConversation(BaseConversation):
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             max_iteration_per_run: Maximum number of iterations per run
+            stuck_detection: Whether to enable stuck detection
+            enable_action_summaries: Whether to request action summaries from the
+                LLM. When enabled, the LLM provides a brief explanation of each
+                action.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
-            stuck_detection: Whether to enable stuck detection
+            secrets: Optional mapping of secret names to values
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -120,6 +125,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            enable_action_summaries=enable_action_summaries,
         )
 
         # Default callback: persist every event to state

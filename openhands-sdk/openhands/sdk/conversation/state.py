@@ -166,6 +166,7 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        enable_action_summaries: bool = False,
     ) -> "ConversationState":
         """
         If base_state.json exists: resume (attach EventLog,
@@ -223,6 +224,7 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
+            enable_action_summaries=enable_action_summaries,
         )
         # Record existing analyzer configuration in state
         state.security_analyzer = state.security_analyzer
