@@ -198,6 +198,13 @@ implementing?
             evaluation_criteria=evaluation_criteria,
         )
 
+        # Add judge usage to test costs
+        self.add_judge_usage(
+            prompt_tokens=judgment.prompt_tokens,
+            completion_tokens=judgment.completion_tokens,
+            cost=judgment.cost,
+        )
+
         if judgment.approved:
             return TestResult(
                 success=True,

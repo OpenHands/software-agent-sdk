@@ -18,6 +18,10 @@ class JudgmentResult(BaseModel):
     approved: bool
     reasoning: str
     confidence: float = 0.0  # 0.0 to 1.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cost: float = 0.0
 
 
 def create_judge_llm() -> LLM:
@@ -109,10 +113,22 @@ Your response must be valid JSON only, no other text."""
         # Parse JSON response
         result_dict = json.loads(response_text.strip())
 
+        # Extract usage information from metrics
+        metrics = response.metrics
+        usage = metrics.accumulated_token_usage
+        prompt_tokens = usage.prompt_tokens or 0 if usage else 0
+        completion_tokens = usage.completion_tokens or 0 if usage else 0
+        total_tokens = prompt_tokens + completion_tokens
+        cost = metrics.accumulated_cost or 0.0
+
         return JudgmentResult(
             approved=result_dict.get("approved", False),
             reasoning=result_dict.get("reasoning", "No reasoning provided"),
             confidence=result_dict.get("confidence", 0.0),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cost=cost,
         )
 
     except json.JSONDecodeError as e:
