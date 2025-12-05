@@ -20,10 +20,33 @@ from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
 logger = get_logger(__name__)
 
-_SPECIAL_CLI_HINTS = {
-    "rg": "terminal:rg",
-    "ripgrep": "terminal:rg",
-    "grep": "terminal:grep",
+# Commands we treat as generic shell/posix utilities; others are treated as
+# distinct CLI tools (terminal:<cmd>).
+_GENERIC_COMMANDS = {
+    "cd",
+    "pwd",
+    "ls",
+    "echo",
+    "cat",
+    "head",
+    "tail",
+    "touch",
+    "mkdir",
+    "rm",
+    "rmdir",
+    "cp",
+    "mv",
+    "chmod",
+    "chown",
+    "find",
+    "env",
+    "which",
+    "whoami",
+    "true",
+    "false",
+    "printf",
+    "test",
+    "[",
 }
 
 
@@ -36,7 +59,10 @@ def _looks_like_env_assignment(token: str) -> bool:
 
 
 def _detect_command_hint(command: str) -> tuple[str | None, list[str] | None]:
-    """Detect special CLI usage (e.g., ripgrep) from a shell command string."""
+    """Detect CLI tool name from a shell command string.
+
+    Returns (parsed_tool, argv). parsed_tool is None for generic commands.
+    """
     command = command.strip()
     if not command:
         return None, None
@@ -58,8 +84,10 @@ def _detect_command_hint(command: str) -> tuple[str | None, list[str] | None]:
     if candidate is None:
         return None, tokens or None
 
-    hint = _SPECIAL_CLI_HINTS.get(candidate)
-    return hint, tokens or None
+    if candidate in _GENERIC_COMMANDS:
+        return None, tokens or None
+
+    return f"terminal:{candidate}", tokens or None
 
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):

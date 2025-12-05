@@ -39,7 +39,7 @@ def test_detect_grep():
 
 def test_detect_ripgrep_alias():
     hint, argv = _detect_command_hint("ripgrep pattern .")
-    assert hint == "terminal:rg"
+    assert hint == "terminal:ripgrep"
     assert argv and argv[0] == "ripgrep"
 
 
