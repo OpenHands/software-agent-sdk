@@ -209,3 +209,4 @@ openapi.json
 .worktrees/
 agent-sdk.workspace.code-workspace
 
+code_review_history.txt
