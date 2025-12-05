@@ -181,9 +181,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments=(
-                    f'{{"command": "{command}", "summary": "executing test command"}}'
-                ),
+                arguments=f'{{"command": "{command}"}}',
             ),
         )
         return MagicMock(
@@ -211,7 +209,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="finish",
-                arguments=f'{{"message": "{message}", "summary": "completing task"}}',
+                arguments=f'{{"message": "{message}"}}',
             ),
         )
 
@@ -240,9 +238,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="think",
-                arguments=(
-                    f'{{"thought": "{thought}", "summary": "thinking about task"}}'
-                ),
+                arguments=f'{{"thought": "{thought}"}}',
             ),
         )
 
@@ -271,9 +267,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments=(
-                    '{"command": "test_command", "summary": "executing test command"}'
-                ),
+                arguments='{"command": "test_command"}',
             ),
         )
 
@@ -282,9 +276,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="finish",
-                arguments=(
-                    '{"message": "Task completed!", "summary": "completing task"}'
-                ),
+                arguments='{"message": "Task completed!"}',
             ),
         )
 
@@ -318,9 +310,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments=(
-                    f'{{"command": "{command}", "summary": "executing test command"}}'
-                ),
+                arguments=f'{{"command": "{command}"}}',
             ),
         )
 

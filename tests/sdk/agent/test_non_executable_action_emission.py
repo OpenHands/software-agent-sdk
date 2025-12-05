@@ -47,12 +47,7 @@ def test_emits_action_event_with_none_action_then_error_on_missing_tool() -> Non
                                 type="function",
                                 function=Function(
                                     name="nonexistent_tool",
-                                    arguments=json.dumps(
-                                        {
-                                            "param": "value",
-                                            "summary": "using nonexistent tool",
-                                        }
-                                    ),
+                                    arguments=json.dumps({"param": "value"}),
                                 ),
                             )
                         ],

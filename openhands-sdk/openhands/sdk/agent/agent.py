@@ -353,33 +353,31 @@ class Agent(AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(self, arguments: dict) -> str:
+    def _extract_summary(self, arguments: dict) -> str | None:
         """Extract and validate the summary field from tool arguments.
 
-        Summary field is always required for transparency and explainability.
+        Summary field is always requested but optional - if LLM doesn't provide
+        it or provides invalid data, we just return None and continue.
 
         Args:
             arguments: Dictionary of tool arguments from LLM
 
         Returns:
-            The summary string
-
-        Raises:
-            ValueError: If summary is missing, empty, or invalid type
+            The summary string if present and valid, None otherwise
         """
         summary = arguments.pop("summary", None)
 
-        # Summary is always required
+        # If no summary provided, just return None
         if summary is None:
-            raise ValueError("Summary field is required for all tool calls")
+            return None
 
-        # Validate summary type
+        # Validate summary type - if invalid, return None
         if not isinstance(summary, str):
-            raise ValueError(f"Summary must be a string, got {type(summary).__name__}")
+            return None
 
-        # Validate summary is not empty or whitespace-only
+        # Validate summary is not empty or whitespace-only - if invalid, return None
         if not summary.strip():
-            raise ValueError("Summary cannot be empty or whitespace-only")
+            return None
 
         return summary
 

@@ -235,10 +235,7 @@ def test_security_risk_param_ignored_when_no_analyzer():
         "openhands.sdk.llm.llm.litellm_completion",
         return_value=_tool_response(
             "think",
-            (
-                '{"thought": "This is a test thought", '
-                '"security_risk": "LOW", "summary": "thinking about test"}'
-            ),
+            '{"thought": "This is a test thought", "security_risk": "LOW"}',
         ),
     ):
         convo.send_message(

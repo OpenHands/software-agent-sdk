@@ -266,7 +266,7 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     tool_call = MessageToolCall(
         id="call_123",
         name="terminal",
-        arguments=json.dumps({"command": "ls -la", "summary": "listing files"}),
+        arguments=json.dumps({"command": "ls -la"}),
         origin="completion",
     )
     conv.state.events.append(

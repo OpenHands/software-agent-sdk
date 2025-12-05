@@ -11,10 +11,7 @@ def test_get_agent_final_response_with_finish_action():
     # Create a finish action event
     finish_action = FinishAction(message="Task completed successfully!")
     tool_call = MessageToolCall(
-        id="test-call-id",
-        name="finish",
-        arguments='{"summary": "completing task"}',
-        origin="completion",
+        id="test-call-id", name="finish", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",
@@ -90,10 +87,7 @@ def test_get_agent_final_response_finish_action_takes_precedence():
     # Create a finish action that comes after
     finish_action = FinishAction(message="Finished!")
     tool_call = MessageToolCall(
-        id="test-call-id",
-        name="finish",
-        arguments='{"summary": "completing task"}',
-        origin="completion",
+        id="test-call-id", name="finish", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",
@@ -138,10 +132,7 @@ def test_get_agent_final_response_with_none_action():
     """Test handling of finish tool call with None action."""
     # Create an action event with tool_name="finish" but action=None
     tool_call = MessageToolCall(
-        id="test-call-id",
-        name="finish",
-        arguments='{"summary": "completing task"}',
-        origin="completion",
+        id="test-call-id", name="finish", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",
@@ -186,10 +177,7 @@ def test_get_agent_final_response_ignores_non_agent_finish():
     # Create a finish action from user (shouldn't happen but test edge case)
     finish_action = FinishAction(message="User finish")
     tool_call = MessageToolCall(
-        id="test-call-id",
-        name="finish",
-        arguments='{"summary": "completing task"}',
-        origin="completion",
+        id="test-call-id", name="finish", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="user",  # Not from agent
@@ -220,10 +208,7 @@ def test_get_agent_final_response_with_non_finish_action():
     """Test that non-finish actions are ignored."""
     # Create a non-finish action event (e.g., read_file)
     tool_call = MessageToolCall(
-        id="test-call-id",
-        name="read_file",
-        arguments='{"summary": "reading file"}',
-        origin="completion",
+        id="test-call-id", name="read_file", arguments="{}", origin="completion"
     )
     action_event = ActionEvent(
         source="agent",

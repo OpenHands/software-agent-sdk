@@ -518,14 +518,14 @@ def _create_action_type_with_summary(action_type: type[Schema]) -> type[Schema]:
         (action_type,),
         {
             "summary": Field(
-                # Optional field - LLM should provide it but won't break if not
+                default=None,
                 description=(
                     "A concise summary (approximately 10 words) describing what "
                     "this specific action does. Focus on the key operation and target. "
                     "Example: 'List all Python files in current directory'"
                 ),
             ),
-            "__annotations__": {"summary": str},
+            "__annotations__": {"summary": str | None},
         },
     )
     _action_types_with_summary[action_type] = action_type_with_summary

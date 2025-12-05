@@ -3,7 +3,7 @@
 This module tests the _extract_summary method which handles extraction
 and validation of summary parameters from tool arguments.
 
-Summary field is always required for transparency and explainability.
+Summary field is always requested but optional - if invalid, returns None.
 """
 
 import pytest
@@ -27,37 +27,36 @@ def agent():
 
 
 @pytest.mark.parametrize(
-    "summary_value,expected_result,should_raise",
+    "summary_value,expected_result",
     [
         # Valid summary provided
-        ("testing file system", "testing file system", False),
-        ("checking logs for errors", "checking logs for errors", False),
-        # No summary provided - should raise
-        (None, None, True),
-        # Non-string summary - should raise
-        (123, None, True),
-        (["list", "of", "words"], None, True),
-        ({"type": "dict"}, None, True),
+        ("testing file system", "testing file system"),
+        ("checking logs for errors", "checking logs for errors"),
+        # No summary provided - returns None
+        (None, None),
+        # Non-string summary - returns None
+        (123, None),
+        (["list", "of", "words"], None),
+        ({"type": "dict"}, None),
+        # Empty or whitespace-only - returns None
+        ("", None),
+        ("   ", None),
     ],
 )
-def test_extract_summary(agent, summary_value, expected_result, should_raise):
+def test_extract_summary(agent, summary_value, expected_result):
     """Test _extract_summary method with various scenarios."""
     # Prepare arguments
     arguments = {"some_param": "value"}
     if summary_value is not None:
         arguments["summary"] = summary_value
 
-    if should_raise:
-        with pytest.raises(ValueError):
-            agent._extract_summary(arguments)
-    else:
-        result = agent._extract_summary(arguments)
-        assert result == expected_result
+    result = agent._extract_summary(arguments)
+    assert result == expected_result
 
-        # Verify that summary was popped from arguments
-        assert "summary" not in arguments
-        # Verify other arguments remain
-        assert arguments["some_param"] == "value"
+    # Verify that summary was popped from arguments
+    assert "summary" not in arguments
+    # Verify other arguments remain
+    assert arguments["some_param"] == "value"
 
 
 def test_extract_summary_arguments_mutation(agent):
@@ -78,29 +77,3 @@ def test_extract_summary_arguments_mutation(agent):
     assert arguments["param1"] == original_args["param1"]
     assert arguments["param2"] == original_args["param2"]
     assert len(arguments) == 2  # Only 2 params should remain
-
-
-def test_extract_summary_missing(agent):
-    """Test _extract_summary with missing summary - should raise."""
-    arguments = {}
-
-    with pytest.raises(ValueError, match="Summary field is required"):
-        agent._extract_summary(arguments)
-
-
-def test_extract_summary_empty_string(agent):
-    """Test _extract_summary with empty string."""
-    # Empty string should raise ValueError
-    arguments = {"summary": ""}
-
-    with pytest.raises(ValueError, match="Summary cannot be empty"):
-        agent._extract_summary(arguments)
-
-
-def test_extract_summary_whitespace_only(agent):
-    """Test _extract_summary with whitespace-only string."""
-    # Whitespace-only string should raise ValueError
-    arguments = {"summary": "   "}
-
-    with pytest.raises(ValueError, match="Summary cannot be empty"):
-        agent._extract_summary(arguments)

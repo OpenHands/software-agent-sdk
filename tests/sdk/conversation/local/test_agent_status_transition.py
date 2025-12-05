@@ -175,9 +175,7 @@ def test_execution_status_is_running_during_execution_from_idle(mock_completion)
         type="function",
         function=Function(
             name="test_tool",
-            arguments=(
-                '{"command": "test_command", "summary": "executing test command"}'
-            ),
+            arguments='{"command": "test_command"}',
         ),
     )
 
@@ -319,9 +317,7 @@ def test_execution_status_transitions_from_waiting_for_confirmation(mock_complet
         type="function",
         function=Function(
             name="test_tool",
-            arguments=(
-                '{"command": "test_command", "summary": "executing test command"}'
-            ),
+            arguments='{"command": "test_command"}',
         ),
     )
 

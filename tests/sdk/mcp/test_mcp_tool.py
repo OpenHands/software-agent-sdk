@@ -255,15 +255,14 @@ class TestMCPTool:
         input_schema = function_def["parameters"]
 
         # Since security_risk was removed from Action, it should not be in schema
-        # Summary field is automatically added, so we expect 2 properties
+        # Summary field is always added for LLM transparency
         assert len(input_schema["properties"]) == 2
         assert "security_risk" not in input_schema["properties"]
         assert "summary" in input_schema["properties"]
-        assert "param" in input_schema["properties"]
 
-        assert input_schema["type"] == "object"
+        # Check the actual tool parameter is present
+        assert "param" in input_schema["properties"]
         assert input_schema["properties"]["param"] == {"type": "string"}
-        assert "summary" in input_schema["properties"]
 
     def test_mcp_tool_with_annotations(self):
         """Test creating an MCP tool with annotations."""
