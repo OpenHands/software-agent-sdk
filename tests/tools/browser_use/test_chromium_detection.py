@@ -12,14 +12,14 @@ from openhands.tools.browser_use.impl import BrowserToolExecutor, _install_chrom
 class TestChromiumDetection:
     """Test Chromium detection functionality."""
 
-    def test_check_chromium_available_system_binary(self):
+    def testcheck_chromium_available_system_binary(self):
         """Test detection of system-installed Chromium binary."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         with patch("shutil.which", return_value="/usr/bin/chromium"):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == "/usr/bin/chromium"
 
-    def test_check_chromium_available_multiple_binaries(self):
+    def testcheck_chromium_available_multiple_binaries(self):
         """Test that first available binary is returned."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
 
@@ -29,10 +29,10 @@ class TestChromiumDetection:
             return None
 
         with patch("shutil.which", side_effect=mock_which):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == "/usr/bin/chromium"
 
-    def test_check_chromium_available_chrome_binary(self):
+    def testcheck_chromium_available_chrome_binary(self):
         """Test detection of Chrome binary when Chromium not available."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
 
@@ -42,10 +42,10 @@ class TestChromiumDetection:
             return None
 
         with patch("shutil.which", side_effect=mock_which):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == "/usr/bin/google-chrome"
 
-    def test_check_chromium_available_standard_linux_path(self):
+    def testcheck_chromium_available_standard_linux_path(self):
         """Test detection via standard Linux installation paths."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         chrome_path = Path("/usr/bin/google-chrome")
@@ -57,10 +57,10 @@ class TestChromiumDetection:
             patch("shutil.which", return_value=None),
             patch.object(Path, "exists", mock_exists),
         ):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == str(chrome_path)
 
-    def test_check_chromium_available_standard_macos_path(self):
+    def testcheck_chromium_available_standard_macos_path(self):
         """Test detection via standard macOS installation paths."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         chrome_path = Path(
@@ -74,10 +74,10 @@ class TestChromiumDetection:
             patch("shutil.which", return_value=None),
             patch.object(Path, "exists", mock_exists),
         ):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == str(chrome_path)
 
-    def test_check_chromium_available_playwright_linux(self):
+    def testcheck_chromium_available_playwright_linux(self):
         """Test detection of Playwright-installed Chromium on Linux."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         mock_cache_dir = Path("/home/user/.cache/ms-playwright")
@@ -95,10 +95,10 @@ class TestChromiumDetection:
         ):
             mock_glob.return_value = [mock_chromium_dir]
 
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == str(mock_chrome_path)
 
-    def test_check_chromium_available_playwright_macos(self):
+    def testcheck_chromium_available_playwright_macos(self):
         """Test detection of Playwright-installed Chromium on macOS."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         mock_cache_dir = Path("/Users/user/Library/Caches/ms-playwright")
@@ -123,10 +123,10 @@ class TestChromiumDetection:
         ):
             mock_glob.return_value = [mock_chromium_dir]
 
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == str(mock_chrome_path)
 
-    def test_check_chromium_available_playwright_windows(self):
+    def testcheck_chromium_available_playwright_windows(self):
         """Test detection of Playwright-installed Chromium on Windows."""
         from openhands.tools.browser_use.impl_windows import WindowsBrowserToolExecutor
 
@@ -152,10 +152,10 @@ class TestChromiumDetection:
         ):
             mock_glob.return_value = [mock_chromium_dir]
 
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result == str(mock_chrome_path)
 
-    def test_check_chromium_available_not_found(self):
+    def testcheck_chromium_available_not_found(self):
         """Test when no Chromium binary is found."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         with (
@@ -163,10 +163,10 @@ class TestChromiumDetection:
             patch("pathlib.Path.home", return_value=Path("/home/user")),
             patch.object(Path, "exists", return_value=False),
         ):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result is None
 
-    def test_check_chromium_available_playwright_cache_not_found(self):
+    def testcheck_chromium_available_playwright_cache_not_found(self):
         """Test when Playwright cache directory doesn't exist."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         with (
@@ -174,7 +174,7 @@ class TestChromiumDetection:
             patch("pathlib.Path.home", return_value=Path("/home/user")),
             patch.object(Path, "exists", return_value=False),
         ):
-            result = executor._check_chromium_available()
+            result = executor.check_chromium_available()
             assert result is None
 
 
@@ -247,7 +247,7 @@ class TestEnsureChromiumAvailable:
         """Test when Chromium is already available."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
         with patch.object(
-            executor, "_check_chromium_available", return_value="/usr/bin/chromium"
+            executor, "check_chromium_available", return_value="/usr/bin/chromium"
         ):
             result = executor._ensure_chromium_available()
             assert result == "/usr/bin/chromium"
@@ -255,7 +255,7 @@ class TestEnsureChromiumAvailable:
     def test_ensure_chromium_available_not_found_raises_error(self):
         """Test that clear error is raised when Chromium is not available."""
         executor = BrowserToolExecutor.__new__(BrowserToolExecutor)
-        with patch.object(executor, "_check_chromium_available", return_value=None):
+        with patch.object(executor, "check_chromium_available", return_value=None):
             with pytest.raises(Exception) as exc_info:
                 executor._ensure_chromium_available()
 
