@@ -439,9 +439,6 @@ class Agent(AgentBase):
             )
 
             summary = self._extract_summary(tool.name, arguments)
-            assert "summary" not in arguments, (
-                "Unexpected 'summary' key found in tool arguments"
-            )
 
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
