@@ -33,9 +33,12 @@ class TestInstance(BaseModel):
     instance_id: str
     file_path: str
     test_type: Literal["integration", "behavior"]
-    required: bool  # True for integration tests, False for behavior tests
-    criticality: str = "critical"
     test_class: BaseIntegrationTest | None = None
+
+    @property
+    def required(self) -> bool:
+        """Whether the test is required (integration) or optional (behavior)."""
+        return self.test_type == "integration"
 
 
 class EvalOutput(BaseModel):
@@ -45,11 +48,14 @@ class EvalOutput(BaseModel):
     test_result: TestResult
     llm_model: str
     test_type: Literal["integration", "behavior"]
-    required: bool  # True for integration tests, False for behavior tests
-    criticality: str = "critical"
     cost: float = 0.0
     error_message: str | None = None
     log_file_path: str | None = None
+
+    @property
+    def required(self) -> bool:
+        """Whether the test is required (integration) or optional (behavior)."""
+        return self.test_type == "integration"
 
 
 def load_integration_tests() -> list[TestInstance]:
@@ -69,26 +75,14 @@ def load_integration_tests() -> list[TestInstance]:
         # Determine test type based on filename prefix
         if test_file.name.startswith("b"):
             test_type = "behavior"
-            required = False  # Behavior tests are optional/tracking
         else:
             test_type = "integration"
-            required = True  # Integration tests are required
-
-        # Load the test class to get its criticality
-        try:
-            test_class_type = load_test_class(str(test_file))
-            criticality = getattr(test_class_type, "CRITICALITY", "critical")
-        except Exception:
-            # If we can't load the class, default to critical
-            criticality = "critical"
 
         instances.append(
             TestInstance(
                 instance_id=instance_id,
                 file_path=str(test_file),
                 test_type=test_type,
-                required=required,
-                criticality=criticality,
             )
         )
 
@@ -130,8 +124,6 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             test_result=TestResult(success=False, reason="Failed to load test class"),
             llm_model=llm_config.get("model", "unknown"),
             test_type=instance.test_type,
-            required=instance.required,
-            criticality=instance.criticality,
             error_message="Could not load test class",
         )
 
@@ -201,8 +193,6 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             test_result=test_result,
             llm_model=llm_config.get("model", "unknown"),
             test_type=instance.test_type,
-            required=instance.required,
-            criticality=instance.criticality,
             cost=llm_cost,
             log_file_path=log_file_path,
         )
@@ -219,8 +209,6 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             ),
             llm_model=llm_config.get("model", "unknown"),
             test_type=instance.test_type,
-            required=instance.required,
-            criticality=instance.criticality,
             cost=0.0,
         )
 
@@ -233,8 +221,6 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             ),
             llm_model=llm_config.get("model", "unknown"),
             test_type=instance.test_type,
-            required=instance.required,
-            criticality=instance.criticality,
             error_message=str(e),
         )
     finally:

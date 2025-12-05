@@ -58,9 +58,6 @@ class BaseIntegrationTest(ABC):
     """
 
     INSTRUCTION: str
-    CRITICALITY: str = (
-        "critical"  # Default to critical; can be overridden in subclasses
-    )
 
     def __init__(
         self,
