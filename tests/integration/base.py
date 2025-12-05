@@ -208,129 +208,34 @@ class BaseIntegrationTest(ABC):
         """
 
     # ===== Behavior Check Helper Methods =====
-    # These methods help verify agent behavior patterns and adherence to system messages
+    # Convenience wrappers around behavior_utils functions
 
     def find_tool_calls(self, tool_name: str) -> list[Event]:
-        """
-        Find all ActionEvents where a specific tool was called.
+        """Find all ActionEvents where a specific tool was called."""
+        from tests.integration.behavior_utils import find_tool_calls
 
-        Args:
-            tool_name: Name of the tool to search for
-                (e.g., "FileEditorTool", "TerminalTool")
-
-        Returns:
-            List of ActionEvents matching the tool name
-        """
-        from openhands.sdk.event import ActionEvent
-
-        return [
-            event
-            for event in self.collected_events
-            if isinstance(event, ActionEvent) and event.tool_name == tool_name
-        ]
+        return find_tool_calls(self.collected_events, tool_name)
 
     def find_file_editing_operations(self) -> list[Event]:
-        """
-        Find all file editing operations (create, str_replace, insert, undo_edit).
+        """Find all file editing operations (create, str_replace, insert, undo_edit)."""
+        from tests.integration.behavior_utils import find_file_editing_operations
 
-        Excludes read-only operations like 'view'.
-
-        Returns:
-            List of ActionEvents that performed file editing
-        """
-        from openhands.sdk.event import ActionEvent
-        from openhands.tools.file_editor.definition import FileEditorAction
-
-        editing_operations = []
-        for event in self.collected_events:
-            if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
-                if event.action is not None:
-                    assert isinstance(event.action, FileEditorAction)
-                    # Check if the command is an editing operation
-                    if event.action.command in [
-                        "create",
-                        "str_replace",
-                        "insert",
-                        "undo_edit",
-                    ]:
-                        editing_operations.append(event)
-        return editing_operations
+        return find_file_editing_operations(self.collected_events)
 
     def find_file_operations(self, file_pattern: str | None = None) -> list[Event]:
-        """
-        Find all file operations (both read and write).
+        """Find all file operations (both read and write)."""
+        from tests.integration.behavior_utils import find_file_operations
 
-        Args:
-            file_pattern: Optional pattern to match against file paths
-                (e.g., "*.md", "README")
-
-        Returns:
-            List of ActionEvents that performed file operations
-        """
-        from openhands.sdk.event import ActionEvent
-        from openhands.tools.file_editor.definition import FileEditorAction
-
-        file_operations = []
-        for event in self.collected_events:
-            if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
-                if event.action is not None:
-                    assert isinstance(event.action, FileEditorAction)
-                    if file_pattern is None or self._matches_pattern(
-                        event.action.path, file_pattern
-                    ):
-                        file_operations.append(event)
-        return file_operations
+        return find_file_operations(self.collected_events, file_pattern)
 
     def check_bash_command_used(self, command_pattern: str) -> list[Event]:
-        """
-        Check if agent used bash commands instead of specialized tools.
+        """Check if agent used bash commands instead of specialized tools."""
+        from tests.integration.behavior_utils import check_bash_command_used
 
-        Args:
-            command_pattern: Pattern to search for in bash commands (e.g., "cat", "sed")
-
-        Returns:
-            List of ActionEvents where bash was used with the pattern
-        """
-        from openhands.sdk.event import ActionEvent
-        from openhands.tools.terminal.definition import TerminalAction
-
-        bash_commands = []
-        for event in self.collected_events:
-            if isinstance(event, ActionEvent) and event.tool_name == "TerminalTool":
-                if event.action is not None:
-                    assert isinstance(event.action, TerminalAction)
-                    if command_pattern in event.action.command:
-                        bash_commands.append(event)
-        return bash_commands
+        return check_bash_command_used(self.collected_events, command_pattern)
 
     def get_conversation_summary(self, max_length: int = 5000) -> str:
-        """
-        Get a summary of the conversation including agent thoughts and actions.
+        """Get a summary of the conversation including agent thoughts and actions."""
+        from tests.integration.behavior_utils import get_conversation_summary
 
-        Args:
-            max_length: Maximum length of the summary
-
-        Returns:
-            String summary of the conversation
-        """
-        summary_parts = []
-        for event in self.collected_events:
-            # Use the event's visualize property to get Rich Text representation
-            visualized = event.visualize
-            # Convert to plain text
-            plain_text = visualized.plain.strip()
-            if plain_text:
-                # Add event type label and content
-                event_type = event.__class__.__name__
-                summary_parts.append(f"[{event_type}]\n{plain_text}\n")
-
-        summary = "\n".join(summary_parts)
-        if len(summary) > max_length:
-            summary = summary[:max_length] + "..."
-        return summary
-
-    def _matches_pattern(self, path: str, pattern: str) -> bool:
-        """Helper to match file paths against patterns."""
-        import fnmatch
-
-        return fnmatch.fnmatch(path, pattern) or pattern in path
+        return get_conversation_summary(self.collected_events, max_length)
