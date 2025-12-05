@@ -87,6 +87,13 @@ class ConversationState(OpenHandsModel):
         default=None,
         description="Optional security analyzer to evaluate action risks.",
     )
+    enable_action_summaries: bool = Field(
+        default=False,
+        description=(
+            "Whether to request action summaries from the LLM. "
+            "When enabled, the LLM provides a brief explanation of each action."
+        ),
+    )
 
     activated_knowledge_skills: list[str] = Field(
         default_factory=list,

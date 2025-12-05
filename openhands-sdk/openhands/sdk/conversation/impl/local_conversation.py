@@ -433,6 +433,15 @@ class LocalConversation(BaseConversation):
         with self._state:
             self._state.security_analyzer = analyzer
 
+    def set_enable_action_summaries(self, enabled: bool) -> None:
+        """Enable or disable action summaries.
+
+        Args:
+            enabled: Whether to request summaries from the LLM for each action
+        """
+        with self._state:
+            self._state.enable_action_summaries = enabled
+
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
         if self._cleanup_initiated:

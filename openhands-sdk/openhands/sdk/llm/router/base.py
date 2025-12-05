@@ -53,12 +53,22 @@ class RouterLLM(LLM):
         tools: Sequence[ToolDefinition] | None = None,
         return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
+        add_summary_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
         """
         This method intercepts completion calls and routes them to the appropriate
         underlying LLM based on the routing logic implemented in select_llm().
+
+        Args:
+            messages: List of conversation messages
+            tools: Optional list of tools available to the model
+            return_metrics: Whether to return usage metrics
+            add_security_risk_prediction: Add security_risk field to tool schemas
+            add_summary_prediction: Add summary field to tool schemas
+            on_token: Optional callback for streaming tokens
+            **kwargs: Additional arguments passed to the LLM API
         """
         # Select appropriate LLM
         selected_model = self.select_llm(messages)
@@ -72,6 +82,7 @@ class RouterLLM(LLM):
             tools=tools,
             _return_metrics=return_metrics,
             add_security_risk_prediction=add_security_risk_prediction,
+            add_summary_prediction=add_summary_prediction,
             on_token=on_token,
             **kwargs,
         )
