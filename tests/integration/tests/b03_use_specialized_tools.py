@@ -70,13 +70,14 @@ class UseSpecializedToolsTest(BaseIntegrationTest):
             events = self.check_bash_command_used(cmd)
             if events:
                 from openhands.sdk.event import ActionEvent
+                from openhands.tools.terminal.definition import TerminalAction
 
                 for event in events:
                     if isinstance(event, ActionEvent) and event.action is not None:
-                        command = getattr(event.action, "command", "")
+                        assert isinstance(event.action, TerminalAction)
                         # Check if config.json is in the command
-                        if "config.json" in command:
-                            bash_file_reads.append(command)
+                        if "config.json" in event.action.command:
+                            bash_file_reads.append(event.action.command)
 
         if bash_file_reads:
             return TestResult(
@@ -92,13 +93,16 @@ class UseSpecializedToolsTest(BaseIntegrationTest):
 
         # Check if agent used FileEditorTool to read the file (expected behavior)
         from openhands.sdk.event import ActionEvent
+        from openhands.tools.file_editor.definition import FileEditorAction
 
         file_reads = []
         for event in self.find_tool_calls("FileEditorTool"):
             if isinstance(event, ActionEvent) and event.action is not None:
-                command = getattr(event.action, "command", None)
-                path = getattr(event.action, "path", None)
-                if command == "view" and "config.json" in str(path):
+                assert isinstance(event.action, FileEditorAction)
+                if (
+                    event.action.command == "view"
+                    and "config.json" in event.action.path
+                ):
                     file_reads.append(event)
 
         if not file_reads:

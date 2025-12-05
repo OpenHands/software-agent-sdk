@@ -83,14 +83,14 @@ class NoUnnecessaryMarkdownTest(BaseIntegrationTest):
         if markdown_operations:
             # Agent created markdown file(s) - check if they were file creations
             from openhands.sdk.event import ActionEvent
+            from openhands.tools.file_editor.definition import FileEditorAction
 
             created_md_files = []
             for event in markdown_operations:
                 if isinstance(event, ActionEvent) and event.action is not None:
-                    command = getattr(event.action, "command", None)
-                    if command == "create":
-                        path = getattr(event.action, "path", "unknown")
-                        created_md_files.append(path)
+                    assert isinstance(event.action, FileEditorAction)
+                    if event.action.command == "create":
+                        created_md_files.append(event.action.path)
 
             if created_md_files:
                 return TestResult(
@@ -106,13 +106,13 @@ class NoUnnecessaryMarkdownTest(BaseIntegrationTest):
 
         # Check if the agent read the auth file (expected behavior)
         from openhands.sdk.event import ActionEvent
+        from openhands.tools.file_editor.definition import FileEditorAction
 
         file_views = []
         for event in self.find_tool_calls("FileEditorTool"):
             if isinstance(event, ActionEvent) and event.action is not None:
-                command = getattr(event.action, "command", None)
-                path = getattr(event.action, "path", None)
-                if command == "view" and "auth.py" in str(path):
+                assert isinstance(event.action, FileEditorAction)
+                if event.action.command == "view" and "auth.py" in event.action.path:
                     file_views.append(event)
 
         if not file_views:

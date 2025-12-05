@@ -152,13 +152,15 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
         if editing_operations:
             # Agent started editing files - this is wrong!
             from openhands.sdk.event import ActionEvent
+            from openhands.tools.file_editor.definition import FileEditorAction
 
             edited_files = []
             for event in editing_operations:
                 if isinstance(event, ActionEvent) and event.action is not None:
-                    path = getattr(event.action, "path", "unknown")
-                    command = getattr(event.action, "command", "unknown")
-                    edited_files.append(f"{command} on {path}")
+                    assert isinstance(event.action, FileEditorAction)
+                    edited_files.append(
+                        f"{event.action.command} on {event.action.path}"
+                    )
 
             return TestResult(
                 success=False,

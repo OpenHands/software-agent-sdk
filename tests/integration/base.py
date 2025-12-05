@@ -239,14 +239,20 @@ class BaseIntegrationTest(ABC):
             List of ActionEvents that performed file editing
         """
         from openhands.sdk.event import ActionEvent
+        from openhands.tools.file_editor.definition import FileEditorAction
 
         editing_operations = []
         for event in self.collected_events:
             if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
                 if event.action is not None:
+                    assert isinstance(event.action, FileEditorAction)
                     # Check if the command is an editing operation
-                    command = getattr(event.action, "command", None)
-                    if command in ["create", "str_replace", "insert", "undo_edit"]:
+                    if event.action.command in [
+                        "create",
+                        "str_replace",
+                        "insert",
+                        "undo_edit",
+                    ]:
                         editing_operations.append(event)
         return editing_operations
 
@@ -262,14 +268,15 @@ class BaseIntegrationTest(ABC):
             List of ActionEvents that performed file operations
         """
         from openhands.sdk.event import ActionEvent
+        from openhands.tools.file_editor.definition import FileEditorAction
 
         file_operations = []
         for event in self.collected_events:
             if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
                 if event.action is not None:
-                    path = getattr(event.action, "path", None)
-                    if file_pattern is None or (
-                        path and self._matches_pattern(path, file_pattern)
+                    assert isinstance(event.action, FileEditorAction)
+                    if file_pattern is None or self._matches_pattern(
+                        event.action.path, file_pattern
                     ):
                         file_operations.append(event)
         return file_operations
@@ -285,13 +292,14 @@ class BaseIntegrationTest(ABC):
             List of ActionEvents where bash was used with the pattern
         """
         from openhands.sdk.event import ActionEvent
+        from openhands.tools.terminal.definition import TerminalAction
 
         bash_commands = []
         for event in self.collected_events:
             if isinstance(event, ActionEvent) and event.tool_name == "TerminalTool":
                 if event.action is not None:
-                    command = getattr(event.action, "command", "")
-                    if command_pattern in command:
+                    assert isinstance(event.action, TerminalAction)
+                    if command_pattern in event.action.command:
                         bash_commands.append(event)
         return bash_commands
 
