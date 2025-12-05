@@ -73,6 +73,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
+        enable_command_hints: bool = False,
     ):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
@@ -98,6 +99,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         )
         self.session.initialize()
         self.full_output_save_dir: str | None = full_output_save_dir
+        self._enable_command_hints = enable_command_hints
         logger.info(
             f"TerminalExecutor initialized with working_dir: {working_dir}, "
             f"username: {username}, "
@@ -236,11 +238,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
                 pass
 
         # Attach parsed command hint (prototype for UI specialization)
-        tool_hint, argv_hint = _detect_command_hint(action.command)
-        if tool_hint:
-            return observation.model_copy(
-                update={"parsed_tool": tool_hint, "parsed_argv": argv_hint}
-            )
+        if self._enable_command_hints:
+            tool_hint, argv_hint = _detect_command_hint(action.command)
+            if tool_hint:
+                return observation.model_copy(
+                    update={"parsed_tool": tool_hint, "parsed_argv": argv_hint}
+                )
         return observation
 
     def close(self) -> None:
