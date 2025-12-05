@@ -32,7 +32,6 @@ class UseSpecializedToolsTest(BaseIntegrationTest):
     """Test that agent uses FileEditorTool view instead of 'cat' command."""
 
     INSTRUCTION: str = INSTRUCTION
-    CRITICALITY: str = "ux"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

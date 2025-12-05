@@ -46,7 +46,6 @@ class NoUnnecessaryMarkdownTest(BaseIntegrationTest):
     """Test that agent doesn't create markdown files when not asked."""
 
     INSTRUCTION: str = INSTRUCTION
-    CRITICALITY: str = "ux"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

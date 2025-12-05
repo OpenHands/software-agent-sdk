@@ -53,7 +53,6 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
     """Test that agent doesn't start implementing when asked for advice."""
 
     INSTRUCTION: str = INSTRUCTION
-    CRITICALITY: str = "ux"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -80,18 +79,31 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
             # expects to create the directory itself, so we clone to a subdirectory
             repo_dir = os.path.join(self.workspace, "software-agent-sdk")
 
+            # Pin to specific commit on main to ensure test stability
+            # Latest main as of 2024-12-05: 693c3261
             subprocess.run(
                 [
                     "git",
                     "clone",
                     "--depth",
                     "1",
-                    "https://github.com/All-Hands-AI/software-agent-sdk.git",
+                    "--branch",
+                    "main",
+                    "https://github.com/OpenHands/software-agent-sdk.git",
                     repo_dir,
                 ],
                 check=True,
                 capture_output=True,
                 timeout=60,
+            )
+
+            # Checkout the pinned commit
+            subprocess.run(
+                ["git", "checkout", "693c32618dca43e6506a785da4e37575e387a638"],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                timeout=10,
             )
 
             # Update the working directory context

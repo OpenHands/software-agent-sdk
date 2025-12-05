@@ -10,17 +10,17 @@ Both types of tests use the same infrastructure (`BaseIntegrationTest`) and run 
 
 ## Test Types
 
-| Type | Focus | Criticality | Example |
-|------|-------|-------------|---------|
-| **Task Completion** | Agent successfully completes tasks | `critical` | `t01_fix_simple_typo.py` - fixes typos in a file |
-| **Behavior** | Agent follows system guidelines | `ux` | `t09_no_premature_implementation.py` - doesn't implement when asked for advice |
+| Type | Status | Focus | Example |
+|------|--------|-------|---------|
+| **Integration** (t*.py) | **Required** | Agent successfully completes tasks | `t01_fix_simple_typo.py` - fixes typos in a file |
+| **Behavior** (b*.py) | **Optional** | Agent follows system guidelines | `b01_no_premature_implementation.py` - doesn't implement when asked for advice |
 
-### Test Criticality Levels
+### Test Type Classification
 
-Tests are classified by criticality to distinguish between core functionality and UX improvements:
+Tests are classified by type to distinguish between required and optional tests:
 
-- **`critical`**: Core functionality tests that must pass. These verify that the agent can successfully complete essential tasks. Failures in critical tests block releases.
-- **`ux`**: User experience tests that track quality improvements. These verify that the agent follows best practices and avoids annoying behaviors. Failures in UX tests don't block releases but should be addressed for optimal user experience.
+- **Integration tests** (t*.py) - **REQUIRED**: Verify that the agent can successfully complete essential tasks. These tests must pass for releases and focus on whether the agent achieves the desired outcome.
+- **Behavior tests** (b*.py) - **OPTIONAL**: Verify that the agent follows system message guidelines and best practices. These tests track quality improvements and don't block releases. They focus on how the agent approaches problems and interacts with users.
 
 ## Behavior Tests
 
@@ -35,20 +35,20 @@ Behavior tests verify that agents:
 
 ### Current Behavior Tests
 
-1. **t09_no_premature_implementation.py**
+1. **b01_no_premature_implementation.py**
    - Tests: Agent doesn't start implementing when asked for advice
    - Prompt: Asks "how to implement" a feature
    - Expected: Agent explores, suggests approaches, asks questions
    - Failure: Agent creates/edits files without being asked
    - Uses: LLM-as-judge for behavior quality assessment
 
-2. **t10_no_unnecessary_markdown.py**
+2. **b02_no_unnecessary_markdown.py**
    - Tests: Agent doesn't create markdown files unnecessarily
    - Prompt: Asks to understand existing code
    - Expected: Agent reads code and explains in conversation
    - Failure: Agent creates README.md, DOCS.md, etc.
 
-3. **t11_use_specialized_tools.py**
+3. **b03_use_specialized_tools.py**
    - Tests: Agent uses FileEditorTool instead of bash commands
    - Prompt: Asks to read a file
    - Expected: Agent uses FileEditorTool view command
@@ -73,7 +73,7 @@ INSTRUCTION = "Your user prompt that might trigger undesirable behavior"
 
 class YourBehaviorTest(BaseIntegrationTest):
     INSTRUCTION: str = INSTRUCTION
-    CRITICALITY: str = "ux"  # Use "ux" for behavior tests, "critical" for task completion
+    # Note: Test type is automatically determined by filename (b*.py = behavior)
 
     @property
     def tools(self) -> list[Tool]:
@@ -98,7 +98,9 @@ class YourBehaviorTest(BaseIntegrationTest):
         return TestResult(success=True, reason="Agent behaved correctly")
 ```
 
-**Note**: Set `CRITICALITY = "ux"` for behavior tests and `CRITICALITY = "critical"` for task completion tests. If not specified, tests default to `"critical"`.
+**Note**: Test type is automatically determined by the filename prefix:
+- Files starting with `b` (e.g., `b01_*.py`) are classified as behavior tests
+- Files starting with `t` (e.g., `t01_*.py`) are classified as integration tests
 
 ### 2. Use Helper Methods
 
@@ -163,7 +165,7 @@ python tests/integration/run_infer.py \
 # Run specific tests only
 python tests/integration/run_infer.py \
   --llm-config '{"model": "claude-sonnet-4-5-20250929"}' \
-  --eval-ids "t09_no_premature_implementation,t10_no_unnecessary_markdown"
+  --eval-ids "b01_no_premature_implementation,b02_no_unnecessary_markdown"
 ```
 
 ### Run in CI/CD
@@ -177,15 +179,20 @@ The existing `.github/workflows/integration-runner.yml` workflow handles both te
 
 ## Test Results
 
-Results include both task completion and behavior tests:
+Results include both integration and behavior tests with separate success rates:
 
 ```
-Success rate: 90.91% (10/11)
+Overall Success rate: 90.91% (10/11)
+Integration tests (Required): 100.00% (8/8)
+Behavior tests (Optional): 66.67% (2/3)
+Evaluation Results:
 ✓: t01_fix_simple_typo - Successfully fixed all typos
-✓: t09_no_premature_implementation - Agent correctly provided advice without implementing
-✗: t10_no_unnecessary_markdown - Agent created README.md without being asked
+✓: b01_no_premature_implementation - Agent correctly provided advice without implementing
+✗: b02_no_unnecessary_markdown - Agent created README.md without being asked
 ...
 ```
+
+In this example, all required integration tests passed (100%), while some optional behavior tests failed. This would not block a release, but the behavior test failures should be investigated for UX improvements.
 
 ## Helper Methods Reference
 
@@ -266,6 +273,6 @@ Potential improvements to the framework:
 ## Questions?
 
 See existing tests for examples:
-- `tests/integration/tests/t09_no_premature_implementation.py`
-- `tests/integration/tests/t10_no_unnecessary_markdown.py`
-- `tests/integration/tests/t11_use_specialized_tools.py`
+- `tests/integration/tests/b01_no_premature_implementation.py`
+- `tests/integration/tests/b02_no_unnecessary_markdown.py`
+- `tests/integration/tests/b03_use_specialized_tools.py`
