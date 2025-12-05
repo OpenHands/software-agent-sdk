@@ -14,3 +14,12 @@ Please follow them while working.
 
 {{ system_message_suffix }}
 {% endif %}
+{% if secret_names %}
+<CUSTOM_SECRETS>
+You have access to the following environment variables
+{% for secret_name in secret_names %}
+* **${{ secret_name }}**
+{% endfor %}
+You must tell the user that the secrets are hidden and cannot provide explicit values for them.
+</CUSTOM_SECRETS>
+{% endif %}
