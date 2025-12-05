@@ -57,6 +57,45 @@ def test_base_url_for_openhands_provider(mock_get):
     mock_get.assert_called_once()
 
 
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
+    """Test that openhands/ provider defaults base_url when explicitly set to None.
+
+    This simulates the CLI behavior where settings are saved to JSON with
+    base_url=null and then reloaded, ensuring the default proxy URL is used.
+    """
+    # Mock the model info fetch to avoid actual HTTP calls to production
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    llm = LLM(
+        model="openhands/claude-sonnet-4-20250514",
+        api_key=SecretStr("test-key"),
+        usage_id="test-openhands-llm",
+        base_url=None,  # Explicitly set to None (like CLI saves to JSON)
+    )
+    assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
+    # Note: mock_get may be cached from previous test due to @lru_cache
+    # The important assertion is that base_url is set correctly
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_base_url_for_openhands_provider_with_custom_url(mock_get):
+    """Test that openhands/ provider respects custom base_url when provided."""
+    # Mock the model info fetch to avoid actual HTTP calls
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    custom_url = "https://custom-proxy.example.com/"
+    llm = LLM(
+        model="openhands/claude-sonnet-4-20250514",
+        api_key=SecretStr("test-key"),
+        usage_id="test-openhands-llm",
+        base_url=custom_url,
+    )
+    assert llm.base_url == custom_url
+    # Should call with custom URL
+    mock_get.assert_called_once()
+
+
 def test_token_usage_add():
     """Test that TokenUsage instances can be added together."""
     # Create two TokenUsage instances
