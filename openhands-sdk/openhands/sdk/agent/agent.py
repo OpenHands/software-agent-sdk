@@ -353,33 +353,29 @@ class Agent(AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(self, arguments: dict) -> str | None:
+    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
         """Extract and validate the summary field from tool arguments.
 
         Summary field is always requested but optional - if LLM doesn't provide
-        it or provides invalid data, we just return None and continue.
+        it or provides invalid data, we generate a default summary using the
+        tool name and arguments.
 
         Args:
+            tool_name: Name of the tool being called
             arguments: Dictionary of tool arguments from LLM
 
         Returns:
-            The summary string if present and valid, None otherwise
+            The summary string - either from LLM or a default generated one
         """
         summary = arguments.pop("summary", None)
 
-        # If no summary provided, just return None
-        if summary is None:
-            return None
+        # If valid summary provided by LLM, use it
+        if summary is not None and isinstance(summary, str) and summary.strip():
+            return summary
 
-        # Validate summary type - if invalid, return None
-        if not isinstance(summary, str):
-            return None
-
-        # Validate summary is not empty or whitespace-only - if invalid, return None
-        if not summary.strip():
-            return None
-
-        return summary
+        # Generate default summary: {tool_name}: {arguments}
+        args_str = json.dumps(arguments)
+        return f"{tool_name}: {args_str}"
 
     def _get_action_event(
         self,
@@ -442,7 +438,7 @@ class Agent(AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
-            summary = self._extract_summary(arguments)
+            summary = self._extract_summary(tool.name, arguments)
             assert "summary" not in arguments, (
                 "Unexpected 'summary' key found in tool arguments"
             )

@@ -3,7 +3,8 @@
 This module tests the _extract_summary method which handles extraction
 and validation of summary parameters from tool arguments.
 
-Summary field is always requested but optional - if invalid, returns None.
+Summary field is always requested but optional - if not provided or invalid,
+a default summary in the format "{tool_name}: {arguments}" is generated.
 """
 
 import pytest
@@ -29,18 +30,18 @@ def agent():
 @pytest.mark.parametrize(
     "summary_value,expected_result",
     [
-        # Valid summary provided
+        # Valid summary provided - use it
         ("testing file system", "testing file system"),
         ("checking logs for errors", "checking logs for errors"),
-        # No summary provided - returns None
-        (None, None),
-        # Non-string summary - returns None
-        (123, None),
-        (["list", "of", "words"], None),
-        ({"type": "dict"}, None),
-        # Empty or whitespace-only - returns None
-        ("", None),
-        ("   ", None),
+        # No summary provided - generate default
+        (None, 'test_tool: {"some_param": "value"}'),
+        # Non-string summary - generate default
+        (123, 'test_tool: {"some_param": "value"}'),
+        (["list", "of", "words"], 'test_tool: {"some_param": "value"}'),
+        ({"type": "dict"}, 'test_tool: {"some_param": "value"}'),
+        # Empty or whitespace-only - generate default
+        ("", 'test_tool: {"some_param": "value"}'),
+        ("   ", 'test_tool: {"some_param": "value"}'),
     ],
 )
 def test_extract_summary(agent, summary_value, expected_result):
@@ -50,7 +51,7 @@ def test_extract_summary(agent, summary_value, expected_result):
     if summary_value is not None:
         arguments["summary"] = summary_value
 
-    result = agent._extract_summary(arguments)
+    result = agent._extract_summary("test_tool", arguments)
     assert result == expected_result
 
     # Verify that summary was popped from arguments
@@ -65,7 +66,7 @@ def test_extract_summary_arguments_mutation(agent):
     arguments = {"param1": "value1", "summary": "reading file", "param2": "value2"}
     original_args = arguments.copy()
 
-    result = agent._extract_summary(arguments)
+    result = agent._extract_summary("test_tool", arguments)
 
     # Verify result
     assert result == "reading file"
@@ -77,3 +78,16 @@ def test_extract_summary_arguments_mutation(agent):
     assert arguments["param1"] == original_args["param1"]
     assert arguments["param2"] == original_args["param2"]
     assert len(arguments) == 2  # Only 2 params should remain
+
+
+def test_extract_summary_default_generation(agent):
+    """Test that default summary is generated when not provided."""
+    # Test with no summary
+    arguments = {"path": "/tmp/file.txt", "content": "hello"}
+    result = agent._extract_summary("write_file", arguments)
+
+    # Should generate default in format: tool_name: {arguments}
+    assert result == 'write_file: {"path": "/tmp/file.txt", "content": "hello"}'
+
+    # Verify summary was popped (even though it wasn't there)
+    assert "summary" not in arguments
