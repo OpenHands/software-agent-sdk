@@ -240,10 +240,9 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         # Attach parsed command hint (prototype for UI specialization)
         if self._enable_command_hints:
             tool_hint, argv_hint = _detect_command_hint(action.command)
-            if tool_hint:
-                return observation.model_copy(
-                    update={"parsed_tool": tool_hint, "parsed_argv": argv_hint}
-                )
+            return observation.model_copy(
+                update={"parsed_tool": tool_hint, "parsed_argv": argv_hint}
+            )
         return observation
 
     def close(self) -> None:

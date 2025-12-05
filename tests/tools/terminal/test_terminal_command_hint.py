@@ -18,6 +18,10 @@ def test_detect_non_special_command():
     assert hint is None
     assert argv == ["echo", "hello"]
 
+    hint2, argv2 = _detect_command_hint("which rg")
+    assert hint2 is None
+    assert argv2 == ["which", "rg"]
+
 
 def test_detect_rg_full_path():
     hint, argv = _detect_command_hint("/usr/bin/rg foo bar")
