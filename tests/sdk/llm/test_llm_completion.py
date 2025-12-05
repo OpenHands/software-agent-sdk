@@ -524,6 +524,7 @@ def test_llm_completion_non_function_call_mode(mock_completion):
         "I'll help you with that.\n"
         "<function=test_tool>\n"
         "<parameter=param>test_value</parameter>\n"
+        "<parameter=summary>testing tool functionality</parameter>\n"
         "</function>"
     )
     mock_completion.return_value = mock_response

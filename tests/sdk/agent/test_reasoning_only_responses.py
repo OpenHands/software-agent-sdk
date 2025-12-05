@@ -47,7 +47,9 @@ class ReasoningOnlyLLM(LLM):
                 MessageToolCall(
                     id="finish-call-1",
                     name="finish",
-                    arguments='{"message": "Task completed"}',
+                    arguments=(
+                        '{"message": "Task completed", "summary": "completing task"}'
+                    ),
                     origin="completion",
                 )
             ]
@@ -170,7 +172,7 @@ class EmptyResponseLLM(LLM):
                 MessageToolCall(
                     id="finish-call-3",
                     name="finish",
-                    arguments='{"message": "Done"}',
+                    arguments='{"message": "Done", "summary": "task completed"}',
                     origin="completion",
                 )
             ]

@@ -479,7 +479,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         tools: Sequence[ToolDefinition] | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
-        add_summary_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
@@ -493,12 +492,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             tools: Optional list of tools available to the model
             _return_metrics: Whether to return usage metrics
             add_security_risk_prediction: Add security_risk field to tool schemas
-            add_summary_prediction: Add summary field to tool schemas
             on_token: Optional callback for streaming tokens
             **kwargs: Additional arguments passed to the LLM API
 
         Returns:
             LLMResponse containing the model's response and metadata.
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
 
         Raises:
             ValueError: If streaming is requested (not supported).
@@ -528,7 +530,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             cc_tools = [
                 t.to_openai_tool(
                     add_security_risk_prediction=add_security_risk_prediction,
-                    add_summary_prediction=add_summary_prediction,
                 )
                 for t in tools
             ]
@@ -639,7 +640,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         store: bool | None = None,
         _return_metrics: bool = False,
         add_security_risk_prediction: bool = False,
-        add_summary_prediction: bool = False,
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
@@ -654,9 +654,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store: Whether to store the conversation
             _return_metrics: Whether to return usage metrics
             add_security_risk_prediction: Add security_risk field to tool schemas
-            add_summary_prediction: Add summary field to tool schemas
             on_token: Optional callback for streaming tokens (not yet supported)
             **kwargs: Additional arguments passed to the API
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
         """
         # Streaming not yet supported
         if kwargs.get("stream", False) or self.stream or on_token is not None:
@@ -671,7 +674,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             [
                 t.to_responses_tool(
                     add_security_risk_prediction=add_security_risk_prediction,
-                    add_summary_prediction=add_summary_prediction,
                 )
                 for t in tools
             ]

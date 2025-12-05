@@ -67,11 +67,6 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def enable_action_summaries(self) -> bool:
-        """Whether action summaries are enabled."""
-        ...
-
-    @property
     def activated_knowledge_skills(self) -> list[str]:
         """List of activated knowledge skills."""
         ...

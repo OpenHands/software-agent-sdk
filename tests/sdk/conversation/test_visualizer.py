@@ -125,7 +125,9 @@ def test_system_prompt_event_visualize():
 def test_action_event_visualize():
     """Test ActionEvent visualization."""
     action = VisualizerMockAction(command="ls -la", working_dir="/tmp")
-    tool_call = create_tool_call("call_123", "terminal", {"command": "ls -la"})
+    tool_call = create_tool_call(
+        "call_123", "terminal", {"command": "ls -la", "summary": "listing files"}
+    )
     event = ActionEvent(
         thought=[TextContent(text="I need to list files")],
         reasoning_content="Let me check the directory contents",
@@ -240,7 +242,7 @@ def test_visualizer_event_panel_creation():
 
     # Test with a simple action event
     action = VisualizerMockAction(command="test")
-    tool_call = create_tool_call("call_1", "test", {})
+    tool_call = create_tool_call("call_1", "test", {"summary": "running test"})
     action_event = ActionEvent(
         thought=[TextContent(text="Testing")],
         action=action,
@@ -261,7 +263,9 @@ def test_visualizer_action_event_with_none_action_panel():
     from rich.console import Console
 
     visualizer = DefaultConversationVisualizer()
-    tc = create_tool_call("call_ne_1", "missing_fn", {})
+    tc = create_tool_call(
+        "call_ne_1", "missing_fn", {"summary": "calling missing function"}
+    )
     action_event = ActionEvent(
         thought=[TextContent(text="...")],
         tool_call=tc,

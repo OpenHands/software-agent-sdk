@@ -362,7 +362,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def _get_tool_schema(
         self,
         add_security_risk_prediction: bool = False,
-        add_summary_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
@@ -374,16 +373,14 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         if add_security_risk_prediction:
             action_type = _create_action_type_with_risk(action_type)
 
-        # Apply summary enhancement if enabled
-        if add_summary_prediction:
-            action_type = _create_action_type_with_summary(action_type)
+        # Always add summary field for transparency and explainability
+        action_type = _create_action_type_with_summary(action_type)
 
         return action_type.to_mcp_schema()
 
     def to_openai_tool(
         self,
         add_security_risk_prediction: bool = False,
-        add_summary_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> ChatCompletionToolParam:
         """Convert a Tool to an OpenAI tool.
@@ -393,12 +390,13 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 to the action schema for LLM to predict. This is useful for
                 tools that may have safety risks, so the LLM can reason about
                 the risk level before calling the tool.
-            add_summary_prediction: Whether to add a `summary` field to the
-                action schema for LLM to provide a brief description of what
-                the action does. Improves explainability and debugging.
             action_type: Optionally override the action_type to use for the schema.
                 This is useful for MCPTool to use a dynamically created action type
                 based on the tool's input schema.
+
+        Note:
+            Summary field is always added to the schema for transparency and
+            explainability of agent actions.
         """
         return ChatCompletionToolParam(
             type="function",
@@ -407,7 +405,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
                 description=self.description,
                 parameters=self._get_tool_schema(
                     add_security_risk_prediction,
-                    add_summary_prediction,
                     action_type,
                 ),
             ),
@@ -416,7 +413,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
     def to_responses_tool(
         self,
         add_security_risk_prediction: bool = False,
-        add_summary_prediction: bool = False,
         action_type: type[Schema] | None = None,
     ) -> FunctionToolParam:
         """Convert a Tool to a Responses API function tool (LiteLLM typed).
@@ -426,8 +422,11 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
 
         Args:
             add_security_risk_prediction: Whether to add a `security_risk` field
-            add_summary_prediction: Whether to add a `summary` field
             action_type: Optional override for the action type
+
+        Note:
+            Summary field is always added to the schema for transparency and
+            explainability of agent actions.
         """
 
         return {
@@ -436,7 +435,6 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
             "description": self.description,
             "parameters": self._get_tool_schema(
                 add_security_risk_prediction,
-                add_summary_prediction,
                 action_type,
             ),
             "strict": False,

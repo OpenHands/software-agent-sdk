@@ -190,7 +190,10 @@ class TestMessageWhileFinishing:
                 type="function",
                 function=Function(
                     name="sleep",
-                    arguments='{"duration": 2.0, "message": "First sleep completed"}',
+                    arguments=(
+                        '{"duration": 2.0, "message": "First sleep completed", '
+                        '"summary": "sleeping for 2 seconds"}'
+                    ),
                 ),
             )
             return ModelResponse(
@@ -233,7 +236,10 @@ class TestMessageWhileFinishing:
                 type="function",
                 function=Function(
                     name="sleep",
-                    arguments=f'{{"duration": 3.0, "message": "{sleep_message}"}}',
+                    arguments=(
+                        f'{{"duration": 3.0, "message": "{sleep_message}", '
+                        f'"summary": "sleeping for 3 seconds"}}'
+                    ),
                 ),
             )
 
@@ -242,7 +248,10 @@ class TestMessageWhileFinishing:
                 type="function",
                 function=Function(
                     name="finish",
-                    arguments=f'{{"message": "{final_message}"}}',
+                    arguments=(
+                        f'{{"message": "{final_message}", '
+                        f'"summary": "completing the task"}}'
+                    ),
                 ),
             )
 

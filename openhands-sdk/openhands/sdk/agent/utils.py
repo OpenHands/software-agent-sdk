@@ -184,7 +184,6 @@ def make_llm_completion(
     messages: list[Message],
     tools: list[ToolDefinition] | None = None,
     on_token: ConversationTokenCallbackType | None = None,
-    add_summary_prediction: bool = False,
 ) -> LLMResponse:
     """Make an LLM completion call with the provided messages and tools.
 
@@ -193,10 +192,13 @@ def make_llm_completion(
         messages: The messages to send to the LLM
         tools: Optional list of tools to provide to the LLM
         on_token: Optional callback for streaming token updates
-        add_summary_prediction: Whether to request action summaries from the LLM
 
     Returns:
         LLMResponse from the LLM completion call
+
+    Note:
+        Summary field is always added to tool schemas for transparency and
+        explainability of agent actions.
     """
     if llm.uses_responses_api():
         return llm.responses(
@@ -205,7 +207,6 @@ def make_llm_completion(
             include=None,
             store=False,
             add_security_risk_prediction=True,
-            add_summary_prediction=add_summary_prediction,
             on_token=on_token,
         )
     else:
@@ -213,6 +214,5 @@ def make_llm_completion(
             messages=messages,
             tools=tools or [],
             add_security_risk_prediction=True,
-            add_summary_prediction=add_summary_prediction,
             on_token=on_token,
         )

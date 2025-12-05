@@ -174,7 +174,6 @@ class Agent(AgentBase):
                 _messages,
                 tools=list(self.tools_map.values()),
                 on_token=on_token,
-                add_summary_prediction=state.enable_action_summaries,
             )
         except FunctionCallValidationError as e:
             logger.warning(f"LLM generated malformed function call: {e}")
@@ -232,7 +231,6 @@ class Agent(AgentBase):
                     llm_response_id=llm_response.id,
                     on_event=on_event,
                     security_analyzer=state.security_analyzer,
-                    enable_action_summaries=state.enable_action_summaries,
                     thought=thought_content
                     if i == 0
                     else [],  # Only first gets thought
@@ -355,36 +353,27 @@ class Agent(AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
-    def _extract_summary(
-        self,
-        arguments: dict,
-        enable_action_summaries: bool = False,
-    ) -> str | None:
+    def _extract_summary(self, arguments: dict) -> str:
         """Extract and validate the summary field from tool arguments.
+
+        Summary field is always required for transparency and explainability.
 
         Args:
             arguments: Dictionary of tool arguments from LLM
-            enable_action_summaries: Whether summaries are enabled
 
         Returns:
-            The summary string if present and valid, None otherwise
+            The summary string
 
         Raises:
-            ValueError: If summary is required but missing/invalid,
-                or if present but invalid type
+            ValueError: If summary is missing, empty, or invalid type
         """
         summary = arguments.pop("summary", None)
 
-        # If no summary provided
+        # Summary is always required
         if summary is None:
-            if enable_action_summaries:
-                raise ValueError(
-                    "Summary field is required when action summaries are enabled"
-                )
-            return None
+            raise ValueError("Summary field is required for all tool calls")
 
-        # If summary is provided, validate it regardless of enable_action_summaries
-        # (LLM might provide it even if not requested)
+        # Validate summary type
         if not isinstance(summary, str):
             raise ValueError(f"Summary must be a string, got {type(summary).__name__}")
 
@@ -400,7 +389,6 @@ class Agent(AgentBase):
         llm_response_id: str,
         on_event: ConversationCallbackType,
         security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
-        enable_action_summaries: bool = False,
         thought: list[TextContent] | None = None,
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
@@ -456,10 +444,7 @@ class Agent(AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
-            summary = self._extract_summary(
-                arguments,
-                enable_action_summaries,
-            )
+            summary = self._extract_summary(arguments)
             assert "summary" not in arguments, (
                 "Unexpected 'summary' key found in tool arguments"
             )

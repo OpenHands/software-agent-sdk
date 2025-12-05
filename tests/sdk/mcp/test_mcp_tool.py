@@ -255,13 +255,15 @@ class TestMCPTool:
         input_schema = function_def["parameters"]
 
         # Since security_risk was removed from Action, it should not be in schema
-        assert len(input_schema["properties"]) == 1
+        # Summary field is automatically added, so we expect 2 properties
+        assert len(input_schema["properties"]) == 2
         assert "security_risk" not in input_schema["properties"]
+        assert "summary" in input_schema["properties"]
+        assert "param" in input_schema["properties"]
 
-        assert input_schema == {
-            "type": "object",
-            "properties": {"param": {"type": "string"}},
-        }
+        assert input_schema["type"] == "object"
+        assert input_schema["properties"]["param"] == {"type": "string"}
+        assert "summary" in input_schema["properties"]
 
     def test_mcp_tool_with_annotations(self):
         """Test creating an MCP tool with annotations."""

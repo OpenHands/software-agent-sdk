@@ -181,7 +181,9 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments=f'{{"command": "{command}"}}',
+                arguments=(
+                    f'{{"command": "{command}", "summary": "executing test command"}}'
+                ),
             ),
         )
         return MagicMock(
@@ -209,7 +211,7 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="finish",
-                arguments=f'{{"message": "{message}"}}',
+                arguments=f'{{"message": "{message}", "summary": "completing task"}}',
             ),
         )
 
@@ -238,7 +240,9 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="think",
-                arguments=f'{{"thought": "{thought}"}}',
+                arguments=(
+                    f'{{"thought": "{thought}", "summary": "thinking about task"}}'
+                ),
             ),
         )
 
@@ -267,7 +271,9 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments='{"command": "test_command"}',
+                arguments=(
+                    '{"command": "test_command", "summary": "executing test command"}'
+                ),
             ),
         )
 
@@ -276,7 +282,9 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="finish",
-                arguments='{"message": "Task completed!"}',
+                arguments=(
+                    '{"message": "Task completed!", "summary": "completing task"}'
+                ),
             ),
         )
 
@@ -310,7 +318,9 @@ class TestConfirmationMode:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments=f'{{"command": "{command}"}}',
+                arguments=(
+                    f'{{"command": "{command}", "summary": "executing test command"}}'
+                ),
             ),
         )
 

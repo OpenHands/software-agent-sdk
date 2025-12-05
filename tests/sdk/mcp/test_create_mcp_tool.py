@@ -245,10 +245,16 @@ def test_real_create_mcp_tools_dict_config():
 
     # Check that both schemas have the same essential structure
     assert mcp_schema["type"] == input_schema["type"]
-    assert set(mcp_schema["required"]) == set(input_schema["required"])
+    # Summary field is automatically added to OpenAI schema but not MCP schema
+    # (MCP schema is from external tool definition)
+    openai_required = set(input_schema["required"]) - {"summary"}
+    assert set(mcp_schema["required"]) == openai_required
 
     # Check that all properties from input_schema exist in mcp_schema
+    # (except summary which is auto-added to OpenAI schema only)
     for prop_name, prop_def in input_schema["properties"].items():
+        if prop_name == "summary":
+            continue  # Summary is auto-added to OpenAI schema, not in MCP schema
         assert prop_name in mcp_schema["properties"]
         assert mcp_schema["properties"][prop_name]["type"] == prop_def["type"]
         assert (

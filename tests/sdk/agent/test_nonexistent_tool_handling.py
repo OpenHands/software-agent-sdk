@@ -47,7 +47,10 @@ def test_nonexistent_tool_returns_error_and_continues_conversation():
                                 type="function",
                                 function=Function(
                                     name="nonexistent_tool",
-                                    arguments='{"param": "value"}',
+                                    arguments=(
+                                        '{"param": "value", '
+                                        '"summary": "using nonexistent tool"}'
+                                    ),
                                 ),
                             )
                         ],
@@ -139,7 +142,7 @@ def test_nonexistent_tool_error_includes_available_tools():
                                 type="function",
                                 function=Function(
                                     name="missing_tool",
-                                    arguments="{}",
+                                    arguments='{"summary": "attempting missing tool"}',
                                 ),
                             )
                         ],
@@ -219,7 +222,9 @@ def test_conversation_continues_after_tool_error():
                                     type="function",
                                     function=Function(
                                         name="bad_tool",
-                                        arguments="{}",
+                                        arguments=(
+                                            '{"summary": "trying non-existent tool"}'
+                                        ),
                                     ),
                                 )
                             ],
@@ -249,7 +254,8 @@ def test_conversation_continues_after_tool_error():
                                         name="finish",
                                         arguments=(
                                             '{"message": "I see there '
-                                            'was an error. Task completed."}'
+                                            'was an error. Task completed.", '
+                                            '"summary": "completing task after error"}'
                                         ),
                                     ),
                                 )

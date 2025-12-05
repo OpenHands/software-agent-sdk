@@ -1,7 +1,7 @@
 """Tests for tool schema summary field enhancement.
 
-This module tests that the summary field is properly added to tool schemas
-when add_summary_prediction is enabled.
+This module tests that the summary field is always properly added to tool
+schemas for transparency and explainability.
 """
 
 from collections.abc import Sequence
@@ -16,37 +16,27 @@ class TSAction(Action):
     x: int = Field(description="x")
 
 
-class MockSummaryTool1(ToolDefinition[TSAction, Observation]):
+class MockSummaryTool(ToolDefinition[TSAction, Observation]):
     """Concrete mock tool for summary testing."""
 
-    name: ClassVar[str] = "t1"
+    name: ClassVar[str] = "test_tool"
 
     @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["MockSummaryTool1"]:
+    def create(cls, conv_state=None, **params) -> Sequence["MockSummaryTool"]:
         return [cls(**params)]
 
 
-class MockSummaryTool2(ToolDefinition[TSAction, Observation]):
-    """Concrete mock tool for summary testing."""
-
-    name: ClassVar[str] = "t2"
-
-    @classmethod
-    def create(cls, conv_state=None, **params) -> Sequence["MockSummaryTool2"]:
-        return [cls(**params)]
-
-
-def test_to_responses_tool_summary_added():
-    """Test that summary field is added when requested."""
-    tool = MockSummaryTool1(
+def test_to_responses_tool_summary_always_added():
+    """Test that summary field is always added."""
+    tool = MockSummaryTool(
         description="Test tool",
         action_type=TSAction,
         observation_type=None,
         annotations=None,
     )
 
-    # add_summary_prediction=True -> add summary field
-    t = tool.to_responses_tool(add_summary_prediction=True)
+    # Summary field is always added
+    t = tool.to_responses_tool()
     params = t["parameters"]
     assert isinstance(params, dict)
     props = params.get("properties") or {}
@@ -59,38 +49,17 @@ def test_to_responses_tool_summary_added():
     assert "description" in summary_field
 
 
-def test_to_responses_tool_summary_not_added():
-    """Test that summary field is not added when not requested."""
-    tool = MockSummaryTool2(
-        description="Test tool",
-        action_type=TSAction,
-        observation_type=None,
-        annotations=None,
-    )
-
-    # add_summary_prediction=False -> do not add summary field
-    t = tool.to_responses_tool(add_summary_prediction=False)
-    params = t["parameters"]
-    assert isinstance(params, dict)
-    props = params.get("properties") or {}
-    assert isinstance(props, dict)
-    assert "summary" not in props
-
-
 def test_to_responses_tool_summary_and_security():
-    """Test that summary and security_risk can both be added."""
-    tool = MockSummaryTool1(
+    """Test that summary and security_risk are both present."""
+    tool = MockSummaryTool(
         description="Test tool",
         action_type=TSAction,
         observation_type=None,
         annotations=None,
     )
 
-    # Both flags enabled -> both fields should be present
-    t = tool.to_responses_tool(
-        add_security_risk_prediction=True,
-        add_summary_prediction=True,
-    )
+    # Security risk enabled -> both fields should be present
+    t = tool.to_responses_tool(add_security_risk_prediction=True)
     params = t["parameters"]
     assert isinstance(params, dict)
     props = params.get("properties") or {}
@@ -99,17 +68,17 @@ def test_to_responses_tool_summary_and_security():
     assert "security_risk" in props
 
 
-def test_to_openai_tool_summary_added():
-    """Test that summary field is added to OpenAI tool schema."""
-    tool = MockSummaryTool1(
+def test_to_openai_tool_summary_always_added():
+    """Test that summary field is always added to OpenAI tool schema."""
+    tool = MockSummaryTool(
         description="Test tool",
         action_type=TSAction,
         observation_type=None,
         annotations=None,
     )
 
-    # add_summary_prediction=True -> add summary field
-    t = tool.to_openai_tool(add_summary_prediction=True)
+    # Summary field is always added
+    t = tool.to_openai_tool()
     func = t.get("function")
     assert func is not None
     params = func.get("parameters")
@@ -124,40 +93,17 @@ def test_to_openai_tool_summary_added():
     assert "description" in summary_field
 
 
-def test_to_openai_tool_summary_not_added():
-    """Test that summary field is not added to OpenAI tool schema when not requested."""
-    tool = MockSummaryTool2(
-        description="Test tool",
-        action_type=TSAction,
-        observation_type=None,
-        annotations=None,
-    )
-
-    # add_summary_prediction=False -> do not add summary field
-    t = tool.to_openai_tool(add_summary_prediction=False)
-    func = t.get("function")
-    assert func is not None
-    params = func.get("parameters")
-    assert isinstance(params, dict)
-    props = params.get("properties") or {}
-    assert isinstance(props, dict)
-    assert "summary" not in props
-
-
 def test_to_openai_tool_summary_and_security():
-    """Test that summary and security_risk can both be added to OpenAI schema."""
-    tool = MockSummaryTool1(
+    """Test that summary and security_risk are both present in OpenAI schema."""
+    tool = MockSummaryTool(
         description="Test tool",
         action_type=TSAction,
         observation_type=None,
         annotations=None,
     )
 
-    # Both flags enabled -> both fields should be present
-    t = tool.to_openai_tool(
-        add_security_risk_prediction=True,
-        add_summary_prediction=True,
-    )
+    # Security risk enabled -> both fields should be present
+    t = tool.to_openai_tool(add_security_risk_prediction=True)
     func = t.get("function")
     assert func is not None
     params = func.get("parameters")

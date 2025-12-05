@@ -87,13 +87,6 @@ class ConversationState(OpenHandsModel):
         default=None,
         description="Optional security analyzer to evaluate action risks.",
     )
-    enable_action_summaries: bool = Field(
-        default=False,
-        description=(
-            "Whether to request action summaries from the LLM. "
-            "When enabled, the LLM provides a brief explanation of each action."
-        ),
-    )
 
     activated_knowledge_skills: list[str] = Field(
         default_factory=list,
@@ -166,7 +159,6 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
-        enable_action_summaries: bool = False,
     ) -> "ConversationState":
         """
         If base_state.json exists: resume (attach EventLog,
@@ -224,7 +216,6 @@ class ConversationState(OpenHandsModel):
             persistence_dir=persistence_dir,
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
-            enable_action_summaries=enable_action_summaries,
         )
         # Record existing analyzer configuration in state
         state.security_analyzer = state.security_analyzer

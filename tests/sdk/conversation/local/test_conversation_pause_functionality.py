@@ -290,7 +290,9 @@ class TestPauseFunctionality:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments='{"command": "test_command"}',
+                arguments=(
+                    '{"command": "test_command", "summary": "executing test command"}'
+                ),
             ),
         )
         mock_completion.return_value = ModelResponse(
@@ -391,7 +393,10 @@ class TestPauseFunctionality:
             type="function",
             function=Function(
                 name="test_tool",
-                arguments='{"command": "loop_forever"}',
+                arguments=(
+                    '{"command": "loop_forever", '
+                    '"summary": "executing loop forever command"}'
+                ),
             ),
         )
         import time
