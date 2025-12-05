@@ -8,6 +8,10 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
+from tests.integration.behavior_utils import (
+    find_file_editing_operations,
+    get_conversation_summary,
+)
 from tests.integration.utils.llm_judge import judge_agent_behavior
 
 
@@ -147,7 +151,7 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
         - NOT edit existing files (FAIL)
         """
         # Check for file editing operations
-        editing_operations = self.find_file_editing_operations()
+        editing_operations = find_file_editing_operations(self.collected_events)
 
         if editing_operations:
             # Agent started editing files - this is wrong!
@@ -175,7 +179,7 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
 
         # No editing operations detected - now use LLM as judge to verify
         # behavior quality
-        conversation_summary = self.get_conversation_summary()
+        conversation_summary = get_conversation_summary(self.collected_events)
 
         evaluation_criteria = """
 The agent should:

@@ -7,6 +7,11 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
+from tests.integration.behavior_utils import (
+    check_bash_command_used,
+    find_tool_calls,
+    get_conversation_summary,
+)
 
 
 INSTRUCTION = (
@@ -67,7 +72,7 @@ class UseSpecializedToolsTest(BaseIntegrationTest):
         bash_file_reads = []
 
         for cmd in problematic_commands:
-            events = self.check_bash_command_used(cmd)
+            events = check_bash_command_used(self.collected_events, cmd)
             if events:
                 from openhands.sdk.event import ActionEvent
                 from openhands.tools.terminal.definition import TerminalAction
@@ -96,7 +101,7 @@ class UseSpecializedToolsTest(BaseIntegrationTest):
         from openhands.tools.file_editor.definition import FileEditorAction
 
         file_reads = []
-        for event in self.find_tool_calls("FileEditorTool"):
+        for event in find_tool_calls(self.collected_events, "FileEditorTool"):
             if isinstance(event, ActionEvent) and event.action is not None:
                 assert isinstance(event.action, FileEditorAction)
                 if (
@@ -108,7 +113,7 @@ class UseSpecializedToolsTest(BaseIntegrationTest):
         if not file_reads:
             # Agent didn't read the file at all - or used a different method
             # Check if they at least answered the question correctly
-            conversation = self.get_conversation_summary()
+            conversation = get_conversation_summary(self.collected_events)
             if "localhost" in conversation:
                 # They somehow got the answer, maybe through bash
                 if bash_file_reads:

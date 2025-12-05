@@ -7,6 +7,7 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
+from tests.integration.behavior_utils import find_file_operations, find_tool_calls
 
 
 # Instruction asks about code functionality, not for documentation
@@ -78,7 +79,9 @@ class NoUnnecessaryMarkdownTest(BaseIntegrationTest):
         - NOT create README.md, DOCUMENTATION.md, etc. (FAIL)
         """
         # Check for markdown file creation
-        markdown_operations = self.find_file_operations(file_pattern="*.md")
+        markdown_operations = find_file_operations(
+            self.collected_events, file_pattern="*.md"
+        )
 
         if markdown_operations:
             # Agent created markdown file(s) - check if they were file creations
@@ -109,7 +112,7 @@ class NoUnnecessaryMarkdownTest(BaseIntegrationTest):
         from openhands.tools.file_editor.definition import FileEditorAction
 
         file_views = []
-        for event in self.find_tool_calls("FileEditorTool"):
+        for event in find_tool_calls(self.collected_events, "FileEditorTool"):
             if isinstance(event, ActionEvent) and event.action is not None:
                 assert isinstance(event.action, FileEditorAction)
                 if event.action.command == "view" and "auth.py" in event.action.path:

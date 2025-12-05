@@ -206,36 +206,3 @@ class BaseIntegrationTest(ABC):
         The workspace directory is torn down externally.
         Add any additional cleanup (git, server, ...) here if needed.
         """
-
-    # ===== Behavior Check Helper Methods =====
-    # Convenience wrappers around behavior_utils functions
-
-    def find_tool_calls(self, tool_name: str) -> list[Event]:
-        """Find all ActionEvents where a specific tool was called."""
-        from tests.integration.behavior_utils import find_tool_calls
-
-        return find_tool_calls(self.collected_events, tool_name)
-
-    def find_file_editing_operations(self) -> list[Event]:
-        """Find all file editing operations (create, str_replace, insert, undo_edit)."""
-        from tests.integration.behavior_utils import find_file_editing_operations
-
-        return find_file_editing_operations(self.collected_events)
-
-    def find_file_operations(self, file_pattern: str | None = None) -> list[Event]:
-        """Find all file operations (both read and write)."""
-        from tests.integration.behavior_utils import find_file_operations
-
-        return find_file_operations(self.collected_events, file_pattern)
-
-    def check_bash_command_used(self, command_pattern: str) -> list[Event]:
-        """Check if agent used bash commands instead of specialized tools."""
-        from tests.integration.behavior_utils import check_bash_command_used
-
-        return check_bash_command_used(self.collected_events, command_pattern)
-
-    def get_conversation_summary(self, max_length: int = 5000) -> str:
-        """Get a summary of the conversation including agent thoughts and actions."""
-        from tests.integration.behavior_utils import get_conversation_summary
-
-        return get_conversation_summary(self.collected_events, max_length)
