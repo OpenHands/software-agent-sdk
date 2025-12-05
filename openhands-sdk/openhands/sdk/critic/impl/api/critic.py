@@ -1,10 +1,15 @@
+from __future__ import annotations
+
 import json
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
-from openhands.sdk.context.view import View
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
-from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
 
 
 class APIBasedCritic(CriticBase, CriticClient):
@@ -13,7 +18,11 @@ class APIBasedCritic(CriticBase, CriticClient):
         events: Sequence[LLMConvertibleEvent],
         git_patch: str | None = None,  # noqa: ARG002
     ) -> CriticResult:
-        system_prompt_event = None
+        # Local imports to avoid circular dependencies during module load
+        from openhands.sdk.context.view import View
+        from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+
+        system_prompt_event: SystemPromptEvent | None = None
         tools = []
         for event in events:
             if isinstance(event, SystemPromptEvent):
