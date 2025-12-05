@@ -192,7 +192,6 @@ implementing?
             user_instruction=INSTRUCTION,
             conversation_summary=conversation_summary,
             evaluation_criteria=evaluation_criteria,
-            llm=self.llm,  # Reuse the same LLM instance
         )
 
         if judgment.approved:

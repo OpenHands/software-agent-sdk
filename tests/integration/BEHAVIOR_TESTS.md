@@ -141,7 +141,6 @@ judgment = judge_agent_behavior(
 
     Did the agent behave appropriately?
     """,
-    llm=self.llm  # Reuse test LLM instance
 )
 
 if not judgment.approved:
