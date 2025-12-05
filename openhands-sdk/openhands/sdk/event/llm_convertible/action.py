@@ -69,7 +69,13 @@ class ActionEvent(LLMConvertibleEvent):
         default=None,
         description=(
             "A concise summary (approximately 10 words) of what this action does, "
-            "provided by the LLM for explainability and debugging."
+            "provided by the LLM for explainability and debugging. "
+            "Examples of good summaries: "
+            "'editing configuration file for deployment settings' | "
+            "'searching codebase for authentication function definitions' | "
+            "'installing required dependencies from package manifest' | "
+            "'running tests to verify bug fix' | "
+            "'viewing directory structure to locate source files'"
         ),
     )
 
