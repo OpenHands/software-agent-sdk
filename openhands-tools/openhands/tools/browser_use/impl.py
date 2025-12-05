@@ -81,7 +81,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
 
-    def _check_chromium_available(self) -> str | None:
+    def check_chromium_available(self) -> str | None:
         """Check if a Chromium/Chrome binary is available.
 
         This method can be overridden by subclasses to provide
@@ -140,7 +140,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         Raises:
             Exception: If Chromium is not available
         """
-        if path := self._check_chromium_available():
+        if path := self.check_chromium_available():
             logger.info(f"Chromium is available for browser operations at {path}")
             return path
 

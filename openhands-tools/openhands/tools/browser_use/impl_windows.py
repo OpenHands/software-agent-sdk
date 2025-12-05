@@ -14,7 +14,7 @@ class WindowsBrowserToolExecutor(BrowserToolExecutor):
     browser detection logic for Chrome and Edge installations.
     """
 
-    def _check_chromium_available(self) -> str | None:
+    def check_chromium_available(self) -> str | None:
         """Check if a Chromium/Chrome binary is available on Windows.
 
         Checks:
