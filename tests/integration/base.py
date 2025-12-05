@@ -313,29 +313,16 @@ class BaseIntegrationTest(ABC):
         Returns:
             String summary of the conversation
         """
-        from openhands.sdk.event import ActionEvent, MessageEvent
-
         summary_parts = []
         for event in self.collected_events:
-            if isinstance(event, MessageEvent):
-                role = event.llm_message.role
-                from openhands.sdk.llm import TextContent as TextContentType
-
-                content = ""
-                if event.llm_message.content:
-                    content = " ".join(
-                        [
-                            c.text
-                            for c in event.llm_message.content
-                            if isinstance(c, TextContentType)
-                        ]
-                    )
-                if content:
-                    summary_parts.append(f"[{role.upper()}] {content[:500]}")
-            elif isinstance(event, ActionEvent):
-                thought = " ".join([t.text for t in event.thought])
-                tool = event.tool_name
-                summary_parts.append(f"[ACTION] Tool: {tool}, Thought: {thought[:300]}")
+            # Use the event's visualize property to get Rich Text representation
+            visualized = event.visualize
+            # Convert to plain text
+            plain_text = visualized.plain.strip()
+            if plain_text:
+                # Add event type label and content
+                event_type = event.__class__.__name__
+                summary_parts.append(f"[{event_type}]\n{plain_text}\n")
 
         summary = "\n".join(summary_parts)
         if len(summary) > max_length:
