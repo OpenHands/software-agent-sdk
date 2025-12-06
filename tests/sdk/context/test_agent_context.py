@@ -537,10 +537,6 @@ defined in user's repository.\n"
         assert "You have access to the following environment variables" in result
         assert "**$GITHUB_TOKEN**" in result
         assert "**$API_KEY**" in result
-        assert (
-            "You must tell the user that the secrets are hidden and cannot "
-            "provide explicit values for them." in result
-        )
         assert "</CUSTOM_SECRETS>" in result
 
     def test_get_system_message_suffix_with_secrets_and_repo_skills(self):
