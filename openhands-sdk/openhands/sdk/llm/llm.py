@@ -4,7 +4,7 @@ import copy
 import json
 import os
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -15,8 +15,12 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -80,6 +84,10 @@ from openhands.sdk.llm.utils.model_features import get_default_temperature, get_
 from openhands.sdk.llm.utils.retry_mixin import RetryMixin
 from openhands.sdk.llm.utils.telemetry import Telemetry
 from openhands.sdk.logger import ENV_LOG_DIR, get_logger
+from openhands.sdk.persistence.settings import (
+    INLINE_CONTEXT_KEY,
+    should_inline_conversations,
+)
 
 
 logger = get_logger(__name__)
@@ -286,6 +294,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Safety settings for models that support them (like Mistral AI and Gemini)"
         ),
     )
+    profile_id: str | None = Field(
+        default=None,
+        description="Optional profile id (filename under ~/.openhands/llm-profiles).",
+    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -342,6 +354,31 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         extra="forbid", arbitrary_types_allowed=True
     )
 
+    @model_serializer(mode="wrap", when_used="json")
+    def _serialize_with_profiles(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> Mapping[str, Any]:
+        """Scope LLM serialization to either inline payloads or profile refs.
+
+        We default to inlining the full LLM payload, but when the persistence
+        layer explicitly opts out (by passing ``inline_llm_persistence=False`` in
+        ``context``) we strip the payload down to just ``{"profile_id": ...}`` so
+        the conversation state can round-trip a profile reference without
+        exposing secrets.
+        """
+
+        inline_pref = None
+        if info.context is not None and INLINE_CONTEXT_KEY in info.context:
+            inline_pref = info.context[INLINE_CONTEXT_KEY]
+        if inline_pref is None:
+            inline_pref = True
+
+        data = handler(self)
+        profile_id = data.get("profile_id") if isinstance(data, dict) else None
+        if not inline_pref and profile_id:
+            return {"profile_id": profile_id}
+        return data
+
     # =========================================================================
     # Validators
     # =========================================================================
@@ -352,10 +389,37 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @model_validator(mode="before")
     @classmethod
-    def _coerce_inputs(cls, data):
-        if not isinstance(data, dict):
+    def _coerce_inputs(cls, data: Any, info: ValidationInfo):
+        if not isinstance(data, Mapping):
             return data
         d = dict(data)
+
+        profile_id = d.get("profile_id")
+        if profile_id and "model" not in d:
+            inline_pref = None
+            if info.context is not None and INLINE_CONTEXT_KEY in info.context:
+                inline_pref = info.context[INLINE_CONTEXT_KEY]
+            if inline_pref is None:
+                inline_pref = should_inline_conversations()
+
+            if inline_pref:
+                raise ValueError(
+                    "Encountered profile reference for LLM while "
+                    "OPENHANDS_INLINE_CONVERSATIONS is enabled. "
+                    "Inline the profile or set "
+                    "OPENHANDS_INLINE_CONVERSATIONS=false."
+                )
+
+            if info.context is None or "llm_registry" not in info.context:
+                raise ValueError(
+                    "LLM registry required in context to load profile references."
+                )
+
+            registry = info.context["llm_registry"]
+            llm = registry.load_profile(profile_id)
+            expanded = llm.model_dump(exclude_none=True)
+            expanded["profile_id"] = profile_id
+            d.update(expanded)
 
         model_val = d.get("model")
         if not model_val:
