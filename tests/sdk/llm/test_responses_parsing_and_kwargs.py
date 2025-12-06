@@ -152,20 +152,24 @@ def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
 
 
 def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gpt():
-    # GPT-5+ should include prompt_cache_retention as a top-level arg
-    llm_51 = LLM(model="openai/gpt-5.1-codex-mini")
-    opts_51_chat = select_chat_options(llm_51, {}, has_tools=False)
-    assert opts_51_chat.get("prompt_cache_retention") == "24h"
+    # GPT-5.1 (non-mini) should include prompt_cache_retention; mini variants should not
+    llm_51_mini = LLM(model="openai/gpt-5.1-codex-mini")
+    opts_51_mini_chat = select_chat_options(llm_51_mini, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_51_mini_chat
 
-    opts_51_resp = select_responses_options(llm_51, {}, include=None, store=None)
-    assert opts_51_resp.get("prompt_cache_retention") == "24h"
+    opts_51_mini_resp = select_responses_options(
+        llm_51_mini, {}, include=None, store=None
+    )
+    assert "prompt_cache_retention" not in opts_51_mini_resp
 
-    llm_5 = LLM(model="openai/gpt-5-mini")
-    opts_5_chat = select_chat_options(llm_5, {}, has_tools=False)
-    assert opts_5_chat.get("prompt_cache_retention") == "24h"
+    llm_5_mini = LLM(model="openai/gpt-5-mini")
+    opts_5_mini_chat = select_chat_options(llm_5_mini, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_5_mini_chat
 
-    opts_5_resp = select_responses_options(llm_5, {}, include=None, store=None)
-    assert opts_5_resp.get("prompt_cache_retention") == "24h"
+    opts_5_mini_resp = select_responses_options(
+        llm_5_mini, {}, include=None, store=None
+    )
+    assert "prompt_cache_retention" not in opts_5_mini_resp
 
     # Non-GPT-5.1 should not include it at all
     llm_other = LLM(model="gpt-4o")
