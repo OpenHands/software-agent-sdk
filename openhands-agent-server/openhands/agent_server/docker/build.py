@@ -4,7 +4,7 @@ Single-entry build helper for agent-server images.
 
 - Targets: binary | binary-minimal | source | source-minimal
 - Multi-tagging via CUSTOM_TAGS (comma-separated)
-- Versioned tag includes primary custom tag: v{SDK}_{BASE_SLUG}
+- Versioned tags for custom tags: {SDK_VERSION}-{CUSTOM_TAG}
 - Branch-scoped cache keys
 - CI (push) vs local (load) behavior
 - sdist-based builds: Uses `uv build` to create clean build contexts
@@ -26,18 +26,16 @@ import threading
 import tomllib
 from contextlib import chdir
 from pathlib import Path
-from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 
 from openhands.sdk.logger import IN_CI, get_logger, rolling_log_view
+from openhands.sdk.workspace import PlatformType, TargetType
 
 
 logger = get_logger(__name__)
 
 VALID_TARGETS = {"binary", "binary-minimal", "source", "source-minimal"}
-TargetType = Literal["binary", "binary-minimal", "source", "source-minimal"]
-PlatformType = Literal["linux/amd64", "linux/arm64"]
 
 
 # --- helpers ---
@@ -379,8 +377,12 @@ class BuildOptions(BaseModel):
         return _base_slug(self.base_image)
 
     @property
-    def versioned_tag(self) -> str:
-        return f"v{self.sdk_version}_{self.base_image_slug}"
+    def versioned_tags(self) -> list[str]:
+        """
+        Generate simple version tags for each custom tag variant.
+        Returns tags like: 1.2.0-python, 1.2.0-java, 1.2.0-golang
+        """
+        return [f"{self.sdk_version}-{t}" for t in self.custom_tag_list]
 
     @property
     def base_tag(self) -> str:
@@ -412,7 +414,8 @@ class BuildOptions(BaseModel):
         if self.include_base_tag:
             tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
         if self.include_versioned_tag:
-            tags.append(f"{self.image}:{self.versioned_tag}{arch_suffix}")
+            for versioned_tag in self.versioned_tags:
+                tags.append(f"{self.image}:{versioned_tag}{arch_suffix}")
 
         # Append target suffix for clarity (binary is default, no suffix needed)
         if self.target != "binary":
@@ -734,7 +737,11 @@ def main(argv: list[str]) -> int:
                 fh.write(f"build_context={ctx}\n")
                 fh.write(f"dockerfile={ctx / 'Dockerfile'}\n")
                 fh.write(f"tags_csv={','.join(opts.all_tags)}\n")
-                fh.write(f"versioned_tag={opts.versioned_tag}\n")
+                # Only output versioned tags if they're being used
+                if opts.include_versioned_tag:
+                    fh.write(f"versioned_tags_csv={','.join(opts.versioned_tags)}\n")
+                else:
+                    fh.write("versioned_tags_csv=\n")
                 fh.write(f"base_image_slug={opts.base_image_slug}\n")
             logger.info("[build] Wrote outputs to $GITHUB_OUTPUT")
 
@@ -773,13 +780,18 @@ def main(argv: list[str]) -> int:
 
     # --- expose outputs for GitHub Actions ---
     def _write_gha_outputs(
-        image: str, short_sha: str, versioned_tag: str, tags_list: list[str]
+        image: str,
+        short_sha: str,
+        versioned_tags: list[str],
+        tags_list: list[str],
+        include_versioned_tag: bool,
     ) -> None:
         """
         If running in GitHub Actions, append step outputs to $GITHUB_OUTPUT.
         - image: repo/name (no tag)
         - short_sha: 7-char SHA
-        - versioned_tag: e.g. v{SDK}_{BASE_SLUG}_{target}[ -dev ]
+        - versioned_tags_csv: comma-separated list of versioned tags
+          (empty if not enabled)
         - tags: multiline output (one per line)
         - tags_csv: single-line, comma-separated
         """
@@ -789,13 +801,23 @@ def main(argv: list[str]) -> int:
         with open(out_path, "a", encoding="utf-8") as fh:
             fh.write(f"image={image}\n")
             fh.write(f"short_sha={short_sha}\n")
-            fh.write(f"versioned_tag={versioned_tag}\n")
+            # Only output versioned tags if they're being used
+            if include_versioned_tag:
+                fh.write(f"versioned_tags_csv={','.join(versioned_tags)}\n")
+            else:
+                fh.write("versioned_tags_csv=\n")
             fh.write(f"tags_csv={','.join(tags_list)}\n")
             fh.write("tags<<EOF\n")
             fh.write("\n".join(tags_list) + "\n")
             fh.write("EOF\n")
 
-    _write_gha_outputs(opts.image, opts.short_sha, opts.versioned_tag, tags)
+    _write_gha_outputs(
+        opts.image,
+        opts.short_sha,
+        opts.versioned_tags,
+        tags,
+        opts.include_versioned_tag,
+    )
     return 0
 
 

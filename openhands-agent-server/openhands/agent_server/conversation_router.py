@@ -9,6 +9,8 @@ from pydantic import SecretStr
 from openhands.agent_server.conversation_service import ConversationService
 from openhands.agent_server.dependencies import get_conversation_service
 from openhands.agent_server.models import (
+    AskAgentRequest,
+    AskAgentResponse,
     ConversationInfo,
     ConversationPage,
     ConversationSortOrder,
@@ -22,9 +24,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
     UpdateSecretsRequest,
 )
-from openhands.sdk import LLM, Agent, TextContent, Tool
+from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.preset.default import get_default_tools
 
 
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -39,17 +42,13 @@ START_CONVERSATION_EXAMPLES = [
                 model="your-model-provider/your-model-name",
                 api_key=SecretStr("your-api-key-here"),
             ),
-            tools=[
-                Tool(name="TerminalTool"),
-                Tool(name="FileEditorTool"),
-                Tool(name="TaskTrackerTool"),
-            ],
+            tools=get_default_tools(enable_browser=True),
         ),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         initial_message=SendMessageRequest(
             role="user", content=[TextContent(text="Flip a coin!")]
         ),
-    ).model_dump(exclude_defaults=True)
+    ).model_dump(exclude_defaults=True, mode="json")
 ]
 
 
@@ -289,3 +288,19 @@ async def generate_conversation_title(
     if title is None:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
     return GenerateTitleResponse(title=title)
+
+
+@conversation_router.post(
+    "/{conversation_id}/ask_agent",
+    responses={404: {"description": "Item not found"}},
+)
+async def ask_agent(
+    conversation_id: UUID,
+    request: AskAgentRequest,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> AskAgentResponse:
+    """Ask the agent a simple question without affecting conversation state."""
+    response = await conversation_service.ask_agent(conversation_id, request.question)
+    if response is None:
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
+    return AskAgentResponse(response=response)

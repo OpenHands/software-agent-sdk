@@ -184,8 +184,8 @@ class ConversationService:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
 
-        if conversation_id in self._event_services:
-            existing_event_service = self._event_services[conversation_id]
+        existing_event_service = self._event_services.get(conversation_id)
+        if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
             conversation_info = _compose_conversation_info(
                 existing_event_service.stored, state
@@ -320,6 +320,18 @@ class ConversationService:
         title = await event_service.generate_title(llm=llm, max_length=max_length)
         return title
 
+    async def ask_agent(self, conversation_id: UUID, question: str) -> str | None:
+        """Ask the agent a simple question without affecting conversation state."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        response = await event_service.ask_agent(question)
+        return response
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
@@ -402,8 +414,14 @@ class ConversationService:
             ]
         )
 
+        try:
+            await event_service.start()
+        except Exception:
+            # Clean up the event service if startup fails
+            await event_service.close()
+            raise
+
         event_services[stored.id] = event_service
-        await event_service.start()
         return event_service
 
 

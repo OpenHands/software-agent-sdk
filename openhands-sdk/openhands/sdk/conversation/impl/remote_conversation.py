@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import threading
 import uuid
 from collections.abc import Mapping
@@ -26,6 +27,7 @@ from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
 )
+from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -502,6 +504,12 @@ class RemoteConversation(BaseConversation):
         state_update_callback = self._state.create_state_update_callback()
         self._callbacks.append(state_update_callback)
 
+        # Add callback to handle LLM completion logs
+        # Register callback if any LLM has log_completions enabled
+        if any(llm.log_completions for llm in agent.get_all_llms()):
+            llm_log_callback = self._create_llm_completion_log_callback()
+            self._callbacks.append(llm_log_callback)
+
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -540,6 +548,39 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
+
+    def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
+        """Create a callback that writes LLM completion logs to client filesystem."""
+
+        def callback(event: Event) -> None:
+            if not isinstance(event, LLMCompletionLogEvent):
+                return
+
+            # Find the LLM with matching usage_id
+            target_llm = None
+            for llm in self.agent.get_all_llms():
+                if llm.usage_id == event.usage_id:
+                    target_llm = llm
+                    break
+
+            if not target_llm or not target_llm.log_completions:
+                logger.debug(
+                    f"No LLM with log_completions enabled found "
+                    f"for usage_id={event.usage_id}"
+                )
+                return
+
+            try:
+                log_dir = target_llm.log_completions_folder
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, event.filename)
+                with open(log_path, "w") as f:
+                    f.write(event.log_data)
+                logger.debug(f"Wrote LLM completion log to {log_path}")
+            except Exception as e:
+                logger.warning(f"Failed to write LLM completion log: {e}")
+
+        return callback
 
     @property
     def id(self) -> ConversationID:
@@ -648,6 +689,33 @@ class RemoteConversation(BaseConversation):
         _send_request(
             self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
         )
+
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        # For remote conversations, delegate to the server endpoint
+        payload = {"question": question}
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/ask_agent",
+            json=payload,
+        )
+        data = resp.json()
+        return data["response"]
 
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:

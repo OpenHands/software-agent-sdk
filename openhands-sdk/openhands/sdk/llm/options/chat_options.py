@@ -34,12 +34,15 @@ def select_chat_options(
 
     # Reasoning-model quirks
     if get_features(llm.model).supports_reasoning_effort:
-        # Preferred: use reasoning_effort
+        # LiteLLM automatically handles reasoning_effort for all models, including
+        # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
-        # Anthropic/OpenAI reasoning models ignore temp/top_p
+
+        # All reasoning models ignore temp/top_p
         out.pop("temperature", None)
         out.pop("top_p", None)
+
         # Gemini 2.5-pro default to low if not set
         if "gemini-2.5-pro" in llm.model:
             if llm.reasoning_effort in {None, "none"}:
@@ -76,7 +79,14 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # Always forward extra_body if provided; let the LLM provider validate
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
+        out["prompt_cache_retention"] = llm.prompt_cache_retention
+
+    # Pass through user-provided extra_body unchanged
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 

@@ -1,8 +1,9 @@
 import inspect
 import json
 import logging
+import os
 from abc import ABC
-from typing import Annotated, Any, ClassVar, Literal, Self, Union
+from typing import Annotated, Any, ClassVar, Literal, NoReturn, Self, Union
 
 from pydantic import (
     BaseModel,
@@ -10,7 +11,9 @@ from pydantic import (
     Field,
     Tag,
     TypeAdapter,
+    ValidationError,
 )
+from pydantic_core import ErrorDetails
 
 
 logger = logging.getLogger(__name__)
@@ -53,6 +56,48 @@ def kind_of(obj) -> str:
     if not hasattr(obj, "__name__"):
         obj = obj.__class__
     return obj.__name__
+
+
+def _create_enhanced_discriminated_union_error_message(
+    invalid_kind: str, cls_name: str, valid_kinds: list[str]
+) -> str:
+    """Create an enhanced error message for discriminated union validation failures."""
+    possible_kinds_str = ", ".join(sorted(valid_kinds)) if valid_kinds else "none"
+    return (
+        f"Unexpected kind '{invalid_kind}' for {cls_name}. "
+        f"Expected one of: {possible_kinds_str}. "
+        f"If you receive this error when trying to wrap a "
+        f"DiscriminatedUnion instance inside another pydantic model, "
+        f"you may need to use OpenHandsModel instead of BaseModel "
+        f"to make sure that an invalid schema has not been cached."
+    )
+
+
+def _extract_invalid_kind_from_validation_error(error: ErrorDetails) -> str:
+    """Extract the invalid kind from a Pydantic validation error."""
+    input_value = error.get("input")
+    if input_value is not None and hasattr(input_value, "kind"):
+        return input_value.kind
+    elif isinstance(input_value, dict) and "kind" in input_value:
+        return input_value["kind"]
+    else:
+        return kind_of(input_value)
+
+
+def _handle_discriminated_union_validation_error(
+    validation_error: ValidationError, cls_name: str, valid_kinds: list[str]
+) -> NoReturn:
+    """Handle discriminated union validation errors with enhanced messages."""
+    for error in validation_error.errors():
+        if error.get("type") == "union_tag_invalid":
+            invalid_kind = _extract_invalid_kind_from_validation_error(error)
+            error_msg = _create_enhanced_discriminated_union_error_message(
+                invalid_kind, cls_name, valid_kinds
+            )
+            raise ValueError(error_msg) from validation_error
+
+    # If it's not a discriminated union error, re-raise the original error
+    raise validation_error
 
 
 def get_known_concrete_subclasses(cls) -> list[type]:
@@ -136,7 +181,15 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
         for subclass in get_known_concrete_subclasses(cls):
             if subclass.__name__ == kind:
                 return subclass
-        raise ValueError(f"Unknown kind '{kind}' for {cls}")
+
+        # Generate enhanced error message for unknown kind
+        valid_kinds = [
+            subclass.__name__ for subclass in get_known_concrete_subclasses(cls)
+        ]
+        error_msg = _create_enhanced_discriminated_union_error_message(
+            kind, cls.__name__, valid_kinds
+        )
+        raise ValueError(error_msg)
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
@@ -149,7 +202,30 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
             serializable_type = source_type.get_serializable_type()
             # If there are subclasses, generate schema for the discriminated union
             if serializable_type is not source_type:
-                return handler.generate_schema(serializable_type)
+                from pydantic_core import core_schema
+
+                # Generate the base schema
+                base_schema = handler.generate_schema(serializable_type)
+
+                # Wrap it with a custom validation function that provides
+                # enhanced error messages
+                def validate_with_enhanced_error(value, handler_func, info):  # noqa: ARG001
+                    try:
+                        return handler_func(value)
+                    except ValidationError as e:
+                        valid_kinds = [
+                            subclass.__name__
+                            for subclass in get_known_concrete_subclasses(source_type)
+                        ]
+                        _handle_discriminated_union_validation_error(
+                            e, source_type.__name__, valid_kinds
+                        )
+
+                # Create a with_info_wrap_validator_function schema
+                return core_schema.with_info_wrap_validator_function(
+                    validate_with_enhanced_error,
+                    base_schema,
+                )
 
         return handler(source_type)
 
@@ -240,12 +316,18 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs) -> Self:
-        if _is_abstract(cls):
-            resolved = cls.resolve_kind(kind_of(obj))
-        else:
-            resolved = super()
-        result = resolved.model_validate(obj, **kwargs)
-        return result  # type: ignore
+        try:
+            if _is_abstract(cls):
+                resolved = cls.resolve_kind(kind_of(obj))
+            else:
+                resolved = super()
+            result = resolved.model_validate(obj, **kwargs)
+            return result  # type: ignore
+        except ValidationError as e:
+            valid_kinds = [
+                subclass.__name__ for subclass in get_known_concrete_subclasses(cls)
+            ]
+            _handle_discriminated_union_validation_error(e, cls.__name__, valid_kinds)
 
     @classmethod
     def model_validate_json(
@@ -300,3 +382,189 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
 def _rebuild_if_required():
     if _rebuild_required:
         rebuild_all()
+
+
+def _extract_discriminated_unions(schema: dict) -> dict:
+    """Extract inline discriminated unions as separate components.
+
+    Recursively scans the schema and extracts any inline discriminated union
+    (oneOf + discriminator + title) as a separate component, replacing it with a $ref.
+    Also deduplicates schemas with identical titles.
+    """
+    import json
+    import re
+    from collections import defaultdict
+
+    if not isinstance(schema, dict):
+        return schema
+
+    # OpenAPI schema names must match this pattern
+    valid_name_pattern = re.compile(r"^[a-zA-Z0-9._-]+$")
+
+    schemas = schema.get("components", {}).get("schemas", {})
+    extracted = {}
+
+    def _find_and_extract(obj, path=""):
+        if not isinstance(obj, dict):
+            return obj
+
+        # Extract inline discriminated unions
+        if "oneOf" in obj and "discriminator" in obj and "title" in obj:
+            title = obj["title"]
+            if (
+                title not in schemas
+                and title not in extracted
+                and valid_name_pattern.match(title)
+            ):
+                extracted[title] = {
+                    "oneOf": obj["oneOf"],
+                    "discriminator": obj["discriminator"],
+                    "title": title,
+                }
+                return {"$ref": f"#/components/schemas/{title}"}
+
+        # Recursively process nested structures
+        result = {}
+        for key, value in obj.items():
+            if isinstance(value, dict):
+                result[key] = _find_and_extract(value, f"{path}.{key}")
+            elif isinstance(value, list):
+                result[key] = [
+                    _find_and_extract(item, f"{path}.{key}[]") for item in value
+                ]
+            else:
+                result[key] = value
+        return result
+
+    schema = _find_and_extract(schema)
+
+    if extracted and "components" in schema and "schemas" in schema["components"]:
+        schema["components"]["schemas"].update(extracted)
+
+    # Deduplicate schemas with same title (prefer *-Output over *-Input over base)
+    schemas = schema.get("components", {}).get("schemas", {})
+    title_to_names = defaultdict(list)
+    for name, defn in schemas.items():
+        if isinstance(defn, dict):
+            title_to_names[defn.get("title", name)].append(name)
+
+    to_remove = {}
+    for title, names in title_to_names.items():
+        if len(names) > 1:
+            # Prefer: *-Output > *-Input > base name
+            keep = sorted(
+                names,
+                key=lambda n: (
+                    0 if n.endswith("-Output") else 1 if n.endswith("-Input") else 2,
+                    n,
+                ),
+            )[0]
+            for name in names:
+                if name != keep:
+                    to_remove[name] = keep
+
+    if to_remove:
+        schema_str = json.dumps(schema)
+        for old, new in to_remove.items():
+            schema_str = schema_str.replace(
+                f'"#/components/schemas/{old}"', f'"#/components/schemas/{new}"'
+            )
+        schema = json.loads(schema_str)
+        for old in to_remove:
+            schema["components"]["schemas"].pop(old, None)
+
+    return schema
+
+
+def _patch_fastapi_discriminated_union_support():
+    """Patch FastAPI to handle discriminated union schemas without $ref.
+
+    This ensures discriminated unions from DiscriminatedUnionMixin work correctly
+    with FastAPI's OpenAPI schema generation. The patch prevents KeyError when
+    FastAPI encounters schemas without $ref keys (which discriminated unions use).
+
+    Also extracts inline discriminated unions as separate schema components for
+    better OpenAPI documentation and Swagger UI display.
+
+    Skips patching if SKIP_FASTAPI_DISCRIMINATED_UNION_FIX environment variable is set.
+    """
+    # Skip patching if environment variable flag is defined
+    if os.environ.get("SKIP_FASTAPI_DISCRIMINATED_UNION_FIX"):
+        logger.debug(
+            "Skipping FastAPI discriminated union patch due to environment variable"
+        )
+        return
+
+    try:
+        import fastapi._compat.v2 as fastapi_v2
+        from fastapi import FastAPI
+
+        _original_remap = fastapi_v2._remap_definitions_and_field_mappings
+
+        def _patched_remap_definitions_and_field_mappings(**kwargs):
+            """Patched version that handles schemas w/o $ref (discriminated unions)."""
+            field_mapping = kwargs.get("field_mapping", {})
+            model_name_map = kwargs.get("model_name_map", {})
+
+            # Build old_name -> new_name map, skipping schemas without $ref
+            old_name_to_new_name_map = {}
+            for field_key, schema in field_mapping.items():
+                model = field_key[0].type_
+                if model not in model_name_map:
+                    continue
+                new_name = model_name_map[model]
+
+                # Skip schemas without $ref (discriminated unions)
+                if "$ref" not in schema:
+                    continue
+
+                old_name = schema["$ref"].split("/")[-1]
+                if old_name in {f"{new_name}-Input", f"{new_name}-Output"}:
+                    continue
+                old_name_to_new_name_map[old_name] = new_name
+
+            # Replace refs using FastAPI's helper
+            from fastapi._compat.v2 import _replace_refs
+
+            new_field_mapping = {}
+            for field_key, schema in field_mapping.items():
+                new_schema = _replace_refs(
+                    schema=schema,
+                    old_name_to_new_name_map=old_name_to_new_name_map,
+                )
+                new_field_mapping[field_key] = new_schema
+
+            definitions = kwargs.get("definitions", {})
+            new_definitions = {}
+            for key, value in definitions.items():
+                new_key = old_name_to_new_name_map.get(key, key)
+                new_value = _replace_refs(
+                    schema=value,
+                    old_name_to_new_name_map=old_name_to_new_name_map,
+                )
+                new_definitions[new_key] = new_value
+
+            return new_field_mapping, new_definitions
+
+        # Apply the patch
+        fastapi_v2._remap_definitions_and_field_mappings = (
+            _patched_remap_definitions_and_field_mappings
+        )
+
+        # Patch FastAPI.openapi() to extract discriminated unions
+        _original_openapi = FastAPI.openapi
+
+        def _patched_openapi(self):
+            """Patched openapi() that extracts discriminated unions."""
+            schema = _original_openapi(self)
+            return _extract_discriminated_unions(schema)
+
+        FastAPI.openapi = _patched_openapi
+
+    except (ImportError, AttributeError):
+        # FastAPI not available or internal API changed
+        pass
+
+
+# Always call the FastAPI patch after DiscriminatedUnionMixin definition
+_patch_fastapi_discriminated_union_support()
