@@ -1,4 +1,8 @@
+from __future__ import annotations
+
 import pathlib
+from collections.abc import Mapping
+from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -65,6 +69,23 @@ class AgentContext(BaseModel):
             "This allows you to get the latest skills without SDK updates."
         ),
     )
+    # Note: Using Any instead of SecretValue (which is str | SecretSource) to avoid
+    # circular import issues. SecretValue is defined in secret_registry.py, which
+    # imports from conversation.py, which imports from agent.base.py, which imports
+    # from this module (agent_context.py), creating a circular dependency.
+    # Using Any here is acceptable because:
+    # 1. The actual type checking happens at runtime when secrets are used
+    # 2. The get_secret_names() method only accesses dictionary keys, not values
+    # 3. The secrets are passed through to conversations where proper validation occurs
+    secrets: Mapping[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Dictionary mapping secret keys to values or secret sources. "
+            "Secrets are used for authentication and sensitive data handling. "
+            "Values should be of type SecretValue (str | SecretSource), but Any is "
+            "used here to avoid circular import issues."
+        ),
+    )
 
     @field_validator("skills")
     @classmethod
@@ -123,6 +144,16 @@ class AgentContext(BaseModel):
             logger.warning(f"Failed to load public skills: {str(e)}")
         return self
 
+    def get_secret_names(self) -> list[str]:
+        """Get the list of secret names from the secrets field.
+
+        Returns:
+            List of secret names. Returns an empty list if no secrets are configured.
+        """
+        if not self.secrets:
+            return []
+        return list(self.secrets.keys())
+
     def get_system_message_suffix(self) -> str | None:
         """Get the system message with repo skill content and custom suffix.
 
@@ -135,13 +166,15 @@ class AgentContext(BaseModel):
         repo_skills = [s for s in self.skills if s.trigger is None]
         logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
         # Build the workspace context information
-        if repo_skills:
+        secret_names = self.get_secret_names()
+        if repo_skills or self.system_message_suffix or secret_names:
             # TODO(test): add a test for this rendering to make sure they work
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
                 repo_skills=repo_skills,
                 system_message_suffix=self.system_message_suffix or "",
+                secret_names=secret_names,
             ).strip()
             return formatted_text
         elif self.system_message_suffix and self.system_message_suffix.strip():
