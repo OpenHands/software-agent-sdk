@@ -134,6 +134,8 @@ jobs:
 
     tools-tests-windows:
         runs-on: windows-latest
+        env:
+            PYTHONUTF8: 1
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -155,6 +157,26 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   enable-cache: true
+
+            - name: Set Python UTF-8 encoding
+              if: steps.changed.outputs.any_changed == 'true'
+              shell: pwsh
+              run: |
+                # Set PYTHONUTF8 environment variable for UTF-8 encoding
+                # Try system-wide first (requires admin), then fallback
+                try {
+                  $result = setx /m PYTHONUTF8 1 2>&1
+                  if ($LASTEXITCODE -eq 0) {
+                    Write-Host "PYTHONUTF8 set system-wide"
+                  } else {
+                    Write-Host "setx /m requires admin privileges, using workflow-level"
+                  }
+                } catch {
+                  Write-Host "setx /m failed, using workflow-level variable"
+                }
+                # Set for all subsequent steps in this workflow
+                echo "PYTHONUTF8=1" >> $env:GITHUB_ENV
+                Write-Host "PYTHONUTF8 environment variable set for this workflow"
 
             - name: Install deps
               if: steps.changed.outputs.any_changed == 'true'
