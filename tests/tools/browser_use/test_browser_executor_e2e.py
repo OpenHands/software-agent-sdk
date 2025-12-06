@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Generator
@@ -114,9 +115,9 @@ def test_server() -> Generator[str, None, None]:
         with open(os.path.join(temp_dir, "page2.html"), "w") as f:
             f.write(PAGE2_HTML)
 
-        # Start HTTP server
+        # Start HTTP server (use sys.executable for cross-platform compatibility)
         server_process = subprocess.Popen(
-            ["python3", "-m", "http.server", "8001"],
+            [sys.executable, "-m", "http.server", "8001"],
             cwd=temp_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -141,12 +142,22 @@ def test_server() -> Generator[str, None, None]:
         shutil.rmtree(temp_dir, ignore_errors=True)
 
 
+def _get_browser_executor_class():
+    """Get the platform-appropriate browser executor class."""
+    if sys.platform == "win32":
+        from openhands.tools.browser_use.impl_windows import WindowsBrowserToolExecutor
+
+        return WindowsBrowserToolExecutor
+    return BrowserToolExecutor
+
+
 @pytest.fixture
 def browser_executor() -> Generator[BrowserToolExecutor, None, None]:
     """Create a real BrowserToolExecutor for testing."""
+    executor_class = _get_browser_executor_class()
     executor = None
     try:
-        executor = BrowserToolExecutor(
+        executor = executor_class(
             headless=True,  # Run in headless mode for CI/testing
             session_timeout_minutes=5,  # Shorter timeout for tests
         )
@@ -417,7 +428,8 @@ class TestBrowserExecutorE2E:
 
     def test_executor_initialization_and_cleanup(self):
         """Test that executor can be created and cleaned up properly."""
-        executor = BrowserToolExecutor(headless=True)
+        executor_class = _get_browser_executor_class()
+        executor = executor_class(headless=True)
 
         # Test that executor is properly initialized
         assert executor._config["headless"] is True
