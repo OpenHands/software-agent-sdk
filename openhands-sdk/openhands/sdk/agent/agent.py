@@ -17,6 +17,7 @@ from openhands.sdk.conversation import (
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -123,6 +124,48 @@ class Agent(AgentBase):
             )
             on_event(event)
 
+    def _should_evaluate_with_critic(self, action: Action | None) -> bool:
+        """Determine if critic should evaluate based on action type and mode."""
+        if self.critic is None:
+            return False
+
+        if self.critic_evaluation_mode == "all_actions":
+            return True
+
+        # For "finish_and_message" mode, only evaluate FinishAction
+        # (MessageEvent will be handled separately in step())
+        if isinstance(action, FinishAction):
+            return True
+
+        return False
+
+    def _evaluate_with_critic(
+        self, conversation: LocalConversation, event: ActionEvent | MessageEvent
+    ) -> CriticResult | None:
+        """Run critic evaluation on the current event and history."""
+        if self.critic is None:
+            return None
+
+        try:
+            # Build event history including the current event
+            events = list(conversation.state.events) + [event]
+            llm_convertible_events = [
+                e for e in events if isinstance(e, LLMConvertibleEvent)
+            ]
+
+            # Evaluate without git_patch for now
+            critic_result = self.critic.evaluate(
+                events=llm_convertible_events, git_patch=None
+            )
+            logger.debug(
+                f"Critic evaluation: score={critic_result.score:.3f}, "
+                f"success={critic_result.success}, message={critic_result.message}"
+            )
+            return critic_result
+        except Exception as e:
+            logger.warning(f"Critic evaluation failed: {e}")
+            return None
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -228,6 +271,7 @@ class Agent(AgentBase):
             for i, tool_call in enumerate(message.tool_calls):
                 action_event = self._get_action_event(
                     tool_call,
+                    conversation=conversation,
                     llm_response_id=llm_response.id,
                     on_event=on_event,
                     security_analyzer=state.security_analyzer,
@@ -266,6 +310,17 @@ class Agent(AgentBase):
             llm_message=message,
             llm_response_id=llm_response.id,
         )
+        # Run critic evaluation if configured for finish_and_message mode
+        if (
+            self.critic is not None
+            and self.critic_evaluation_mode == "finish_and_message"
+        ):
+            critic_result = self._evaluate_with_critic(conversation, msg_event)
+            if critic_result is not None:
+                # Create new event with critic result
+                msg_event = msg_event.model_copy(
+                    update={"critic_result": critic_result}
+                )
         on_event(msg_event)
 
         # Emit VLLM token ids if enabled
@@ -356,6 +411,7 @@ class Agent(AgentBase):
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
+        conversation: LocalConversation,
         llm_response_id: str,
         on_event: ConversationCallbackType,
         security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
@@ -442,6 +498,7 @@ class Agent(AgentBase):
             on_event(event)
             return
 
+        # Create initial action event
         action_event = ActionEvent(
             action=action,
             thought=thought or [],
@@ -454,6 +511,16 @@ class Agent(AgentBase):
             llm_response_id=llm_response_id,
             security_risk=security_risk,
         )
+
+        # Run critic evaluation if configured
+        if self._should_evaluate_with_critic(action):
+            critic_result = self._evaluate_with_critic(conversation, action_event)
+            if critic_result is not None:
+                # Create new event with critic result
+                action_event = action_event.model_copy(
+                    update={"critic_result": critic_result}
+                )
+
         on_event(action_event)
         return action_event
 

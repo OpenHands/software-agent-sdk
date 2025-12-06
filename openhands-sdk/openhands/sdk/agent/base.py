@@ -1,15 +1,18 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
@@ -24,7 +27,6 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
-
 
 logger = get_logger(__name__)
 
@@ -142,6 +144,24 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
+    critic: CriticBase | None = Field(
+        default=None,
+        description=(
+            "Optional critic to evaluate agent actions and messages in real-time."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+
+    critic_evaluation_mode: Literal["finish_and_message", "all_actions"] = Field(
+        default="finish_and_message",
+        description=(
+            "When to run critic evaluation:\n"
+            "- 'finish_and_message': Evaluate on FinishAction and agent"
+            " MessageEvent (default)\n"
+            "- 'all_actions': Evaluate after every agent action"
+        ),
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
 
@@ -176,8 +196,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def init_state(
         self,
-        state: "ConversationState",
-        on_event: "ConversationCallbackType",  # noqa: ARG002
+        state: ConversationState,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -188,7 +208,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: "ConversationState"):
+    def _initialize(self, state: ConversationState):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._tools:
@@ -240,9 +260,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @abstractmethod
     def step(
         self,
-        conversation: "LocalConversation",
-        on_event: "ConversationCallbackType",
-        on_token: "ConversationTokenCallbackType | None" = None,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -260,7 +280,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
+    def resolve_diff_from_deserialized(self, persisted: AgentBase) -> AgentBase:
         """
         Return a new AgentBase instance equivalent to `persisted` but with
         explicitly whitelisted fields (e.g. api_key) taken from `self`.
