@@ -163,9 +163,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
         template_kwargs = dict(self.system_prompt_kwargs)
+
+        template_name = self.system_prompt_filename
+        # Expose model-family information to the template so it can conditionally
+        # adjust behavior without swapping template files.
+        template_kwargs["is_gpt5"] = self.llm.is_gpt5_family()
+
         system_message = render_template(
             prompt_dir=self.prompt_dir,
-            template_name=self.system_prompt_filename,
+            template_name=template_name,
             **template_kwargs,
         )
         if self.agent_context:
