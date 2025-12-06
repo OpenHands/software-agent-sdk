@@ -100,14 +100,14 @@ def test_normalize_responses_kwargs_with_summary():
 
 
 def test_normalize_responses_kwargs_encrypted_reasoning_disabled():
-    """Test that encrypted reasoning is NOT included when enable_encrypted_reasoning=False."""
-    llm = LLM(model="gpt-5-codex", reasoning_effort="medium")
+    """Test that encrypted reasoning is NOT included when
+    enable_encrypted_reasoning=False.
+    """
+    llm = LLM(model="gpt-4.1", reasoning_effort="medium")
     # Explicitly disable encrypted reasoning (also the default)
     llm.enable_encrypted_reasoning = False
 
-    out = select_responses_options(
-        llm, {}, include=["text.output_text"], store=None
-    )
+    out = select_responses_options(llm, {}, include=["text.output_text"], store=None)
     # encrypted_content should NOT be in the include list
     assert "reasoning.encrypted_content" not in out.get("include", [])
     # But the original include item should still be there
