@@ -16,7 +16,8 @@ from .conftest import (
 )
 
 
-def test_browser_executor_initialization():
+@patch.object(BrowserToolExecutor, "_ensure_chromium_available", return_value="/mock/chromium")
+def test_browser_executor_initialization(mock_ensure_chromium):
     """Test that BrowserToolExecutor initializes correctly."""
     executor = BrowserToolExecutor()
 
@@ -27,7 +28,8 @@ def test_browser_executor_initialization():
     assert executor._async_executor is not None
 
 
-def test_browser_executor_config_passing():
+@patch.object(BrowserToolExecutor, "_ensure_chromium_available", return_value="/mock/chromium")
+def test_browser_executor_config_passing(mock_ensure_chromium):
     """Test that configuration is passed correctly."""
     executor = BrowserToolExecutor(
         session_timeout_minutes=60,

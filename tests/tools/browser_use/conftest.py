@@ -18,8 +18,11 @@ def mock_browser_server():
 
 
 @pytest.fixture
-def mock_browser_executor(mock_browser_server):
+def mock_browser_executor(mock_browser_server, monkeypatch):
     """Create a BrowserToolExecutor with mocked server."""
+    monkeypatch.setattr(
+        BrowserToolExecutor, "_ensure_chromium_available", lambda self: "/mock/chromium"
+    )
     executor = BrowserToolExecutor()
     executor._server = mock_browser_server
     return executor
