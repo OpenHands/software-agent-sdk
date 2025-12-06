@@ -160,6 +160,29 @@ jobs:
               if: steps.changed.outputs.any_changed == 'true'
               run: uv sync --frozen --group dev
 
+            - name: Install Chromium for browser tests
+              if: steps.changed.outputs.any_changed == 'true'
+              shell: pwsh
+              run: |
+                # Try uvx first (recommended), then fallback to playwright CLI
+                try {
+                  uvx playwright install chromium --with-deps
+                } catch {
+                  Write-Host "uvx installation failed, trying alternative"
+                  # Fallback: install playwright if not available, then install chromium
+                  try {
+                    $null = uv run python -m playwright --version 2>&1
+                  } catch {
+                    Write-Host "Installing playwright..."
+                    uv pip install playwright
+                  }
+                  try {
+                    uv run python -m playwright install chromium --with-deps
+                  } catch {
+                    Write-Host "Chromium installation failed, tests may skip"
+                  }
+                }
+
             - name: Run Windows tools tests with coverage
               if: steps.changed.outputs.any_changed == 'true'
               run: |
