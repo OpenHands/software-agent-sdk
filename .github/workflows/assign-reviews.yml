@@ -46,8 +46,6 @@ jobs:
                 4. If the original poster has commented after the label was added:
                    - Remove the "needs-info" label
                    - Add the "needs-triage" label
-                   - Post a comment: "[Automatic Post]: The issue author has provided additional information. Moving back to needs-triage for review."
-
                 # Issues with needs-triage
 
                 Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 2 days:
@@ -57,13 +55,10 @@ jobs:
                 2. If the issue has already been triaged (has enhancement or priority label), remove the "needs-triage" label
                 3. For issues that have NOT been triaged yet:
                    - Read the issue description and comments
-                   - Determine if it requires maintainer attention by checking:
-                     * Is it a bug report, feature request, or question?
-                     * Does it have enough information to be actionable?
-                     * Has a maintainer already commented?
-                   - If it needs maintainer attention and no maintainer has commented:
+                   - Check if it is a bug report, feature request, or question and add the appropriate label
+                   - If it is a bug report and it does not have a priority label
                      * Find an appropriate maintainer based on the issue topic and recent activity
-                     * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look when you have
+                     * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look and add the appropriate priority label when you have
                 a chance?"
 
                 # Need Reviewer Action
