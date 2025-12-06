@@ -70,10 +70,16 @@ PROMPT_CACHE_PATTERNS: list[str] = [
 ]
 
 # Models that support a top-level prompt_cache_retention parameter
+# Source: OpenAI Prompt Caching docs (extended retention), which list:
+#   - gpt-5.1
+#   - gpt-5.1-codex
+#   - gpt-5.1-codex-mini
+#   - gpt-5.1-chat-latest
+#   - gpt-5
+#   - gpt-5-codex
+#   - gpt-4.1
 PROMPT_CACHE_RETENTION_PATTERNS: list[str] = [
-    # OpenAI GPT-5+ family
     "gpt-5",
-    # GPT-4.1 too
     "gpt-4.1",
 ]
 
@@ -117,6 +123,7 @@ SEND_REASONING_CONTENT_PATTERNS: list[str] = [
 
 def get_features(model: str) -> ModelFeatures:
     """Get model features."""
+    raw = (model or "").strip().lower()
     return ModelFeatures(
         supports_reasoning_effort=model_matches(model, REASONING_EFFORT_PATTERNS),
         supports_extended_thinking=model_matches(model, EXTENDED_THINKING_PATTERNS),
@@ -127,8 +134,12 @@ def get_features(model: str) -> ModelFeatures:
         supports_responses_api=model_matches(model, RESPONSES_API_PATTERNS),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_PATTERNS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_PATTERNS),
-        supports_prompt_cache_retention=model_matches(
-            model, PROMPT_CACHE_RETENTION_PATTERNS
+        # Extended prompt_cache_retention support:
+        # - Exclude all "mini" variants EXCEPT for the documented allowed model
+        #   "gpt-5.1-codex-mini" which supports extended retention per OpenAI docs.
+        supports_prompt_cache_retention=(
+            model_matches(model, PROMPT_CACHE_RETENTION_PATTERNS)
+            and not ("mini" in raw and "gpt-5.1-codex-mini" not in raw)
         ),
     )
 
