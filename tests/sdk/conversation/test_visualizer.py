@@ -138,6 +138,17 @@ def test_action_event_visualize():
 
     result = event.visualize
     assert isinstance(result, Text)
+    # If no Responses reasoning is present, Reasoning: should not be printed
+    event_no_reason = ActionEvent(
+        thought=[TextContent(text="I need to list files")],
+        action=action,
+        tool_name="terminal",
+        tool_call_id="call_124",
+        tool_call=create_tool_call("call_124", "terminal", {"command": "ls -la"}),
+        llm_response_id="response_457",
+    )
+    text_no_reason = event_no_reason.visualize.plain
+    assert "Reasoning:" not in text_no_reason
 
     text_content = result.plain
     assert "Reasoning:" in text_content
