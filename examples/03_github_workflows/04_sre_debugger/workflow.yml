@@ -1,0 +1,141 @@
+---
+# To set this up:
+#  1. Copy this file to .github/workflows/sre-debugger.yml in your repository
+#  2. Add your LLM_API_KEY to the repository secrets
+#  3. Update the "workflows" name to match your test workflow
+#  4. Commit this file to your repository
+name: SRE Error Debugger
+
+on:
+    # Trigger automatically when test workflow fails
+    workflow_run:
+        workflows: [Tests]    # Change to match your test workflow name
+        types: [completed]
+    # Manual trigger with optional test path override
+    workflow_dispatch:
+        inputs:
+            test_path:
+                description: Path to tests to analyze (e.g., tests/sdk/)
+                required: false
+                type: string
+                default: tests/
+
+permissions:
+    contents: read
+    actions: read  # Needed to read workflow run status
+
+jobs:
+    debug-failures:
+        # Only run if tests failed or manually triggered
+        if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'failure' }}
+        runs-on: ubuntu-latest
+        env:
+            # Configuration (modify these values as needed)
+            LLM_MODEL: <YOUR_LLM_MODEL>
+            LLM_BASE_URL: <YOUR_LLM_BASE_URL>
+
+            # Test configuration
+            TEST_PATH: ${{ inputs.test_path || 'tests/' }}
+            REPO_NAME: ${{ github.repository }}
+
+        steps:
+            - name: Checkout agent-sdk repository
+              uses: actions/checkout@v4
+              with:
+                  repository: All-Hands-AI/agent-sdk
+                  path: agent-sdk
+
+            - name: Checkout target repository
+              uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0  # Full history for git log analysis
+                  path: target-repo
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+            - name: Install uv
+              uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+
+            - name: Install OpenHands dependencies
+              run: |
+                  # Install OpenHands SDK and tools from git repository
+                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/tools"
+
+            - name: Install pytest
+              run: |
+                  # Install pytest for running tests
+                  uv pip install --system pytest pytest-asyncio
+
+            - name: Check required configuration
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+              run: |
+                  if [ -z "$LLM_API_KEY" ]; then
+                    echo "Error: LLM_API_KEY secret is not set."
+                    exit 1
+                  fi
+
+                  echo "Repository: $REPO_NAME"
+                  echo "Test path: $TEST_PATH"
+                  echo "LLM model: $LLM_MODEL"
+                  if [ -n "$LLM_BASE_URL" ]; then
+                    echo "LLM base URL: $LLM_BASE_URL"
+                  fi
+
+            - name: Run error debugger
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+              run: |
+                  # Change to the target repository directory
+                  cd target-repo
+
+                  # Run the error debugger
+                  uv run python ../agent-sdk/examples/03_github_workflows/04_sre_debugger/agent_script.py
+
+            - name: Upload error analysis report
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: error-analysis-report
+                  path: target-repo/ERROR_ANALYSIS.md
+                  retention-days: 30
+
+            - name: Comment on PR (if applicable)
+              if: github.event_name == 'pull_request' && always()
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      const fs = require('fs');
+                      const analysisPath = 'target-repo/ERROR_ANALYSIS.md';
+
+                      if (fs.existsSync(analysisPath)) {
+                        const analysis = fs.readFileSync(analysisPath, 'utf8');
+                        
+                        // Truncate if too long for GitHub comment
+                        const maxLength = 60000;
+                        const content = analysis.length > maxLength 
+                          ? analysis.substring(0, maxLength) + '\n\n... (truncated)'
+                          : analysis;
+                        
+                        github.rest.issues.createComment({
+                          issue_number: context.issue.number,
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          body: `## 🔍 SRE Error Analysis\n\n${content}`
+                        });
+                      }
+
+            - name: Upload logs as artifact
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: openhands-debugger-logs
+                  path: |
+                      *.log
+                      output/
+                  retention-days: 7
