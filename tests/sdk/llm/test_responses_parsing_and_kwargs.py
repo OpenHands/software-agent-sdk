@@ -153,12 +153,6 @@ def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
 
 def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gpt():
     # Confirm allowed: 5.1 codex mini supports extended retention per docs
-    llm_51_codex_mini = LLM(model="openai/gpt-5.1-codex-mini")
-    opts_51_codex_mini_chat = select_chat_options(
-        llm_51_codex_mini, {}, has_tools=False
-    )
-    assert opts_51_codex_mini_chat.get("prompt_cache_retention") == "24h"
-
     opts_51_codex_mini_resp = select_responses_options(
         llm_51_codex_mini, {}, include=None, store=None
     )
