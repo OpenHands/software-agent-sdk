@@ -140,9 +140,13 @@ def get_features(model: str) -> ModelFeatures:
         supports_responses_api=model_matches(model, RESPONSES_API_PATTERNS),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_PATTERNS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_PATTERNS),
-        # Exclude mini variants (e.g., gpt-5-mini) from prompt_cache_retention support
+        # Extended prompt_cache_retention support:
+        # - Base patterns: ["gpt-5", "gpt-4.1"] (see doc block above)
+        # - Exclude all "mini" variants EXCEPT for the documented allowed model
+        #   "gpt-5.1-codex-mini" which supports extended retention per OpenAI docs.
         supports_prompt_cache_retention=(
-            model_matches(model, PROMPT_CACHE_RETENTION_PATTERNS) and "mini" not in raw
+            model_matches(model, PROMPT_CACHE_RETENTION_PATTERNS)
+            and not ("mini" in raw and "gpt-5.1-codex-mini" not in raw)
         ),
     )
 

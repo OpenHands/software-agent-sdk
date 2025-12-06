@@ -152,8 +152,20 @@ def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
 
 
 def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gpt():
+    # Confirm allowed: 5.1 codex mini supports extended retention per docs
+    llm_51_codex_mini = LLM(model="openai/gpt-5.1-codex-mini")
+    opts_51_codex_mini_chat = select_chat_options(
+        llm_51_codex_mini, {}, has_tools=False
+    )
+    assert opts_51_codex_mini_chat.get("prompt_cache_retention") == "24h"
+
+    opts_51_codex_mini_resp = select_responses_options(
+        llm_51_codex_mini, {}, include=None, store=None
+    )
+    assert opts_51_codex_mini_resp.get("prompt_cache_retention") == "24h"
+
     # GPT-5.1 (non-mini) should include prompt_cache_retention; mini variants should not
-    llm_51_mini = LLM(model="openai/gpt-5.1-codex-mini")
+    llm_51_mini = LLM(model="openai/gpt-5.1-mini")
     opts_51_mini_chat = select_chat_options(llm_51_mini, {}, has_tools=False)
     assert "prompt_cache_retention" not in opts_51_mini_chat
 
@@ -161,18 +173,6 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
         llm_51_mini, {}, include=None, store=None
     )
     assert "prompt_cache_retention" not in opts_51_mini_resp
-
-    # Also exclude explicit 5.1-mini variant
-    llm_51_plain_mini = LLM(model="openai/gpt-5.1-mini")
-    opts_51_plain_mini_chat = select_chat_options(
-        llm_51_plain_mini, {}, has_tools=False
-    )
-    assert "prompt_cache_retention" not in opts_51_plain_mini_chat
-
-    opts_51_plain_mini_resp = select_responses_options(
-        llm_51_plain_mini, {}, include=None, store=None
-    )
-    assert "prompt_cache_retention" not in opts_51_plain_mini_resp
 
     llm_5_mini = LLM(model="openai/gpt-5-mini")
     opts_5_mini_chat = select_chat_options(llm_5_mini, {}, has_tools=False)

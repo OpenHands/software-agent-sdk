@@ -248,7 +248,7 @@ def test_force_string_serializer_full_model_names():
     "model,expected_retention",
     [
         ("gpt-5.1", True),
-        ("openai/gpt-5.1-codex-mini", False),
+        ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
         ("openai/gpt-5-mini", False),
         ("gpt-4o", False),
