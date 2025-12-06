@@ -3,8 +3,8 @@
 import os
 import urllib.request
 
-from openhands.sdk import TextContent, get_logger
-from openhands.sdk.event.llm_convertible import MessageEvent
+from openhands.sdk import get_logger
+from openhands.sdk.conversation.response_utils import get_agent_final_response
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
@@ -64,20 +64,10 @@ class ImageFileViewingTest(BaseIntegrationTest):
                 success=False, reason="Logo file not found after agent execution"
             )
 
-        # Check the agent's responses in collected events
-        # Look for messages mentioning yellow color
-        agent_responses = []
-        for event in self.collected_events:
-            if isinstance(event, MessageEvent):
-                message = event.llm_message
-                if message.role == "assistant":
-                    for content_item in message.content:
-                        if isinstance(content_item, TextContent):
-                            agent_responses.append(content_item.text.lower())
+        # Get the final response from agent (handles both MessageEvent and FinishAction)
+        final_response = get_agent_final_response(self.collected_events).lower()
 
-        combined_response = " ".join(agent_responses)
-
-        if "yellow" in combined_response:
+        if "yellow" in final_response:
             return TestResult(
                 success=True,
                 reason="Agent successfully identified yellow color in the logo",
@@ -87,6 +77,6 @@ class ImageFileViewingTest(BaseIntegrationTest):
                 success=False,
                 reason=(
                     f"Agent did not identify yellow color in the logo. "
-                    f"Response: {combined_response[:500]}"
+                    f"Response: {final_response[:500]}"
                 ),
             )

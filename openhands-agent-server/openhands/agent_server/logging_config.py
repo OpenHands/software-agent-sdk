@@ -3,26 +3,7 @@
 import logging
 from typing import Any
 
-from openhands.sdk.logger import (
-    ENV_JSON,
-    ENV_LOG_LEVEL,
-    IN_CI,
-)
-
-
-class UvicornAccessFormatter(logging.Formatter):
-    """Custom formatter for uvicorn access logs."""
-
-    def format(self, record):
-        # Set default values for uvicorn-specific fields if they don't exist
-        if not hasattr(record, "client_addr"):
-            record.client_addr = "-"
-        if not hasattr(record, "request_line"):
-            record.request_line = record.getMessage()
-        if not hasattr(record, "status_code"):
-            record.status_code = "-"
-
-        return super().format(record)
+from openhands.sdk.logger import ENV_LOG_LEVEL
 
 
 def get_uvicorn_logging_config() -> dict[str, Any]:
@@ -47,29 +28,6 @@ def get_uvicorn_logging_config() -> dict[str, Any]:
         "loggers": {},
     }
 
-    # Add formatters based on SDK settings
-    if ENV_JSON or IN_CI:
-        # JSON formatter for access logs
-        config["formatters"]["access"] = {
-            "()": "pythonjsonlogger.json.JsonFormatter",
-            "fmt": "%(asctime)s %(levelname)s %(name)s "
-            "%(client_addr)s %(request_line)s %(status_code)s",
-        }
-    else:
-        # Custom formatter for access logs that handles missing fields
-        config["formatters"]["access"] = {
-            "()": UvicornAccessFormatter,
-            "format": '%(asctime)s - %(name)s - %(levelname)s - "'
-            '"%(client_addr)s - "%(request_line)s" %(status_code)s',
-        }
-
-    # Access handler - always separate for proper formatting
-    config["handlers"]["access"] = {
-        "formatter": "access",
-        "class": "logging.StreamHandler",
-        "stream": "ext://sys.stdout",
-    }
-
     # Configure uvicorn loggers
     config["loggers"] = {
         # Main uvicorn logger - propagate to root
@@ -84,11 +42,11 @@ def get_uvicorn_logging_config() -> dict[str, Any]:
             "level": logging.getLevelName(ENV_LOG_LEVEL),
             "propagate": True,
         },
-        # Access logger - use dedicated handler
+        # Access logger - propagate to root
         "uvicorn.access": {
-            "handlers": ["access"],
+            "handlers": [],
             "level": logging.getLevelName(ENV_LOG_LEVEL),
-            "propagate": False,  # Don't duplicate to root
+            "propagate": True,
         },
     }
 

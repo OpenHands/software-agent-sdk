@@ -29,38 +29,6 @@ else:
 logger = get_logger(__name__)
 
 
-def _check_chromium_available() -> str | None:
-    """Check if a Chromium/Chrome binary is available in PATH."""
-    for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
-        if path := shutil.which(binary):
-            return path
-
-    # Check Playwright-installed Chromium
-    playwright_cache_candidates = [
-        Path.home() / ".cache" / "ms-playwright",
-        Path.home() / "Library" / "Caches" / "ms-playwright",
-    ]
-    for playwright_cache in playwright_cache_candidates:
-        if playwright_cache.exists():
-            chromium_dirs = list(playwright_cache.glob("chromium-*"))
-            for chromium_dir in chromium_dirs:
-                # Check platform-specific paths
-                possible_paths = [
-                    chromium_dir / "chrome-linux" / "chrome",  # Linux
-                    chromium_dir
-                    / "chrome-mac"
-                    / "Chromium.app"
-                    / "Contents"
-                    / "MacOS"
-                    / "Chromium",  # macOS
-                    chromium_dir / "chrome-win" / "chrome.exe",  # Windows
-                ]
-                for p in possible_paths:
-                    if p.exists():
-                        return str(p)
-    return None
-
-
 def _install_chromium() -> bool:
     """Attempt to install Chromium via uvx playwright install."""
     try:
@@ -88,18 +56,9 @@ def _install_chromium() -> bool:
         return False
 
 
-def _ensure_chromium_available() -> str:
-    """Ensure Chromium is available for browser operations.
-
-    Raises:
-        Exception: If Chromium is not available
-    """
-    if path := _check_chromium_available():
-        logger.info(f"Chromium is available for browser operations at {path}")
-        return path
-
-    # Chromium not available - provide clear installation instructions
-    error_msg = (
+def _get_chromium_error_message() -> str:
+    """Get the error message for when Chromium is not available."""
+    return (
         "Chromium is required for browser operations but is not installed.\n\n"
         "To install Chromium, run one of the following commands:\n"
         "  1. Using uvx (recommended): uvx playwright install chromium "
@@ -111,7 +70,6 @@ def _ensure_chromium_available() -> str:
         "     - Windows: winget install Chromium.Chromium\n\n"
         "After installation, restart your application to use the browser tool."
     )
-    raise Exception(error_msg)
 
 
 class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
@@ -122,6 +80,72 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+
+    def check_chromium_available(self) -> str | None:
+        """Check if a Chromium/Chrome binary is available.
+
+        This method can be overridden by subclasses to provide
+        platform-specific detection logic.
+
+        Returns:
+            Path to Chromium binary if found, None otherwise
+        """
+        for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
+            if path := shutil.which(binary):
+                return path
+
+        # Check standard installation paths
+        standard_paths = [
+            # Linux
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            # macOS
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        for install_path in standard_paths:
+            p = Path(install_path)
+            if p.exists():
+                return str(p)
+
+        # Check Playwright-installed Chromium
+        playwright_cache_candidates = [
+            Path.home() / ".cache" / "ms-playwright",  # Linux
+            Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
+        ]
+
+        for playwright_cache in playwright_cache_candidates:
+            if playwright_cache.exists():
+                chromium_dirs = list(playwright_cache.glob("chromium-*"))
+                for chromium_dir in chromium_dirs:
+                    # Check platform-specific paths
+                    possible_paths = [
+                        chromium_dir / "chrome-linux" / "chrome",  # Linux
+                        chromium_dir
+                        / "chrome-mac"
+                        / "Chromium.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Chromium",  # macOS
+                    ]
+                    for p in possible_paths:
+                        if p.exists():
+                            return str(p)
+        return None
+
+    def _ensure_chromium_available(self) -> str:
+        """Ensure Chromium is available for browser operations.
+
+        Raises:
+            Exception: If Chromium is not available
+        """
+        if path := self.check_chromium_available():
+            logger.info(f"Chromium is available for browser operations at {path}")
+            return path
+
+        # Chromium not available - provide clear installation instructions
+        raise Exception(_get_chromium_error_message())
 
     def __init__(
         self,
@@ -146,7 +170,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
         def init_logic():
             nonlocal headless
-            executable_path = _ensure_chromium_available()
+            executable_path = self._ensure_chromium_available()
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )

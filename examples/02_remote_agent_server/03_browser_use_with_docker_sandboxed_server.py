@@ -31,9 +31,17 @@ def detect_platform():
     return "linux/amd64"
 
 
-# Create a Docker-based remote workspace with extra ports for browser access
+# Create a Docker-based remote workspace with extra ports for browser access.
+# Use `DockerWorkspace` with a pre-built image or `DockerDevWorkspace` to
+# automatically build the image on-demand.
+#    with DockerDevWorkspace(
+#        # dynamically build agent-server image
+#        base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+#        host_port=8010,
+#        platform=detect_platform(),
+#    ) as workspace:
 with DockerWorkspace(
-    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8011,
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
@@ -85,7 +93,7 @@ with DockerWorkspace(
         y = None
         while y != "y":
             y = input(
-                "Because you've enabled extra_ports=True in DockerWorkspace, "
+                "Because you've enabled extra_ports=True in DockerDevWorkspace, "
                 "you can open a browser tab to see the *actual* browser OpenHands "
                 "is interacting with via VNC.\n\n"
                 "Link: http://localhost:8012/vnc.html?autoconnect=1&resize=remote\n\n"
