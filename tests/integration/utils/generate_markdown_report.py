@@ -18,12 +18,28 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
     """Generate a summary table for all models."""
 
     table_lines = [
-        "| Model | Success Rate | Tests Passed | Skipped | Total Tests | Cost |",
-        "|-------|--------------|--------------|---------|-------------|------|",
+        (
+            "| Model | Overall | Integration (Required) | Behavior (Optional) "
+            "| Tests Passed | Skipped | Total | Cost |"
+        ),
+        (
+            "|-------|---------|------------------------|---------------------|"
+            "--------------|---------|-------|------|"
+        ),
     ]
 
     for result in model_results:
-        success_rate = f"{result.success_rate:.1%}"
+        overall_success = f"{result.success_rate:.1%}"
+        integration_success = (
+            f"{result.integration_tests_success_rate:.1%}"
+            if result.integration_tests_total > 0
+            else "N/A"
+        )
+        behavior_success = (
+            f"{result.behavior_tests_success_rate:.1%}"
+            if result.behavior_tests_total > 0
+            else "N/A"
+        )
         non_skipped = result.total_tests - result.skipped_tests
         tests_passed = f"{result.successful_tests}/{non_skipped}"
         skipped = f"{result.skipped_tests}"
@@ -32,8 +48,9 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
         model_name = result.model_name
         total_tests = result.total_tests
         row = (
-            f"| {model_name} | {success_rate} | {tests_passed} | "
-            f"{skipped} | {total_tests} | {cost} |"
+            f"| {model_name} | {overall_success} | {integration_success} | "
+            f"{behavior_success} | {tests_passed} | {skipped} | "
+            f"{total_tests} | {cost} |"
         )
         table_lines.append(row)
 
@@ -50,11 +67,34 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
         section_lines = [
             f"### {result.model_name}",
             "",
-            f"- **Success Rate**: {result.success_rate:.1%} "
+            f"- **Overall Success Rate**: {result.success_rate:.1%} "
             f"({result.successful_tests}/{non_skipped})",
-            f"- **Total Cost**: {format_cost(result.total_cost)}",
-            f"- **Run Suffix**: `{result.run_suffix}`",
         ]
+
+        # Add integration tests success rate if applicable
+        if result.integration_tests_total > 0:
+            section_lines.append(
+                f"- **Integration Tests (Required)**: "
+                f"{result.integration_tests_success_rate:.1%} "
+                f"({result.integration_tests_successful}/"
+                f"{result.integration_tests_total})"
+            )
+
+        # Add behavior tests success rate if applicable
+        if result.behavior_tests_total > 0:
+            section_lines.append(
+                f"- **Behavior Tests (Optional)**: "
+                f"{result.behavior_tests_success_rate:.1%} "
+                f"({result.behavior_tests_successful}/"
+                f"{result.behavior_tests_total})"
+            )
+
+        section_lines.extend(
+            [
+                f"- **Total Cost**: {format_cost(result.total_cost)}",
+                f"- **Run Suffix**: `{result.run_suffix}`",
+            ]
+        )
 
         if result.skipped_tests > 0:
             section_lines.append(f"- **Skipped Tests**: {result.skipped_tests}")
@@ -94,7 +134,10 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
             for test in failed_tests:
                 reason = test.test_result.reason or "No reason provided"
                 cost = format_cost(test.cost)
-                section_lines.append(f"- `{test.instance_id}`: {reason} (Cost: {cost})")
+                required_marker = " ⚠️ **REQUIRED**" if test.required else ""
+                section_lines.append(
+                    f"- `{test.instance_id}`{required_marker}: {reason} (Cost: {cost})"
+                )
 
             section_lines.append("")
 

@@ -12,7 +12,7 @@ import tempfile
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -32,7 +32,13 @@ class TestInstance(BaseModel):
 
     instance_id: str
     file_path: str
+    test_type: Literal["integration", "behavior"]
     test_class: BaseIntegrationTest | None = None
+
+    @property
+    def required(self) -> bool:
+        """Whether the test is required (integration) or optional (behavior)."""
+        return self.test_type == "integration"
 
 
 class EvalOutput(BaseModel):
@@ -41,25 +47,43 @@ class EvalOutput(BaseModel):
     instance_id: str
     test_result: TestResult
     llm_model: str
+    test_type: Literal["integration", "behavior"]
     cost: float = 0.0
     error_message: str | None = None
     log_file_path: str | None = None
+
+    @property
+    def required(self) -> bool:
+        """Whether the test is required (integration) or optional (behavior)."""
+        return self.test_type == "integration"
 
 
 def load_integration_tests() -> list[TestInstance]:
     """Load tests from python files under ./tests/integration"""
     test_dir = Path(__file__).parent / "tests"
+    # Load both task completion tests (t*.py) and behavior tests (b*.py)
     test_files = [
         f
-        for f in test_dir.glob("t*.py")
-        if f.name.startswith("t") and f.name.endswith(".py")
+        for f in test_dir.glob("[tb]*.py")
+        if (f.name.startswith("t") or f.name.startswith("b")) and f.name.endswith(".py")
     ]
 
     instances = []
     for test_file in test_files:
         instance_id = test_file.stem  # filename without extension
+
+        # Determine test type based on filename prefix
+        if test_file.name.startswith("b"):
+            test_type = "behavior"
+        else:
+            test_type = "integration"
+
         instances.append(
-            TestInstance(instance_id=instance_id, file_path=str(test_file))
+            TestInstance(
+                instance_id=instance_id,
+                file_path=str(test_file),
+                test_type=test_type,
+            )
         )
 
     return instances
@@ -99,6 +123,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             instance_id=instance.instance_id,
             test_result=TestResult(success=False, reason="Failed to load test class"),
             llm_model=llm_config.get("model", "unknown"),
+            test_type=instance.test_type,
             error_message="Could not load test class",
         )
 
@@ -167,6 +192,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             instance_id=instance.instance_id,
             test_result=test_result,
             llm_model=llm_config.get("model", "unknown"),
+            test_type=instance.test_type,
             cost=llm_cost,
             log_file_path=log_file_path,
         )
@@ -182,6 +208,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
                 skipped=True,
             ),
             llm_model=llm_config.get("model", "unknown"),
+            test_type=instance.test_type,
             cost=0.0,
         )
 
@@ -193,6 +220,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
                 success=False, reason=f"Test execution failed: {str(e)}"
             ),
             llm_model=llm_config.get("model", "unknown"),
+            test_type=instance.test_type,
             error_message=str(e),
         )
     finally:
@@ -290,7 +318,26 @@ def generate_structured_results(
     successful = structured_results.successful_tests
     skipped = structured_results.skipped_tests
     total = structured_results.total_tests
-    logger.info("Success rate: %.2f%% (%d/%d)", success_rate * 100, successful, total)
+    logger.info(
+        "Overall Success rate: %.2f%% (%d/%d)", success_rate * 100, successful, total
+    )
+
+    # Print type-specific success rates
+    if structured_results.integration_tests_total > 0:
+        logger.info(
+            "Integration tests: %.2f%% (%d/%d)",
+            structured_results.integration_tests_success_rate * 100,
+            structured_results.integration_tests_successful,
+            structured_results.integration_tests_total,
+        )
+    if structured_results.behavior_tests_total > 0:
+        logger.info(
+            "Behavior tests: %.2f%% (%d/%d)",
+            structured_results.behavior_tests_success_rate * 100,
+            structured_results.behavior_tests_successful,
+            structured_results.behavior_tests_total,
+        )
+
     if skipped > 0:
         logger.info("Skipped tests: %d", skipped)
     logger.info("Evaluation Results:")
