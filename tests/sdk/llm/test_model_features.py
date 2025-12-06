@@ -257,6 +257,7 @@ def test_force_string_serializer_full_model_names():
         ("litellm_proxy/openai/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-5", True),
         ("litellm_proxy/openai/gpt-5-mini", False),
+        ("openai/gpt-5.1-mini", False),
     ],
 )
 def test_prompt_cache_retention_support(model, expected_retention):

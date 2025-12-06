@@ -162,6 +162,18 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
     )
     assert "prompt_cache_retention" not in opts_51_mini_resp
 
+    # Also exclude explicit 5.1-mini variant
+    llm_51_plain_mini = LLM(model="openai/gpt-5.1-mini")
+    opts_51_plain_mini_chat = select_chat_options(
+        llm_51_plain_mini, {}, has_tools=False
+    )
+    assert "prompt_cache_retention" not in opts_51_plain_mini_chat
+
+    opts_51_plain_mini_resp = select_responses_options(
+        llm_51_plain_mini, {}, include=None, store=None
+    )
+    assert "prompt_cache_retention" not in opts_51_plain_mini_resp
+
     llm_5_mini = LLM(model="openai/gpt-5-mini")
     opts_5_mini_chat = select_chat_options(llm_5_mini, {}, has_tools=False)
     assert "prompt_cache_retention" not in opts_5_mini_chat
