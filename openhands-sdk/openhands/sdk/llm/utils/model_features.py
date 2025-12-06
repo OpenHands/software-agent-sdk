@@ -78,12 +78,6 @@ PROMPT_CACHE_PATTERNS: list[str] = [
 #   - gpt-5
 #   - gpt-5-codex
 #   - gpt-4.1
-# We intentionally keep patterns minimal to reduce overmatching:
-#   - Patterns below: ["gpt-5", "gpt-4.1"]
-#   - Then we exclude all "mini" variants in get_features (e.g., gpt-5-mini,
-#     gpt-5.1-mini, gpt-5.1-codex-mini) to avoid provider errors observed with
-#     prompt_cache_retention on some mini models in practice. Adjust if provider
-#     behavior changes.
 PROMPT_CACHE_RETENTION_PATTERNS: list[str] = [
     "gpt-5",
     "gpt-4.1",
