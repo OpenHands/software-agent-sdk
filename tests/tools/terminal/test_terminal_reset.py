@@ -100,27 +100,55 @@ def test_bash_reset_with_command():
         tools = TerminalTool.create(_create_conv_state(temp_dir))
         tool = tools[0]
         try:
-            # Set an environment variable
-            action = TerminalAction(command="export TEST_VAR=world")
-            result = tool(action)
-            assert isinstance(result, TerminalObservation)
-            assert result.metadata.exit_code == 0
+            if IS_WINDOWS:
+                # Set an environment variable (PowerShell)
+                action = TerminalAction(command="$env:TEST_VAR = 'world'")
+                result = tool(action)
+                assert isinstance(result, TerminalObservation)
+                assert result.metadata.exit_code == 0
 
-            # Reset with a command (should reset then execute the command)
-            reset_action = TerminalAction(
-                command="echo 'hello from fresh terminal'", reset=True
-            )
-            reset_result = tool(reset_action)
-            assert isinstance(reset_result, TerminalObservation)
-            assert "Terminal session has been reset" in reset_result.text
-            assert "hello from fresh terminal" in reset_result.text
-            assert reset_result.command == "[RESET] echo 'hello from fresh terminal'"
+                # Reset with a command (should reset then execute the command)
+                reset_action = TerminalAction(
+                    command="Write-Output 'hello from fresh terminal'", reset=True
+                )
+                reset_result = tool(reset_action)
+                assert isinstance(reset_result, TerminalObservation)
+                assert "Terminal session has been reset" in reset_result.text
+                assert "hello from fresh terminal" in reset_result.text
+                assert (
+                    reset_result.command
+                    == "[RESET] Write-Output 'hello from fresh terminal'"
+                )
 
-            # Verify the variable is no longer set (confirming reset worked)
-            action = TerminalAction(command="echo $TEST_VAR")
-            result = tool(action)
-            assert isinstance(result, TerminalObservation)
-            assert result.text.strip() == ""
+                # Verify the variable is no longer set (confirming reset worked)
+                action = TerminalAction(command="Write-Output $env:TEST_VAR")
+                result = tool(action)
+                assert isinstance(result, TerminalObservation)
+                assert result.text.strip() == ""
+            else:
+                # Set an environment variable (Bash)
+                action = TerminalAction(command="export TEST_VAR=world")
+                result = tool(action)
+                assert isinstance(result, TerminalObservation)
+                assert result.metadata.exit_code == 0
+
+                # Reset with a command (should reset then execute the command)
+                reset_action = TerminalAction(
+                    command="echo 'hello from fresh terminal'", reset=True
+                )
+                reset_result = tool(reset_action)
+                assert isinstance(reset_result, TerminalObservation)
+                assert "Terminal session has been reset" in reset_result.text
+                assert "hello from fresh terminal" in reset_result.text
+                assert (
+                    reset_result.command == "[RESET] echo 'hello from fresh terminal'"
+                )
+
+                # Verify the variable is no longer set (confirming reset worked)
+                action = TerminalAction(command="echo $TEST_VAR")
+                result = tool(action)
+                assert isinstance(result, TerminalObservation)
+                assert result.text.strip() == ""
         finally:
             assert tool.executor is not None
             tool.executor.close()
