@@ -95,7 +95,8 @@ def test_grep_executor_custom_path():
         assert observation.is_error is False
         assert len(observation.matches) == 1
         assert observation.search_path == str(sub_dir.resolve())
-        assert str(sub_dir) in str(observation.matches[0])
+        # Use resolved path for comparison (handles Windows short paths)
+        assert str(sub_dir.resolve()) in str(observation.matches[0])
 
 
 def test_grep_executor_invalid_path():

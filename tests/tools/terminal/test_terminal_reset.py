@@ -126,6 +126,8 @@ def test_bash_reset_with_command():
 
 def test_bash_reset_working_directory():
     """Test that reset restores the original working directory."""
+    from pathlib import Path
+
     with tempfile.TemporaryDirectory() as temp_dir:
         tools = TerminalTool.create(_create_conv_state(temp_dir))
         tool = tools[0]
@@ -134,10 +136,10 @@ def test_bash_reset_working_directory():
             action = TerminalAction(command="echo test")
             result = tool(action)
             assert isinstance(result, TerminalObservation)
-            # Normalize paths for comparison (Windows uses backslash)
-            result_cwd = result.metadata.working_dir.replace("/", "\\")
-            temp_dir_normalized = temp_dir.replace("/", "\\")
-            assert temp_dir_normalized.lower() in result_cwd.lower()
+            # Resolve paths to canonical form (handles Windows short paths)
+            result_cwd = str(Path(result.metadata.working_dir).resolve())
+            temp_dir_resolved = str(Path(temp_dir).resolve())
+            assert temp_dir_resolved.lower() in result_cwd.lower()
 
             # Change directory
             if IS_WINDOWS:
@@ -151,8 +153,8 @@ def test_bash_reset_working_directory():
             action = TerminalAction(command="echo test")
             result = tool(action)
             assert isinstance(result, TerminalObservation)
-            result_cwd = result.metadata.working_dir.replace("/", "\\")
-            assert temp_dir_normalized.lower() not in result_cwd.lower()
+            result_cwd = str(Path(result.metadata.working_dir).resolve())
+            assert temp_dir_resolved.lower() not in result_cwd.lower()
 
             # Reset the terminal
             reset_action = TerminalAction(command="", reset=True)
@@ -164,8 +166,8 @@ def test_bash_reset_working_directory():
             action = TerminalAction(command="echo test")
             result = tool(action)
             assert isinstance(result, TerminalObservation)
-            result_cwd = result.metadata.working_dir.replace("/", "\\")
-            assert temp_dir_normalized.lower() in result_cwd.lower()
+            result_cwd = str(Path(result.metadata.working_dir).resolve())
+            assert temp_dir_resolved.lower() in result_cwd.lower()
         finally:
             tool.executor.close()
 

@@ -80,6 +80,8 @@ def test_bash_tool_execution():
 
 def test_bash_tool_working_directory():
     """Test that TerminalTool respects the working directory."""
+    from pathlib import Path
+
     with tempfile.TemporaryDirectory() as temp_dir:
         conv_state = _create_test_conv_state(temp_dir)
         tools = TerminalTool.create(conv_state)
@@ -93,10 +95,10 @@ def test_bash_tool_working_directory():
 
             # Check that the working directory is correct via metadata
             assert isinstance(result, TerminalObservation)
-            # Normalize paths for comparison (Windows uses backslash)
-            result_cwd = result.metadata.working_dir.replace("/", "\\")
-            temp_dir_normalized = temp_dir.replace("/", "\\")
-            assert temp_dir_normalized.lower() in result_cwd.lower()
+            # Resolve paths to canonical form (handles Windows short paths)
+            result_cwd = str(Path(result.metadata.working_dir).resolve())
+            temp_dir_resolved = str(Path(temp_dir).resolve())
+            assert temp_dir_resolved.lower() in result_cwd.lower()
         finally:
             tool.executor.close()
 
