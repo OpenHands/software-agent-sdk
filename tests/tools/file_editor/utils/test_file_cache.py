@@ -167,8 +167,8 @@ def test_file_permissions(file_cache):
     file_path = file_cache._get_file_path("test_key")
     assert os.access(file_path, os.R_OK)
     assert os.access(file_path, os.W_OK)
-    # Skip X_OK check on Windows - Windows doesn't have Unix-style executable permissions
-    # All files are considered executable based on extension, not permissions
+    # Skip X_OK check on Windows - Windows doesn't have Unix-style
+    # executable permissions (files are executable based on extension)
     if sys.platform != "win32":
         assert not os.access(file_path, os.X_OK)
 

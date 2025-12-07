@@ -5,10 +5,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from openhands.tools.browser_use.impl import get_browser_executor_class
+from openhands.tools.utils.timeout import TimeoutError
 
 
 BrowserToolExecutor = get_browser_executor_class()
-from openhands.tools.utils.timeout import TimeoutError
 
 
 class TestBrowserInitialization:

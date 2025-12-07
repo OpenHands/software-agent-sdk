@@ -10,13 +10,13 @@ from openhands.tools.browser_use.definition import (
 )
 from openhands.tools.browser_use.impl import get_browser_executor_class
 
-
-BrowserToolExecutor = get_browser_executor_class()
-
 from .conftest import (
     assert_browser_observation_error,
     assert_browser_observation_success,
 )
+
+
+BrowserToolExecutor = get_browser_executor_class()
 
 
 @patch.object(

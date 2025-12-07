@@ -365,8 +365,8 @@ class FileEditor:
             # Normalize header path for consistent output
             normalized_path = str(path).replace("\\", "/")
             msg = [
-                f"Here's the files and directories up to 2 levels deep in {normalized_path}, "
-                f"excluding hidden items:\n{output}"
+                f"Here's the files and directories up to 2 levels deep in "
+                f"{normalized_path}, excluding hidden items:\n{output}"
             ]
             if hidden_count > 0:
                 msg.append(

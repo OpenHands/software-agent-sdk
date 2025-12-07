@@ -160,23 +160,7 @@ jobs:
 
             - name: Set Python UTF-8 encoding
               if: steps.changed.outputs.any_changed == 'true'
-              shell: pwsh
-              run: |
-                # Set PYTHONUTF8 environment variable for UTF-8 encoding
-                # Try system-wide first (requires admin), then fallback
-                try {
-                  $result = setx /m PYTHONUTF8 1 2>&1
-                  if ($LASTEXITCODE -eq 0) {
-                    Write-Host "PYTHONUTF8 set system-wide"
-                  } else {
-                    Write-Host "setx /m requires admin privileges, using workflow-level"
-                  }
-                } catch {
-                  Write-Host "setx /m failed, using workflow-level variable"
-                }
-                # Set for all subsequent steps in this workflow
-                echo "PYTHONUTF8=1" >> $env:GITHUB_ENV
-                Write-Host "PYTHONUTF8 environment variable set for this workflow"
+              run: echo "PYTHONUTF8=1" >> $env:GITHUB_ENV
 
             - name: Install deps
               if: steps.changed.outputs.any_changed == 'true'
@@ -184,26 +168,7 @@ jobs:
 
             - name: Install Chromium for browser tests
               if: steps.changed.outputs.any_changed == 'true'
-              shell: pwsh
-              run: |
-                # Try uvx first (recommended), then fallback to playwright CLI
-                try {
-                  uvx playwright install chromium --with-deps
-                } catch {
-                  Write-Host "uvx installation failed, trying alternative"
-                  # Fallback: install playwright if not available, then install chromium
-                  try {
-                    $null = uv run python -m playwright --version 2>&1
-                  } catch {
-                    Write-Host "Installing playwright..."
-                    uv pip install playwright
-                  }
-                  try {
-                    uv run python -m playwright install chromium --with-deps
-                  } catch {
-                    Write-Host "Chromium installation failed, tests may skip"
-                  }
-                }
+              run: uvx playwright install chromium --with-deps
 
             - name: Run Windows tools tests with coverage
               if: steps.changed.outputs.any_changed == 'true'
@@ -224,7 +189,6 @@ jobs:
                     --ignore=tests/tools/terminal/test_conversation_cleanup.py `
                     --ignore=tests/tools/terminal/test_terminal_tool_auto_detection.py `
                     --ignore=tests/tools/file_editor/test_memory_usage.py
-                  # Rename coverage file for upload
                   if (Test-Path .coverage) {
                     Move-Item .coverage coverage-tools-windows.dat
                     Write-Host "Windows tools coverage file prepared for upload"
