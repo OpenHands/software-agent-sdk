@@ -85,15 +85,18 @@ def test_bash_tool_working_directory():
         tools = TerminalTool.create(conv_state)
         tool = tools[0]
         try:
-            # Create an action to check current directory
-            action = TerminalAction(command="pwd")
+            # Create an action and check working directory via metadata
+            action = TerminalAction(command="echo test")
 
             # Execute the action
             result = tool(action)
 
-            # Check that the working directory is correct
+            # Check that the working directory is correct via metadata
             assert isinstance(result, TerminalObservation)
-            assert temp_dir in result.text
+            # Normalize paths for comparison (Windows uses backslash)
+            result_cwd = result.metadata.working_dir.replace("/", "\\")
+            temp_dir_normalized = temp_dir.replace("/", "\\")
+            assert temp_dir_normalized.lower() in result_cwd.lower()
         finally:
             tool.executor.close()
 
