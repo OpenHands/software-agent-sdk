@@ -15,29 +15,31 @@ from openhands.tools.file_editor.editor import FileEditor
 @pytest.fixture
 def temp_file():
     """Create a temporary file for testing."""
+    # Create temp file and close the handle immediately to avoid locking on Windows
     with tempfile.NamedTemporaryFile(delete=False) as f:
         file_path = Path(f.name)
-        yield file_path
-        # On Windows, files may be locked briefly after handles are closed.
-        # This is due to Windows file system behavior where file handles may not be
-        # immediately released, opportunistic locks (oplocks), or background processes
-        # like File Explorer holding handles. See:
-        # - https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-opbatch-ack-close-pending
-        # - https://learn.microsoft.com/en-us/answers/questions/5559106/file-explorer-is-opening-files-and-folders-prevent
-        # Retry deletion with a small delay if it fails
-        max_retries = 5 if sys.platform == "win32" else 1
-        for attempt in range(max_retries):
-            try:
-                if file_path.exists():
-                    file_path.unlink()
-                break
-            except (FileNotFoundError, PermissionError):
-                if attempt < max_retries - 1:
-                    time.sleep(0.1)  # Small delay before retry
-                elif attempt == max_retries - 1:
-                    # Last attempt failed, but don't fail the test
-                    # The file will be cleaned up by the OS eventually
-                    pass
+    # File handle is now closed, yield the path
+    yield file_path
+    # On Windows, files may be locked briefly after handles are closed.
+    # This is due to Windows file system behavior where file handles may not be
+    # immediately released, opportunistic locks (oplocks), or background processes
+    # like File Explorer holding handles. See:
+    # - https://learn.microsoft.com/en-us/windows-hardware/drivers/ifs/fsctl-opbatch-ack-close-pending
+    # - https://learn.microsoft.com/en-us/answers/questions/5559106/file-explorer-is-opening-files-and-folders-prevent
+    # Retry deletion with a small delay if it fails
+    max_retries = 5 if sys.platform == "win32" else 1
+    for attempt in range(max_retries):
+        try:
+            if file_path.exists():
+                file_path.unlink()
+            break
+        except (FileNotFoundError, PermissionError):
+            if attempt < max_retries - 1:
+                time.sleep(0.1)  # Small delay before retry
+            elif attempt == max_retries - 1:
+                # Last attempt failed, but don't fail the test
+                # The file will be cleaned up by the OS eventually
+                pass
 
 
 @pytest.fixture
