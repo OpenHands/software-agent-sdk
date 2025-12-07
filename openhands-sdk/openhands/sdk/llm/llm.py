@@ -248,7 +248,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Requires verified OpenAI organization. Only sent when explicitly set.",
     )
     enable_encrypted_reasoning: bool = Field(
-        default=False,
+        default=True,
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
