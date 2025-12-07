@@ -90,6 +90,7 @@ def test_bash_reset_basic():
                 # The variable should be empty after reset
                 assert result.text.strip() == ""
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -121,6 +122,7 @@ def test_bash_reset_with_command():
             assert isinstance(result, TerminalObservation)
             assert result.text.strip() == ""
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -136,6 +138,7 @@ def test_bash_reset_working_directory():
             action = TerminalAction(command="echo test")
             result = tool(action)
             assert isinstance(result, TerminalObservation)
+            assert result.metadata.working_dir is not None
             # Resolve paths to canonical form (handles Windows short paths)
             result_cwd = str(Path(result.metadata.working_dir).resolve())
             temp_dir_resolved = str(Path(temp_dir).resolve())
@@ -153,6 +156,7 @@ def test_bash_reset_working_directory():
             action = TerminalAction(command="echo test")
             result = tool(action)
             assert isinstance(result, TerminalObservation)
+            assert result.metadata.working_dir is not None
             result_cwd = str(Path(result.metadata.working_dir).resolve())
             assert temp_dir_resolved.lower() not in result_cwd.lower()
 
@@ -166,9 +170,11 @@ def test_bash_reset_working_directory():
             action = TerminalAction(command="echo test")
             result = tool(action)
             assert isinstance(result, TerminalObservation)
+            assert result.metadata.working_dir is not None
             result_cwd = str(Path(result.metadata.working_dir).resolve())
             assert temp_dir_resolved.lower() in result_cwd.lower()
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -202,6 +208,7 @@ def test_bash_reset_multiple_times():
             assert isinstance(result, TerminalObservation)
             assert "after second reset" in result.text
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -218,6 +225,7 @@ def test_bash_reset_with_timeout():
             assert "Terminal session has been reset" in reset_result.text
             assert reset_result.command == "[RESET]"
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -236,6 +244,7 @@ def test_bash_reset_with_is_input_validation():
             ):
                 tool(action)
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -252,4 +261,5 @@ def test_bash_reset_only_with_empty_command():
             assert "Terminal session has been reset" in reset_result.text
             assert reset_result.command == "[RESET]"
         finally:
+            assert tool.executor is not None
             tool.executor.close()

@@ -39,6 +39,7 @@ def test_bash_tool_initialization():
             assert tool.executor is not None
             assert tool.action_type == TerminalAction
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -54,6 +55,7 @@ def test_bash_tool_with_username():
             assert tool.executor is not None
             assert tool.action_type == TerminalAction
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -75,6 +77,7 @@ def test_bash_tool_execution():
             assert isinstance(result, TerminalObservation)
             assert "Hello, World!" in result.text
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -95,11 +98,13 @@ def test_bash_tool_working_directory():
 
             # Check that the working directory is correct via metadata
             assert isinstance(result, TerminalObservation)
+            assert result.metadata.working_dir is not None
             # Resolve paths to canonical form (handles Windows short paths)
             result_cwd = str(Path(result.metadata.working_dir).resolve())
             temp_dir_resolved = str(Path(temp_dir).resolve())
             assert temp_dir_resolved.lower() in result_cwd.lower()
         finally:
+            assert tool.executor is not None
             tool.executor.close()
 
 
@@ -119,4 +124,5 @@ def test_bash_tool_to_openai_tool():
             assert "description" in openai_tool["function"]
             assert "parameters" in openai_tool["function"]
         finally:
+            assert tool.executor is not None
             tool.executor.close()
