@@ -609,6 +609,6 @@ class Agent(AgentBase):
                 "  )\n"
                 "\n"
                 "For more information, see: "
-                "https://docs.all-hands.dev/sdk/agent-configuration#condensers\n"
+                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
                 "=" * 80
             )
