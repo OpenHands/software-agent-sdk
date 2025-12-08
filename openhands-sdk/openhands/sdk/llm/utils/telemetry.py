@@ -47,6 +47,7 @@ class Telemetry(BaseModel):
         default=None
     )
     _stats_update_callback: Callable[[], None] | None = PrivateAttr(default=None)
+    _token_estimation_callback: Callable[[list], int] | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", arbitrary_types_allowed=True
@@ -72,6 +73,18 @@ class Telemetry(BaseModel):
                      Used for streaming stats updates in remote execution contexts.
         """
         self._stats_update_callback = callback
+
+    def set_token_estimation_callback(
+        self, callback: Callable[[list], int] | None
+    ) -> None:
+        """Set a callback function to estimate token usage when provider returns zero.
+
+        Args:
+            callback: A function that takes a list of messages and returns estimated
+                     token count. Used when providers like Minimax return zero token
+                     usage.
+        """
+        self._token_estimation_callback = callback
 
     def on_request(self, log_ctx: dict | None) -> None:
         self._req_start = time.time()
@@ -106,6 +119,36 @@ class Telemetry(BaseModel):
             self._record_usage(
                 usage, response_id, self._req_ctx.get("context_window", 0)
             )
+        elif usage is not None and self._token_estimation_callback is not None:
+            # Provider returned usage but with zero tokens (e.g., Minimax)
+            # Try to estimate token usage from the request messages
+            messages = self._req_ctx.get("messages", [])
+            input_items = self._req_ctx.get("input", [])
+
+            # Use messages for chat completions or input items for responses API
+            content_to_estimate = messages or input_items
+            if content_to_estimate:
+                try:
+                    estimated_prompt_tokens = self._token_estimation_callback(
+                        content_to_estimate
+                    )
+                    # For completion tokens, we can't easily estimate without the
+                    # response
+                    # content
+                    # So we'll record the prompt tokens and leave completion tokens as 0
+                    # This is better than recording nothing at all
+                    self.metrics.add_token_usage(
+                        prompt_tokens=estimated_prompt_tokens,
+                        completion_tokens=0,  # Can't estimate without response content
+                        cache_read_tokens=0,
+                        cache_write_tokens=0,
+                        reasoning_tokens=0,
+                        context_window=self._req_ctx.get("context_window", 0),
+                        response_id=response_id,
+                    )
+                except Exception as e:
+                    logger.debug(f"Token estimation failed: {e}")
+                    # Fall back to recording zero usage if estimation fails
 
         # 4) optional logging
         if self.log_enabled:

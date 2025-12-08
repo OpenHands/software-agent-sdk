@@ -410,6 +410,25 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             metrics=self._metrics,
         )
 
+        # Set up token estimation callback for providers that return zero usage
+        def estimate_tokens_from_formatted_messages(formatted_messages):
+            """Estimate token count from already formatted messages."""
+            try:
+                return int(
+                    token_counter(
+                        model=self.model,
+                        messages=formatted_messages,
+                        custom_tokenizer=self._tokenizer,
+                    )
+                )
+            except Exception as e:
+                logger.debug(f"Token estimation failed: {e}")
+                return 0
+
+        self._telemetry.set_token_estimation_callback(
+            estimate_tokens_from_formatted_messages
+        )
+
         # Tokenizer
         if self.custom_tokenizer:
             self._tokenizer = create_pretrained_tokenizer(self.custom_tokenizer)
@@ -540,16 +559,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
 
-        # 4) optional request logging context (kept small)
+        # 4) request context for telemetry (always include messages for token
+        # estimation)
         assert self._telemetry is not None
-        log_ctx = None
+        log_ctx = {
+            "messages": formatted_messages[:],  # already simple dicts
+            "context_window": self.max_input_tokens or 0,
+        }
+        # Add additional context only when logging is enabled to keep it small
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "messages": formatted_messages[:],  # already simple dicts
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            log_ctx.update(
+                {
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
 
@@ -661,17 +685,21 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self, kwargs, include=include, store=store
         )
 
-        # Optional request logging
+        # Request context for telemetry (always include input for token estimation)
         assert self._telemetry is not None
-        log_ctx = None
+        log_ctx = {
+            "input": input_items[:],
+            "context_window": self.max_input_tokens or 0,
+        }
+        # Add additional context only when logging is enabled to keep it small
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "llm_path": "responses",
-                "input": input_items[:],
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            log_ctx.update(
+                {
+                    "llm_path": "responses",
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
         self._telemetry.on_request(log_ctx=log_ctx)
 
         # Perform call with retries
