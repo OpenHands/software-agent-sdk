@@ -163,8 +163,20 @@ Your response must be valid JSON only, no other text."""
                 if isinstance(content, TextContent):
                     response_text += content.text
 
+        # Strip markdown code blocks if present (```json ... ```)
+        cleaned_response = response_text.strip()
+        if cleaned_response.startswith("```"):
+            # Remove opening code block marker (```json or ```)
+            lines = cleaned_response.split("\n")
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            # Remove closing code block marker (```)
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            cleaned_response = "\n".join(lines).strip()
+
         # Parse JSON response
-        result_dict = json.loads(response_text.strip())
+        result_dict = json.loads(cleaned_response)
 
         # Extract usage information from metrics
         metrics = response.metrics
