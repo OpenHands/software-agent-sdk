@@ -1,14 +1,14 @@
 from abc import ABC
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal
+from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
-from openhands.sdk.conversation.secret_source import SecretSource
+from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
@@ -94,9 +94,12 @@ class StartConversationRequest(BaseModel):
         description="If true, the conversation will use stuck detection to "
         "prevent infinite loops.",
     )
-    secrets: dict[str, SecretSource] = Field(
+    secrets: dict[str, SecretValue] = Field(
         default_factory=dict,
-        description="Secrets available in the conversation",
+        description=(
+            "Secrets available to the conversation. Each value may be a plain string "
+            "or a SecretSource object (e.g., StaticSecret, LookupSecret)."
+        ),
     )
 
 
@@ -153,48 +156,14 @@ class EventPage(OpenHandsModel):
 
 
 class UpdateSecretsRequest(BaseModel):
-    """Payload to update secrets in a conversation."""
+    """Payload to update secrets in a conversation.
 
-    secrets: dict[str, SecretSource] = Field(
-        description="Dictionary mapping secret keys to values"
+    Each value may be either a plain string or a SecretSource object.
+    """
+
+    secrets: dict[str, SecretValue] = Field(
+        description="Dictionary mapping secret keys to values (string or SecretSource)"
     )
-
-    @field_validator("secrets", mode="before")
-    @classmethod
-    def convert_string_secrets(cls, v: dict[str, Any]) -> dict[str, Any]:
-        """Convert plain string secrets to StaticSecret objects.
-
-        This validator enables backward compatibility by automatically converting:
-        - Plain strings: "secret-value" → StaticSecret(value=SecretStr("secret-value"))
-        - Dict with value field: {"value": "secret-value"} → StaticSecret dict format
-        - Proper SecretSource objects: passed through unchanged
-        """
-        if not isinstance(v, dict):
-            return v
-
-        converted = {}
-        for key, value in v.items():
-            if isinstance(value, str):
-                # Convert plain string to StaticSecret dict format
-                converted[key] = {
-                    "kind": "StaticSecret",
-                    "value": value,
-                }
-            elif isinstance(value, dict):
-                if "value" in value and "kind" not in value:
-                    # Convert dict with value field to StaticSecret dict format
-                    converted[key] = {
-                        "kind": "StaticSecret",
-                        "value": value["value"],
-                    }
-                else:
-                    # Keep existing SecretSource objects or properly formatted dicts
-                    converted[key] = value
-            else:
-                # Keep other types as-is (will likely fail validation later)
-                converted[key] = value
-
-        return converted
 
 
 class SetConfirmationPolicyRequest(BaseModel):

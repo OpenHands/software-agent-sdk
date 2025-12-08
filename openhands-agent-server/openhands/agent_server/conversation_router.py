@@ -210,13 +210,8 @@ async def update_conversation_secrets(
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND)
-    # Strings are valid SecretValue (SecretValue = str | SecretProvider)
-    from typing import cast
-
-    from openhands.sdk.conversation.secret_registry import SecretValue
-
-    secrets = cast(dict[str, SecretValue], request.secrets)
-    await event_service.update_secrets(secrets)
+    # Values may be either plain strings or SecretSource objects; pass through.
+    await event_service.update_secrets(request.secrets)
     return Success()
 
 
