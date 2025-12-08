@@ -58,6 +58,8 @@ class TmuxTerminal(TerminalInterface):
             x=1000,
             y=1000,
         )
+        for k, v in os.environ.items():
+            self.session.set_environment(k, v)
 
         # Set history limit to a large number to avoid losing history
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
