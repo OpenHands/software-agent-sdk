@@ -20,7 +20,6 @@ from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
-    ConversationTokenCallbackType,
     StuckDetectionThresholds,
 )
 from openhands.sdk.conversation.visualizer import (

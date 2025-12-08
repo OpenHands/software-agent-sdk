@@ -5,7 +5,7 @@ from pydantic import SecretStr
 from openhands.sdk import Agent, LocalConversation
 from openhands.sdk.event import ActionEvent, ObservationEvent
 from openhands.sdk.llm import LLM, MessageToolCall, TextContent
-from openhands.tools.execute_bash.definition import (
+from openhands.tools.execute_bash.definition import (  # type: ignore
     ExecuteBashAction,
     ExecuteBashObservation,
 )
