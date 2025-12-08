@@ -1,5 +1,5 @@
 ---
-name: '[Optional] Docs example / check-examples'
+name: '[Optional] Docs example'
 
 on:
     pull_request:
