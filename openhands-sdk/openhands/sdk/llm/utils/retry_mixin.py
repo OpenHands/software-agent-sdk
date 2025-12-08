@@ -41,12 +41,12 @@ class RetryMixin:
             self.log_retry_attempt(retry_state)
 
             if retry_listener is not None:
-                if retry_state.outcome is not None:
-                    retry_listener(
-                        retry_state.attempt_number,
-                        num_retries,
-                        retry_state.outcome.exception(),
-                    )
+                exc = (
+                    retry_state.outcome.exception()
+                    if retry_state.outcome is not None
+                    else None
+                )
+                retry_listener(retry_state.attempt_number, num_retries, exc)
 
             # If there is no outcome or no exception, nothing to tweak.
             if retry_state.outcome is None:
