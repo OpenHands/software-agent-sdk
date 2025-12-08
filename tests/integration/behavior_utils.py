@@ -17,7 +17,7 @@ def find_tool_calls(collected_events: list[Event], tool_name: str) -> list[Event
     Args:
         collected_events: List of events collected from conversation
         tool_name: Name of the tool to search for
-            (e.g., "FileEditorTool", "TerminalTool")
+            (e.g., "file_editor", "terminal")
 
     Returns:
         List of ActionEvents matching the tool name
@@ -44,11 +44,11 @@ def find_file_editing_operations(collected_events: list[Event]) -> list[Event]:
         List of ActionEvents that performed file editing
     """
     from openhands.sdk.event import ActionEvent
-    from openhands.tools.file_editor.definition import FileEditorAction
+    from openhands.tools.file_editor.definition import FileEditorAction, FileEditorTool
 
     editing_operations = []
     for event in collected_events:
-        if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
+        if isinstance(event, ActionEvent) and event.tool_name == FileEditorTool.name:
             if event.action is not None:
                 assert isinstance(event.action, FileEditorAction)
                 # Check if the command is an editing operation
@@ -77,11 +77,11 @@ def find_file_operations(
         List of ActionEvents that performed file operations
     """
     from openhands.sdk.event import ActionEvent
-    from openhands.tools.file_editor.definition import FileEditorAction
+    from openhands.tools.file_editor.definition import FileEditorAction, FileEditorTool
 
     file_operations = []
     for event in collected_events:
-        if isinstance(event, ActionEvent) and event.tool_name == "FileEditorTool":
+        if isinstance(event, ActionEvent) and event.tool_name == FileEditorTool.name:
             if event.action is not None:
                 assert isinstance(event.action, FileEditorAction)
                 if file_pattern is None or _matches_pattern(
@@ -105,11 +105,11 @@ def check_bash_command_used(
         List of ActionEvents where bash was used with the pattern
     """
     from openhands.sdk.event import ActionEvent
-    from openhands.tools.terminal.definition import TerminalAction
+    from openhands.tools.terminal.definition import TerminalAction, TerminalTool
 
     bash_commands = []
     for event in collected_events:
-        if isinstance(event, ActionEvent) and event.tool_name == "TerminalTool":
+        if isinstance(event, ActionEvent) and event.tool_name == TerminalTool.name:
             if event.action is not None:
                 assert isinstance(event.action, TerminalAction)
                 if command_pattern in event.action.command:
