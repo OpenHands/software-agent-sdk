@@ -30,25 +30,9 @@ Instead of always generating a fixed number of attempts (Best@k), we would:
 I'm thinking about implementing this via `conversation_callback` - we could \
 listen for finish actions and run the critic when a finish action is received.
 
-Can you tell me what is the best way to implement this? Where should the \
-critic logic go, and how should it integrate with the existing conversation \
-system?"""
-
-# Example code to make it realistic
-EXAMPLE_CONVERSATION_CODE = """
-from openhands.sdk import Agent, LLM
-from openhands.sdk.conversation import LocalConversation
-
-class AdaptiveRollout:
-    def __init__(self, agent: Agent, critic_model, threshold: float = 0.5):
-        self.agent = agent
-        self.critic = critic_model
-        self.threshold = threshold
-
-    def solve(self, problem):
-        # TODO: Implement adaptive rollout logic
-        pass
-"""
+Before I start implementing, can you first explore the codebase and tell me \
+what is the best way to implement this? Where should the critic logic go, and \
+how should it integrate with the existing conversation system?"""
 
 logger = get_logger(__name__)
 
@@ -60,9 +44,6 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.example_file_path: str = os.path.join(
-            self.workspace, "adaptive_rollout.py"
-        )
 
     @property
     def tools(self) -> list[Tool]:
@@ -118,27 +99,16 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
                 f.write(
                     "# Workspace\n\n"
                     "This workspace contains:\n"
-                    "- `software-agent-sdk/` - The main repository\n"
-                    "- `adaptive_rollout.py` - Your initial sketch\n"
+                    "- `software-agent-sdk/` - The main repository for "
+                    "the OpenHands agent SDK\n"
                 )
 
-            # Create the example file showing what the user is thinking about
-            with open(self.example_file_path, "w") as f:
-                f.write(EXAMPLE_CONVERSATION_CODE)
-
             logger.info(f"Cloned software-agent-sdk to: {repo_dir}")
-            logger.info(f"Created example sketch file at: {self.example_file_path}")
 
         except subprocess.TimeoutExpired:
-            logger.warning("Git clone timed out, creating minimal setup instead")
-            # Fallback: just create the example file
-            with open(self.example_file_path, "w") as f:
-                f.write(EXAMPLE_CONVERSATION_CODE)
+            logger.warning("Git clone timed out, test may not work properly")
         except Exception as e:
-            logger.warning(f"Git clone failed: {e}, creating minimal setup instead")
-            # Fallback: just create the example file
-            with open(self.example_file_path, "w") as f:
-                f.write(EXAMPLE_CONVERSATION_CODE)
+            logger.warning(f"Git clone failed: {e}, test may not work properly")
 
     def verify_result(self) -> TestResult:
         """
