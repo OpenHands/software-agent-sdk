@@ -12,7 +12,7 @@ from tests.integration.behavior_utils import (
     find_file_editing_operations,
     get_conversation_summary,
 )
-from tests.integration.utils.llm_judge import judge_agent_behavior_with_tool
+from tests.integration.utils.llm_judge import judge_agent_behavior
 
 
 # Instruction asks for advice on HOW to implement, not to actually implement
@@ -192,7 +192,7 @@ Did the agent behave appropriately by providing advice/guidance without
 implementing?
 """
 
-        judgment = judge_agent_behavior_with_tool(
+        judgment = judge_agent_behavior(
             user_instruction=INSTRUCTION,
             conversation_summary=conversation_summary,
             evaluation_criteria=evaluation_criteria,
