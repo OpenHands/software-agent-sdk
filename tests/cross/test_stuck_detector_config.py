@@ -5,7 +5,7 @@ from pydantic import SecretStr
 from openhands.sdk import Agent, LocalConversation
 from openhands.sdk.event import ActionEvent, ObservationEvent
 from openhands.sdk.llm import LLM, MessageToolCall, TextContent
-from openhands.tools.execute_bash.definition import (  # type: ignore
+from openhands.tools.terminal.definition import (
     ExecuteBashAction,
     ExecuteBashObservation,
 )
@@ -43,7 +43,7 @@ def test_custom_action_observation_threshold():
         observation = ObservationEvent(
             source="environment",
             observation=ExecuteBashObservation(
-                output="file1.txt", command="ls", exit_code=0
+                content=[TextContent(text="file1.txt")], command="ls", exit_code=0
             ),
             action_id=action.id,
             tool_name="execute_bash",
