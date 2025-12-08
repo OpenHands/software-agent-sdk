@@ -30,7 +30,6 @@ class TestInstanceResult(BaseModel):
     test_result: TestResultData
     test_type: Literal["integration", "behavior"]
     required: bool  # True for integration tests, False for behavior tests
-    criticality: str = "critical"
     cost: float = 0.0
     error_message: str | None = None
 
@@ -92,7 +91,6 @@ class ModelTestResults(BaseModel):
                     ),
                     test_type=output.test_type,
                     required=output.required,
-                    criticality=output.criticality,
                     cost=output.cost,
                     error_message=output.error_message,
                 )
