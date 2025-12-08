@@ -101,3 +101,7 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
   - Prefer using `ps aux` to find the exact process ID (PID) first, then kill that specific PID
   - When possible, use more targeted approaches like finding the PID from a pidfile or using application-specific shutdown commands
 </PROCESS_MANAGEMENT>
+
+{% if model_family %}
+{% include "model_specific/" ~ model_family ~ ".j2" ignore missing %}
+{% endif %}
