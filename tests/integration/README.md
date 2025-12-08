@@ -81,12 +81,8 @@ These tests must pass for releases and verify that the agent can successfully co
 
 ### Behavior Tests (`b*.py`) - **Optional**
 
-These tests track quality improvements and don't block releases. They verify that agents follow system message guidelines and avoid undesirable behaviors:
+These tests track quality improvements and don't block releases. They verify that agents follow system message guidelines and handle complex, nuanced scenarios appropriately:
 
-- **b01_no_premature_implementation** - Tests that the agent doesn't start implementing when asked for advice. The agent should explore the codebase, provide suggestions, and ask clarifying questions instead of immediately creating or editing files.
+- **b01_no_premature_implementation** - Tests that the agent doesn't start implementing when asked for advice. Uses a real codebase (software-agent-sdk checked out to a historical commit) to test that the agent explores, provides suggestions, and asks clarifying questions instead of immediately creating or editing files.
 
-- **b02_no_unnecessary_markdown** - Tests that the agent doesn't create unnecessary documentation files (README.md, DOCS.md, etc.) when asked to explain existing code. The agent should provide explanations in conversation rather than creating new files.
-
-- **b03_use_specialized_tools** - Tests that the agent uses specialized tools like FileEditorTool instead of bash commands (cat, head, tail) for reading files. This ensures a better user experience and more reliable file operations.
-
-For more details on behavior testing, see [BEHAVIOR_TESTS.md](BEHAVIOR_TESTS.md).
+For more details on behavior testing and guidelines for adding new tests, see [BEHAVIOR_TESTS.md](BEHAVIOR_TESTS.md).

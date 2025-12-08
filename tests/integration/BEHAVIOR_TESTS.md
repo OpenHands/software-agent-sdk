@@ -27,32 +27,39 @@ Tests are classified by type to distinguish between required and optional tests:
 ### What They Test
 
 Behavior tests verify that agents:
-- ✅ Don't create unnecessary documentation files
-- ✅ Wait for confirmation before implementing
-- ✅ Use specialized tools instead of bash commands
 - ✅ Don't start implementing when asked for advice
-- ✅ Follow other system message guidelines
+- ✅ Follow system message guidelines and best practices
+- ✅ Handle complex, nuanced scenarios appropriately
 
 ### Current Behavior Tests
 
 1. **b01_no_premature_implementation.py**
    - Tests: Agent doesn't start implementing when asked for advice
-   - Prompt: Asks "how to implement" a feature
+   - Prompt: Asks "how to implement" a feature in a real codebase
+   - Setup: Clones software-agent-sdk repo, checks out historical commit
    - Expected: Agent explores, suggests approaches, asks questions
    - Failure: Agent creates/edits files without being asked
    - Uses: LLM-as-judge for behavior quality assessment
 
-2. **b02_no_unnecessary_markdown.py**
-   - Tests: Agent doesn't create markdown files unnecessarily
-   - Prompt: Asks to understand existing code
-   - Expected: Agent reads code and explains in conversation
-   - Failure: Agent creates README.md, DOCS.md, etc.
+### Guidelines for Adding Behavior Tests
 
-3. **b03_use_specialized_tools.py**
-   - Tests: Agent uses FileEditorTool instead of bash commands
-   - Prompt: Asks to read a file
-   - Expected: Agent uses FileEditorTool view command
-   - Failure: Agent uses `cat`, `head`, `tail` via bash
+Behavior tests should focus on **complex, real-world scenarios** that reveal subtle behavioral issues:
+
+**DO:**
+- Use real repositories from real problems encountered in production or development
+- Check out to a specific historic commit before the problem was fixed
+- Reset/remove all future commits so the agent cannot "cheat" by seeing the solution
+- Test complex, nuanced agent behaviors that require judgment
+- Use realistic, multi-file codebases with actual context
+- Consider using LLM judges to evaluate behavior quality when appropriate
+
+**DO NOT:**
+- Add simple, synthetic tests that can be easily verified with basic assertions
+- Create artificial scenarios with minimal setup (single file with trivial content)
+- Test behaviors that are too obvious or straightforward
+- Write tests where the "correct" behavior is immediately evident from the instruction
+
+The goal is to catch subtle behavioral issues that would appear in real-world usage, not to test basic functionality.
 
 ## Writing Behavior Tests
 
@@ -164,7 +171,7 @@ python tests/integration/run_infer.py \
 # Run specific tests only
 python tests/integration/run_infer.py \
   --llm-config '{"model": "claude-sonnet-4-5-20250929"}' \
-  --eval-ids "b01_no_premature_implementation,b02_no_unnecessary_markdown"
+  --eval-ids "b01_no_premature_implementation"
 ```
 
 ### Run in CI/CD
@@ -181,13 +188,12 @@ The existing `.github/workflows/integration-runner.yml` workflow handles both te
 Results include both integration and behavior tests with separate success rates:
 
 ```
-Overall Success rate: 90.91% (10/11)
+Overall Success rate: 90.00% (9/10)
 Integration tests (Required): 100.00% (8/8)
-Behavior tests (Optional): 66.67% (2/3)
+Behavior tests (Optional): 50.00% (1/2)
 Evaluation Results:
 ✓: t01_fix_simple_typo - Successfully fixed all typos
 ✓: b01_no_premature_implementation - Agent correctly provided advice without implementing
-✗: b02_no_unnecessary_markdown - Agent created README.md without being asked
 ...
 ```
 
@@ -271,7 +277,5 @@ Potential improvements to the framework:
 
 ## Questions?
 
-See existing tests for examples:
+See existing test for example:
 - `tests/integration/tests/b01_no_premature_implementation.py`
-- `tests/integration/tests/b02_no_unnecessary_markdown.py`
-- `tests/integration/tests/b03_use_specialized_tools.py`
