@@ -186,7 +186,7 @@ class Agent(AgentBase):
             )
             on_event(error_message)
             return
-        except LLMContextWindowExceedError:
+        except LLMContextWindowExceedError as e:
             # If condenser is available and handles requests, trigger condensation
             if (
                 self.condenser is not None
@@ -197,8 +197,9 @@ class Agent(AgentBase):
                 )
                 on_event(CondensationRequest())
                 return
-            # No condenser available; re-raise for client handling
-            raise
+            # No condenser available or doesn't handle requests; log helpful warning
+            self._log_context_window_exceeded_warning()
+            raise e
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
@@ -516,3 +517,98 @@ class Agent(AgentBase):
                 ]["token_ids"],
             )
             on_event(token_event)
+
+    def _log_context_window_exceeded_warning(self) -> None:
+        """Log a helpful warning when context window is exceeded without a condenser."""
+        if self.condenser is None:
+            logger.warning(
+                "\n"
+                "=" * 80 + "\n"
+                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+                "=" * 80 + "\n"
+                "\n"
+                "The LLM's context window has been exceeded, but no condenser is "
+                "configured.\n"
+                "\n"
+                "Current configuration:\n"
+                f"  • Condenser: None\n"
+                f"  • LLM Model: {self.llm.model}\n"
+                "\n"
+                "To prevent this error, configure a condenser to automatically "
+                "summarize\n"
+                "conversation history when it gets too long.\n"
+                "\n"
+                "Example configuration:\n"
+                "\n"
+                "  from openhands.sdk import Agent, LLM\n"
+                "  from openhands.sdk.context.condenser import "
+                "LLMSummarizingCondenser\n"
+                "\n"
+                "  agent = Agent(\n"
+                "      llm=LLM(model='your-model'),\n"
+                "      condenser=LLMSummarizingCondenser(\n"
+                "          llm=LLM(model='your-model'),  # Can use same or "
+                "cheaper model\n"
+                "          max_size=120,  # Maximum events before condensation\n"
+                "          keep_first=4   # Number of initial events to preserve\n"
+                "      )\n"
+                "  )\n"
+                "\n"
+                "For more information, see: "
+                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+                "=" * 80
+            )
+        else:
+            condenser_type = type(self.condenser).__name__
+            handles_requests = self.condenser.handles_condensation_requests()
+            condenser_config = self.condenser.model_dump(
+                exclude={"llm"}, exclude_none=True
+            )
+            condenser_llm_obj = getattr(self.condenser, "llm", None)
+            condenser_llm = (
+                condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
+            )
+
+            logger.warning(
+                "\n"
+                "=" * 80 + "\n"
+                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+                "=" * 80 + "\n"
+                "\n"
+                "The LLM's context window has been exceeded.\n"
+                "\n"
+                "Current configuration:\n"
+                f"  • Condenser Type: {condenser_type}\n"
+                f"  • Handles Condensation Requests: {handles_requests}\n"
+                f"  • Condenser LLM: {condenser_llm}\n"
+                f"  • Agent LLM Model: {self.llm.model}\n"
+                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}\n"
+                "\n"
+                "Your condenser is configured but does not handle condensation "
+                "requests\n"
+                "(handles_condensation_requests() returned False).\n"
+                "\n"
+                "To fix this:\n"
+                "  1. Use LLMSummarizingCondenser which handles condensation "
+                "requests, OR\n"
+                "  2. Implement handles_condensation_requests() in your custom "
+                "condenser\n"
+                "\n"
+                "Example with LLMSummarizingCondenser:\n"
+                "\n"
+                "  from openhands.sdk.context.condenser import "
+                "LLMSummarizingCondenser\n"
+                "\n"
+                "  agent = Agent(\n"
+                "      llm=LLM(model='your-model'),\n"
+                "      condenser=LLMSummarizingCondenser(\n"
+                "          llm=LLM(model='your-model'),\n"
+                "          max_size=120,\n"
+                "          keep_first=4\n"
+                "      )\n"
+                "  )\n"
+                "\n"
+                "For more information, see: "
+                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+                "=" * 80
+            )
