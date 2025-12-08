@@ -16,9 +16,11 @@ class DummyLLM:
     extended_thinking_budget: int | None = None
     safety_settings: list[dict[str, Any]] | None = None
     litellm_extra_body: dict[str, Any] | None = None
+    # Align with LLM default; only emitted for models that support it
+    prompt_cache_retention: str | None = "24h"
 
 
-def test_opus_4_5_uses_effort_and_beta_header_and_strips_temp_top_p():
+def test_opus_4_5_uses_reasoning_effort_and_strips_temp_top_p():
     llm = DummyLLM(
         model="claude-opus-4-5-20251101",
         top_p=0.9,
@@ -27,13 +29,14 @@ def test_opus_4_5_uses_effort_and_beta_header_and_strips_temp_top_p():
     )
     out = select_chat_options(llm, user_kwargs={}, has_tools=True)
 
-    # Uses output_config.effort instead of reasoning_effort
-    assert out.get("output_config") == {"effort": "medium"}
-    assert "reasoning_effort" not in out
+    # LiteLLM automatically maps reasoning_effort to output_config
+    assert out.get("reasoning_effort") == "medium"
+    assert "output_config" not in out
 
-    # Adds the required beta header for effort
-    headers = out.get("extra_headers") or {}
-    assert headers.get("anthropic-beta") == "effort-2025-11-24"
+    # LiteLLM automatically adds the required beta header
+    assert "extra_headers" not in out or "anthropic-beta" not in out.get(
+        "extra_headers", {}
+    )
 
     # Strips temperature/top_p for reasoning models
     assert "temperature" not in out

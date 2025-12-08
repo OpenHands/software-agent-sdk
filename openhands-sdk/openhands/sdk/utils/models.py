@@ -3,7 +3,7 @@ import json
 import logging
 import os
 from abc import ABC
-from typing import Annotated, Any, ClassVar, Literal, Self, Union
+from typing import Annotated, Any, ClassVar, Literal, NoReturn, Self, Union
 
 from pydantic import (
     BaseModel,
@@ -11,7 +11,9 @@ from pydantic import (
     Field,
     Tag,
     TypeAdapter,
+    ValidationError,
 )
+from pydantic_core import ErrorDetails
 
 
 logger = logging.getLogger(__name__)
@@ -54,6 +56,48 @@ def kind_of(obj) -> str:
     if not hasattr(obj, "__name__"):
         obj = obj.__class__
     return obj.__name__
+
+
+def _create_enhanced_discriminated_union_error_message(
+    invalid_kind: str, cls_name: str, valid_kinds: list[str]
+) -> str:
+    """Create an enhanced error message for discriminated union validation failures."""
+    possible_kinds_str = ", ".join(sorted(valid_kinds)) if valid_kinds else "none"
+    return (
+        f"Unexpected kind '{invalid_kind}' for {cls_name}. "
+        f"Expected one of: {possible_kinds_str}. "
+        f"If you receive this error when trying to wrap a "
+        f"DiscriminatedUnion instance inside another pydantic model, "
+        f"you may need to use OpenHandsModel instead of BaseModel "
+        f"to make sure that an invalid schema has not been cached."
+    )
+
+
+def _extract_invalid_kind_from_validation_error(error: ErrorDetails) -> str:
+    """Extract the invalid kind from a Pydantic validation error."""
+    input_value = error.get("input")
+    if input_value is not None and hasattr(input_value, "kind"):
+        return input_value.kind
+    elif isinstance(input_value, dict) and "kind" in input_value:
+        return input_value["kind"]
+    else:
+        return kind_of(input_value)
+
+
+def _handle_discriminated_union_validation_error(
+    validation_error: ValidationError, cls_name: str, valid_kinds: list[str]
+) -> NoReturn:
+    """Handle discriminated union validation errors with enhanced messages."""
+    for error in validation_error.errors():
+        if error.get("type") == "union_tag_invalid":
+            invalid_kind = _extract_invalid_kind_from_validation_error(error)
+            error_msg = _create_enhanced_discriminated_union_error_message(
+                invalid_kind, cls_name, valid_kinds
+            )
+            raise ValueError(error_msg) from validation_error
+
+    # If it's not a discriminated union error, re-raise the original error
+    raise validation_error
 
 
 def get_known_concrete_subclasses(cls) -> list[type]:
@@ -137,7 +181,15 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
         for subclass in get_known_concrete_subclasses(cls):
             if subclass.__name__ == kind:
                 return subclass
-        raise ValueError(f"Unknown kind '{kind}' for {cls}")
+
+        # Generate enhanced error message for unknown kind
+        valid_kinds = [
+            subclass.__name__ for subclass in get_known_concrete_subclasses(cls)
+        ]
+        error_msg = _create_enhanced_discriminated_union_error_message(
+            kind, cls.__name__, valid_kinds
+        )
+        raise ValueError(error_msg)
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
@@ -150,7 +202,30 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
             serializable_type = source_type.get_serializable_type()
             # If there are subclasses, generate schema for the discriminated union
             if serializable_type is not source_type:
-                return handler.generate_schema(serializable_type)
+                from pydantic_core import core_schema
+
+                # Generate the base schema
+                base_schema = handler.generate_schema(serializable_type)
+
+                # Wrap it with a custom validation function that provides
+                # enhanced error messages
+                def validate_with_enhanced_error(value, handler_func, info):  # noqa: ARG001
+                    try:
+                        return handler_func(value)
+                    except ValidationError as e:
+                        valid_kinds = [
+                            subclass.__name__
+                            for subclass in get_known_concrete_subclasses(source_type)
+                        ]
+                        _handle_discriminated_union_validation_error(
+                            e, source_type.__name__, valid_kinds
+                        )
+
+                # Create a with_info_wrap_validator_function schema
+                return core_schema.with_info_wrap_validator_function(
+                    validate_with_enhanced_error,
+                    base_schema,
+                )
 
         return handler(source_type)
 
@@ -241,12 +316,18 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs) -> Self:
-        if _is_abstract(cls):
-            resolved = cls.resolve_kind(kind_of(obj))
-        else:
-            resolved = super()
-        result = resolved.model_validate(obj, **kwargs)
-        return result  # type: ignore
+        try:
+            if _is_abstract(cls):
+                resolved = cls.resolve_kind(kind_of(obj))
+            else:
+                resolved = super()
+            result = resolved.model_validate(obj, **kwargs)
+            return result  # type: ignore
+        except ValidationError as e:
+            valid_kinds = [
+                subclass.__name__ for subclass in get_known_concrete_subclasses(cls)
+            ]
+            _handle_discriminated_union_validation_error(e, cls.__name__, valid_kinds)
 
     @classmethod
     def model_validate_json(
