@@ -105,4 +105,7 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
 
 {% if model_family %}
 {% include "model_specific/" ~ model_family ~ ".j2" ignore missing %}
+    {% if model_variant %}
+{% include "model_specific/" ~ model_family ~ "/" ~ model_variant ~ ".j2" ignore missing %}
+    {% endif %}
 {% endif %}
