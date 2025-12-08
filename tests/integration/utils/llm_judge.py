@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field, SecretStr
 
 from openhands.sdk import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.tool import Action, Observation, ToolDefinition
+from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
 
 
 logger = get_logger(__name__)
@@ -38,6 +38,18 @@ class SubmitJudgmentObservation(Observation):
     pass
 
 
+class SubmitJudgmentExecutor(
+    ToolExecutor[SubmitJudgmentAction, SubmitJudgmentObservation]
+):
+    """Executor for submitting judgment."""
+
+    def __call__(
+        self, action: SubmitJudgmentAction, conversation=None
+    ) -> SubmitJudgmentObservation:
+        """Execute judgment submission - no actual execution needed."""
+        return SubmitJudgmentObservation.from_text("Judgment received")
+
+
 class SubmitJudgmentTool(
     ToolDefinition[SubmitJudgmentAction, SubmitJudgmentObservation]
 ):
@@ -46,10 +58,7 @@ class SubmitJudgmentTool(
     @classmethod
     def create(cls):
         """Create the SubmitJudgmentTool."""
-
-        def executor(action: SubmitJudgmentAction) -> SubmitJudgmentObservation:
-            # No execution needed - we just want the structured input
-            return SubmitJudgmentObservation.from_text("Judgment received")
+        executor = SubmitJudgmentExecutor()
 
         return [
             cls(
@@ -60,7 +69,7 @@ class SubmitJudgmentTool(
                     "was appropriate. You MUST call this tool to provide your "
                     "evaluation."
                 ),
-                executor=executor,  # type: ignore[arg-type]
+                executor=executor,
             )
         ]
 
