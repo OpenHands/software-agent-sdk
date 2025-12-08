@@ -1,5 +1,5 @@
 ---
-name: Check Documented Examples
+name: '[Optional] Docs example / check-examples'
 
 on:
     pull_request:
