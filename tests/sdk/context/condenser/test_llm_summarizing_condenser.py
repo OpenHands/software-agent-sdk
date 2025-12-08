@@ -43,6 +43,7 @@ def mock_llm() -> LLM:
         )
         # Create a mock ModelResponse
         raw_response = MagicMock(spec=ModelResponse)
+        raw_response.id = "mock-llm-response-id"
         return LLMResponse(message=message, metrics=metrics, raw_response=raw_response)
 
     mock_llm.completion.return_value = create_completion_result(
@@ -63,7 +64,8 @@ def mock_llm() -> LLM:
     mock_llm.custom_tokenizer = None
     mock_llm.base_url = None
     mock_llm.reasoning_effort = None
-    mock_llm.metadata = {}
+    mock_llm.litellm_extra_body = {}
+    mock_llm.temperature = 0.0
 
     # Explicitly set pricing attributes required by LLM -> Telemetry wiring
     mock_llm.input_cost_per_token = None
@@ -158,6 +160,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
         forgotten_event_ids=[events[3].id, events[4].id],
         summary="Previous summary content",
         summary_offset=keep_first,
+        llm_response_id="condensation_response_1",
     )
     events_with_condensation = (
         events[:keep_first] + [condensation] + events[keep_first:]
@@ -194,3 +197,25 @@ def test_invalid_config(mock_llm: LLM) -> None:
     # Test keep_first must be less than max_size // 2 to leave room for condensation
     with pytest.raises(ValueError):
         LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=8)
+
+
+def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
+    """Condenser should not pass extra_body to llm.completion.
+
+    This prevents providers like 1p Anthropic from rejecting the request with
+    "extra_body: Extra inputs are not permitted".
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Prepare a view that triggers condensation (len > max_size)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+    assert isinstance(result, Condensation)
+
+    # Ensure completion was called without an explicit extra_body kwarg
+    completion_mock = cast(MagicMock, mock_llm.completion)
+    assert completion_mock.call_count == 1
+    _, kwargs = completion_mock.call_args
+    assert "extra_body" not in kwargs

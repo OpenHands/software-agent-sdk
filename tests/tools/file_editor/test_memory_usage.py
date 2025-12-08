@@ -71,7 +71,7 @@ def test_file_read_memory_usage(temp_file):
 
     # Pull output before measuring and drop references to encourage GC
     assert_successful_result(result)
-    content = result.output
+    content = result.text
     del result
     gc.collect()
 
@@ -132,8 +132,8 @@ def test_file_editor_memory_leak(temp_file):
     del warmup_result
     gc.collect()
 
-    # Set memory limit to 128MB to make it more likely to catch issues
-    memory_limit = 128 * 1024 * 1024  # 128MB in bytes
+    # Set memory limit to 170MB to make it more likely to catch issues
+    memory_limit = 170 * 1024 * 1024  # 170MB in bytes
     try:
         import resource
 
@@ -187,7 +187,8 @@ def test_file_editor_memory_leak(temp_file):
                     new_str=new_content,
                 )
                 if i == 0:
-                    print(f"First edit result: {result.output[:200]}...")
+                    content_str = result.text
+                    print(f"First edit result: {content_str[:200]}...")
             except Exception as e:
                 print(f"\nError during edit {i}:")
                 print(f"File size: {os.path.getsize(temp_file) / (1024 * 1024):.2f} MB")

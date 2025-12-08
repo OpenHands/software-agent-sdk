@@ -20,7 +20,7 @@ class RegistryEvent(BaseModel):
 
 
 class LLMRegistry:
-    """A minimal LLM registry for managing LLM instances by service ID.
+    """A minimal LLM registry for managing LLM instances by usage ID.
 
     This registry provides a simple way to manage multiple LLM instances,
     avoiding the need to recreate LLMs with the same configuration.
@@ -40,7 +40,7 @@ class LLMRegistry:
         """
         self.registry_id = str(uuid4())
         self.retry_listener = retry_listener
-        self.service_to_llm: dict[str, LLM] = {}
+        self._usage_to_llm: dict[str, LLM] = {}
         self.subscriber: Callable[[RegistryEvent], None] | None = None
 
     def subscribe(self, callback: Callable[[RegistryEvent], None]) -> None:
@@ -63,6 +63,12 @@ class LLMRegistry:
             except Exception as e:
                 logger.warning(f"Failed to emit event: {e}")
 
+    @property
+    def usage_to_llm(self) -> dict[str, LLM]:
+        """Access the internal usage-ID-to-LLM mapping."""
+
+        return self._usage_to_llm
+
     def add(self, llm: LLM) -> None:
         """Add an LLM instance to the registry.
 
@@ -70,49 +76,47 @@ class LLMRegistry:
             llm: The LLM instance to register.
 
         Raises:
-            ValueError: If llm.service_id already exists in the registry.
+            ValueError: If llm.usage_id already exists in the registry.
         """
-        service_id = llm.service_id
-        if service_id in self.service_to_llm:
-            raise ValueError(
-                f"Service ID '{service_id}' already exists in registry. "
-                "Use a different service_id on the LLM or call get() to retrieve the "
-                "existing LLM."
+        usage_id = llm.usage_id
+        if usage_id in self._usage_to_llm:
+            message = (
+                f"Usage ID '{usage_id}' already exists in registry. "
+                "Use a different usage_id on the LLM or "
+                "call get() to retrieve the existing LLM."
             )
+            raise ValueError(message)
 
-        self.service_to_llm[service_id] = llm
+        self._usage_to_llm[usage_id] = llm
         self.notify(RegistryEvent(llm=llm))
-        logger.info(
-            f"[LLM registry {self.registry_id}]: Added LLM for service {service_id}"
+        logger.debug(
+            f"[LLM registry {self.registry_id}]: Added LLM for usage {usage_id}"
         )
 
-    def get(self, service_id: str) -> LLM:
+    def get(self, usage_id: str) -> LLM:
         """Get an LLM instance from the registry.
 
         Args:
-            service_id: Unique identifier for the LLM service.
+            usage_id: Unique identifier for the LLM usage slot.
 
         Returns:
             The LLM instance.
 
         Raises:
-            KeyError: If service_id is not found in the registry.
+            KeyError: If usage_id is not found in the registry.
         """
-        if service_id not in self.service_to_llm:
+        if usage_id not in self._usage_to_llm:
             raise KeyError(
-                f"Service ID '{service_id}' not found in registry. "
+                f"Usage ID '{usage_id}' not found in registry. "
                 "Use add() to register an LLM first."
             )
 
         logger.info(
-            f"[LLM registry {self.registry_id}]: Retrieved LLM for service {service_id}"
+            f"[LLM registry {self.registry_id}]: Retrieved LLM for usage {usage_id}"
         )
-        return self.service_to_llm[service_id]
+        return self._usage_to_llm[usage_id]
 
-    def list_services(self) -> list[str]:
-        """List all registered service IDs.
+    def list_usage_ids(self) -> list[str]:
+        """List all registered usage IDs."""
 
-        Returns:
-            List of service IDs currently in the registry.
-        """
-        return list(self.service_to_llm.keys())
+        return list(self._usage_to_llm.keys())

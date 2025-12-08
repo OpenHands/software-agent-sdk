@@ -142,6 +142,45 @@ def test_message_with_tool_calls():
     assert result["tool_calls"][0]["function"]["arguments"] == '{"arg": "value"}'
 
 
+def test_message_tool_calls_drop_empty_string_content():
+    """Assistant tool calls with no text should not include empty content strings."""
+    from openhands.sdk.llm.message import Message, MessageToolCall
+
+    tool_call = MessageToolCall(
+        id="call_empty",
+        name="test_function",
+        arguments="{}",
+        origin="completion",
+    )
+
+    message = Message(role="assistant", content=[], tool_calls=[tool_call])
+
+    result = message.to_chat_dict()
+    assert "content" not in result
+
+
+def test_message_tool_calls_strip_blank_list_content():
+    """List-serialized tool call messages should drop blank text content blocks."""
+    from openhands.sdk.llm.message import Message, MessageToolCall, TextContent
+
+    tool_call = MessageToolCall(
+        id="call_blank_list",
+        name="test_function",
+        arguments="{}",
+        origin="completion",
+    )
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[tool_call],
+        function_calling_enabled=True,
+    )
+
+    result = message.to_chat_dict()
+    assert "content" not in result
+
+
 def test_message_from_llm_chat_message_function_role_error():
     """Test Message.from_llm_chat_message with function role raises error."""
     from litellm.types.utils import Message as LiteLLMMessage
@@ -228,3 +267,106 @@ def test_text_content_truncation_exact_limit():
         # Check that text was not truncated
         assert len(result) == 1
         assert result[0]["text"] == exact_text
+
+
+def test_message_with_reasoning_content_when_enabled():
+    """Test that reasoning_content is included when send_reasoning_content is True."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content="Let me think step by step...",
+        send_reasoning_content=True,
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "assistant"
+    assert result["content"] == "Final answer"
+    assert result["reasoning_content"] == "Let me think step by step..."
+
+
+def test_message_with_reasoning_content_when_disabled():
+    """Test that reasoning_content is NOT included when send_reasoning_content is False."""  # noqa: E501
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content="Let me think step by step...",
+        send_reasoning_content=False,
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "assistant"
+    assert result["content"] == "Final answer"
+    assert "reasoning_content" not in result
+
+
+def test_message_with_reasoning_content_default_disabled():
+    """Test that reasoning_content is NOT included by default."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content="Let me think step by step...",
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "assistant"
+    assert result["content"] == "Final answer"
+    assert "reasoning_content" not in result
+
+
+def test_message_with_reasoning_content_none():
+    """Test that reasoning_content is NOT included when it's None even if enabled."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content=None,
+        send_reasoning_content=True,
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "assistant"
+    assert result["content"] == "Final answer"
+    assert "reasoning_content" not in result
+
+
+def test_message_with_reasoning_content_empty_string():
+    """Test that reasoning_content is NOT included when it's an empty string."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content="",
+        send_reasoning_content=True,
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "assistant"
+    assert result["content"] == "Final answer"
+    assert "reasoning_content" not in result
+
+
+def test_message_with_reasoning_content_list_serializer():
+    """Test that reasoning_content works with list serializer."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final answer")],
+        reasoning_content="Step by step reasoning",
+        send_reasoning_content=True,
+        function_calling_enabled=True,  # Forces list serializer
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "assistant"
+    assert isinstance(result["content"], list)
+    assert result["content"][0]["text"] == "Final answer"
+    assert result["reasoning_content"] == "Step by step reasoning"

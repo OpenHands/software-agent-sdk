@@ -13,7 +13,7 @@ def test_llm_store_and_load_json():
     """Test storing LLM to JSON and loading back with fields unchanged."""
     # Create original LLM with secrets
     original_llm = LLM(
-        service_id="test-llm",
+        usage_id="test-llm",
         model="test-model",
         temperature=0.7,
         max_output_tokens=2000,
@@ -51,6 +51,12 @@ def test_llm_store_and_load_json():
         assert original_llm.api_key is not None
         assert original_llm.aws_access_key_id is not None
         assert original_llm.aws_secret_access_key is not None
+        assert isinstance(loaded_llm.api_key, SecretStr)
+        assert isinstance(original_llm.api_key, SecretStr)
+        assert isinstance(loaded_llm.aws_access_key_id, SecretStr)
+        assert isinstance(original_llm.aws_access_key_id, SecretStr)
+        assert isinstance(loaded_llm.aws_secret_access_key, SecretStr)
+        assert isinstance(original_llm.aws_secret_access_key, SecretStr)
         assert (
             loaded_llm.api_key.get_secret_value()
             == original_llm.api_key.get_secret_value()

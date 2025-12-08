@@ -1,0 +1,241 @@
+---
+name: Run Eval
+
+on:
+    pull_request_target:
+        types: [labeled]
+    release:
+        types: [published]
+    workflow_dispatch:
+        inputs:
+            sdk_ref:
+                description: SDK commit/ref to evaluate
+                required: true
+                default: main
+            eval_limit:
+                description: Number of SWE-bench instances to run
+                required: true
+                default: '1'
+                type: choice
+                options:
+                    - '1'
+                    - '50'
+                    - '200'
+                    - '500'
+            model_ids:
+                description: Comma-separated model IDs to evaluate. Must be keys of MODELS in resolve_model_config.py. Defaults to first model in that
+                    dict.
+                required: false
+                default: ''
+                type: string
+            reason:
+                description: Reason for manual trigger
+                required: false
+                default: ''
+            eval_branch:
+                description: Evaluation repo branch to use (for testing feature branches)
+                required: false
+                default: main
+                type: string
+            benchmarks_branch:
+                description: Benchmarks repo branch to use (for testing feature branches)
+                required: false
+                default: main
+                type: string
+
+
+env:
+    EVAL_REPO: OpenHands/evaluation
+    EVAL_WORKFLOW: eval-job.yml
+    DATASET: princeton-nlp/SWE-bench_Verified
+    SPLIT: test
+
+jobs:
+    build-and-evaluate:
+        if: >
+            github.event_name == 'release' ||
+            github.event_name == 'workflow_dispatch' ||
+            (github.event_name == 'pull_request_target' &&
+             (github.event.label.name == 'run-eval-1' ||
+              github.event.label.name == 'run-eval-50' ||
+              github.event.label.name == 'run-eval-200' ||
+              github.event.label.name == 'run-eval-500'))
+        runs-on: ubuntu-latest
+        permissions:
+            contents: read
+            packages: write
+            actions: write
+            issues: write
+            pull-requests: write
+
+        steps:
+            - name: Checkout sdk code (base for validation)
+              uses: actions/checkout@v4
+              with:
+                  ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
+                  fetch-depth: 0
+
+            - name: Load model IDs from Python script
+              id: load-models
+              run: |
+                  # Extract all model IDs from resolve_model_config.py
+                  ALLOWED_MODEL_IDS=$(python3 << 'EOF'
+                  import sys
+                  sys.path.insert(0, '.github/run-eval')
+                  from resolve_model_config import MODELS
+                  import json
+                  print(json.dumps(list(MODELS.keys())))
+                  EOF
+                  )
+                  DEFAULT_MODEL=$(echo "$ALLOWED_MODEL_IDS" | jq -r '.[0]')
+                  if [ -z "$DEFAULT_MODEL" ] || [ "$DEFAULT_MODEL" = "null" ]; then
+                    echo "No models configured" >&2
+                    exit 1
+                  fi
+                  echo "allowed_model_ids=$ALLOWED_MODEL_IDS" >> "$GITHUB_OUTPUT"
+                  echo "default_model=$DEFAULT_MODEL" >> "$GITHUB_OUTPUT"
+
+            - name: Resolve parameters
+              id: params
+              env:
+                  DEFAULT_MODEL: ${{ steps.load-models.outputs.default_model }}
+                  ALLOWED_MODEL_IDS_JSON: ${{ steps.load-models.outputs.allowed_model_ids }}
+                  PAT_TOKEN_DEFAULT: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+              run: |
+                  set -euo pipefail
+
+                  # Set PAT token for cross-repo workflow dispatch
+                  PAT_TOKEN="$PAT_TOKEN_DEFAULT"
+                  if [ -z "$PAT_TOKEN" ]; then
+                    echo "Missing PAT token" >&2
+                    exit 1
+                  fi
+                  echo "PAT_TOKEN=$PAT_TOKEN" >> "$GITHUB_ENV"
+
+                  # Determine eval limit and SDK SHA based on trigger
+                  if [ "${{ github.event_name }}" = "pull_request_target" ]; then
+                    LABEL="${{ github.event.label.name }}"
+                    case "$LABEL" in
+                      run-eval-1) EVAL_LIMIT=1 ;;
+                      run-eval-50) EVAL_LIMIT=50 ;;
+                      run-eval-200) EVAL_LIMIT=200 ;;
+                      run-eval-500) EVAL_LIMIT=500 ;;
+                      *) echo "Unsupported label $LABEL" >&2; exit 1 ;;
+                    esac
+                    SDK_SHA="${{ github.event.pull_request.head.sha }}"
+                    PR_NUMBER="${{ github.event.pull_request.number }}"
+                    TRIGGER_DESCRIPTION="Label '${LABEL}' on PR #${PR_NUMBER}"
+                  elif [ "${{ github.event_name }}" = "release" ]; then
+                    EVAL_LIMIT=50
+                    # Use tag instead of target_commitish because release branches are automatically deleted after merge
+                    SDK_SHA=$(git rev-parse "${{ github.event.release.tag_name }}")
+                    PR_NUMBER=""
+                    TRIGGER_DESCRIPTION="Release ${{ github.event.release.tag_name }}"
+                  else
+                    EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
+                    SDK_REF="${{ github.event.inputs.sdk_ref }}"
+                    # Convert ref to SHA for manual dispatch
+                    SDK_SHA=$(git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
+                    PR_NUMBER=""
+                    REASON="${{ github.event.inputs.reason }}"
+                    if [ -z "$REASON" ]; then
+                      REASON="manual"
+                    fi
+                    TRIGGER_DESCRIPTION="Manual trigger: ${REASON}"
+                  fi
+
+                  # Normalize and validate model IDs
+                  MODELS_INPUT="${{ github.event_name == 'workflow_dispatch' && github.event.inputs.model_ids || '' }}"
+                  if [ -z "$MODELS_INPUT" ]; then
+                    MODELS_INPUT="$DEFAULT_MODEL"
+                  fi
+                  MODELS=$(printf '%s' "$MODELS_INPUT" | tr ', ' '\n' | sed '/^$/d' | paste -sd, -)
+                  ALLOWED_LIST=$(echo "$ALLOWED_MODEL_IDS_JSON" | jq -r '.[]')
+                  for MODEL in ${MODELS//,/ }; do
+                    if ! echo "$ALLOWED_LIST" | grep -Fx "$MODEL" >/dev/null; then
+                      echo "Model ID '$MODEL' not found in models.json" >&2
+                      echo "Available models: $(echo "$ALLOWED_LIST" | paste -sd, -)" >&2
+                      exit 1
+                    fi
+                  done
+
+                  echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
+                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  echo "models=$MODELS" >> "$GITHUB_OUTPUT"
+                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
+
+            - name: Resolve model configurations
+              id: resolve-models
+              env:
+                  MODEL_IDS: ${{ steps.params.outputs.models }}
+              run: |
+                  python3 .github/run-eval/resolve_model_config.py
+
+            - name: Dispatch evaluation workflow
+              env:
+                  SDK_SHA: ${{ steps.params.outputs.sdk_sha }}
+                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
+                  MODELS_JSON: ${{ steps.resolve-models.outputs.models_json }}
+                  EVAL_REPO: ${{ env.EVAL_REPO }}
+                  EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
+                  EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
+                  BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
+                  TRIGGER_REASON: ${{ github.event.inputs.reason }}
+                  PR_NUMBER: ${{ steps.params.outputs.pr_number }}
+              run: |
+                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
+                  PAYLOAD=$(jq -n \
+                    --arg sdk "$SDK_SHA" \
+                    --arg eval_limit "$EVAL_LIMIT" \
+                    --argjson models "$MODELS_JSON" \
+                    --arg ref "$EVAL_BRANCH" \
+                    --arg reason "$TRIGGER_REASON" \
+                    --arg pr "$PR_NUMBER" \
+                    --arg benchmarks "$BENCHMARKS_BRANCH" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks}}')
+                  RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
+                    -H "Authorization: token $PAT_TOKEN" \
+                    -H "Accept: application/vnd.github+json" \
+                    -d "$PAYLOAD" \
+                    "https://api.github.com/repos/${EVAL_REPO}/actions/workflows/${EVAL_WORKFLOW}/dispatches")
+                  if [ "$RESPONSE" != "204" ]; then
+                    echo "Dispatch failed (status $RESPONSE):" >&2
+                    cat /tmp/dispatch.out >&2
+                    exit 1
+                  fi
+
+            - name: Comment on PR
+              env:
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
+                  EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
+                  MODELS: ${{ steps.params.outputs.models }}
+                  TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}
+                  EVENT_NAME: ${{ github.event_name }}
+                  PR_NUMBER_INPUT: ${{ steps.params.outputs.pr_number }}
+              run: |
+                  set -euo pipefail
+                  PR_NUMBER="$PR_NUMBER_INPUT"
+                  if [ "$EVENT_NAME" = "release" ] && [ -z "$PR_NUMBER" ]; then
+                    # Attempt to find the merged PR for this commit
+                    PR_NUMBER=$(curl -sS \
+                      -H "Authorization: Bearer $GITHUB_TOKEN" \
+                      -H "Accept: application/vnd.github+json" \
+                      "https://api.github.com/repos/${{ github.repository }}/commits/${SDK_SHA}/pulls" \
+                      | jq -r '.[0].number // ""')
+                  fi
+
+                  if [ -z "$PR_NUMBER" ]; then
+                    echo "No PR found to comment on; skipping comment"
+                    exit 0
+                  fi
+
+                  COMMENT_BODY=$(printf '**Evaluation Triggered**\n\n- Trigger: %s\n- SDK: %s\n- Eval limit: %s\n- Models: %s\n' \
+                    "$TRIGGER_DESC" "$SDK_SHA" "$EVAL_LIMIT" "$MODELS")
+
+                  curl -sS -X POST \
+                    -H "Accept: application/vnd.github+json" \
+                    -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    "https://api.github.com/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments" \
+                    -d "$(jq -n --arg body "$COMMENT_BODY" '{body: $body}')"

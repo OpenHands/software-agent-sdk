@@ -22,27 +22,53 @@ permissions:
 
 jobs:
     run-task:
-        runs-on: ubuntu-latest
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         env:
             # Configuration (modify these values as needed)
-            AGENT_SCRIPT_URL: 
-                https://raw.githubusercontent.com/All-Hands-AI/agent-sdk/main/examples/03_github_workflows/01_basic_action/agent_script.py
+            AGENT_SCRIPT_URL: https://raw.githubusercontent.com/OpenHands/agent-sdk/main/examples/03_github_workflows/01_basic_action/agent_script.py
             # Provide either PROMPT_LOCATION (URL/file) OR PROMPT_STRING (direct text), not both
             # Option 1: Use a URL or file path for the prompt
             PROMPT_LOCATION: ''
             # PROMPT_LOCATION: 'https://example.com/prompts/maintenance.txt'
             # Option 2: Use direct text for the prompt
             PROMPT_STRING: >
-                Use GITHUB_TOKEN and the github API to organize open pull requests in the repo.
+                Use GITHUB_TOKEN and the github API to organize open pull requests and issues in the repo.
                 Read the sections below in order, and perform each in order. Do NOT take action
-                on the same issue twice.
+                on the same issue or PR twice.
+
+                # Issues with needs-info - Check for OP Response
+
+                Find all open issues that have the "needs-info" label. For each issue:
+                1. Identify the original poster (issue author)
+                2. Check if there are any comments from the original poster AFTER the "needs-info" label was added
+                3. To determine when the label was added, use: GET /repos/{owner}/{repo}/issues/{issue_number}/timeline
+                   and look for "labeled" events with the label "needs-info"
+                4. If the original poster has commented after the label was added:
+                   - Remove the "needs-info" label
+                   - Add the "needs-triage" label
+                # Issues with needs-triage
+
+                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 2 days:
+                1. First, check if the issue has already been triaged by verifying it does NOT have:
+                   - The "enhancement" label
+                   - Any "priority" label (priority:low, priority:medium, priority:high, etc.)
+                2. If the issue has already been triaged (has enhancement or priority label), remove the "needs-triage" label
+                3. For issues that have NOT been triaged yet:
+                   - Read the issue description and comments
+                   - Check if it is a bug report, feature request, or question and add the appropriate label
+                   - If it is a bug report and it does not have a priority label
+                     * Find an appropriate maintainer based on the issue topic and recent activity
+                     * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look and add the
+                appropriate priority label when you have
+                a chance?"
 
                 # Need Reviewer Action
 
                 Find all open PRs where:
                 1. The PR is waiting for review (there are no open review comments or change requests)
                 2. The PR is in a "clean" state (CI passing, no merge conflicts)
-                3. The PR has had no activity (comments, commits, reviews) for more than 3 days.
+                3. The PR is not marked as draft (draft: false)
+                4. The PR has had no activity (comments, commits, reviews) for more than 3 days.
 
                 In this case, send a message to the reviewers:
                 [Automatic Post]: This PR seems to be currently waiting for review.
@@ -51,7 +77,7 @@ jobs:
                 # Need Author Action
 
                 Find all open PRs where the most recent change or comment was made on the pull
-                request more than 5 days ago. Then do the following in order:
+                request more than 5 days ago (use 14 days if the PR is marked as draft).
 
                 And send a message to the author:
 
@@ -61,41 +87,69 @@ jobs:
 
                 # Need Reviewers
 
-                Find all open pull requests that:
-                1. Have no reviewers assigned to them.
-                2. Are not marked as draft.
-                3. Were created more than 1 day ago.
-                4. CI is passing and there are no merge conflicts.
+                Find all open pull requests that TRULY have NO reviewers assigned. To do this correctly:
 
-                For each of these pull requests, read the git blame information for the files,
-                and find the most recent and active contributors to the file/location of the changes.
-                Assign one of these people as a reviewer, but try not to assign too many reviews to
-                any single person. Add this message:
+                1. Use the GitHub API to fetch PR details: GET /repos/{owner}/{repo}/pulls/{pull_number}
+                2. Check the "requested_reviewers" and "requested_teams" arrays
+                3. ALSO check for submitted reviews: GET /repos/{owner}/{repo}/pulls/{pull_number}/reviews
+                4. A PR needs reviewers ONLY if ALL of these are true:
+                   - The "requested_reviewers" array is empty (no pending review requests)
+                   - The "requested_teams" array is empty (no pending team review requests)
+                   - The reviews array is empty (no reviews have been submitted yet)
+                5. IMPORTANT: If ANY of these has entries, SKIP this PR - it already has or had reviewers!
+
+                Example API responses showing a PR that DOES NOT need reviewers (skip this):
+
+                Case 1 - Has requested reviewers:
+                GET /pulls/{number}: {"requested_reviewers": [{"login": "someuser"}], "requested_teams": []}
+
+                Case 2 - Has submitted reviews (even if requested_reviewers is empty):
+                GET /pulls/{number}: {"requested_reviewers": [], "requested_teams": []}
+                GET /pulls/{number}/reviews: [{"user": {"login": "someuser"}, "state": "COMMENTED"}]
+
+                Example API response showing a PR that DOES need reviewers (process this):
+                GET /pulls/{number}: {"requested_reviewers": [], "requested_teams": []}
+                GET /pulls/{number}/reviews: []
+
+                Additional criteria for PRs that need reviewers:
+                1. Are not marked as draft (draft: false)
+                2. Were created more than 1 day ago
+                3. CI is passing and there are no merge conflicts
+
+                For each PR that truly has NO reviewers:
+                1) Read git blame for changed files to identify recent, active contributors.
+                2) From those candidates, ONLY consider maintainers — repository collaborators with write access or higher. Verify via the GitHub API before
+                requesting review:
+                   - Preferred: GET /repos/{owner}/{repo}/collaborators (no permission filter). Filter client-side using either:
+                     role_name in ["write", "maintain", "admin"] OR permissions.push || permissions.admin. Note: paginate if > 30 collaborators.
+                   - Alternative: GET /repos/{owner}/{repo}/collaborators/{username}/permission and accept if permission in {push, maintain, admin}.
+                3) If multiple maintainers qualify, avoid assigning too many reviews to any single one.
+                4) Request review from exactly one maintainer and add this message:
 
                 [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame information.
                 Thanks in advance for the help!
 
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-            LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+            LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
         steps:
             - name: Checkout repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
 
             - name: Set up Python
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: '3.12'
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v6
+              uses: astral-sh/setup-uv@v7
               with:
                   enable-cache: true
 
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/tools"
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-tools"
 
             - name: Check required configuration
               env:
@@ -155,7 +209,7 @@ jobs:
                   fi
 
             - name: Upload logs as artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               if: always()
               with:
                   name: openhands-task-logs

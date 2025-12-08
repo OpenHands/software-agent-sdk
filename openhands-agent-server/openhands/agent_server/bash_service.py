@@ -92,10 +92,9 @@ class BashEventService:
     ) -> list[BashEventBase | None]:
         """Given a list of ids, get bash events (Or none for any which were
         not found)"""
-        results = []
-        for event_id in event_ids:
-            result = await self.get_bash_event(event_id)
-            results.append(result)
+        results = await asyncio.gather(
+            *[self.get_bash_event(event_id) for event_id in event_ids]
+        )
         return results
 
     async def search_bash_events(

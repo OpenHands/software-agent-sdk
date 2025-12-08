@@ -8,14 +8,15 @@ from pydantic import Field, PrivateAttr
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
+
 from rich.text import Text
 
-from openhands.sdk.llm import ImageContent, TextContent
 from openhands.sdk.tool import (
     Action,
     Observation,
     ToolAnnotations,
     ToolDefinition,
+    register_tool,
 )
 from openhands.tools.file_editor.utils.diff import visualize_diff
 
@@ -67,12 +68,12 @@ class FileEditorObservation(Observation):
     """A ToolResult that can be rendered as a CLI output."""
 
     command: CommandLiteral = Field(
-        description="The commands to run. Allowed options are: `view`, `create`, "
-        "`str_replace`, `insert`, `undo_edit`."
+        description=(
+            "The command that was run: `view`, `create`, `str_replace`, "
+            "`insert`, or `undo_edit`."
+        )
     )
-    output: str = Field(
-        default="", description="The output message from the tool for the LLM to see."
-    )
+
     path: str | None = Field(default=None, description="The file path that was edited.")
     prev_exist: bool = Field(
         default=True,
@@ -84,15 +85,8 @@ class FileEditorObservation(Observation):
     new_content: str | None = Field(
         default=None, description="The content of the file after the edit."
     )
-    error: str | None = Field(default=None, description="Error message if any.")
 
     _diff_cache: Text | None = PrivateAttr(default=None)
-
-    @property
-    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-        if self.error:
-            return [TextContent(text=self.error)]
-        return [TextContent(text=self.output)]
 
     @property
     def visualize(self) -> Text:
@@ -101,6 +95,11 @@ class FileEditorObservation(Observation):
         Shows diff visualization for meaningful changes (file creation, successful
         edits), otherwise falls back to agent observation.
         """
+        text = Text()
+
+        if self.is_error:
+            text.append("❌ ", style="red bold")
+            text.append(self.ERROR_MESSAGE_HEADER, style="bold red")
 
         if not self._has_meaningful_diff:
             return super().visualize
@@ -108,7 +107,7 @@ class FileEditorObservation(Observation):
         assert self.path is not None, "path should be set for meaningful diff"
         # Generate and cache diff visualization
         if not self._diff_cache:
-            change_applied = self.command != "view" and not self.error
+            change_applied = self.command != "view" and not self.is_error
             self._diff_cache = visualize_diff(
                 self.path,
                 self.old_content,
@@ -117,12 +116,14 @@ class FileEditorObservation(Observation):
                 change_applied=change_applied,
             )
 
-        return self._diff_cache
+        # Combine error prefix with diff visualization
+        text.append(self._diff_cache)
+        return text
 
     @property
     def _has_meaningful_diff(self) -> bool:
         """Check if there's a meaningful diff to display."""
-        if self.error:
+        if self.is_error:
             return False
 
         if not self.path:
@@ -187,21 +188,6 @@ Remember: when making multiple file edits in a row to the same file, you should 
 """  # noqa: E501
 
 
-file_editor_tool = ToolDefinition(
-    name="str_replace_editor",
-    action_type=FileEditorAction,
-    observation_type=FileEditorObservation,
-    description=TOOL_DESCRIPTION,
-    annotations=ToolAnnotations(
-        title="str_replace_editor",
-        readOnlyHint=False,
-        destructiveHint=True,
-        idempotentHint=False,
-        openWorldHint=False,
-    ),
-)
-
-
 class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
     """A ToolDefinition subclass that automatically initializes a FileEditorExecutor."""
 
@@ -223,11 +209,28 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         # Initialize the executor
         executor = FileEditorExecutor(workspace_root=conv_state.workspace.working_dir)
 
+        # Build the tool description with conditional image viewing support
+        # Split TOOL_DESCRIPTION to insert image viewing line after the second bullet
+        description_lines = TOOL_DESCRIPTION.split("\n")
+        base_description = "\n".join(description_lines[:2])  # First two lines
+        remaining_description = "\n".join(description_lines[2:])  # Rest of description
+
+        # Add image viewing line if LLM supports vision
+        if conv_state.agent.llm.vision_is_active():
+            tool_description = (
+                f"{base_description}\n"
+                "* If `path` is an image file (.png, .jpg, .jpeg, .gif, .webp, "
+                ".bmp), `view` displays the image content\n"
+                f"{remaining_description}"
+            )
+        else:
+            tool_description = TOOL_DESCRIPTION
+
         # Add working directory information to the tool description
         # to guide the agent to use the correct directory instead of root
         working_dir = conv_state.workspace.working_dir
         enhanced_description = (
-            f"{TOOL_DESCRIPTION}\n\n"
+            f"{tool_description}\n\n"
             f"Your current working directory is: {working_dir}\n"
             f"When exploring project structure, start with this directory "
             f"instead of the root filesystem."
@@ -236,11 +239,20 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
         # Initialize the parent Tool with the executor
         return [
             cls(
-                name=file_editor_tool.name,
-                description=enhanced_description,
                 action_type=FileEditorAction,
                 observation_type=FileEditorObservation,
-                annotations=file_editor_tool.annotations,
+                description=enhanced_description,
+                annotations=ToolAnnotations(
+                    title="file_editor",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
                 executor=executor,
             )
         ]
+
+
+# Automatically register the tool when this module is imported
+register_tool(FileEditorTool.name, FileEditorTool)

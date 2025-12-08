@@ -1,9 +1,10 @@
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import Field
+from pydantic import BeforeValidator, Field
 
+from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
@@ -12,19 +13,37 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 logger = get_logger(__name__)
 
 
+def _convert_path_to_str(v: str | Path) -> str:
+    """Convert Path objects to string for working_dir."""
+    if isinstance(v, Path):
+        return str(v)
+    return v
+
+
 class BaseWorkspace(DiscriminatedUnionMixin, ABC):
-    """Abstract base mixin for workspace.
+    """Abstract base class for workspace implementations.
 
-    All workspace implementations support the context manager protocol,
-    allowing safe resource management:
+    Workspaces provide a sandboxed environment where agents can execute commands,
+    read/write files, and perform other operations. All workspace implementations
+    support the context manager protocol for safe resource management.
 
-        with workspace:
-            workspace.execute_command("echo 'hello'")
+    Example:
+        >>> with workspace:
+        ...     result = workspace.execute_command("echo 'hello'")
+        ...     content = workspace.read_file("example.txt")
     """
 
-    working_dir: str = Field(
-        description="The working directory for agent operations and tool execution."
-    )
+    working_dir: Annotated[
+        str,
+        BeforeValidator(_convert_path_to_str),
+        Field(
+            description=(
+                "The working directory for agent operations and tool execution. "
+                "Accepts both string paths and Path objects. "
+                "Path objects are automatically converted to strings."
+            )
+        ),
+    ]
 
     def __enter__(self) -> "BaseWorkspace":
         """Enter the workspace context.
@@ -109,3 +128,31 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
             Exception: If file download fails
         """
         ...
+
+    @abstractmethod
+    def git_changes(self, path: str | Path) -> list[GitChange]:
+        """Get the git changes for the repository at the path given.
+
+        Args:
+            path: Path to the git repository
+
+        Returns:
+            list[GitChange]: List of changes
+
+        Raises:
+            Exception: If path is not a git repository or getting changes failed
+        """
+
+    @abstractmethod
+    def git_diff(self, path: str | Path) -> GitDiff:
+        """Get the git diff for the file at the path given.
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            GitDiff: Git diff
+
+        Raises:
+            Exception: If path is not a git repository or getting diff failed
+        """

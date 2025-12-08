@@ -13,7 +13,7 @@ from ..conftest import create_mock_http_client
 
 
 def create_test_agent() -> Agent:
-    llm = LLM(model="gpt-4o-mini", api_key=None, service_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=None, usage_id="test-llm")
     return Agent(llm=llm, tools=[])
 
 

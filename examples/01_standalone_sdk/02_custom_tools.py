@@ -24,16 +24,15 @@ from openhands.sdk.tool import (
     ToolExecutor,
     register_tool,
 )
-from openhands.tools.execute_bash import (
-    BashExecutor,
-    ExecuteBashAction,
-    execute_bash_tool,
-)
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import (
+    TerminalAction,
+    TerminalExecutor,
+    TerminalTool,
+)
 
 
 logger = get_logger(__name__)
-
 
 # --- Action / Observation ---
 
@@ -72,10 +71,10 @@ class GrepObservation(Observation):
 
 
 class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
-    def __init__(self, bash: BashExecutor):
-        self.bash: BashExecutor = bash
+    def __init__(self, terminal: TerminalExecutor):
+        self.terminal: TerminalExecutor = terminal
 
-    def __call__(self, action: GrepAction) -> GrepObservation:
+    def __call__(self, action: GrepAction, conversation=None) -> GrepObservation:  # noqa: ARG002
         root = os.path.abspath(action.path)
         pat = shlex.quote(action.pattern)
         root_q = shlex.quote(root)
@@ -87,14 +86,16 @@ class GrepExecutor(ToolExecutor[GrepAction, GrepObservation]):
         else:
             cmd = f"grep -rHnE {pat} {root_q} 2>/dev/null | head -100"
 
-        result = self.bash(ExecuteBashAction(command=cmd))
+        result = self.terminal(TerminalAction(command=cmd))
 
         matches: list[str] = []
         files: set[str] = set()
 
         # grep returns exit code 1 when no matches; treat as empty
-        if result.output.strip():
-            for line in result.output.strip().splitlines():
+        output_text = result.text
+
+        if output_text.strip():
+            for line in output_text.strip().splitlines():
                 matches.append(line)
                 # Expect "path:line:content" — take the file part before first ":"
                 file_path = line.split(":", 1)[0]
@@ -115,13 +116,50 @@ _GREP_DESCRIPTION = """Fast content search tool.
 * When you are doing an open ended search that may require multiple rounds of globbing and grepping, use the Agent tool instead
 """  # noqa: E501
 
+
+# --- Tool Definition ---
+
+
+class GrepTool(ToolDefinition[GrepAction, GrepObservation]):
+    """A custom grep tool that searches file contents using regular expressions."""
+
+    @classmethod
+    def create(
+        cls, conv_state, terminal_executor: TerminalExecutor | None = None
+    ) -> Sequence[ToolDefinition]:
+        """Create GrepTool instance with a GrepExecutor.
+
+        Args:
+            conv_state: Conversation state to get working directory from.
+            terminal_executor: Optional terminal executor to reuse. If not provided,
+                         a new one will be created.
+
+        Returns:
+            A sequence containing a single GrepTool instance.
+        """
+        if terminal_executor is None:
+            terminal_executor = TerminalExecutor(
+                working_dir=conv_state.workspace.working_dir
+            )
+        grep_executor = GrepExecutor(terminal_executor)
+
+        return [
+            cls(
+                description=_GREP_DESCRIPTION,
+                action_type=GrepAction,
+                observation_type=GrepObservation,
+                executor=grep_executor,
+            )
+        ]
+
+
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    service_id="agent",
+    usage_id="agent",
     model=model,
     base_url=base_url,
     api_key=SecretStr(api_key),
@@ -132,28 +170,22 @@ cwd = os.getcwd()
 
 
 def _make_bash_and_grep_tools(conv_state) -> list[ToolDefinition]:
-    """Create execute_bash and custom grep tools sharing one executor."""
+    """Create terminal and custom grep tools sharing one executor."""
 
-    bash_executor = BashExecutor(working_dir=conv_state.workspace.working_dir)
-    bash_tool = execute_bash_tool.set_executor(executor=bash_executor)
+    terminal_executor = TerminalExecutor(working_dir=conv_state.workspace.working_dir)
+    # terminal_tool = terminal_tool.set_executor(executor=terminal_executor)
+    terminal_tool = TerminalTool.create(conv_state, executor=terminal_executor)[0]
 
-    grep_executor = GrepExecutor(bash_executor)
-    grep_tool = ToolDefinition(
-        name="grep",
-        description=_GREP_DESCRIPTION,
-        action_type=GrepAction,
-        observation_type=GrepObservation,
-        executor=grep_executor,
-    )
+    # Use the GrepTool.create() method with shared terminal_executor
+    grep_tool = GrepTool.create(conv_state, terminal_executor=terminal_executor)[0]
 
-    return [bash_tool, grep_tool]
+    return [terminal_tool, grep_tool]
 
 
-register_tool("FileEditorTool", FileEditorTool)
 register_tool("BashAndGrepToolSet", _make_bash_and_grep_tools)
 
 tools = [
-    Tool(name="FileEditorTool"),
+    Tool(name=FileEditorTool.name),
     Tool(name="BashAndGrepToolSet"),
 ]
 
@@ -186,3 +218,7 @@ print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")
 for i, message in enumerate(llm_messages):
     print(f"Message {i}: {str(message)[:200]}")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")

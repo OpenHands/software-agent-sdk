@@ -16,7 +16,7 @@ Arguments:
 Environment Variables:
     PROMPT_STRING: Direct prompt text (alternative to prompt_location)
     LLM_API_KEY: API key for the LLM (required)
-    LLM_MODEL: Language model to use (default: openhands/claude-sonnet-4-5-20250929)
+    LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
 
 Note: Provide either prompt_location argument OR PROMPT_STRING env variable, not both.
@@ -125,13 +125,13 @@ def main():
         logger.error("LLM_API_KEY environment variable is not set.")
         sys.exit(1)
 
-    model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
     base_url = os.getenv("LLM_BASE_URL")
 
     llm_config = {
         "model": model,
         "api_key": api_key,
-        "service_id": "agent_script",
+        "usage_id": "agent_script",
         "drop_params": True,
     }
 

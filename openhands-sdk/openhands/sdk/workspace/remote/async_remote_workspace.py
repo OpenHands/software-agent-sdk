@@ -5,6 +5,7 @@ from typing import Any
 import httpx
 from pydantic import PrivateAttr
 
+from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.remote_workspace_mixin import RemoteWorkspaceMixin
 
@@ -14,11 +15,32 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
 
     _client: httpx.AsyncClient | None = PrivateAttr(default=None)
 
+    async def reset_client(self) -> None:
+        """Reset the HTTP client to force re-initialization.
+
+        This is useful when connection parameters (host, api_key) have changed
+        and the client needs to be recreated with new values.
+        """
+        if self._client is not None:
+            try:
+                await self._client.aclose()
+            except Exception:
+                pass
+        self._client = None
+
     @property
     def client(self) -> httpx.AsyncClient:
         client = self._client
         if client is None:
-            client = httpx.AsyncClient()
+            # Configure reasonable timeouts for HTTP requests
+            # - connect: 10 seconds to establish connection
+            # - read: 60 seconds to read response (for LLM operations)
+            # - write: 10 seconds to send request
+            # - pool: 10 seconds to get connection from pool
+            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+            client = httpx.AsyncClient(
+                base_url=self.host, timeout=timeout, headers=self._headers
+            )
             self._client = client
         return client
 
@@ -91,5 +113,37 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
             FileOperationResult: Result with success status and metadata
         """
         generator = self._file_download_generator(source_path, destination_path)
+        result = await self._execute(generator)
+        return result
+
+    async def git_changes(self, path: str | Path) -> list[GitChange]:
+        """Get the git changes for the repository at the path given.
+
+        Args:
+            path: Path to the git repository
+
+        Returns:
+            list[GitChange]: List of changes
+
+        Raises:
+            Exception: If path is not a git repository or getting changes failed
+        """
+        generator = self._git_changes_generator(path)
+        result = await self._execute(generator)
+        return result
+
+    async def git_diff(self, path: str | Path) -> GitDiff:
+        """Get the git diff for the file at the path given.
+
+        Args:
+            path: Path to the file
+
+        Returns:
+            GitDiff: Git diff
+
+        Raises:
+            Exception: If path is not a git repository or getting diff failed
+        """
+        generator = self._git_diff_generator(path)
         result = await self._execute(generator)
         return result

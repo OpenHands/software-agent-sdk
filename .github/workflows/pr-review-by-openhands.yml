@@ -2,9 +2,15 @@
 name: PR Review by OpenHands
 
 on:
-    # Trigger when a label is added to a pull request
-    pull_request:
-        types: [labeled]
+    # Use pull_request_target to allow fork PRs to access secrets when triggered by maintainers
+    # Security: This workflow only runs when:
+    #   1. A maintainer adds the 'review-this' label, OR
+    #   2. A maintainer requests openhands-agent as a reviewer
+    # Only users with write access can add labels or request reviews, ensuring security.
+    # The PR code is explicitly checked out for review, but secrets are only accessible
+    # because the workflow runs in the base repository context
+    pull_request_target:
+        types: [labeled, review_requested]
 
 permissions:
     contents: read
@@ -13,12 +19,17 @@ permissions:
 
 jobs:
     pr-review:
-        if: github.event.label.name == 'review-this'
-        runs-on: ubuntu-latest
+        # Security: Only run when one of the following conditions is met:
+        #   1. 'review-this' label is added by a maintainer, OR
+        #   2. openhands-agent is requested as a reviewer by a maintainer
+        # Maintainers should review PR code before triggering this workflow
+        if: |
+            github.event.label.name == 'review-this' ||
+            github.event.requested_reviewer.login == 'openhands-agent'
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         env:
-            # Configuration (modify these values as needed)
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
-            LLM_BASE_URL: https://llm-proxy.eval.all-hands.dev
+            LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
             # PR context will be automatically provided by the agent script
             PR_NUMBER: ${{ github.event.pull_request.number }}
             PR_TITLE: ${{ github.event.pull_request.title }}
@@ -28,27 +39,30 @@ jobs:
             REPO_NAME: ${{ github.repository }}
         steps:
             - name: Checkout agent-sdk repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
-                  repository: All-Hands-AI/agent-sdk
+                  repository: OpenHands/agent-sdk
                   path: agent-sdk
 
             - name: Checkout PR repository
-              uses: actions/checkout@v4
+              uses: actions/checkout@v5
               with:
-                  # Fetch the full history to get the diff
-                  fetch-depth: 0
-                  path: pr-repo
-                  # Check out the feature branch so agent can inspect the PR changes
+                  # When using pull_request_target, explicitly checkout the PR branch
+                  # This ensures we review the actual PR code (including fork PRs)
+                  repository: ${{ github.event.pull_request.head.repo.full_name }}
                   ref: ${{ github.event.pull_request.head.ref }}
+                  fetch-depth: 0
+                  # Security: Don't persist credentials to prevent untrusted PR code from using them
+                  persist-credentials: false
+                  path: pr-repo
 
             - name: Set up Python
-              uses: actions/setup-python@v5
+              uses: actions/setup-python@v6
               with:
                   python-version: '3.12'
 
             - name: Install uv
-              uses: astral-sh/setup-uv@v6
+              uses: astral-sh/setup-uv@v7
               with:
                   enable-cache: true
 
@@ -61,8 +75,8 @@ jobs:
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/tools"
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-tools"
 
             - name: Check required configuration
               env:
@@ -93,7 +107,7 @@ jobs:
                   uv run python ../agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
 
             - name: Upload logs as artifact
-              uses: actions/upload-artifact@v4
+              uses: actions/upload-artifact@v5
               if: always()
               with:
                   name: openhands-pr-review-logs

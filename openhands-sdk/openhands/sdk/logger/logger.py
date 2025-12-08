@@ -105,7 +105,14 @@ def setup_logging(
     keep = ENV_BACKUP_COUNT if backup_count is None else backup_count
 
     root = logging.getLogger()
+    old_level = root.level
     root.setLevel(lvl)
+
+    # Set the level for any existing logger with the same intial level
+    for logger in logging.root.manager.loggerDict.values():
+        if isinstance(logger, logging.Logger) and logger.level == old_level:
+            logger.setLevel(lvl)
+
     # Do NOT clear existing handlers; Uvicorn installs these before importing the app.
     # Only add ours if there isn't already a comparable stream handler.
     has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
@@ -160,7 +167,24 @@ def setup_logging(
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Return a logger for the given module name."""
+    """Get a logger instance for the specified module.
+
+    This function returns a configured logger that inherits from the root logger
+    setup. The logger supports both Rich formatting for human-readable output
+    and JSON formatting for machine processing, depending on environment configuration.
+
+    Args:
+        name: The name of the module, typically __name__.
+
+    Returns:
+        A configured Logger instance.
+
+    Example:
+        >>> from openhands.sdk.logger import get_logger
+        >>> logger = get_logger(__name__)
+        >>> logger.info("This is an info message")
+        >>> logger.error("This is an error message")
+    """
     logger = logging.getLogger(name)
     logger.propagate = True
     return logger

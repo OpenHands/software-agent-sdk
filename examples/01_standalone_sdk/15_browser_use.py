@@ -10,10 +10,10 @@ from openhands.sdk import (
     LLMConvertibleEvent,
     get_logger,
 )
-from openhands.sdk.tool import Tool, register_tool
+from openhands.sdk.tool import Tool
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.execute_bash import BashTool
 from openhands.tools.file_editor import FileEditorTool
+from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
@@ -21,10 +21,10 @@ logger = get_logger(__name__)
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
-    service_id="agent",
+    usage_id="agent",
     model=model,
     base_url=base_url,
     api_key=SecretStr(api_key),
@@ -32,15 +32,12 @@ llm = LLM(
 
 # Tools
 cwd = os.getcwd()
-register_tool("BashTool", BashTool)
-register_tool("FileEditorTool", FileEditorTool)
-register_tool("BrowserToolSet", BrowserToolSet)
 tools = [
     Tool(
-        name="BashTool",
+        name=TerminalTool.name,
     ),
-    Tool(name="FileEditorTool"),
-    Tool(name="BrowserToolSet"),
+    Tool(name=FileEditorTool.name),
+    Tool(name=BrowserToolSet.name),
 ]
 
 # If you need fine-grained browser control, you can manually register individual browser
@@ -63,11 +60,10 @@ conversation = Conversation(
 )
 
 conversation.send_message(
-    "Could you go to https://all-hands.dev/ blog page and summarize main "
+    "Could you go to https://openhands.dev/ blog page and summarize main "
     "points of the latest blog?"
 )
 conversation.run()
-
 
 print("=" * 100)
 print("Conversation finished. Got the following LLM messages:")

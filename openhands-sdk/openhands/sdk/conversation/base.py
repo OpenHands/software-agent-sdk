@@ -1,14 +1,24 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable, Mapping
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, TypeVar, cast
 
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.secrets_manager import SecretValue
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.secret_registry import SecretValue
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.llm.llm import LLM
-from openhands.sdk.llm.message import Message, content_to_str
+from openhands.sdk.llm.message import Message
+from openhands.sdk.observability.laminar import (
+    end_active_span,
+    should_enable_observability,
+    start_active_span,
+)
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -18,7 +28,14 @@ from openhands.sdk.workspace.base import BaseWorkspace
 
 if TYPE_CHECKING:
     from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.conversation.state import AgentExecutionStatus
+    from openhands.sdk.conversation.state import ConversationExecutionStatus
+
+
+CallbackType = TypeVar(
+    "CallbackType",
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 
 
 class ConversationStateProtocol(Protocol):
@@ -35,8 +52,8 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def agent_status(self) -> "AgentExecutionStatus":
-        """The current agent execution status."""
+    def execution_status(self) -> "ConversationExecutionStatus":
+        """The current conversation execution status."""
         ...
 
     @property
@@ -45,8 +62,13 @@ class ConversationStateProtocol(Protocol):
         ...
 
     @property
-    def activated_knowledge_microagents(self) -> list[str]:
-        """List of activated knowledge microagents."""
+    def security_analyzer(self) -> SecurityAnalyzerBase | None:
+        """The security analyzer."""
+        ...
+
+    @property
+    def activated_knowledge_skills(self) -> list[str]:
+        """List of activated knowledge skills."""
         ...
 
     @property
@@ -67,8 +89,39 @@ class ConversationStateProtocol(Protocol):
         """The agent running in the conversation."""
         ...
 
+    @property
+    def stats(self) -> ConversationStats:
+        """The conversation statistics."""
+        ...
+
 
 class BaseConversation(ABC):
+    """Abstract base class for conversation implementations.
+
+    This class defines the interface that all conversation implementations must follow.
+    Conversations manage the interaction between users and agents, handling message
+    exchange, execution control, and state management.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the base conversation with span tracking."""
+        self._span_ended = False
+
+    def _start_observability_span(self, session_id: str) -> None:
+        """Start an observability span if observability is enabled.
+
+        Args:
+            session_id: The session ID to associate with the span
+        """
+        if should_enable_observability():
+            start_active_span("conversation", session_id=session_id)
+
+    def _end_observability_span(self) -> None:
+        """End the observability span if it hasn't been ended already."""
+        if not self._span_ended and should_enable_observability():
+            end_active_span()
+            self._span_ended = True
+
     @property
     @abstractmethod
     def id(self) -> ConversationID: ...
@@ -82,13 +135,32 @@ class BaseConversation(ABC):
     def conversation_stats(self) -> ConversationStats: ...
 
     @abstractmethod
-    def send_message(self, message: str | Message) -> None: ...
+    def send_message(self, message: str | Message, sender: str | None = None) -> None:
+        """Send a message to the agent.
+
+        Args:
+            message: Either a string (which will be converted to a user message)
+                    or a Message object
+            sender: Optional identifier of the sender. Can be used to track
+                   message origin in multi-agent scenarios. For example, when
+                   one agent delegates to another, the sender can be set to
+                   identify which agent is sending the message.
+        """
+        ...
 
     @abstractmethod
-    def run(self) -> None: ...
+    def run(self) -> None:
+        """Execute the agent to process messages and perform actions.
+
+        This method runs the agent until it finishes processing the current
+        message or reaches the maximum iteration limit.
+        """
+        ...
 
     @abstractmethod
-    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None: ...
+    def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
+        """Set the confirmation policy for the conversation."""
+        ...
 
     @property
     def confirmation_policy_active(self) -> bool:
@@ -99,13 +171,12 @@ class BaseConversation(ABC):
         """Check if confirmation mode is active.
 
         Returns True if BOTH conditions are met:
-        1. The agent has a security analyzer set (not None)
+        1. The conversation state has a security analyzer set (not None)
         2. The confirmation policy is active
 
         """
         return (
-            self.state.agent.security_analyzer is not None
-            and self.confirmation_policy_active
+            self.state.security_analyzer is not None and self.confirmation_policy_active
         )
 
     @abstractmethod
@@ -141,55 +212,41 @@ class BaseConversation(ABC):
 
     @staticmethod
     def get_persistence_dir(
-        persistence_base_dir: str, conversation_id: ConversationID
+        persistence_base_dir: str | Path, conversation_id: ConversationID
     ) -> str:
-        """Get the persistence directory for the conversation."""
-        return str(Path(persistence_base_dir) / conversation_id.hex)
+        """Get the persistence directory for the conversation.
 
-    def agent_final_response(self) -> str:
-        """Extract the final response from the agent.
-
-        An agent can end a conversation in two ways:
-        1. By calling the finish tool
-        2. By returning a text message with no tool calls
+        Args:
+            persistence_base_dir: Base directory for persistence. Can be a string
+                path or Path object.
+            conversation_id: Unique conversation ID.
 
         Returns:
-            The final response message from the agent, or empty string if not found.
+            String path to the conversation-specific persistence directory.
+            Always returns a normalized string path even if a Path was provided.
         """
-        # Find the last finish action or message event from the agent
-        for event in reversed(self.state.events):
-            # Case 1: finish tool call
-            if (
-                type(event).__name__ == "ActionEvent"
-                and hasattr(event, "source")
-                and getattr(event, "source") == "agent"
-                and hasattr(event, "tool_name")
-                and getattr(event, "tool_name") == "finish"
-            ):
-                # Extract message from finish tool call
-                if hasattr(event, "action") and hasattr(
-                    getattr(event, "action"), "message"
-                ):
-                    message = getattr(getattr(event, "action"), "message")
-                    return message
-                else:
-                    break
-            # Case 2: text message with no tool calls (MessageEvent)
-            elif (
-                type(event).__name__ == "MessageEvent"
-                and hasattr(event, "source")
-                and getattr(event, "source") == "agent"
-                and hasattr(event, "llm_message")
-            ):
-                llm_message = getattr(event, "llm_message")
-                text_parts = content_to_str(llm_message.content)
-                return "".join(text_parts)
-        return ""
+        return str(Path(persistence_base_dir) / conversation_id.hex)
+
+    @abstractmethod
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        ...
 
     @staticmethod
-    def compose_callbacks(
-        callbacks: Iterable[ConversationCallbackType],
-    ) -> ConversationCallbackType:
+    def compose_callbacks(callbacks: Iterable[CallbackType]) -> CallbackType:
         """Compose multiple callbacks into a single callback function.
 
         Args:
@@ -204,4 +261,4 @@ class BaseConversation(ABC):
                 if cb:
                     cb(event)
 
-        return composed
+        return cast(CallbackType, composed)

@@ -8,6 +8,7 @@ from openhands.sdk.context.view import View
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.observability.laminar import observe
 
 
 class LLMSummarizingCondenser(RollingCondenser):
@@ -16,15 +17,14 @@ class LLMSummarizingCondenser(RollingCondenser):
     keep_first: int = Field(default=4, ge=0)
 
     @model_validator(mode="after")
-    @classmethod
-    def validate_keep_first_vs_max_size(cls, model):
-        events_from_tail = model.max_size // 2 - model.keep_first - 1
+    def validate_keep_first_vs_max_size(self):
+        events_from_tail = self.max_size // 2 - self.keep_first - 1
         if events_from_tail <= 0:
             raise ValueError(
                 "keep_first must be less than max_size // 2 to leave room for "
                 "condensation"
             )
-        return model
+        return self
 
     def handles_condensation_requests(self) -> bool:
         return True
@@ -34,9 +34,14 @@ class LLMSummarizingCondenser(RollingCondenser):
             return True
         return len(view) > self.max_size
 
+    @observe(ignore_inputs=["view"])
     def get_condensation(self, view: View) -> Condensation:
         head = view[: self.keep_first]
         target_size = self.max_size // 2
+        if view.unhandled_condensation_request:
+            # Condensation triggered by a condensation request
+            # should be calculated based on the view size.
+            target_size = len(view) // 2
         # Number of events to keep from the tail -- target size, minus however many
         # prefix events from the head, minus one for the summarization event
         events_from_tail = target_size - len(head) - 1
@@ -64,9 +69,10 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         messages = [Message(role="user", content=[TextContent(text=prompt)])]
 
+        # Do not pass extra_body explicitly. The LLM handles forwarding
+        # litellm_extra_body only when it is non-empty.
         llm_response = self.llm.completion(
             messages=messages,
-            extra_body={"metadata": self.llm.metadata},
         )
         # Extract summary from the LLMResponse message
         summary = None
@@ -79,4 +85,5 @@ class LLMSummarizingCondenser(RollingCondenser):
             forgotten_event_ids=[event.id for event in forgotten_events],
             summary=summary,
             summary_offset=self.keep_first,
+            llm_response_id=llm_response.id,
         )

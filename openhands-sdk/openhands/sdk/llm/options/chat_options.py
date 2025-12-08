@@ -28,14 +28,21 @@ def select_chat_options(
         if "max_completion_tokens" in out:
             out["max_tokens"] = out.pop("max_completion_tokens")
 
+    # If user didn't set extra_headers, propagate from llm config
+    if llm.extra_headers is not None and "extra_headers" not in out:
+        out["extra_headers"] = dict(llm.extra_headers)
+
     # Reasoning-model quirks
     if get_features(llm.model).supports_reasoning_effort:
-        # Preferred: use reasoning_effort
+        # LiteLLM automatically handles reasoning_effort for all models, including
+        # Claude Opus 4.5 (maps to output_config and adds beta header automatically)
         if llm.reasoning_effort is not None:
             out["reasoning_effort"] = llm.reasoning_effort
-        # Anthropic/OpenAI reasoning models ignore temp/top_p
+
+        # All reasoning models ignore temp/top_p
         out.pop("temperature", None)
         out.pop("top_p", None)
+
         # Gemini 2.5-pro default to low if not set
         if "gemini-2.5-pro" in llm.model:
             if llm.reasoning_effort in {None, "none"}:
@@ -49,7 +56,12 @@ def select_chat_options(
                 "budget_tokens": llm.extended_thinking_budget,
             }
             # Enable interleaved thinking
-            out["extra_headers"] = {"anthropic-beta": "interleaved-thinking-2025-05-14"}
+            # Merge default header with any user-provided headers; user wins on conflict
+            existing = out.get("extra_headers") or {}
+            out["extra_headers"] = {
+                "anthropic-beta": "interleaved-thinking-2025-05-14",
+                **existing,
+            }
             # Fix litellm behavior
             out["max_tokens"] = llm.max_output_tokens
         # Anthropic models ignore temp/top_p
@@ -67,8 +79,15 @@ def select_chat_options(
         out.pop("tools", None)
         out.pop("tool_choice", None)
 
-    # non litellm proxy special-case: keep `extra_body` off unless model requires it
-    if "litellm_proxy" not in llm.model:
-        out.pop("extra_body", None)
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
+        out["prompt_cache_retention"] = llm.prompt_cache_retention
+
+    # Pass through user-provided extra_body unchanged
+    if llm.litellm_extra_body:
+        out["extra_body"] = llm.litellm_extra_body
 
     return out

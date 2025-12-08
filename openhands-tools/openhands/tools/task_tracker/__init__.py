@@ -2,8 +2,8 @@ from .definition import (
     TaskTrackerAction,
     TaskTrackerExecutor,
     TaskTrackerObservation,
+    TaskTrackerStatusType,
     TaskTrackerTool,
-    task_tracker_tool,
 )
 
 
@@ -11,6 +11,6 @@ __all__ = [
     "TaskTrackerAction",
     "TaskTrackerExecutor",
     "TaskTrackerObservation",
+    "TaskTrackerStatusType",
     "TaskTrackerTool",
-    "task_tracker_tool",
 ]

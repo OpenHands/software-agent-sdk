@@ -18,6 +18,7 @@ from openhands.sdk import (
     TextContent,
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import (
     MessageEvent,
@@ -25,11 +26,23 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.tool import Tool
 
 
+class SkipTest(Exception):
+    """
+    Exception raised to indicate that a test should be skipped.
+
+    This is useful for tests that require specific capabilities (e.g., vision)
+    that may not be available in all LLMs.
+    """
+
+    pass
+
+
 class TestResult(BaseModel):
     """Result of an integration test."""
 
     success: bool
     reason: str | None = None
+    skipped: bool = False
 
 
 class BaseIntegrationTest(ABC):
@@ -75,7 +88,7 @@ class BaseIntegrationTest(ABC):
             "api_key": SecretStr(api_key),
         }
 
-        self.llm: LLM = LLM(**llm_kwargs, service_id="test-llm")
+        self.llm: LLM = LLM(**llm_kwargs, usage_id="test-llm")
         self.agent: Agent = Agent(llm=self.llm, tools=self.tools)
         self.collected_events: list[Event] = []
         self.llm_messages: list[dict[str, Any]] = []
@@ -89,7 +102,7 @@ class BaseIntegrationTest(ABC):
             agent=self.agent,
             workspace=self.workspace,
             callbacks=[self.conversation_callback],
-            visualize=True,  # Use default visualizer and capture its output
+            visualizer=DefaultConversationVisualizer(),  # Use default visualizer
         )
 
     def conversation_callback(self, event: Event):
