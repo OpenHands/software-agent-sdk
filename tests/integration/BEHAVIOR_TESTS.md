@@ -109,79 +109,25 @@ class YourBehaviorTest(BaseIntegrationTest):
 - Files starting with `b` (e.g., `b01_*.py`) are classified as behavior tests
 - Files starting with `t` (e.g., `t01_*.py`) are classified as integration tests
 
-### 2. Use Helper Methods
+### 2. Validate Behavior
 
-`BaseIntegrationTest` provides behavior checking helpers:
+- Keep assertions focused on the user-facing behavior you want to enforce.
+- Reach for `judge_agent_behavior` (see `tests/integration/utils/llm_judge.py`) when human-style evaluation is needed.
+- Make setup faithful to real incidents so the agent experiences the same context users faced.
 
-```python
-# Find tool calls
-file_editor_calls = self.find_tool_calls("FileEditorTool")
-terminal_calls = self.find_tool_calls("TerminalTool")
-
-# Find file editing operations (create, str_replace, insert, undo_edit)
-edits = self.find_file_editing_operations()
-
-# Find specific file operations
-markdown_ops = self.find_file_operations(file_pattern="*.md")
-
-# Check bash command usage
-cat_commands = self.check_bash_command_used("cat")
-
-# Get conversation summary for LLM judge
-summary = self.get_conversation_summary()
-```
-
-### 3. Use LLM-as-Judge (Optional)
-
-For complex behavior verification:
-
-```python
-from tests.integration.utils.llm_judge import judge_agent_behavior
-
-judgment = judge_agent_behavior(
-    user_instruction=INSTRUCTION,
-    conversation_summary=self.get_conversation_summary(),
-    evaluation_criteria="""
-    The agent should:
-    1. Do X (GOOD)
-    2. Not do Y (BAD)
-
-    Did the agent behave appropriately?
-    """,
-)
-
-if not judgment.approved:
-    return TestResult(
-        success=False,
-        reason=f"LLM judge rejected: {judgment.reasoning}"
-    )
-```
+For additional patterns, read the existing suites such as `b01_no_premature_implementation.py`.
 
 ## Running Tests
 
-### Run All Tests (Including Behavior Tests)
+Use the integration runner locally when developing new scenarios:
 
 ```bash
-# Run all integration tests locally
-python tests/integration/run_infer.py \
-  --llm-config '{"model": "claude-sonnet-4-5-20250929"}' \
-  --num-workers 4 \
-  --eval-note "local-test"
-
-# Run specific tests only
 python tests/integration/run_infer.py \
   --llm-config '{"model": "claude-sonnet-4-5-20250929"}' \
   --eval-ids "b01_no_premature_implementation"
 ```
 
-### Run in CI/CD
-
-Behavior tests run automatically alongside task completion tests when:
-- The `integration-test` label is added to a PR
-- Workflow is triggered manually
-- Nightly scheduled run
-
-The existing `.github/workflows/integration-runner.yml` workflow handles both test types.
+CI automatically runs behavior and integration tests together via `.github/workflows/integration-runner.yml` when the `integration-test` label is applied or the workflow is triggered manually.
 
 ## Test Results
 
@@ -197,43 +143,8 @@ Evaluation Results:
 ...
 ```
 
-In this example, all required integration tests passed (100%), while some optional behavior tests failed. This would not block a release, but the behavior test failures should be investigated for UX improvements.
-
-## Helper Methods Reference
-
-### `find_tool_calls(tool_name: str) -> list[Event]`
-Find all calls to a specific tool.
-
-**Example:**
-```python
-file_editor_calls = self.find_tool_calls("FileEditorTool")
-```
-
-### `find_file_editing_operations() -> list[Event]`
-Find all file editing operations (excludes read-only `view` operations).
-
-**Returns:** Events for `create`, `str_replace`, `insert`, `undo_edit` commands.
-
-### `find_file_operations(file_pattern: str | None) -> list[Event]`
-Find all file operations, optionally filtered by pattern.
-
-**Example:**
-```python
-markdown_ops = self.find_file_operations("*.md")
-python_ops = self.find_file_operations("*.py")
-```
-
-### `check_bash_command_used(command_pattern: str) -> list[Event]`
-Check if agent used bash commands matching a pattern.
-
-**Example:**
-```python
-cat_usage = self.check_bash_command_used("cat")
-grep_usage = self.check_bash_command_used("grep")
-```
-
-### `get_conversation_summary(max_length: int = 5000) -> str`
-Get a text summary of the conversation for LLM judge.
+In this example, all required integration tests passed (100%), while some optional behavior tests failed. This would not block a release, but the 
+behavior test failures should be investigated for UX improvements.
 
 ## Adding New Behavior Tests
 
@@ -245,7 +156,7 @@ Get a text summary of the conversation for LLM judge.
 
 ## System Message Optimization
 
-Behavior tests serve as **regression tests for system messages**. When evolving system messages:
+Behavior tests serve as **regression tests for system messages**. When evolving ystem messages:
 
 1. Run behavior test suite
 2. Identify tests that start failing
@@ -255,27 +166,3 @@ Behavior tests serve as **regression tests for system messages**. When evolving 
    - Acceptable trade-off
 4. Iterate on system message
 5. Re-run tests to verify
-
-## Best Practices
-
-- **Be specific:** Test one behavior per test
-- **Use realistic prompts:** Base tests on real failure cases
-- **Check early:** Behavior tests fail fast if agent starts wrong actions
-- **Use LLM judge wisely:** For nuanced behavior, not simple checks
-- **Document intent:** Explain WHY a behavior is undesirable
-
-## Future Enhancements
-
-Potential improvements to the framework:
-
-- [ ] Test categories/tags for filtering
-- [ ] Behavior severity levels (warning vs error)
-- [ ] More sophisticated LLM judge prompts
-- [ ] Automatic prompt variation generation
-- [ ] Historical tracking of behavior test pass rates
-- [ ] A/B testing system messages with behavior tests
-
-## Questions?
-
-See existing test for example:
-- `tests/integration/tests/b01_no_premature_implementation.py`
