@@ -245,6 +245,21 @@ class BaseConversation(ABC):
         """
         ...
 
+    @abstractmethod
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method bypasses the normal condensation window requirements and forces
+        condensation to be applied to the current conversation history. If a condenser
+        is configured on the agent, it uses that condenser's LLM and configuration.
+        If no condenser is configured, it creates a default condenser using the
+        agent's LLM with default settings.
+
+        The condensation will be applied immediately and will modify the conversation
+        state by adding a condensation event to the history.
+        """
+        ...
+
     @staticmethod
     def compose_callbacks(callbacks: Iterable[CallbackType]) -> CallbackType:
         """Compose multiple callbacks into a single callback function.

@@ -540,6 +540,60 @@ class LocalConversation(BaseConversation):
             events=self._state.events, llm=llm_to_use, max_length=max_length
         )
 
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method bypasses the normal condensation window requirements and forces
+        condensation to be applied to the current conversation history. If a condenser
+        is configured on the agent, it uses that condenser's LLM and configuration.
+        If no condenser is configured, it creates a default ForceCondenser using the
+        agent's LLM with default settings.
+
+        The condensation will be applied immediately and will modify the conversation
+        state by adding a condensation event to the history.
+        """
+        # Import here to avoid circular imports
+        from openhands.sdk.context.condenser import (
+            ForceCondenser,
+            LLMSummarizingCondenser,
+        )
+        from openhands.sdk.context.view import View
+
+        # Create a ForceCondenser based on the agent's configuration
+        if self.agent.condenser is not None and isinstance(
+            self.agent.condenser, LLMSummarizingCondenser
+        ):
+            # Use existing LLMSummarizingCondenser configuration
+            force_condenser = ForceCondenser(
+                llm=self.agent.condenser.llm,
+                max_size=self.agent.condenser.max_size,
+                keep_first=self.agent.condenser.keep_first,
+            )
+        else:
+            # No condenser configured or unsupported condenser type,
+            # use agent's LLM with default settings
+            force_condenser = ForceCondenser(
+                llm=self.agent.llm,
+                max_size=120,  # Default max_size
+                keep_first=4,  # Default keep_first
+            )
+
+        # Get the current view of events
+        view = View.from_events(self._state.events)
+
+        # Force condensation
+        condensation_result = force_condenser.condense(view)
+
+        # If we get a Condensation event, add it to the conversation
+        from openhands.sdk.event.condenser import Condensation
+
+        if isinstance(condensation_result, Condensation):
+            # Notify callbacks about the condensation event (includes adding to state)
+            self._on_event(condensation_result)
+            logger.info("Manual condensation applied to conversation history")
+        else:
+            logger.info("Condensation was requested but no condensation was needed")
+
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""
         try:
