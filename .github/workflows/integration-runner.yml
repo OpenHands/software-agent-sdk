@@ -58,11 +58,11 @@ jobs:
                       run-suffix: sonnet_run
                       llm-config:
                           model: litellm_proxy/claude-sonnet-4-5-20250929
-                    - name: GPT-5 Mini 2025-08-07
-                      run-suffix: gpt5_mini_run
+                    - name: GPT-5 Codex
+                      run-suffix: gpt5_codex_run
                       llm-config:
-                          model: litellm_proxy/gpt-5-mini-2025-08-07
-                          temperature: 1.0
+                          model: litellm_proxy/gpt-5-codex
+                          temperature: 0.0
                     - name: Deepseek Chat
                       run-suffix: deepseek_run
                       llm-config:
