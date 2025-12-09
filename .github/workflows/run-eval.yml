@@ -14,8 +14,8 @@ on:
                 default: swebench
                 type: choice
                 options:
-                    - swebench
                     - gaia
+                    - swebench
                     - swtbench
             sdk_ref:
                 description: SDK commit/ref to evaluate
