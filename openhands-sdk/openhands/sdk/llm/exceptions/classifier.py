@@ -6,7 +6,7 @@ from .types import LLMContextWindowExceedError
 
 
 # Minimal, provider-agnostic context-window detection
-LONG_PROMPT_MODELS: list[str] = [
+LONG_PROMPT_PATTERNS: list[str] = [
     "contextwindowexceedederror",
     "prompt is too long",
     "input length and `max_tokens` exceed context limit",
@@ -25,10 +25,10 @@ def is_context_window_exceeded(exception: Exception) -> bool:
         return False
 
     s = str(exception).lower()
-    return any(p in s for p in LONG_PROMPT_MODELS)
+    return any(p in s for p in LONG_PROMPT_PATTERNS)
 
 
-AUTH_MODELS: list[str] = [
+AUTH_PATTERNS: list[str] = [
     "invalid api key",
     "unauthorized",
     "missing api key",
@@ -41,7 +41,7 @@ def looks_like_auth_error(exception: Exception) -> bool:
     if not isinstance(exception, (BadRequestError, OpenAIError)):
         return False
     s = str(exception).lower()
-    if any(p in s for p in AUTH_MODELS):
+    if any(p in s for p in AUTH_PATTERNS):
         return True
     # Some providers include explicit status codes in message text
     for code in ("status 401", "status 403"):
