@@ -141,34 +141,9 @@ When reviewing code, provide constructive feedback:
 
 # Behavior Tests
 
-Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to verify that agents exhibit desired behaviors in realistic scenarios. These tests are distinct from functional tests (prefix `t##_*`) and have specific requirements:
+Behavior tests (prefix `b##_*`) in `tests/integration/tests/` are designed to verify that agents exhibit desired behaviors in realistic scenarios. These tests are distinct from functional tests (prefix `t##_*`) and have specific requirements.
 
-## Guidelines for Adding Behavior Tests
-
-**DO:**
-- Use real repositories from real problems encountered in production or development
-- Check out to a specific historic commit before the problem was fixed
-- Reset/remove all future commits so the agent cannot "cheat" by seeing the solution
-- Test complex, nuanced agent behaviors (e.g., knowing when NOT to implement, choosing appropriate tools)
-- Use realistic, multi-file codebases with actual context
-- Consider using LLM judges to evaluate behavior quality when appropriate
-
-**DO NOT:**
-- Add simple, synthetic tests that can be easily verified with basic assertions
-- Create artificial scenarios with minimal setup (single file with trivial content)
-- Test behaviors that are too obvious or straightforward
-- Write tests where the "correct" behavior is immediately evident from the instruction
-
-## Example of a Good Behavior Test
-
-See `b01_no_premature_implementation.py`:
-- Clones the software-agent-sdk repository
-- Checks out to a specific historical commit (693c3261)
-- Tests that the agent provides advice without implementing when asked for guidance
-- Uses an LLM judge to evaluate the quality of the agent's response
-- Represents a real scenario where agents often over-implement
-
-The goal is to catch subtle behavioral issues that would appear in real-world usage, not to test basic functionality.
+Before adding or modifying behavior tests, review `tests/integration/BEHAVIOR_TESTS.md` for the latest workflow, expectations, and examples.
 </TESTING>
 
 <DOCUMENTATION_WORKFLOW>

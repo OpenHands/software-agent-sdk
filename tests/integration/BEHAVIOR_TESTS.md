@@ -48,7 +48,7 @@ Behavior tests should focus on **complex, real-world scenarios** that reveal sub
 **DO:**
 - Use real repositories from real problems encountered in production or development
 - Check out to a specific historic commit before the problem was fixed
-- Reset/remove all future commits so the agent cannot "cheat" by seeing the solution
+- Reset/remove all future commits so the agent cannot "cheat" by seeing the solution (see `b01_no_premature_implementation.py` for example)
 - Test complex, nuanced agent behaviors that require judgment
 - Use realistic, multi-file codebases with actual context
 - Consider using LLM judges to evaluate behavior quality when appropriate
