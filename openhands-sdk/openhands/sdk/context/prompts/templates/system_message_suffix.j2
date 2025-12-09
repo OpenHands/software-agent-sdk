@@ -18,7 +18,6 @@ Please follow them while working.
 <CUSTOM_SECRETS>
 ### Credential Access
 * Automatic secret injection: When you reference a registered secret key in your bash command, the secret value will be automatically exported as an environment variable before your command executes.
-enyst marked this conversation as resolved.
 * How to use secrets: Simply reference the secret key in your command (e.g., `echo ${GITHUB_TOKEN:0:8}` or `curl -H "Authorization: Bearer $API_KEY" https://api.example.com`). The system will detect the key name in your command text and export it as environment variable before it executes your command.
 * Secret detection: The system performs case-insensitive matching to find secret keys in your command text. If a registered secret key appears anywhere in your command, its value will be made available as an environment variable.
 * Security: Secret values are automatically masked in command output to prevent accidental exposure. You will see `<secret-hidden>` instead of the actual secret value in the output.
