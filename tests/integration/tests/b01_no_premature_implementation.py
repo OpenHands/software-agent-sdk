@@ -70,10 +70,7 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
                 [
                     "git",
                     "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    "main",
+                    "--filter=blob:none",
                     "https://github.com/OpenHands/software-agent-sdk.git",
                     repo_dir,
                 ],
@@ -82,13 +79,28 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
                 timeout=60,
             )
 
-            # Checkout the pinned commit
+            # Fetch and checkout the pinned commit
+            subprocess.run(
+                [
+                    "git",
+                    "fetch",
+                    "origin",
+                    "693c32618dca43e6506a785da4e37575e387a638",
+                    "--depth",
+                    "1",
+                ],
+                cwd=repo_dir,
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+
             subprocess.run(
                 ["git", "checkout", "693c32618dca43e6506a785da4e37575e387a638"],
                 cwd=repo_dir,
                 check=True,
                 capture_output=True,
-                timeout=10,
+                timeout=30,
             )
 
             # Update the working directory context
