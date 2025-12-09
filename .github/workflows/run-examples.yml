@@ -57,7 +57,6 @@ jobs:
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_MODEL: openhands/claude-haiku-4-5-20251001
-                  LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
                   RUNTIME_API_KEY: ${{ secrets.RUNTIME_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
                   PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -32,9 +32,35 @@ jobs:
             # PROMPT_LOCATION: 'https://example.com/prompts/maintenance.txt'
             # Option 2: Use direct text for the prompt
             PROMPT_STRING: >
-                Use GITHUB_TOKEN and the github API to organize open pull requests in the repo.
+                Use GITHUB_TOKEN and the github API to organize open pull requests and issues in the repo.
                 Read the sections below in order, and perform each in order. Do NOT take action
-                on the same issue twice.
+                on the same issue or PR twice.
+
+                # Issues with needs-info - Check for OP Response
+
+                Find all open issues that have the "needs-info" label. For each issue:
+                1. Identify the original poster (issue author)
+                2. Check if there are any comments from the original poster AFTER the "needs-info" label was added
+                3. To determine when the label was added, use: GET /repos/{owner}/{repo}/issues/{issue_number}/timeline
+                   and look for "labeled" events with the label "needs-info"
+                4. If the original poster has commented after the label was added:
+                   - Remove the "needs-info" label
+                   - Add the "needs-triage" label
+                # Issues with needs-triage
+
+                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 2 days:
+                1. First, check if the issue has already been triaged by verifying it does NOT have:
+                   - The "enhancement" label
+                   - Any "priority" label (priority:low, priority:medium, priority:high, etc.)
+                2. If the issue has already been triaged (has enhancement or priority label), remove the "needs-triage" label
+                3. For issues that have NOT been triaged yet:
+                   - Read the issue description and comments
+                   - Check if it is a bug report, feature request, or question and add the appropriate label
+                   - If it is a bug report and it does not have a priority label
+                     * Find an appropriate maintainer based on the issue topic and recent activity
+                     * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look and add the
+                appropriate priority label when you have
+                a chance?"
 
                 # Need Reviewer Action
 
