@@ -36,11 +36,11 @@ from tests.sdk.conversation.conftest import create_mock_http_client
 # ---------------------------------------------------------------------------
 
 
-class MockAction(Action):
+class CondenseTestMockAction(Action):
     command: str
 
 
-class MockObservation(Observation):
+class CondenseTestMockObservation(Observation):
     result: str
 
     @property
@@ -280,7 +280,7 @@ def test_local_conversation_condense_with_existing_events_and_tool_calls(
         ActionEvent(
             source="agent",
             thought=[TextContent(text="I'll list the files using the terminal")],
-            action=MockAction(command="ls -la"),
+            action=CondenseTestMockAction(command="ls -la"),
             tool_name="terminal",
             tool_call_id="call_123",
             tool_call=tool_call,
@@ -298,7 +298,7 @@ def test_local_conversation_condense_with_existing_events_and_tool_calls(
     conv.state.events.append(
         ObservationEvent(
             source="environment",
-            observation=MockObservation(result=observation_result),
+            observation=CondenseTestMockObservation(result=observation_result),
             action_id="action_123",
             tool_name="terminal",
             tool_call_id="call_123",
