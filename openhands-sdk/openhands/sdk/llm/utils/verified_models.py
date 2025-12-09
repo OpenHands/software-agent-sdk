@@ -38,6 +38,8 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-small-2505",
     "devstral-small-2507",
     "devstral-medium-2507",
+    "devstral-2512",
+    "devstral-medium-2512",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -52,8 +54,8 @@ VERIFIED_OPENHANDS_MODELS = [
     "kimi-k2-thinking",
     "gpt-5-mini-2025-08-07",
     "claude-opus-4-1-20250805",
-    "devstral-small-2507",
-    "devstral-medium-2507",
+    "devstral-2512",
+    "devstral-medium-2512",
 ]
 
 
