@@ -749,14 +749,15 @@ class RemoteConversation(BaseConversation):
     def condense(self) -> None:
         """Force condensation of the conversation history.
 
-        This method bypasses the normal condensation window requirements and forces
-        condensation to be applied to the current conversation history. If a condenser
-        is configured on the agent, it uses that condenser's LLM and configuration.
-        If no condenser is configured, it creates a default condenser using the
-        agent's LLM with default settings.
+        This method sends a condensation request to the remote agent server.
+        The server will use the existing condensation request pattern to trigger
+        condensation if a condenser is configured and handles condensation requests.
 
-        The condensation will be applied immediately and will modify the conversation
-        state by adding a condensation event to the history.
+        The condensation will be applied on the server side and will modify the
+        conversation state by adding a condensation event to the history.
+
+        Raises:
+            HTTPError: If the server returns an error (e.g., no condenser configured).
         """
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
 

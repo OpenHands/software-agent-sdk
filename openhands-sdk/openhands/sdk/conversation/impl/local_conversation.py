@@ -543,80 +543,58 @@ class LocalConversation(BaseConversation):
     def condense(self) -> None:
         """Force condensation of the conversation history.
 
-        This method bypasses the normal condensation window requirements and forces
-        condensation to be applied to the current conversation history. If a condenser
-        is configured on the agent, it uses that condenser's LLM and configuration.
-        If no condenser is configured, it creates a default ForceCondenser using the
-        agent's LLM with default settings.
+        This method uses the existing condensation request pattern to trigger
+        condensation. It adds a CondensationRequest event to the conversation
+        and forces the agent to take a single step to process it.
 
-        The condensation will be applied immediately and will modify the conversation
-        state by adding a condensation event to the history.
+        If no condenser is configured or the condenser doesn't handle condensation
+        requests, this method will raise a ValueError with helpful guidance.
         """
         # Import here to avoid circular imports
-        from openhands.sdk.context.condenser import (
-            ForceCondenser,
-            LLMSummarizingCondenser,
-        )
-        from openhands.sdk.context.view import View
+        from openhands.sdk.event.condenser import CondensationRequest
 
-        # Create a ForceCondenser based on the agent's configuration
-        if self.agent.condenser is not None and isinstance(
-            self.agent.condenser, LLMSummarizingCondenser
+        # Check if condenser is configured and handles condensation requests
+        if (
+            self.agent.condenser is None
+            or not self.agent.condenser.handles_condensation_requests()
         ):
-            # Use existing LLMSummarizingCondenser configuration with new LLM instance
-            # Get or create the specialized condense LLM
-            try:
-                condense_llm = self.llm_registry.get("condense-llm")
-            except KeyError:
-                condense_llm = self.agent.condenser.llm.model_copy(
-                    update={
-                        "usage_id": "condense-llm",
-                    },
-                    deep=True,
+            condenser_info = (
+                "No condenser configured"
+                if self.agent.condenser is None
+                else (
+                    f"Condenser {type(self.agent.condenser).__name__} does not handle "
+                    "condensation requests"
                 )
-                self.llm_registry.add(condense_llm)
-
-            force_condenser = ForceCondenser(
-                llm=condense_llm,
-                max_size=self.agent.condenser.max_size,
-                keep_first=self.agent.condenser.keep_first,
             )
-        else:
-            # No condenser configured or unsupported condenser type,
-            # use agent's LLM with default settings but with new LLM instance
-            # Get or create the specialized condense LLM
-            try:
-                condense_llm = self.llm_registry.get("condense-llm")
-            except KeyError:
-                condense_llm = self.agent.llm.model_copy(
-                    update={
-                        "usage_id": "condense-llm",
-                    },
-                    deep=True,
-                )
-                self.llm_registry.add(condense_llm)
-
-            force_condenser = ForceCondenser(
-                llm=condense_llm,
-                max_size=120,  # Default max_size
-                keep_first=4,  # Default keep_first
+            raise ValueError(
+                f"Cannot condense conversation: {condenser_info}. "
+                "To enable manual condensation, configure an "
+                "LLMSummarizingCondenser:\n\n"
+                "from openhands.sdk.context.condenser import LLMSummarizingCondenser\n"
+                "agent = Agent(\n"
+                "    llm=your_llm,\n"
+                "    condenser=LLMSummarizingCondenser(\n"
+                "        llm=your_llm,\n"
+                "        max_size=120,\n"
+                "        keep_first=4\n"
+                "    )\n"
+                ")"
             )
 
-        # Get the current view of events
-        view = View.from_events(self._state.events)
+        # Add a condensation request event
+        condensation_request = CondensationRequest()
+        self._on_event(condensation_request)
 
-        # Force condensation
-        condensation_result = force_condenser.condense(view)
+        # Force the agent to take a single step to process the condensation request
+        # This will trigger the condenser if it handles condensation requests
+        with self._state:
+            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+                self._state.execution_status = ConversationExecutionStatus.IDLE
 
-        # If we get a Condensation event, add it to the conversation
-        from openhands.sdk.event.condenser import Condensation
+            # Take a single step to process the condensation request
+            self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
 
-        if isinstance(condensation_result, Condensation):
-            # Notify callbacks about the condensation event (includes adding to state)
-            self._on_event(condensation_result)
-            logger.info("Manual condensation applied to conversation history")
-        else:
-            logger.info("Condensation was requested but no condensation was needed")
+        logger.info("Condensation request processed")
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""

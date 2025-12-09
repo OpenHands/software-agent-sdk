@@ -56,7 +56,9 @@ def create_test_agent() -> Agent:
 def create_test_agent_with_condenser() -> Agent:
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     condenser_llm = LLM(
-        model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="condenser-llm"
+        model="gpt-4o-mini",
+        api_key=SecretStr("test-key"),
+        usage_id="test-condenser-llm",
     )
     condenser = LLMSummarizingCondenser(llm=condenser_llm, max_size=100, keep_first=5)
     return Agent(llm=llm, condenser=condenser, tools=[])
@@ -108,15 +110,8 @@ def agent_with_condenser() -> Agent:
 # ---------------------------------------------------------------------------
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_condense_without_condenser(
-    mock_completion, tmp_path, agent
-):
-    """condense creates ForceCondenser with agent's LLM when no condenser configured."""
-    mock_completion.return_value = create_mock_llm_response(
-        "## Summary\nThis is a condensed summary of the conversation."
-    )
-
+def test_local_conversation_condense_without_condenser(tmp_path, agent):
+    """condense raises ValueError when no condenser is configured."""
     conv = Conversation(
         agent=agent,
         persistence_dir=str(tmp_path),
@@ -134,30 +129,26 @@ def test_local_conversation_condense_without_condenser(
         )
     )
 
-    # Call condense
-    conv.condense()
-
-    # LLM was called for condensation
-    mock_completion.assert_called_once()
-    messages = mock_completion.call_args.kwargs["messages"]
-    assert len(messages) >= 1
-
-    # Dedicated condense-llm is configured correctly
-    condense_llm = conv.llm_registry.get("condense-llm")
-    assert condense_llm.usage_id == "condense-llm"
-    # Verify that parameters are copied from the original agent's LLM
-    assert condense_llm.model == agent.llm.model
-    assert condense_llm.native_tool_calling == agent.llm.native_tool_calling
-    assert condense_llm.caching_prompt == agent.llm.caching_prompt
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
+        conv.condense()
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
+@patch(
+    "openhands.sdk.context.condenser.llm_summarizing_condenser.LLMSummarizingCondenser.condense"
+)
 def test_local_conversation_condense_with_condenser(
-    mock_completion, tmp_path, agent_with_condenser
+    mock_condense, tmp_path, agent_with_condenser
 ):
-    """condense uses existing condenser's LLM configuration when condenser is configured."""  # noqa: E501
-    mock_completion.return_value = create_mock_llm_response(
-        "## Summary\nThis is a condensed summary using the existing condenser."
+    """condense adds CondensationRequest and calls agent.step() when condenser is configured."""  # noqa: E501
+    # Mock the condenser to avoid actual LLM calls
+    from openhands.sdk.event.condenser import Condensation
+
+    # Return a Condensation event to simulate successful condensation
+    mock_condense.return_value = Condensation(
+        summary="Test summary", llm_response_id="test-response-id"
     )
 
     conv = Conversation(
@@ -180,28 +171,20 @@ def test_local_conversation_condense_with_condenser(
     # Call condense
     conv.condense()
 
-    # LLM was called for condensation
-    mock_completion.assert_called_once()
+    # Check that a CondensationRequest was added to the events
+    from openhands.sdk.event.condenser import CondensationRequest
 
-    # Dedicated condense-llm is configured correctly
-    condense_llm = conv.llm_registry.get("condense-llm")
-    assert condense_llm.usage_id == "condense-llm"
-    # Verify that parameters are copied from the condenser's LLM
-    assert condense_llm.model == agent_with_condenser.condenser.llm.model
-    assert (
-        condense_llm.native_tool_calling
-        == agent_with_condenser.condenser.llm.native_tool_calling
-    )
-    assert (
-        condense_llm.caching_prompt == agent_with_condenser.condenser.llm.caching_prompt
-    )
+    condensation_requests = [
+        e for e in conv.state.events if isinstance(e, CondensationRequest)
+    ]
+    assert len(condensation_requests) == 1
+
+    # The condenser should have been called
+    mock_condense.assert_called_once()
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_condense_copies_llm_config(mock_completion, tmp_path):
-    """condense creates LLM with parameters copied from original agent's LLM."""
-    mock_completion.return_value = create_mock_llm_response("Test condensation")
-
+def test_local_conversation_condense_copies_llm_config(tmp_path):
+    """condense raises ValueError when no condenser is configured, even with custom LLM config."""  # noqa: E501
     # Create agent with custom LLM configuration
     llm = LLM(
         model="gpt-4o-mini",
@@ -229,29 +212,17 @@ def test_local_conversation_condense_copies_llm_config(mock_completion, tmp_path
         )
     )
 
-    conv.condense()
-
-    # Verify that condense-llm copies the custom configuration
-    condense_llm = conv.llm_registry.get("condense-llm")
-    assert condense_llm.native_tool_calling == agent.llm.native_tool_calling
-    assert condense_llm.caching_prompt == agent.llm.caching_prompt
-    assert condense_llm.usage_id == "condense-llm"
-    # Verify the specific custom values are copied
-    assert condense_llm.native_tool_calling is False
-    assert condense_llm.caching_prompt is False
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
+        conv.condense()
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
 def test_local_conversation_condense_with_existing_events_and_tool_calls(
-    mock_completion, tmp_path, agent
+    tmp_path, agent
 ):
-    """condense includes prior events (user, tool call, observation) in the context."""
-    summary_text = (
-        "## Summary\nUser requested file listing. "
-        "Agent executed 'ls' command and found test.txt file."
-    )
-    mock_completion.return_value = create_mock_llm_response(summary_text)
-
+    """condense raises ValueError when no condenser is configured, even with complex history."""  # noqa: E501
     conv = Conversation(
         agent=agent,
         persistence_dir=str(tmp_path),
@@ -305,33 +276,15 @@ def test_local_conversation_condense_with_existing_events_and_tool_calls(
         )
     )
 
-    # condense should incorporate the entire history
-    conv.condense()
-
-    mock_completion.assert_called_once()
-    messages = mock_completion.call_args.kwargs["messages"]
-
-    # The condense method creates a single user message with the condensation prompt
-    # containing the conversation history, so we expect at least 1 message
-    assert len(messages) >= 1
-
-    # The condensation prompt should be a user message
-    condensation_msg = messages[0]
-    assert condensation_msg.role == "user"
-
-    # The condensation should have been applied (we can see from the output that it worked)  # noqa: E501
-    # The specific content format is handled by the condenser implementation
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
+        conv.condense()
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_condense_force_condenser_bypasses_window(
-    mock_completion, tmp_path, agent
-):
-    """condense uses ForceCondenser that bypasses condensation window requirements."""
-    mock_completion.return_value = create_mock_llm_response(
-        "## Summary\nForced condensation applied."
-    )
-
+def test_local_conversation_condense_force_condenser_bypasses_window(tmp_path, agent):
+    """condense raises ValueError when no condenser is configured, even with minimal history."""  # noqa: E501
     conv = Conversation(
         agent=agent,
         persistence_dir=str(tmp_path),
@@ -349,16 +302,11 @@ def test_local_conversation_condense_force_condenser_bypasses_window(
         )
     )
 
-    # condense should work even with minimal history (ForceCondenser bypasses window)
-    conv.condense()
-
-    # LLM was called despite minimal history
-    mock_completion.assert_called_once()
-
-    # Verify ForceCondenser was used by checking that condensation happened
-    # even with minimal events
-    condense_llm = conv.llm_registry.get("condense-llm")
-    assert condense_llm is not None
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
+        conv.condense()
 
 
 # ---------------------------------------------------------------------------
@@ -468,18 +416,8 @@ def test_remote_conversation_condense_with_agent_with_condenser(agent_with_conde
 # ---------------------------------------------------------------------------
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_condense_raises_context_window_error(
-    mock_completion, tmp_path, agent
-):
-    """condense properly propagates LLMContextWindowExceedError from LLM completion."""
-    from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
-
-    # Mock LLM completion to raise context window error
-    mock_completion.side_effect = LLMContextWindowExceedError(
-        "Context window exceeded: conversation too long"
-    )
-
+def test_local_conversation_condense_raises_context_window_error(tmp_path, agent):
+    """condense raises ValueError when no condenser is configured."""
     conv = Conversation(
         agent=agent,
         persistence_dir=str(tmp_path),
@@ -497,24 +435,15 @@ def test_local_conversation_condense_raises_context_window_error(
         )
     )
 
-    # condense should propagate the exception
-    with pytest.raises(LLMContextWindowExceedError) as exc_info:
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
         conv.condense()
 
-    assert "Context window exceeded" in str(exc_info.value)
-    mock_completion.assert_called_once()
 
-
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_condense_handles_empty_response(
-    mock_completion, tmp_path, agent
-):
-    """condense handles empty LLM response gracefully."""
-    # Mock LLM response with no text content
-    mock_response = create_mock_llm_response("")
-    mock_response.message.content = []  # Empty content list
-    mock_completion.return_value = mock_response
-
+def test_local_conversation_condense_handles_empty_response(tmp_path, agent):
+    """condense raises ValueError when no condenser is configured."""
     conv = Conversation(
         agent=agent,
         persistence_dir=str(tmp_path),
@@ -532,9 +461,11 @@ def test_local_conversation_condense_handles_empty_response(
         )
     )
 
-    # condense should handle empty response gracefully (no exception)
-    conv.condense()
-    mock_completion.assert_called_once()
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
+        conv.condense()
 
 
 def test_remote_conversation_condense_raises_http_status_error(agent):
@@ -631,13 +562,8 @@ def test_remote_conversation_condense_raises_request_error(agent):
 # ---------------------------------------------------------------------------
 
 
-@patch("openhands.sdk.llm.llm.LLM.completion")
-def test_local_conversation_condense_llm_registry_isolation(
-    mock_completion, tmp_path, agent
-):
-    """condense creates separate LLM instances that don't interfere with agent's LLM."""
-    mock_completion.return_value = create_mock_llm_response("Test condensation")
-
+def test_local_conversation_condense_llm_registry_isolation(tmp_path, agent):
+    """condense raises ValueError when no condenser is configured."""
     conv = Conversation(
         agent=agent,
         persistence_dir=str(tmp_path),
@@ -659,17 +585,12 @@ def test_local_conversation_condense_llm_registry_isolation(
     initial_llms = conv.llm_registry.list_usage_ids()
     assert "condense-llm" not in initial_llms
 
-    # Call condense
-    conv.condense()
+    # Call condense should raise ValueError
+    with pytest.raises(
+        ValueError, match="Cannot condense conversation: No condenser configured"
+    ):
+        conv.condense()
 
-    # Check final LLM registry state
+    # LLM registry should remain unchanged
     final_llms = conv.llm_registry.list_usage_ids()
-    assert "condense-llm" in final_llms
-
-    # Verify LLM instances are separate
-    condense_llm = conv.llm_registry.get("condense-llm")
-    agent_llm = agent.llm
-
-    assert condense_llm is not agent_llm
-    assert condense_llm.usage_id == "condense-llm"
-    assert agent_llm.usage_id == "test-llm"
+    assert "condense-llm" not in final_llms

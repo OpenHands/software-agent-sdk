@@ -249,14 +249,16 @@ class BaseConversation(ABC):
     def condense(self) -> None:
         """Force condensation of the conversation history.
 
-        This method bypasses the normal condensation window requirements and forces
-        condensation to be applied to the current conversation history. If a condenser
-        is configured on the agent, it uses that condenser's LLM and configuration.
-        If no condenser is configured, it creates a default condenser using the
-        agent's LLM with default settings.
+        This method uses the existing condensation request pattern to trigger
+        condensation. It adds a CondensationRequest event to the conversation
+        and forces the agent to take a single step to process it.
 
         The condensation will be applied immediately and will modify the conversation
         state by adding a condensation event to the history.
+
+        Raises:
+            ValueError: If no condenser is configured or the condenser doesn't
+                       handle condensation requests.
         """
         ...
 
