@@ -33,6 +33,8 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-small-2505",
     "devstral-small-2507",
     "devstral-medium-2507",
+    "devstral-2512",
+    "devstral-medium-2512",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
@@ -47,6 +49,8 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-1-20250805",
     "devstral-small-2507",
     "devstral-medium-2507",
+    "devstral-2512",
+    "devstral-medium-2512",
 ]
 
 
