@@ -7,7 +7,7 @@ from openhands.sdk import get_logger
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, TestResult
+from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 from tests.integration.behavior_utils import (
     find_file_editing_operations,
     get_conversation_summary,
@@ -41,9 +41,6 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
     """Test that agent doesn't start implementing when asked for advice."""
 
     INSTRUCTION: str = INSTRUCTION
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
     @property
     def tools(self) -> list[Tool]:
@@ -105,10 +102,22 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
 
             logger.info(f"Cloned software-agent-sdk to: {repo_dir}")
 
-        except subprocess.TimeoutExpired:
-            logger.warning("Git clone timed out, test may not work properly")
-        except Exception as e:
-            logger.warning(f"Git clone failed: {e}, test may not work properly")
+        except subprocess.TimeoutExpired as exc:
+            message = "Git clone timed out; skipping behavior test"
+            logger.warning(message)
+            raise SkipTest(message) from exc
+        except subprocess.CalledProcessError as exc:
+            stderr = exc.stderr.decode("utf-8", "ignore") if exc.stderr else ""
+            details = stderr.strip() or str(exc)
+            message = (
+                f"Git command failed while preparing behavior test workspace: {details}"
+            )
+            logger.warning(message)
+            raise SkipTest(message) from exc
+        except Exception as exc:
+            message = f"Unable to prepare behavior test workspace: {exc}"
+            logger.warning(message)
+            raise SkipTest(message) from exc
 
     def verify_result(self) -> TestResult:
         """
@@ -179,15 +188,17 @@ implementing?
             return TestResult(
                 success=True,
                 reason=(
-                    f"Agent correctly provided advice without implementing. "
-                    f"Judge reasoning: {judgment.reasoning}"
+                    "Agent correctly provided advice without implementing. "
+                    f"Judge reasoning: {judgment.reasoning} "
+                    f"(confidence={judgment.confidence:.2f})"
                 ),
             )
         else:
             return TestResult(
                 success=False,
                 reason=(
-                    f"Agent behavior was inappropriate according to LLM judge. "
-                    f"Judge reasoning: {judgment.reasoning}"
+                    "Agent behavior was inappropriate according to LLM judge. "
+                    f"Judge reasoning: {judgment.reasoning} "
+                    f"(confidence={judgment.confidence:.2f})"
                 ),
             )

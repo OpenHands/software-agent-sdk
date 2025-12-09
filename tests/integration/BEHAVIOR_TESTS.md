@@ -65,7 +65,7 @@ The goal is to catch subtle behavioral issues that would appear in real-world us
 
 ### 1. Create Test File
 
-Create a file in `tests/integration/tests/` with naming pattern `t##_*.py`:
+Create a file in `tests/integration/tests/` with naming pattern `b##_*.py`:
 
 ```python
 """Test description here."""
