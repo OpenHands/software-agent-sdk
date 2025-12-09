@@ -332,6 +332,18 @@ class ConversationService:
         response = await event_service.ask_agent(question)
         return response
 
+    async def condense(self, conversation_id: UUID) -> bool:
+        """Force condensation of the conversation history."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return False
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        await event_service.condense()
+        return True
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}

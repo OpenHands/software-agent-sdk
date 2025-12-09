@@ -757,16 +757,8 @@ class RemoteConversation(BaseConversation):
 
         The condensation will be applied immediately and will modify the conversation
         state by adding a condensation event to the history.
-
-        Raises:
-            NotImplementedError: Remote condensation is not yet implemented
         """
-        # For now, remote condensation is not implemented
-        # This would require server-side support for manual condensation
-        raise NotImplementedError(
-            "Manual condensation is not yet supported for RemoteConversation. "
-            "This feature requires server-side implementation."
-        )
+        _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
 
     def close(self) -> None:
         """Close the conversation and clean up resources.
