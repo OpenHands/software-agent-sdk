@@ -183,6 +183,8 @@ You MUST use the submit_judgment tool to provide your evaluation. """
             else:
                 args = json.loads(tool_call.arguments)
 
+            logger.info("Behavior judge tool call arguments: %s", args)
+
             # Extract usage information
             metrics = response.metrics
             usage = metrics.accumulated_token_usage
@@ -201,17 +203,20 @@ You MUST use the submit_judgment tool to provide your evaluation. """
                 cost=cost,
             )
         else:
-            logger.error("LLM did not call the judgment tool")
+            logger.error(
+                "LLM did not call the judgment tool. Response message: %s",
+                response.message.model_dump(),
+            )
             return JudgmentResult(
                 approved=False,
                 reasoning="LLM failed to call the judgment tool",
                 confidence=0.0,
             )
 
-    except Exception as e:
-        logger.error(f"Error during tool-based LLM judgment: {e}")
+    except Exception as exc:
+        logger.exception("Error during tool-based LLM judgment")
         return JudgmentResult(
             approved=False,
-            reasoning=f"Error during judgment: {str(e)}",
+            reasoning=f"Error during judgment: {exc}",
             confidence=0.0,
         )
