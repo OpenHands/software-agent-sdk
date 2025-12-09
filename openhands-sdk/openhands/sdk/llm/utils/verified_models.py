@@ -43,10 +43,10 @@ VERIFIED_MISTRAL_MODELS = [
 VERIFIED_OPENHANDS_MODELS = [
     "claude-sonnet-4-5-20250929",
     "gemini-3-pro-preview",
-    "gpt-5-2025-08-07",
-    "gpt-5-codex",
     "gpt-5.1",
     "gpt-5.1-2025-11-13",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
     "kimi-k2-thinking",
