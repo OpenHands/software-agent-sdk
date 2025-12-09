@@ -1,3 +1,9 @@
+"""Secret sources and types for handling sensitive data.
+
+This module is intentionally placed at the SDK root level (not in the conversation
+package) to avoid circular import dependencies with agent_context.
+"""
+
 from abc import ABC, abstractmethod
 
 import httpx
@@ -84,3 +90,7 @@ def _is_secret_header(key: str):
         if secret in key:
             return True
     return False
+
+
+# Type alias for secret values - can be a plain string or a SecretSource
+SecretValue = str | SecretSource

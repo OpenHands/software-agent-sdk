@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import pathlib
 from collections.abc import Mapping
-from typing import Any
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -15,6 +14,7 @@ from openhands.sdk.context.skills import (
 )
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.secret import SecretValue
 
 
 logger = get_logger(__name__)
@@ -69,21 +69,13 @@ class AgentContext(BaseModel):
             "This allows you to get the latest skills without SDK updates."
         ),
     )
-    # Note: Using Any instead of SecretValue (which is str | SecretSource) to avoid
-    # circular import issues. SecretValue is defined in secret_registry.py, which
-    # imports from conversation.py, which imports from agent.base.py, which imports
-    # from this module (agent_context.py), creating a circular dependency.
-    # Using Any here is acceptable because:
-    # 1. The actual type checking happens at runtime when secrets are used
-    # 2. The get_secret_names() method only accesses dictionary keys, not values
-    # 3. The secrets are passed through to conversations where proper validation occurs
-    secrets: Mapping[str, Any] | None = Field(
+    secrets: Mapping[str, SecretValue] | None = Field(
         default=None,
         description=(
             "Dictionary mapping secret keys to values or secret sources. "
             "Secrets are used for authentication and sensitive data handling. "
-            "Values should be of type SecretValue (str | SecretSource), but Any is "
-            "used here to avoid circular import issues."
+            "Values can be either strings or SecretSource instances "
+            "(str | SecretSource)."
         ),
     )
 
