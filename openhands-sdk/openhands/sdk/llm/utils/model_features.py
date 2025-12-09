@@ -105,9 +105,8 @@ PROMPT_CACHE_RETENTION_MODELS: list[str] = [
     # Broad allow for GPT-5 family and GPT-4.1
     "gpt-5",
     "gpt-4.1",
-    # Exclude all mini variants under GPT-5 by default
-    "!gpt-5-mini",
-    "!gpt-5.1-mini",
+    # Exclude all mini variants by default
+    "!mini",
     # Re-allow the explicitly documented supported mini variant
     "gpt-5.1-codex-mini",
 ]
