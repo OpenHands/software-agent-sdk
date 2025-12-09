@@ -563,17 +563,41 @@ class LocalConversation(BaseConversation):
         if self.agent.condenser is not None and isinstance(
             self.agent.condenser, LLMSummarizingCondenser
         ):
-            # Use existing LLMSummarizingCondenser configuration
+            # Use existing LLMSummarizingCondenser configuration with new LLM instance
+            # Get or create the specialized condense LLM
+            try:
+                condense_llm = self.llm_registry.get("condense-llm")
+            except KeyError:
+                condense_llm = self.agent.condenser.llm.model_copy(
+                    update={
+                        "usage_id": "condense-llm",
+                    },
+                    deep=True,
+                )
+                self.llm_registry.add(condense_llm)
+
             force_condenser = ForceCondenser(
-                llm=self.agent.condenser.llm,
+                llm=condense_llm,
                 max_size=self.agent.condenser.max_size,
                 keep_first=self.agent.condenser.keep_first,
             )
         else:
             # No condenser configured or unsupported condenser type,
-            # use agent's LLM with default settings
+            # use agent's LLM with default settings but with new LLM instance
+            # Get or create the specialized condense LLM
+            try:
+                condense_llm = self.llm_registry.get("condense-llm")
+            except KeyError:
+                condense_llm = self.agent.llm.model_copy(
+                    update={
+                        "usage_id": "condense-llm",
+                    },
+                    deep=True,
+                )
+                self.llm_registry.add(condense_llm)
+
             force_condenser = ForceCondenser(
-                llm=self.agent.llm,
+                llm=condense_llm,
                 max_size=120,  # Default max_size
                 keep_first=4,  # Default keep_first
             )
