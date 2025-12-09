@@ -588,8 +588,6 @@ class LocalConversation(BaseConversation):
         # Force the agent to take a single step to process the condensation request
         # This will trigger the condenser if it handles condensation requests
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
-                self._state.execution_status = ConversationExecutionStatus.IDLE
 
             # Take a single step to process the condensation request
             self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
