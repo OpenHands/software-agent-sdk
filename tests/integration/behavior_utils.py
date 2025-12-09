@@ -118,7 +118,7 @@ def check_bash_command_used(
 
 
 def get_conversation_summary(
-    collected_events: list[Event], max_length: int = 5000
+    collected_events: list[Event], max_length: int = 50000
 ) -> str:
     """
     Get a summary of the conversation including agent thoughts and actions.
@@ -131,7 +131,12 @@ def get_conversation_summary(
         String summary of the conversation
     """
     summary_parts = []
+    from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
+
     for event in collected_events:
+        # Skip the (very long) system prompt so judges see actual agent behavior
+        if isinstance(event, SystemPromptEvent):
+            continue
         # Use the event's visualize property to get Rich Text representation
         visualized = event.visualize
         # Convert to plain text
