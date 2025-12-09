@@ -6,7 +6,7 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from openhands.agent_server.models import UpdateSecretsRequest
-from openhands.sdk.conversation.secret_source import LookupSecret, StaticSecret
+from openhands.sdk.secret import LookupSecret, StaticSecret
 
 
 def test_update_secrets_request_string_conversion():
