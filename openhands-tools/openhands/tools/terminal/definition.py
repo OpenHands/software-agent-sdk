@@ -95,6 +95,16 @@ class TerminalObservation(Observation):
         default_factory=CmdOutputMetadata,
         description="Additional metadata captured from PS1 after command execution.",
     )
+    parsed_tool: str | None = Field(
+        default=None,
+        description=(
+            "Optional hint when the command matches a known CLI (e.g., terminal:rg)."
+        ),
+    )
+    parsed_argv: list[str] | None = Field(
+        default=None,
+        description="Tokenized argv used to detect parsed_tool (if any).",
+    )
     full_output_save_dir: str | None = Field(
         default=None,
         description="Directory where full output files are saved",
@@ -243,6 +253,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
         executor: ToolExecutor | None = None,
+        enable_command_hints: bool = False,
     ) -> Sequence["TerminalTool"]:
         """Initialize TerminalTool with executor parameters.
 
@@ -276,6 +287,7 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 terminal_type=terminal_type,
                 shell_path=shell_path,
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
+                enable_command_hints=enable_command_hints,
             )
 
         # Initialize the parent ToolDefinition with the executor
@@ -298,6 +310,58 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
 
 # Automatically register the tool when this module is imported
 register_tool(TerminalTool.name, TerminalTool)
+
+
+class TerminalWithHintsTool(TerminalTool):
+    """Terminal tool variant that emits parsed command hints."""
+
+    @classmethod
+    def create(
+        cls,
+        conv_state: "ConversationState",
+        username: str | None = None,
+        no_change_timeout_seconds: int | None = None,
+        terminal_type: Literal["tmux", "subprocess"] | None = None,
+        shell_path: str | None = None,
+        executor: ToolExecutor | None = None,
+        enable_command_hints: bool = True,
+    ) -> Sequence["TerminalWithHintsTool"]:
+        # Import here to avoid circular imports
+        from openhands.tools.terminal.impl import TerminalExecutor
+
+        working_dir = conv_state.workspace.working_dir
+        if not os.path.isdir(working_dir):
+            raise ValueError(f"working_dir '{working_dir}' is not a valid directory")
+
+        if executor is None:
+            executor = TerminalExecutor(
+                working_dir=working_dir,
+                username=username,
+                no_change_timeout_seconds=no_change_timeout_seconds,
+                terminal_type=terminal_type,
+                shell_path=shell_path,
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                enable_command_hints=enable_command_hints,
+            )
+
+        return [
+            cls(
+                action_type=TerminalAction,
+                observation_type=TerminalObservation,
+                description=TOOL_DESCRIPTION,
+                annotations=ToolAnnotations(
+                    title="terminal_with_hints",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=True,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+register_tool(TerminalWithHintsTool.name, TerminalWithHintsTool)
 
 
 # Deprecated aliases for backward compatibility

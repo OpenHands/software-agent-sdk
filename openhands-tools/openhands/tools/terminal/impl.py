@@ -1,4 +1,6 @@
 import json
+import shlex
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from openhands.sdk.llm import TextContent
@@ -18,6 +20,75 @@ from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
 logger = get_logger(__name__)
 
+# Commands we treat as generic shell/posix utilities; others are treated as
+# distinct CLI tools (terminal:<cmd>).
+_GENERIC_COMMANDS = {
+    "cd",
+    "pwd",
+    "ls",
+    "echo",
+    "cat",
+    "head",
+    "tail",
+    "touch",
+    "mkdir",
+    "rm",
+    "rmdir",
+    "cp",
+    "mv",
+    "chmod",
+    "chown",
+    "find",
+    "env",
+    "which",
+    "whoami",
+    "true",
+    "false",
+    "printf",
+    "test",
+    "[",
+}
+
+
+def _looks_like_env_assignment(token: str) -> bool:
+    """Return True if token resembles KEY=VALUE assignment."""
+    if "=" not in token or token.startswith("-"):
+        return False
+    key = token.split("=", 1)[0]
+    return key.isidentifier()
+
+
+def _detect_command_hint(command: str) -> tuple[str | None, list[str] | None]:
+    """Detect CLI tool name from a shell command string.
+
+    Returns (parsed_tool, argv). parsed_tool is None for generic commands.
+    """
+    command = command.strip()
+    if not command:
+        return None, None
+
+    try:
+        tokens = shlex.split(command)
+    except ValueError:
+        return None, None
+
+    candidate: str | None = None
+    for tok in tokens:
+        if tok == "sudo":
+            continue
+        if _looks_like_env_assignment(tok):
+            continue
+        candidate = Path(tok).name
+        break
+
+    if candidate is None:
+        return None, tokens or None
+
+    if candidate in _GENERIC_COMMANDS:
+        return None, tokens or None
+
+    return f"terminal:{candidate}", tokens or None
+
 
 class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
     session: TerminalSession
@@ -31,6 +102,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         terminal_type: Literal["tmux", "subprocess"] | None = None,
         shell_path: str | None = None,
         full_output_save_dir: str | None = None,
+        enable_command_hints: bool = False,
     ):
         """Initialize TerminalExecutor with auto-detected or specified session type.
 
@@ -56,6 +128,7 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         )
         self.session.initialize()
         self.full_output_save_dir: str | None = full_output_save_dir
+        self._enable_command_hints = enable_command_hints
         logger.info(
             f"TerminalExecutor initialized with working_dir: {working_dir}, "
             f"username: {username}, "
@@ -193,6 +266,12 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             except Exception:
                 pass
 
+        # Attach parsed command hint (prototype for UI specialization)
+        if self._enable_command_hints:
+            tool_hint, argv_hint = _detect_command_hint(action.command)
+            return observation.model_copy(
+                update={"parsed_tool": tool_hint, "parsed_argv": argv_hint}
+            )
         return observation
 
     def close(self) -> None:
