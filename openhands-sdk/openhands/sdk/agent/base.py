@@ -292,14 +292,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
                 updates["condenser"] = new_condenser
 
-        # Reconcile agent_context if present - use current environment-dependent values
-        # This allows resuming conversations from different directories
-        if self.agent_context is not None and persisted.agent_context is not None:
-            # Use the current agent_context since it reflects the current environment
-            # (working directory, skill paths, etc.)
-            updates["agent_context"] = self.agent_context
-        elif self.agent_context is not None:
-            # New agent_context was added - use it
+        # Reconcile agent_context - always use the current environment's agent_context
+        # This allows resuming conversations from different directories and handles
+        # cases where skills, working directory, or other context has changed
+        if self.agent_context is not None:
             updates["agent_context"] = self.agent_context
 
         # Create maps by tool name for easy lookup
