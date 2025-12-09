@@ -1,8 +1,4 @@
-"""Secret sources and types for handling sensitive data.
-
-This module is intentionally placed at the SDK root level (not in the conversation
-package) to avoid circular import dependencies with agent_context.
-"""
+"""Secret sources and types for handling sensitive data."""
 
 from abc import ABC, abstractmethod
 
