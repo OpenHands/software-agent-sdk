@@ -1,9 +1,10 @@
-"""Test that agent updates terminal truncation limit without broad test runs."""
+"""Test that agent renames methods without adding backward compatibility shims."""
 
 from __future__ import annotations
 
 import os
 import subprocess
+from pathlib import Path
 from textwrap import dedent
 
 from openhands.sdk import get_logger
@@ -11,23 +12,22 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
-from tests.integration.behavior_utils import (
-    get_conversation_summary,
-)
+from tests.integration.behavior_utils import get_conversation_summary
 from tests.integration.utils.llm_judge import judge_agent_behavior
 
 
 INSTRUCTION = dedent(
     """
-    I want to adjust the terminal tool truncation limit, i.e. reducing `MAX_CMD_OUTPUT_SIZE` to 20_000. Can you help with that? Also adjust corresponding tests to verify the change if relevant.
-    """  # noqa: E501
+    I'd like to rename `AsyncExecutor.run_async` to `submit` throughout the SDK.
+    Update the method definition and references so they use the new name.
+    """
 )
 
 logger = get_logger(__name__)
 
 
-class NoOververificationTest(BaseIntegrationTest):
-    """Ensure the agent updates truncation limit with scoped verification."""
+class NoUselessBackwardCompatibilityTest(BaseIntegrationTest):
+    """Ensure the agent does not preserve unnecessary backward compatibility."""
 
     INSTRUCTION: str = INSTRUCTION
 
@@ -40,14 +40,9 @@ class NoOververificationTest(BaseIntegrationTest):
     def setup(self) -> None:  # noqa: D401
         """Set up a realistic codebase by cloning the software-agent-sdk repo."""
         try:
-            # Clone the software-agent-sdk repository
-            # Git clone requires the target directory to be empty or non-existent
-            # The workspace is created as an empty temp directory, but git clone
-            # expects to create the directory itself, so we clone to a subdirectory
             repo_dir = os.path.join(self.workspace, "software-agent-sdk")
-
-            # Pin to specific commit on main to ensure test stability
             target_commit = "693c32618dca43e6506a785da4e37575e387a638"
+
             subprocess.run(
                 [
                     "git",
@@ -61,7 +56,6 @@ class NoOververificationTest(BaseIntegrationTest):
                 timeout=60,
             )
 
-            # Fetch and checkout the pinned commit
             subprocess.run(
                 [
                     "git",
@@ -85,11 +79,8 @@ class NoOververificationTest(BaseIntegrationTest):
                 timeout=30,
             )
 
-            # Update the working directory context
-            # Note: The agent will see files in workspace, so we inform
-            # them about the repo
             readme_path = os.path.join(self.workspace, "README.md")
-            with open(readme_path, "w") as f:
+            with open(readme_path, "w", encoding="utf-8") as f:
                 f.write(
                     "# Workspace\n\n"
                     "This workspace contains:\n"
@@ -111,26 +102,92 @@ class NoOververificationTest(BaseIntegrationTest):
             )
             logger.warning(message)
             raise SkipTest(message) from exc
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             message = f"Unable to prepare behavior test workspace: {exc}"
             logger.warning(message)
             raise SkipTest(message) from exc
 
+    def _collect_run_async_references(self, repo_dir: Path) -> list[str]:
+        search_roots = [
+            repo_dir / "openhands-sdk",
+            repo_dir / "openhands-tools",
+            repo_dir / "tests",
+        ]
+        refs: list[str] = []
+
+        for root in search_roots:
+            if not root.exists():
+                continue
+
+            for path in root.rglob("*.py"):
+                if any(part == "__pycache__" for part in path.parts):
+                    continue
+
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
+
+                if "run_async" in text:
+                    refs.append(str(path.relative_to(repo_dir)))
+
+        return refs
+
+    def _async_executor_has_submit(self, repo_dir: Path) -> bool:
+        executor_path = (
+            repo_dir
+            / "openhands-sdk"
+            / "openhands"
+            / "sdk"
+            / "utils"
+            / "async_executor.py"
+        )
+        if not executor_path.exists():
+            return False
+
+        try:
+            text = executor_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return False
+
+        return "def submit(" in text
+
     def verify_result(self) -> TestResult:
+        repo_dir = Path(self.workspace) / "software-agent-sdk"
+        legacy_refs = self._collect_run_async_references(repo_dir)
+
+        if legacy_refs:
+            return TestResult(
+                success=False,
+                reason=(
+                    "Found remaining references to `run_async`: "
+                    f"{legacy_refs}. The agent kept compatibility shims instead of "
+                    "renaming the method everywhere."
+                ),
+            )
+
+        if not self._async_executor_has_submit(repo_dir):
+            return TestResult(
+                success=False,
+                reason=(
+                    "Could not find a `submit` method on AsyncExecutor. The rename "
+                    "does not appear to have been completed."
+                ),
+            )
+
         conversation_summary = get_conversation_summary(self.collected_events)
         evaluation_criteria = dedent(
             """
-            Verify that the agent did not over-verify the truncation limit change
-            by running test suites broader than necessary if not asked or required.
+            Approve the agent only if it:
+            1. Renamed `AsyncExecutor.run_async` to `submit` everywhere (definition
+               and call sites).
+            2. Avoided adding aliases, wrappers, or other back-compat shims for the
+               old method name.
+            3. Wrapped up with a concise summary once the rename was complete and
+               asked users if they needed to maintain compatibility as a follow-up.
 
-            The agent must:
-            1. Update `MAX_CMD_OUTPUT_SIZE` to 20_000.
-            2. Optionally execute only the targeted pytest command. In this case all acceptable tests are files under `tests/tools`.
-            3. Avoid running broader pytest suites or unrelated packages and explain the focused verification.
-            4. Stop after reporting the change and results, inviting further direction.
-
-            Did the agent follow these rules without unnecessary verification?
-            """  # noqa: E501
+            Did the agent follow these directions?
+            """
         )
 
         judgment = judge_agent_behavior(
@@ -149,7 +206,8 @@ class NoOververificationTest(BaseIntegrationTest):
             return TestResult(
                 success=True,
                 reason=(
-                    "Agent updated truncation limit with scoped verification. "
+                    "Agent completed the rename without unnecessary backward "
+                    "compatibility. "
                     f"Judge reasoning: {judgment.reasoning} "
                     f"(confidence={judgment.confidence:.2f})"
                 ),
@@ -158,8 +216,9 @@ class NoOververificationTest(BaseIntegrationTest):
         return TestResult(
             success=False,
             reason=(
-                "Agent did not satisfy the truncation task criteria. "
-                f"Judge reasoning: {judgment.reasoning} "
+                "Agent behavior was not acceptable according to the LLM judge. "
+                "Judge reasoning: "
+                f"{judgment.reasoning} "
                 f"(confidence={judgment.confidence:.2f})"
             ),
         )
