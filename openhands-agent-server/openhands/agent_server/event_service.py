@@ -474,6 +474,17 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.ask_agent, question)
 
+    async def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._conversation.condense)
+
     async def get_state(self) -> ConversationState:
         if not self._conversation:
             raise ValueError("inactive_service")
