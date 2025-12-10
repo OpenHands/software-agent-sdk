@@ -200,6 +200,45 @@ class BaseIntegrationTest(ABC):
         """
         pass
 
+    def add_judge_usage(
+        self, prompt_tokens: int, completion_tokens: int, cost: float
+    ) -> None:
+        """
+        Add LLM judge usage to conversation stats.
+
+        This ensures judge costs are included in the total test cost.
+
+        Args:
+            prompt_tokens: Number of prompt tokens used by judge
+            completion_tokens: Number of completion tokens used by judge
+            cost: Cost of the judge call
+        """
+        from openhands.sdk.llm.utils.metrics import TokenUsage
+
+        # Add to conversation stats for the test LLM
+        stats = self.conversation.conversation_stats
+        if stats:
+            try:
+                metrics = stats.get_metrics_for_usage("test-llm")
+                # Update accumulated metrics
+                if metrics.accumulated_token_usage:
+                    metrics.accumulated_token_usage.prompt_tokens = (
+                        metrics.accumulated_token_usage.prompt_tokens or 0
+                    ) + prompt_tokens
+                    metrics.accumulated_token_usage.completion_tokens = (
+                        metrics.accumulated_token_usage.completion_tokens or 0
+                    ) + completion_tokens
+                else:
+                    # Create new TokenUsage if it doesn't exist
+                    metrics.accumulated_token_usage = TokenUsage(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
+                metrics.accumulated_cost += cost
+            except Exception:
+                # If test-llm doesn't exist in stats yet, skip
+                pass
+
     def teardown(self):
         """
         Clean up test resources.
