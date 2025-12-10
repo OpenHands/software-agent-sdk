@@ -154,6 +154,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
         full_output_save_dir: str | None = None,
+        chromium_path: str | None = None,
         **config,
     ):
         """Initialize BrowserToolExecutor with timeout protection.
@@ -165,12 +166,19 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             init_timeout_seconds: Timeout for browser initialization in seconds
             full_output_save_dir: Absolute path to directory to save full output
             logs and files, used when truncation is needed.
+            chromium_path: Pre-computed path to Chromium executable (if None, will check)
             **config: Additional configuration options
         """
 
         def init_logic():
             nonlocal headless
-            executable_path = self._ensure_chromium_available()
+            # Use pre-computed chromium path if available, otherwise check
+            if chromium_path is not None:
+                executable_path = chromium_path
+                logger.debug(f"Using pre-computed Chromium path: {executable_path}")
+            else:
+                executable_path = self._ensure_chromium_available()
+                
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )

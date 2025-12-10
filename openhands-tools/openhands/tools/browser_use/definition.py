@@ -558,27 +558,23 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
-        # Import executor only when actually needed to
-        # avoid hanging during module import
-        import sys
-
-        # Use Windows-specific executor on Windows systems
-        if sys.platform == "win32":
-            from openhands.tools.browser_use.impl_windows import (
-                WindowsBrowserToolExecutor,
+        # Try to use browser service if available (agent server context)
+        try:
+            from openhands.tools.browser_use.browser_service import (
+                create_browser_executor,
+                is_service_available,
             )
 
-            executor = WindowsBrowserToolExecutor(
-                full_output_save_dir=conv_state.env_observation_persistence_dir,
-                **executor_config,
-            )
-        else:
-            from openhands.tools.browser_use.impl import BrowserToolExecutor
-
-            executor = BrowserToolExecutor(
-                full_output_save_dir=conv_state.env_observation_persistence_dir,
-                **executor_config,
-            )
+            if is_service_available():
+                # Use the pre-initialized service
+                executor = create_browser_executor(conv_state, **executor_config)
+            else:
+                # Fall back to direct executor creation
+                executor = cls._create_executor_direct(conv_state, **executor_config)
+        except (ImportError, RuntimeError):
+            # Browser service not available or failed
+            # Fall back to direct executor creation
+            executor = cls._create_executor_direct(conv_state, **executor_config)
 
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
@@ -596,6 +592,35 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
         ]:
             tools.extend(tool_class.create(executor))
         return tools
+
+    @classmethod
+    def _create_executor_direct(
+        cls,
+        conv_state: "ConversationState",
+        **executor_config,
+    ) -> "BrowserToolExecutor":
+        """Create executor directly without browser service (fallback method)."""
+        # Import executor only when actually needed to
+        # avoid hanging during module import
+        import sys
+
+        # Use Windows-specific executor on Windows systems
+        if sys.platform == "win32":
+            from openhands.tools.browser_use.impl_windows import (
+                WindowsBrowserToolExecutor,
+            )
+
+            return WindowsBrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+        else:
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            return BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
 
 
 register_tool(BrowserToolSet.name, BrowserToolSet)

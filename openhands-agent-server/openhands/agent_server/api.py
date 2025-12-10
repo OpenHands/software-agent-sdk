@@ -8,6 +8,8 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
 from openhands.agent_server.bash_router import bash_router
+
+# Browser service import removed - using module-level service instead
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -65,6 +67,17 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("Desktop service is disabled")
 
+    # Initialize browser service for optimized tool initialization
+    from openhands.tools.browser_use.browser_service import initialize_browser_service
+
+    browser_started = await initialize_browser_service()
+    if browser_started:
+        logger.info("Browser service initialized successfully")
+    else:
+        logger.warning(
+            "Browser service failed to initialize - browser tools may be slower"
+        )
+
     async with service:
         # Store the initialized service in app state for dependency injection
         api.state.conversation_service = service
@@ -76,6 +89,13 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 await vscode_service.stop()
             if desktop_service is not None:
                 await desktop_service.stop()
+
+            # Shutdown browser service
+            from openhands.tools.browser_use.browser_service import (
+                shutdown_browser_service,
+            )
+
+            await shutdown_browser_service()
 
 
 def _create_fastapi_instance() -> FastAPI:
