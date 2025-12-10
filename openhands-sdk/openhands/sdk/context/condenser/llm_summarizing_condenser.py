@@ -1,4 +1,5 @@
 import os
+from collections.abc import Sequence
 
 from pydantic import Field, model_validator
 
@@ -6,6 +7,7 @@ from openhands.sdk.context.condenser.base import RollingCondenser
 from openhands.sdk.context.condenser.utils import get_total_token_count
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
+from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -53,18 +55,12 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Case 3: The view exceeds the maximum size in number of events.
         return len(view) > self.max_size
 
-    @observe(ignore_inputs=["view", "llm"])
-    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
-        head = view[: self.keep_first]
-        target_size = self.max_size // 2
-        if view.unhandled_condensation_request:
-            # Condensation triggered by a condensation request
-            # should be calculated based on the view size.
-            target_size = len(view) // 2
-        # Number of events to keep from the tail -- target size, minus however many
-        # prefix events from the head, minus one for the summarization event
-        events_from_tail = target_size - len(head) - 1
-
+    def _get_summary_event_content(self, view: View) -> str:
+        """Extract the text content from the summary event in the view, if any.
+        
+        If there is no summary event or it does not contain text content, returns an
+        empty string.
+        """
         summary_event_content: str = ""
 
         summary_event = view.summary_event
@@ -73,9 +69,23 @@ class LLMSummarizingCondenser(RollingCondenser):
             if isinstance(message_content, TextContent):
                 summary_event_content = message_content.text
 
-        # Identify events to be forgotten (those not in head or tail)
-        forgotten_events = view[self.keep_first : -events_from_tail]
+        return summary_event_content
 
+    def _generate_condensation(
+        self,
+        summary_event_content: str,
+        forgotten_events: Sequence[LLMConvertibleEvent]
+    ) -> Condensation:
+        """Generate a condensation by using the condenser's LLM to summarize forgotten
+        events.
+
+        Args:
+            summary_event_content: The content of the previous summary event.
+            forgotten_events: The list of events to be summarized.
+
+        Returns:
+            Condensation: The generated condensation object.
+        """
         # Convert events to strings for the template
         event_strings = [str(forgotten_event) for forgotten_event in forgotten_events]
 
@@ -105,4 +115,24 @@ class LLMSummarizingCondenser(RollingCondenser):
             summary=summary,
             summary_offset=self.keep_first,
             llm_response_id=llm_response.id,
+        )
+
+    @observe(ignore_inputs=["view", "llm"])
+    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
+        head = view[: self.keep_first]
+        target_size = self.max_size // 2
+        if view.unhandled_condensation_request:
+            # Condensation triggered by a condensation request
+            # should be calculated based on the view size.
+            target_size = len(view) // 2
+        # Number of events to keep from the tail -- target size, minus however many
+        # prefix events from the head, minus one for the summarization event
+        events_from_tail = target_size - len(head) - 1
+
+        # Identify events to be forgotten (those not in head or tail)
+        forgotten_events = view[self.keep_first : -events_from_tail]
+
+        return self._generate_condensation(
+            summary_event_content=self._get_summary_event_content(view),
+            forgotten_events=forgotten_events,
         )
