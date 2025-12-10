@@ -217,5 +217,29 @@ def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
     # Ensure completion was called without an explicit extra_body kwarg
     completion_mock = cast(MagicMock, mock_llm.completion)
     assert completion_mock.call_count == 1
+
+
+def test_condense_with_agent_llm(mock_llm: LLM) -> None:
+    """Test that condenser accepts and works with optional agent llm parameter."""
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Create a separate mock for the agent's LLM
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.model = "gpt-4"
+
+    # Prepare a view that triggers condensation
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    # Call condense with the agent's LLM
+    result = condenser.condense(view, llm=agent_llm)
+    assert isinstance(result, Condensation)
+
+    # Verify the condenser still uses its own LLM for summarization
+    completion_mock = cast(MagicMock, mock_llm.completion)
+    assert completion_mock.call_count == 1
+
+    # Agent LLM should not be called for completion (condenser uses its own LLM)
+    assert not agent_llm.completion.called
     _, kwargs = completion_mock.call_args
     assert "extra_body" not in kwargs

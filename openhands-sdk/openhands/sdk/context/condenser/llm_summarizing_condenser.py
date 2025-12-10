@@ -12,6 +12,13 @@ from openhands.sdk.observability.laminar import observe
 
 
 class LLMSummarizingCondenser(RollingCondenser):
+    """LLM-based condenser that summarizes forgotten events.
+
+    Uses an independent LLM for generating summaries of forgotten events. The optional
+    LLM parameter passed to condense() is the LLM used by the agent, and you should not
+    assume it is the same as the one defined in this condenser.
+    """
+
     llm: LLM
     max_size: int = Field(default=120, gt=0)
     keep_first: int = Field(default=4, ge=0)
@@ -29,13 +36,13 @@ class LLMSummarizingCondenser(RollingCondenser):
     def handles_condensation_requests(self) -> bool:
         return True
 
-    def should_condense(self, view: View) -> bool:
+    def should_condense(self, view: View, llm: LLM | None = None) -> bool:
         if view.unhandled_condensation_request:
             return True
         return len(view) > self.max_size
 
-    @observe(ignore_inputs=["view"])
-    def get_condensation(self, view: View) -> Condensation:
+    @observe(ignore_inputs=["view", "llm"])
+    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
         head = view[: self.keep_first]
         target_size = self.max_size // 2
         if view.unhandled_condensation_request:
