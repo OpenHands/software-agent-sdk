@@ -197,7 +197,7 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # We might have multiple reasons to condense, so pick the strictest condensation
         # to ensure all resource constraints are met.
-        events_from_tail = min(*suffix_events_to_keep, 1)
+        events_from_tail = min(*suffix_events_to_keep)
 
         # Identify events to be forgotten (those not in head or tail)
         return view[self.keep_first : -events_from_tail]
