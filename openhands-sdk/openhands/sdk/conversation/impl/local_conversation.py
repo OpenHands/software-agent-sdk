@@ -405,10 +405,12 @@ class LocalConversation(BaseConversation):
             return
 
         with self._state:
-            # Only pause when running or idle
+            # Only pause when running or idle or waiting for confirmation
             if (
                 self._state.execution_status == ConversationExecutionStatus.IDLE
                 or self._state.execution_status == ConversationExecutionStatus.RUNNING
+                or self._state.execution_status
+                == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
             ):
                 self._state.execution_status = ConversationExecutionStatus.PAUSED
                 pause_event = PauseEvent()
