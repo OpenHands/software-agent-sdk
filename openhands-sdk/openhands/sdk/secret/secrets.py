@@ -1,3 +1,5 @@
+"""Secret sources and types for handling sensitive data."""
+
 from abc import ABC, abstractmethod
 
 import httpx
@@ -84,3 +86,7 @@ def _is_secret_header(key: str):
         if secret in key:
             return True
     return False
+
+
+# Type alias for secret values - can be a plain string or a SecretSource
+SecretValue = str | SecretSource

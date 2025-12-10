@@ -6,23 +6,17 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, cast
+from typing import Any
 from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
-from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.workspace import PlatformType, RemoteWorkspace, TargetType
+from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
 logger = get_logger(__name__)
-
-_BASE_IMAGE_DEPRECATION_DETAILS = (
-    "DockerWorkspace(base_image=..., target=...) is deprecated. "
-    "Switch to DockerDevWorkspace for build-on-demand images."
-)
 
 
 def check_port_available(port: int) -> bool:
@@ -114,73 +108,6 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to enable GPU support with --gpus all.",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_deprecated_build_params(cls, data: Any):
-        if cls is not DockerWorkspace or not isinstance(data, dict):
-            return data
-
-        base_image = data.pop("base_image", None)
-        target = data.pop("target", None)
-
-        if base_image is None:
-            if target is not None:
-                warn_deprecated(
-                    "DockerWorkspace(target=...)",
-                    deprecated_in="1.3.0",
-                    removed_in="1.5.0",
-                    details=_BASE_IMAGE_DEPRECATION_DETAILS,
-                    stacklevel=3,
-                )
-            return data
-
-        if data.get("server_image"):
-            raise ValueError("Specify either base_image or server_image, not both.")
-
-        warn_deprecated(
-            "DockerWorkspace(base_image=...)",
-            deprecated_in="1.3.0",
-            removed_in="1.5.0",
-            details=_BASE_IMAGE_DEPRECATION_DETAILS,
-            stacklevel=3,
-        )
-
-        normalized_target: TargetType = cast(TargetType, target or "source")
-        platform_raw = data.get("platform")
-        platform_value = cast(
-            PlatformType, platform_raw if platform_raw else "linux/amd64"
-        )
-        built_image = cls._build_image_from_base(
-            base_image=str(base_image),
-            target=normalized_target,
-            platform=platform_value,
-        )
-        data["server_image"] = built_image
-        return data
-
-    @staticmethod
-    def _build_image_from_base(
-        *, base_image: str, target: TargetType, platform: PlatformType
-    ) -> str:
-        from openhands.agent_server.docker.build import BuildOptions, build
-
-        if "ghcr.io/openhands/agent-server" in base_image:
-            raise RuntimeError(
-                "base_image cannot be a pre-built agent-server image. "
-                "Use server_image=... instead."
-            )
-
-        build_opts = BuildOptions(
-            base_image=base_image,
-            target=target,
-            platforms=[platform],
-            push=False,
-        )
-        tags = build(opts=build_opts)
-        if not tags:
-            raise RuntimeError("Build failed, no image tags returned")
-        return tags[0]
 
     _container_id: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
