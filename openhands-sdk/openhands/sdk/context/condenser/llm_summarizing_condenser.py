@@ -3,6 +3,7 @@ import os
 from pydantic import Field, model_validator
 
 from openhands.sdk.context.condenser.base import RollingCondenser
+from openhands.sdk.context.condenser.utils import get_total_token_count
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.condenser import Condensation
@@ -21,6 +22,7 @@ class LLMSummarizingCondenser(RollingCondenser):
 
     llm: LLM
     max_size: int = Field(default=120, gt=0)
+    max_tokens: int | None = None
     keep_first: int = Field(default=4, ge=0)
 
     @model_validator(mode="after")
@@ -37,8 +39,18 @@ class LLMSummarizingCondenser(RollingCondenser):
         return True
 
     def should_condense(self, view: View, llm: LLM | None = None) -> bool:
+        # Case 1: There is an unhandled condensation request. The view handles the
+        # detection of these requests while processing the event stream.
         if view.unhandled_condensation_request:
             return True
+        
+        # Case 2: A token limit is provided and exceeded.
+        if self.max_tokens and llm:
+            total_tokens = get_total_token_count(view.events, llm)
+            if total_tokens > self.max_tokens:
+                return True
+
+        # Case 3: The view exceeds the maximum size in number of events.
         return len(view) > self.max_size
 
     @observe(ignore_inputs=["view", "llm"])
