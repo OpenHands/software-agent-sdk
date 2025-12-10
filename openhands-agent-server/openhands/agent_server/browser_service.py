@@ -21,10 +21,12 @@ class BrowserService:
         self.running = True
         try:
             if sys.platform == "win32":
-                pass
+                from openhands.tools.browser_use.impl_windows import (
+                    WindowsBrowserToolExecutor as BrowserToolExecutor,
+                )
             else:
-                pass
-            _logger.debug("Loaded {BrowserToolExecutor}")
+                from openhands.tools.browser_use.impl import BrowserToolExecutor
+            _logger.debug(f"Loaded {BrowserToolExecutor}")
             return True
         except Exception:
             _logger.exception("Error preloading chromium")
