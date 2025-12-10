@@ -11,6 +11,7 @@ from openhands.sdk.event.condenser import CondensationRequest
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
 
+
 if TYPE_CHECKING:
     from openhands.sdk.event.condenser import Condensation
 

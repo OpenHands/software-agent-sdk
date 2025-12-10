@@ -20,9 +20,11 @@ from openhands.sdk.observability.laminar import observe
 
 class Reason(Enum):
     """Reasons for condensation."""
+
     REQUEST = "request"
     TOKENS = "tokens"
     EVENTS = "events"
+
 
 class LLMSummarizingCondenser(RollingCondenser):
     """LLM-based condenser that summarizes forgotten events.
@@ -51,16 +53,14 @@ class LLMSummarizingCondenser(RollingCondenser):
         return True
 
     def get_condensation_reasons(
-        self,
-        view: View,
-        llm: LLM | None = None
+        self, view: View, llm: LLM | None = None
     ) -> set[Reason]:
         """Determine the reasons why the view should be condensed.
-        
+
         Args:
             view: The current view to evaluate.
             llm: The LLM used by the agent. Required if token counting is needed.
-            
+
         Returns:
             A set of Reason enums indicating why condensation is needed.
         """
@@ -89,7 +89,7 @@ class LLMSummarizingCondenser(RollingCondenser):
 
     def _get_summary_event_content(self, view: View) -> str:
         """Extract the text content from the summary event in the view, if any.
-        
+
         If there is no summary event or it does not contain text content, returns an
         empty string.
         """
@@ -106,7 +106,7 @@ class LLMSummarizingCondenser(RollingCondenser):
     def _generate_condensation(
         self,
         summary_event_content: str,
-        forgotten_events: Sequence[LLMConvertibleEvent]
+        forgotten_events: Sequence[LLMConvertibleEvent],
     ) -> Condensation:
         """Generate a condensation by using the condenser's LLM to summarize forgotten
         events.
@@ -150,9 +150,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
     def _get_forgotten_events(
-        self,
-        view: View,
-        llm: LLM | None = None
+        self, view: View, llm: LLM | None = None
     ) -> Sequence[LLMConvertibleEvent]:
         """Identify events to be forgotten.
 
@@ -178,22 +176,24 @@ class LLMSummarizingCondenser(RollingCondenser):
         if Reason.EVENTS in reasons:
             target_size = self.max_size // 2
             suffix_events_to_keep.add(target_size - self.keep_first - 1)
-        
+
         if Reason.TOKENS in reasons:
             # Compute the number of tokens we need to eliminate to be under half the
             # max_tokens value. We know max_tokens and the agent LLM are not None here
             # because we can't have Reason.TOKENS without them.
             assert self.max_tokens is not None
             assert llm is not None
-            
+
             total_tokens = get_total_token_count(view.events, llm)
             tokens_to_reduce = total_tokens - (self.max_tokens // 2)
 
-            suffix_events_to_keep.add(get_suffix_length_for_token_reduction(
-                events=view.events[self.keep_first :],
-                llm=llm,
-                token_reduction=tokens_to_reduce,
-            ))
+            suffix_events_to_keep.add(
+                get_suffix_length_for_token_reduction(
+                    events=view.events[self.keep_first :],
+                    llm=llm,
+                    token_reduction=tokens_to_reduce,
+                )
+            )
 
         # We might have multiple reasons to condense, so pick the strictest condensation
         # to ensure all resource constraints are met.

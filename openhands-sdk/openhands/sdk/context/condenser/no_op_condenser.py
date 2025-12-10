@@ -4,6 +4,7 @@ from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event.condenser import Condensation
 
+
 if TYPE_CHECKING:
     from openhands.sdk.llm import LLM
 
