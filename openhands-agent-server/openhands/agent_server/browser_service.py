@@ -18,6 +18,11 @@ class BrowserService:
 
     async def start(self) -> bool:
         """Preload chromium"""
+
+        # Skip if already running
+        if self.running:
+            return True
+
         self.running = True
         try:
             if sys.platform == "win32":
