@@ -29,7 +29,7 @@ def _save_full_content(content: str, save_dir: str, tool_prefix: str) -> str | N
     """Save full content to the specified directory and return the file path."""
 
     save_dir_path = Path(save_dir)
-    save_dir_path.mkdir(exist_ok=True)
+    save_dir_path.mkdir(parents=True, exist_ok=True)
 
     # Generate hash-based filename for deduplication
     content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()[:8]

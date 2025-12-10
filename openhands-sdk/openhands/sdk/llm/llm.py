@@ -260,7 +260,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Requires verified OpenAI organization. Only sent when explicitly set.",
     )
     enable_encrypted_reasoning: bool = Field(
-        default=False,
+        default=True,
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
@@ -315,7 +315,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
-    retry_listener: SkipJsonSchema[Callable[[int, int], None] | None] = Field(
+    retry_listener: SkipJsonSchema[
+        Callable[[int, int, BaseException | None], None] | None
+    ] = Field(
         default=None,
         exclude=True,
     )
@@ -369,8 +371,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("openhands/"):
             model_name = model_val.removeprefix("openhands/")
             d["model"] = f"litellm_proxy/{model_name}"
-            # Set base_url (default to the app proxy when base_url is unset)
-            d["base_url"] = d.get("base_url", "https://llm-proxy.app.all-hands.dev/")
+            # Set base_url (default to the app proxy when base_url is unset or None)
+            # Use `or` instead of dict.get() to handle explicit None values
+            d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
@@ -425,6 +428,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _retry_listener_fn(
+        self, attempt_number: int, num_retries: int, _err: BaseException | None
+    ) -> None:
+        if self.retry_listener is not None:
+            self.retry_listener(attempt_number, num_retries, _err)
+        if self._telemetry is not None and _err is not None:
+            self._telemetry.on_error(_err)
 
     # =========================================================================
     # Serializers
@@ -559,7 +570,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
@@ -671,7 +682,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 "kwargs": {k: v for k, v in call_kwargs.items()},
                 "context_window": self.max_input_tokens or 0,
             }
-        self._telemetry.on_request(log_ctx=log_ctx)
 
         # Perform call with retries
         @self.retry_decorator(
@@ -680,9 +690,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+            assert self._telemetry is not None
+            self._telemetry.on_request(log_ctx=log_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
@@ -713,7 +725,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
                     # telemetry (latency, cost). Token usage mapping we handle after.
-                    assert self._telemetry is not None
                     self._telemetry.on_response(ret)
                     return ret
 
