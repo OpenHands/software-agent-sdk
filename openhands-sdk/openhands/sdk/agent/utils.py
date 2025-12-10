@@ -195,6 +195,10 @@ def make_llm_completion(
 
     Returns:
         LLMResponse from the LLM completion call
+
+    Note:
+        Summary field is always added to tool schemas for transparency and
+        explainability of agent actions.
     """
     if llm.uses_responses_api():
         return llm.responses(

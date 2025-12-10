@@ -85,12 +85,16 @@ class LocalConversation(BaseConversation):
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             max_iteration_per_run: Maximum number of iterations per run
+            stuck_detection: Whether to enable stuck detection
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
-            stuck_detection: Whether to enable stuck detection
+            secrets: Optional mapping of secret names to values
+
+        Note:
+            Action summaries are always enabled for transparency and explainability.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
