@@ -6,15 +6,16 @@ LLM providers while keeping naming heuristics centralized.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from pydantic import BaseModel, ConfigDict
 
 
-@dataclass(frozen=True, slots=True)
-class ModelPromptSpec:
+class ModelPromptSpec(BaseModel):
     """Detected prompt metadata for a given model configuration."""
 
-    family: str | None
-    variant: str | None
+    model_config = ConfigDict(frozen=True)
+
+    family: str | None = None
+    variant: str | None = None
 
 
 _MODEL_FAMILY_PATTERNS: dict[str, tuple[str, ...]] = {
