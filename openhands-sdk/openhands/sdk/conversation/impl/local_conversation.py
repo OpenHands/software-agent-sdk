@@ -24,6 +24,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    CondensationRequest,
     MessageEvent,
     PauseEvent,
     UserRejectObservation,
@@ -541,17 +542,13 @@ class LocalConversation(BaseConversation):
         )
 
     def condense(self) -> None:
-        """Force condensation of the conversation history.
+        """Synchronously force condense the conversation history.
 
-        This method uses the existing condensation request pattern to trigger
-        condensation. It adds a CondensationRequest event to the conversation
-        and forces the agent to take a single step to process it.
+        If the agent is currently running, `condense()` will wait for the
+        ongoing step to finish before proceeding.
 
-        If no condenser is configured or the condenser doesn't handle condensation
-        requests, this method will raise a ValueError with helpful guidance.
+        Raises ValueError if no compatible condenser exists.
         """
-        # Import here to avoid circular imports
-        from openhands.sdk.event.condenser import CondensationRequest
 
         # Check if condenser is configured and handles condensation requests
         if (
