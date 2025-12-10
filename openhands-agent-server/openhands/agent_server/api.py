@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -45,38 +46,50 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     desktop_service = get_desktop_service()
     browser_service = get_browser_service()
 
-    # Start VSCode service if enabled
-    if vscode_service is not None:
-        vscode_started = await vscode_service.start()
-        if vscode_started:
-            logger.info("VSCode service started successfully")
+    # Define async functions for starting each service
+    async def start_vscode_service():
+        if vscode_service is not None:
+            vscode_started = await vscode_service.start()
+            if vscode_started:
+                logger.info("VSCode service started successfully")
+            else:
+                logger.warning(
+                    "VSCode service failed to start, continuing without VSCode"
+                )
         else:
-            logger.warning("VSCode service failed to start, continuing without VSCode")
-    else:
-        logger.info("VSCode service is disabled")
+            logger.info("VSCode service is disabled")
 
-    # Start Desktop service if enabled
-    if desktop_service is not None:
-        desktop_started = await desktop_service.start()
-        if desktop_started:
-            logger.info("Desktop service started successfully")
+    async def start_desktop_service():
+        if desktop_service is not None:
+            desktop_started = await desktop_service.start()
+            if desktop_started:
+                logger.info("Desktop service started successfully")
+            else:
+                logger.warning(
+                    "Desktop service failed to start, continuing without desktop"
+                )
         else:
-            logger.warning(
-                "Desktop service failed to start, continuing without desktop"
-            )
-    else:
-        logger.info("Desktop service is disabled")
+            logger.info("Desktop service is disabled")
 
-    if browser_service is not None:
-        desktop_started = await browser_service.start()
-        if browser_service:
-            logger.info("Browser service started successfully")
+    async def start_browser_service():
+        if browser_service is not None:
+            browser_started = await browser_service.start()
+            if browser_started:
+                logger.info("Browser service started successfully")
+            else:
+                logger.warning(
+                    "Browser service failed to start, continuing without browser"
+                )
         else:
-            logger.warning(
-                "Browser service failed to start, continuing without browser"
-            )
-    else:
-        logger.info("Browser service is disabled")
+            logger.info("Browser service is disabled")
+
+    # Start all services concurrently
+    await asyncio.gather(
+        start_vscode_service(),
+        start_desktop_service(),
+        start_browser_service(),
+        return_exceptions=True,
+    )
 
     async with service:
         # Store the initialized service in app state for dependency injection
@@ -84,13 +97,26 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
-            # Stop services on shutdown
-            if vscode_service is not None:
-                await vscode_service.stop()
-            if desktop_service is not None:
-                await desktop_service.stop()
-            if browser_service is not None:
-                await browser_service.stop()
+            # Define async functions for stopping each service
+            async def stop_vscode_service():
+                if vscode_service is not None:
+                    await vscode_service.stop()
+
+            async def stop_desktop_service():
+                if desktop_service is not None:
+                    await desktop_service.stop()
+
+            async def stop_browser_service():
+                if browser_service is not None:
+                    await browser_service.stop()
+
+            # Stop all services concurrently
+            await asyncio.gather(
+                stop_vscode_service(),
+                stop_desktop_service(),
+                stop_browser_service(),
+                return_exceptions=True,
+            )
 
 
 def _create_fastapi_instance() -> FastAPI:
