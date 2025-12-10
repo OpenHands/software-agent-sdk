@@ -117,8 +117,8 @@ class LLMSummarizingCondenser(RollingCondenser):
             llm_response_id=llm_response.id,
         )
 
-    @observe(ignore_inputs=["view", "llm"])
-    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
+    def _get_forgotten_events(self, view: View) -> Sequence[LLMConvertibleEvent]:
+        """Identify events to be forgotten (those not in head or tail)"""
         head = view[: self.keep_first]
         target_size = self.max_size // 2
         if view.unhandled_condensation_request:
@@ -130,9 +130,16 @@ class LLMSummarizingCondenser(RollingCondenser):
         events_from_tail = target_size - len(head) - 1
 
         # Identify events to be forgotten (those not in head or tail)
-        forgotten_events = view[self.keep_first : -events_from_tail]
+        return view[self.keep_first : -events_from_tail]
+
+    @observe(ignore_inputs=["view", "llm"])
+    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
+        # The condensation is dependent on the events we want to drop and the previous
+        # summary.
+        summary_event_content = self._get_summary_event_content(view)
+        forgotten_events = self._get_forgotten_events(view)
 
         return self._generate_condensation(
-            summary_event_content=self._get_summary_event_content(view),
+            summary_event_content=summary_event_content,
             forgotten_events=forgotten_events,
         )
