@@ -1,0 +1,6 @@
+Hello! Welcome and have a wonderful day! 🌟
+
+We're so glad you're here. May your code compile on the first try,
+your tests pass without errors, and your coffee always be just the right temperature!
+
+Happy coding! ☕✨

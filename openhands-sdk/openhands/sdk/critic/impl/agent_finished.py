@@ -7,11 +7,15 @@ This critic evaluates whether an agent properly finished a task by checking:
 """
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
-from openhands.sdk.event import ActionEvent, LLMConvertibleEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.finish import FinishAction
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event import LLMConvertibleEvent
 
 
 logger = get_logger(__name__)
@@ -27,7 +31,7 @@ class AgentFinishedCritic(CriticBase):
     """
 
     def evaluate(
-        self, events: Sequence[LLMConvertibleEvent], git_patch: str | None = None
+        self, events: Sequence["LLMConvertibleEvent"], git_patch: str | None = None
     ) -> CriticResult:
         """
         Evaluate if an agent properly finished with a non-empty git patch.
@@ -66,8 +70,11 @@ class AgentFinishedCritic(CriticBase):
             message="Agent completed with FinishAction and non-empty patch",
         )
 
-    def _has_finish_action(self, events: Sequence[LLMConvertibleEvent]) -> bool:
+    def _has_finish_action(self, events: Sequence["LLMConvertibleEvent"]) -> bool:
         """Check if the last action was a FinishAction."""
+        # Local import to avoid circular dependency during module initialization
+        from openhands.sdk.event import ActionEvent
+
         if not events:
             return False
 
