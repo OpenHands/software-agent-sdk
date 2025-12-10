@@ -1,4 +1,4 @@
-"""Desktop service for launching VNC desktop via desktop_launch.sh script."""
+"""Service which preloads chromium."""
 
 from __future__ import annotations
 
