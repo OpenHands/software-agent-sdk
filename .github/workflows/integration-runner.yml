@@ -13,6 +13,10 @@ on:
                 description: Reason for manual trigger
                 required: true
                 default: ''
+            test_type:
+                description: Select which tests to run (all, integration, behavior)
+                required: false
+                default: all
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
@@ -121,11 +125,32 @@ jobs:
             # Run integration test evaluation
             - name: Determine test selection
               run: |
+                  TEST_TYPE_ARGS=""
                   if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
-                    echo "TEST_TYPE_ARGS=--test-type behavior" >> "$GITHUB_ENV"
+                    TEST_TYPE_ARGS="--test-type behavior"
+                    echo "behavior-test label detected; running behavior tests only."
+                  elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                    test_type="${{ github.event.inputs.test_type }}"
+                    case "$test_type" in
+                      behavior)
+                        TEST_TYPE_ARGS="--test-type behavior"
+                        echo "workflow_dispatch requested behavior tests only."
+                        ;;
+                      integration)
+                        TEST_TYPE_ARGS="--test-type integration"
+                        echo "workflow_dispatch requested integration tests only."
+                        ;;
+                      ""|all)
+                        echo "workflow_dispatch requested full integration suite."
+                        ;;
+                      *)
+                        echo "workflow_dispatch provided unknown test_type '$test_type'; defaulting to full suite."
+                        ;;
+                    esac
                   else
-                    echo "TEST_TYPE_ARGS=" >> "$GITHUB_ENV"
+                    echo "Running full integration test suite."
                   fi
+                  echo "TEST_TYPE_ARGS=$TEST_TYPE_ARGS" >> "$GITHUB_ENV"
 
             - name: Run integration test evaluation for ${{ matrix.job-config.name }}
               env:
@@ -138,11 +163,7 @@ jobs:
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
                   EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config.run-suffix }}"
 
-                  if [ -n "$TEST_TYPE_ARGS" ]; then
-                    echo "behavior-test label detected; running behavior tests only."
-                  else
-                    echo "Running full integration test suite."
-                  fi
+                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS'"
 
                   uv run python tests/integration/run_infer.py \
                     --llm-config "$LLM_CONFIG" \
