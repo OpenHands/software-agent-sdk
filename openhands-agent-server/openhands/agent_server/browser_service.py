@@ -26,6 +26,9 @@ class BrowserService:
                 )
             else:
                 from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            # Creating an instance here to preload chomium
+            BrowserToolExecutor()
             _logger.debug(f"Loaded {BrowserToolExecutor}")
             return True
         except Exception:
