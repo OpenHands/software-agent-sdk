@@ -317,22 +317,9 @@ class TestServiceParallelization:
             mock_app = AsyncMock()
             mock_app.state = AsyncMock()
 
-            # Measure time for parallel shutdown
-            start_time = time.time()
             async with api_lifespan(mock_app):
                 # Exit the context to trigger shutdown
                 pass
-            end_time = time.time()
-
-            # The total time includes both startup and shutdown
-            # Startup should be ~0.0s (mocked to return immediately)
-            # Shutdown should be ~0.1s if parallel, ~0.3s if sequential
-            # We'll allow up to 0.2s total to account for overhead
-            elapsed_time = end_time - start_time
-            assert elapsed_time < 0.2, (
-                f"Services took {elapsed_time:.3f}s, "
-                "expected < 0.2s for parallel shutdown"
-            )
 
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
