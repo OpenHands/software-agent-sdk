@@ -21,25 +21,42 @@ env:
 
 jobs:
     post-initial-comment:
-        if: github.event_name == 'pull_request_target' && github.event.label.name == 'integration-test'
+        if: >
+            github.event_name == 'pull_request_target' && (
+                github.event.label.name == 'integration-test' ||
+                github.event.label.name == 'behavior-test'
+            )
         runs-on: ubuntu-latest
         permissions:
             pull-requests: write
         steps:
-            - name: Comment on PR
+            - name: Comment on PR (integration tests)
+              if: github.event.label.name == 'integration-test'
               uses: KeisukeYamashita/create-comment@v1
               with:
                   unique: false
                   comment: |
                       Hi! I started running the integration tests on your PR. You will receive a comment with the results shortly.
+            - name: Comment on PR (behavior tests)
+              if: github.event.label.name == 'behavior-test'
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  unique: false
+                  comment: |
+                      Hi! I started running the behavior tests on your PR. You will receive a comment with the results shortly.
 
     run-integration-tests:
-        # Security: Only run when 'integration-test' label is present, via workflow_dispatch, or on schedule
+        # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
         # This prevents automatic execution on fork PRs without maintainer approval
         # Note: uses always() to run even when post-initial-comment is skipped (e.g., for workflow_dispatch)
         if: |
             always() && (
-                github.event.label.name == 'integration-test' ||
+                (
+                    github.event_name == 'pull_request_target' && (
+                        github.event.label.name == 'integration-test' ||
+                        github.event.label.name == 'behavior-test'
+                    )
+                ) ||
                 github.event_name == 'workflow_dispatch' ||
                 github.event_name == 'schedule'
             )
@@ -101,7 +118,15 @@ jobs:
                   uv sync --dev
                   uv pip install pytest
 
-      # Run integration test evaluation
+            # Run integration test evaluation
+            - name: Determine test selection
+              run: |
+                  if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
+                    echo "TEST_TYPE_ARGS=--test-type behavior" >> "$GITHUB_ENV"
+                  else
+                    echo "TEST_TYPE_ARGS=" >> "$GITHUB_ENV"
+                  fi
+
             - name: Run integration test evaluation for ${{ matrix.job-config.name }}
               env:
                   LLM_CONFIG: ${{ toJson(matrix.job-config.llm-config) }}
@@ -113,10 +138,17 @@ jobs:
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
                   EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config.run-suffix }}"
 
+                  if [ -n "$TEST_TYPE_ARGS" ]; then
+                    echo "behavior-test label detected; running behavior tests only."
+                  else
+                    echo "Running full integration test suite."
+                  fi
+
                   uv run python tests/integration/run_infer.py \
                     --llm-config "$LLM_CONFIG" \
                     --num-workers $N_PROCESSES \
-                    --eval-note "$EVAL_NOTE"
+                    --eval-note "$EVAL_NOTE" \
+                    $TEST_TYPE_ARGS
 
                   # get integration tests JSON results
                   RESULTS_FILE=$(find tests/integration/outputs/*${{ matrix.job-config.run-suffix }}* -name "results.json" -type f | head -n 1)
@@ -169,7 +201,17 @@ jobs:
 
     consolidate-results:
         needs: run-integration-tests
-        if: always() && (github.event.label.name == 'integration-test' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        if: |
+            always() && (
+                (
+                    github.event_name == 'pull_request_target' && (
+                        github.event.label.name == 'integration-test' ||
+                        github.event.label.name == 'behavior-test'
+                    )
+                ) ||
+                github.event_name == 'workflow_dispatch' ||
+                github.event_name == 'schedule'
+            )
         runs-on: blacksmith-2vcpu-ubuntu-2404
         permissions:
             contents: read
