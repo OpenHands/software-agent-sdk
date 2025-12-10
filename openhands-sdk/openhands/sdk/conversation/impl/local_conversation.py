@@ -24,6 +24,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    CondensationRequest,
     MessageEvent,
     PauseEvent,
     UserRejectObservation,
@@ -539,6 +540,55 @@ class LocalConversation(BaseConversation):
         return generate_conversation_title(
             events=self._state.events, llm=llm_to_use, max_length=max_length
         )
+
+    def condense(self) -> None:
+        """Synchronously force condense the conversation history.
+
+        If the agent is currently running, `condense()` will wait for the
+        ongoing step to finish before proceeding.
+
+        Raises ValueError if no compatible condenser exists.
+        """
+
+        # Check if condenser is configured and handles condensation requests
+        if (
+            self.agent.condenser is None
+            or not self.agent.condenser.handles_condensation_requests()
+        ):
+            condenser_info = (
+                "No condenser configured"
+                if self.agent.condenser is None
+                else (
+                    f"Condenser {type(self.agent.condenser).__name__} does not handle "
+                    "condensation requests"
+                )
+            )
+            raise ValueError(
+                f"Cannot condense conversation: {condenser_info}. "
+                "To enable manual condensation, configure an "
+                "LLMSummarizingCondenser:\n\n"
+                "from openhands.sdk.context.condenser import LLMSummarizingCondenser\n"
+                "agent = Agent(\n"
+                "    llm=your_llm,\n"
+                "    condenser=LLMSummarizingCondenser(\n"
+                "        llm=your_llm,\n"
+                "        max_size=120,\n"
+                "        keep_first=4\n"
+                "    )\n"
+                ")"
+            )
+
+        # Add a condensation request event
+        condensation_request = CondensationRequest()
+        self._on_event(condensation_request)
+
+        # Force the agent to take a single step to process the condensation request
+        # This will trigger the condenser if it handles condensation requests
+        with self._state:
+            # Take a single step to process the condensation request
+            self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
+
+        logger.info("Condensation request processed")
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""
