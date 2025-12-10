@@ -153,7 +153,10 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     cast(Any, mock_llm).set_mock_response_content("Updated summary")
 
     # Create events with a condensation in the history
-    events = [message_event(f"Event {i}") for i in range(max_size + 1)]
+    # Need enough events so that after condensation, the view still exceeds max_size
+    # Condensation will remove 2 events (events[3] and events[4]) plus itself
+    # So we need at least max_size + 1 + 3 = 14 events to exceed max_size after condensation
+    events = [message_event(f"Event {i}") for i in range(14)]
 
     # Add a condensation to simulate previous summarization
     condensation = Condensation(

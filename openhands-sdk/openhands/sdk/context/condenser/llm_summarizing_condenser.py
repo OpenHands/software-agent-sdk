@@ -151,14 +151,14 @@ class LLMSummarizingCondenser(RollingCondenser):
 
     def _get_forgotten_events(
         self,
-        view: View, 
+        view: View,
         llm: LLM | None = None
     ) -> Sequence[LLMConvertibleEvent]:
         """Identify events to be forgotten.
-        
+
         Relies on the condensation reasons to determine how many events we need to drop
         in order to maintain our resource constraints.
-        
+
         Args:
             view: The current view from which to identify forgotten events.
             llm: The LLM used by the agent, required for token-based calculations.
@@ -166,7 +166,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         Returns:
             A sequence of events to be forgotten.
         """
-        reasons = self.get_condensation_reasons(view)
+        reasons = self.get_condensation_reasons(view, llm=llm)
         assert reasons != set(), "No condensation reasons found."
 
         suffix_events_to_keep: set[int] = set()
