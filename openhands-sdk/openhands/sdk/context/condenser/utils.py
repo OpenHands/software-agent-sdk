@@ -1,9 +1,11 @@
+from collections.abc import Sequence
+
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.llm import LLM
 
 
 def get_total_token_count(
-    events: list[LLMConvertibleEvent],
+    events: Sequence[LLMConvertibleEvent],
     llm: LLM,
 ) -> int:
     """Calculate the total token count for a list of LLM convertible events.
@@ -31,12 +33,12 @@ def get_total_token_count(
         >>> token_count = get_total_token_count(events, llm)
         >>> print(f"Total tokens: {token_count}")
     """
-    messages = LLMConvertibleEvent.events_to_messages(events)
+    messages = LLMConvertibleEvent.events_to_messages(list(events))
     return llm.get_token_count(messages)
 
 
 def get_shortest_prefix_above_token_count(
-    events: list[LLMConvertibleEvent],
+    events: Sequence[LLMConvertibleEvent],
     llm: LLM,
     token_count: int,
 ) -> int:
@@ -96,7 +98,7 @@ def get_shortest_prefix_above_token_count(
 
 
 def get_suffix_length_for_token_reduction(
-    events: list[LLMConvertibleEvent],
+    events: Sequence[LLMConvertibleEvent],
     llm: LLM,
     token_reduction: int,
 ) -> int:
