@@ -1,8 +1,7 @@
 import os
 import shutil
 
-from cachetools import LRUCache
-
+from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 
@@ -14,15 +13,20 @@ logger = get_logger(__name__)
 
 class LocalFileStore(FileStore):
     root: str
-    cache: LRUCache
+    cache: MemoryLRUCache
 
-    def __init__(self, root: str, cache_size: int = 100) -> None:
+    def __init__(
+        self,
+        root: str,
+        cache_limit_size: int = 500,
+        cache_memory_size: int = 5 * 1_024_024,
+    ) -> None:
         if root.startswith("~"):
             root = os.path.expanduser(root)
         root = os.path.abspath(os.path.normpath(root))
         self.root = root
         os.makedirs(self.root, exist_ok=True)
-        self.cache = LRUCache(maxsize=cache_size)
+        self.cache = MemoryLRUCache(cache_memory_size, cache_limit_size)
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
