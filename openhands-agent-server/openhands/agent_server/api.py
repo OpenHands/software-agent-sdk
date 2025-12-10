@@ -8,6 +8,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
 from openhands.agent_server.bash_router import bash_router
+from openhands.agent_server.browser_service import get_browser_service
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -42,6 +43,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
+    browser_service = get_browser_service()
 
     # Start VSCode service if enabled
     if vscode_service is not None:
@@ -65,6 +67,17 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("Desktop service is disabled")
 
+    if browser_service is not None:
+        desktop_started = await browser_service.start()
+        if browser_service:
+            logger.info("Browser service started successfully")
+        else:
+            logger.warning(
+                "Browser service failed to start, continuing without browser"
+            )
+    else:
+        logger.info("Browser service is disabled")
+
     async with service:
         # Store the initialized service in app state for dependency injection
         api.state.conversation_service = service
@@ -76,6 +89,8 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 await vscode_service.stop()
             if desktop_service is not None:
                 await desktop_service.stop()
+            if browser_service is not None:
+                await browser_service.stop()
 
 
 def _create_fastapi_instance() -> FastAPI:
