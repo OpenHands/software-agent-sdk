@@ -6,10 +6,11 @@ from litellm.types.utils import ModelResponse
 
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
+    Reason,
 )
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import Event
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import (
     LLM,
@@ -246,3 +247,271 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     assert not agent_llm.completion.called
     _, kwargs = completion_mock.call_args
     assert "extra_body" not in kwargs
+
+
+def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
+    """Test that condenser triggers on TOKENS reason when token limit is exceeded."""
+    max_tokens = 100
+    keep_first = 2
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=max_tokens, keep_first=keep_first
+    )
+
+    # Create a separate mock for the agent's LLM with token counting
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.model = "gpt-4"
+
+    # Mock get_token_count to return predictable values based on message content length
+    def mock_token_count(messages):
+        # Simple heuristic: count characters in all text content
+        # Each character = 0.25 tokens (roughly 4 chars per token)
+        total_chars = 0
+        for msg in messages:
+            for content in msg.content:
+                if hasattr(content, "text"):
+                    total_chars += len(content.text)
+        return total_chars // 4
+
+    agent_llm.get_token_count.side_effect = mock_token_count
+
+    # Create events that exceed token limit
+    # Each event has 40 chars = 10 tokens
+    # 15 events = 150 tokens (exceeds max_tokens of 100)
+    events: list[Event] = [message_event("A" * 40) for i in range(15)]
+    view = View.from_events(events)
+
+    # Verify that TOKENS is the condensation reason
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    assert Reason.TOKENS in reasons
+    assert Reason.EVENTS not in reasons  # Should not trigger on event count
+    assert Reason.REQUEST not in reasons
+
+    # Condense the view
+    result = condenser.condense(view, llm=agent_llm)
+    assert isinstance(result, Condensation)
+
+    # Verify the condenser used its own LLM for summarization
+    completion_mock = cast(MagicMock, mock_llm.completion)
+    assert completion_mock.call_count == 1
+
+    # Verify forgotten events were calculated based on token reduction
+    assert len(result.forgotten_event_ids) > 0
+
+
+def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
+    """Test condensation when both REQUEST and EVENTS reasons are true simultaneously.
+
+    Verifies that the most aggressive condensation (minimum suffix) is chosen.
+    """
+    max_size = 20
+    keep_first = 2
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=max_size, keep_first=keep_first
+    )
+
+    # Create events that exceed max_size AND include a condensation request
+    # 25 events > max_size of 20 (triggers EVENTS)
+    # Plus a CondensationRequest (triggers REQUEST)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(25)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Verify both reasons are present
+    reasons = condenser.get_condensation_reasons(view, llm=None)
+    assert Reason.REQUEST in reasons
+    assert Reason.EVENTS in reasons
+    assert Reason.TOKENS not in reasons
+
+    # Get the condensation
+    result = condenser.condense(view)
+    assert isinstance(result, Condensation)
+
+    # Calculate expected behavior:
+    # REQUEST: target_size = len(view) // 2 = 25 // 2 = 12
+    #          suffix_to_keep = 12 - keep_first - 1 = 12 - 2 - 1 = 9
+    # EVENTS:  target_size = max_size // 2 = 20 // 2 = 10
+    #          suffix_to_keep = 10 - keep_first - 1 = 10 - 2 - 1 = 7
+    # Most aggressive: min(9, 7) = 7
+
+    # Forgotten events should be from index keep_first to -(7)
+    # Total events in view = 25 (CondensationRequest is not in view.events)
+    # Forgotten: events[2:18] = 16 events
+    expected_forgotten_count = 25 - keep_first - 7
+    assert len(result.forgotten_event_ids) == expected_forgotten_count
+
+
+def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
+    """Test condensation when both REQUEST and TOKENS reasons are true simultaneously.
+
+    Verifies that the most aggressive condensation (minimum suffix) is chosen.
+    """
+    max_tokens = 100
+    keep_first = 2
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=1000, max_tokens=max_tokens, keep_first=keep_first
+    )
+
+    # Create a separate mock for the agent's LLM with token counting
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.model = "gpt-4"
+
+    # Mock get_token_count to return predictable values
+    def mock_token_count(messages):
+        total_chars = 0
+        for msg in messages:
+            for content in msg.content:
+                if hasattr(content, "text"):
+                    total_chars += len(content.text)
+        return total_chars // 4
+
+    agent_llm.get_token_count.side_effect = mock_token_count
+
+    # Create 20 events with 40 chars each = 10 tokens each = 200 total tokens
+    # This exceeds max_tokens of 100 (triggers TOKENS)
+    events: list[Event] = [message_event("A" * 40) for i in range(20)]
+    # Add a CondensationRequest (triggers REQUEST)
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Verify both reasons are present
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    assert Reason.REQUEST in reasons
+    assert Reason.TOKENS in reasons
+    assert Reason.EVENTS not in reasons
+
+    # Get the condensation
+    result = condenser.condense(view, llm=agent_llm)
+    assert isinstance(result, Condensation)
+
+    # The most aggressive condensation should be chosen (minimum suffix)
+    assert len(result.forgotten_event_ids) > 0
+
+
+def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
+    """Test condensation when both EVENTS and TOKENS reasons are true simultaneously.
+
+    Verifies that the most aggressive condensation (minimum suffix) is chosen.
+    """
+    max_size = 15
+    max_tokens = 100
+    keep_first = 2
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=max_size, max_tokens=max_tokens, keep_first=keep_first
+    )
+
+    # Create a separate mock for the agent's LLM with token counting
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.model = "gpt-4"
+
+    def mock_token_count(messages):
+        total_chars = 0
+        for msg in messages:
+            for content in msg.content:
+                if hasattr(content, "text"):
+                    total_chars += len(content.text)
+        return total_chars // 4
+
+    agent_llm.get_token_count.side_effect = mock_token_count
+
+    # Create 20 events (exceeds max_size of 15) with 40 chars each
+    # 20 events * 10 tokens = 200 tokens (exceeds max_tokens of 100)
+    events: list[Event] = [message_event("A" * 40) for i in range(20)]
+    view = View.from_events(events)
+
+    # Verify both reasons are present
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    assert Reason.EVENTS in reasons
+    assert Reason.TOKENS in reasons
+    assert Reason.REQUEST not in reasons
+
+    # Get the condensation
+    result = condenser.condense(view, llm=agent_llm)
+    assert isinstance(result, Condensation)
+
+    # The most aggressive condensation should be chosen (minimum suffix)
+    assert len(result.forgotten_event_ids) > 0
+
+
+def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
+    """Test condensation when all three reasons are true simultaneously.
+
+    Verifies that the most aggressive condensation (minimum suffix) is chosen
+    when REQUEST, EVENTS, and TOKENS all trigger at once.
+    """
+    max_size = 15
+    max_tokens = 100
+    keep_first = 2
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=max_size, max_tokens=max_tokens, keep_first=keep_first
+    )
+
+    # Create a separate mock for the agent's LLM with token counting
+    agent_llm = MagicMock(spec=LLM)
+    agent_llm.model = "gpt-4"
+
+    def mock_token_count(messages):
+        total_chars = 0
+        for msg in messages:
+            for content in msg.content:
+                if hasattr(content, "text"):
+                    total_chars += len(content.text)
+        return total_chars // 4
+
+    agent_llm.get_token_count.side_effect = mock_token_count
+
+    # Create 20 events (exceeds max_size of 15) with 40 chars each
+    # 20 events * 10 tokens = 200 tokens (exceeds max_tokens of 100)
+    events: list[Event] = [message_event("A" * 40) for i in range(20)]
+    # Add CondensationRequest (triggers REQUEST)
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Verify all three reasons are present
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    assert Reason.REQUEST in reasons
+    assert Reason.EVENTS in reasons
+    assert Reason.TOKENS in reasons
+
+    # Get the condensation
+    result = condenser.condense(view, llm=agent_llm)
+    assert isinstance(result, Condensation)
+
+    # The most aggressive condensation should be chosen (minimum suffix)
+    # This means the most events should be forgotten
+    assert len(result.forgotten_event_ids) > 0
+
+    # Verify the condenser used its own LLM for summarization
+    completion_mock = cast(MagicMock, mock_llm.completion)
+    assert completion_mock.call_count == 1
+
+
+def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
+    """Test that the minimum suffix is chosen when multiple reasons provide different targets.
+
+    This test explicitly verifies the min() logic at line 200 of the condenser.
+    """
+    max_size = 30  # Set high so EVENTS triggers with specific target
+    keep_first = 2
+    condenser = LLMSummarizingCondenser(
+        llm=mock_llm, max_size=max_size, keep_first=keep_first
+    )
+
+    # Create a scenario where REQUEST and EVENTS give different suffix sizes
+    # 40 events total
+    events: list[Event] = [message_event(f"Event {i}") for i in range(40)]
+    events.append(CondensationRequest())
+    view = View.from_events(events)
+
+    # Calculate expected suffix lengths:
+    # REQUEST: target_size = len(view) // 2 = 40 // 2 = 20
+    #          suffix_to_keep = 20 - keep_first - 1 = 20 - 2 - 1 = 17
+    # EVENTS:  target_size = max_size // 2 = 30 // 2 = 15
+    #          suffix_to_keep = 15 - keep_first - 1 = 15 - 2 - 1 = 12
+    # Most aggressive: min(17, 12) = 12
+
+    result = condenser.condense(view)
+    assert isinstance(result, Condensation)
+
+    # Forgotten events: events[keep_first : -12] = events[2:28] = 26 events
+    expected_forgotten_count = 40 - keep_first - 12
+    assert len(result.forgotten_event_ids) == expected_forgotten_count
