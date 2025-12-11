@@ -604,11 +604,11 @@ class TestConfirmationMode:
         assert obs_events[1].observation.text == "Analysis complete"
 
     def test_pause_during_confirmation_preserves_waiting_status(self):
-        """Test that pausing during WAITING_FOR_CONFIRMATION changes status to PAUSED.
+        """Test that pausing during WAITING_FOR_CONFIRMATION preserves the status.
 
-        When pause() is called while the agent is waiting for confirmation,
-        the status should change to PAUSED, consistent with pausing from
-        other execution states.
+        This test reproduces the race condition issue where agent can be waiting
+        for confirmation and the status is changed to paused instead. Waiting for
+        confirmation is simply a special type of pause and should not be overridden.
         """
         # Create a pending action that puts agent in WAITING_FOR_CONFIRMATION state
         self._make_pending_action()
@@ -623,10 +623,11 @@ class TestConfirmationMode:
         # Call pause() while in WAITING_FOR_CONFIRMATION state
         self.conversation.pause()
 
-        # Status should change to PAUSED when pause() is called
+        # Status should remain WAITING_FOR_CONFIRMATION, not change to PAUSED
+        # This is the key fix: waiting for confirmation is a special type of pause
         assert (
             self.conversation.state.execution_status
-            == ConversationExecutionStatus.PAUSED
+            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
         )
 
         # Test that pause works correctly for other states
