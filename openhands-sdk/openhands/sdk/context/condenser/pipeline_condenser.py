@@ -1,12 +1,7 @@
-from typing import TYPE_CHECKING
-
 from openhands.sdk.context.condenser.base import CondenserBase
 from openhands.sdk.context.view import View
 from openhands.sdk.event.condenser import Condensation
-
-
-if TYPE_CHECKING:
-    from openhands.sdk.llm import LLM
+from openhands.sdk.llm import LLM
 
 
 class PipelineCondenser(CondenserBase):
@@ -47,7 +42,7 @@ class PipelineCondenser(CondenserBase):
     condensers: list[CondenserBase]
     """The list of condensers to apply in order."""
 
-    def condense(self, view: View, llm: "LLM | None" = None) -> View | Condensation:
+    def condense(self, view: View, llm: LLM | None = None) -> View | Condensation:
         result: View | Condensation = view
         for condenser in self.condensers:
             if isinstance(result, Condensation):
