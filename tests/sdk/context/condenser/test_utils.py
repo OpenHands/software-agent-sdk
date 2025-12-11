@@ -72,9 +72,9 @@ class TestGetTotalTokenCount:
         get_total_token_count(events, mock_llm)
 
         # Verify get_token_count was called
-        assert mock_llm.get_token_count.called
+        assert mock_llm.get_token_count.called  # type: ignore
         # Verify it was called with a list of messages
-        call_args = mock_llm.get_token_count.call_args[0][0]
+        call_args = mock_llm.get_token_count.call_args[0][0]  # type: ignore
         assert isinstance(call_args, list)
         assert all(isinstance(msg, Message) for msg in call_args)
 
