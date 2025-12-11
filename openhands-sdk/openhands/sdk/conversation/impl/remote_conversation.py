@@ -467,6 +467,8 @@ class RemoteConversation(BaseConversation):
             # Import here to avoid circular imports
             from openhands.sdk.tool.registry import get_tool_module_qualnames
 
+            tool_qualnames = get_tool_module_qualnames()
+            logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -479,7 +481,7 @@ class RemoteConversation(BaseConversation):
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
                 # Include tool module qualnames for dynamic registration on server
-                "tool_module_qualnames": get_tool_module_qualnames(),
+                "tool_module_qualnames": tool_qualnames,
             }
             resp = _send_request(
                 self._client, "POST", "/api/conversations", json=payload

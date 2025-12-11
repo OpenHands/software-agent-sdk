@@ -109,7 +109,12 @@ with DockerWorkspace(
 ) as workspace:
     logger.info("✅ Custom agent server started!")
 
-    # 4) Create agent with custom tools
+    # 4) Import custom tools to register them in the client's registry
+    #    This allows the client to send the module qualname to the server
+    #    The server will then import the same module and execute the tool
+    import custom_tools.report_bug  # noqa: F401
+
+    # 5) Create agent with custom tools
     #    Note: We specify the tool here, but it's actually executed on the server
     #    Get default tools and add our custom tool
     from openhands.sdk import Agent
@@ -128,7 +133,7 @@ with DockerWorkspace(
         ),
     )
 
-    # 5) Set up callback collection
+    # 6) Set up callback collection
     received_events: list = []
     last_event_time = {"ts": time.time()}
 
@@ -138,7 +143,7 @@ with DockerWorkspace(
         received_events.append(event)
         last_event_time["ts"] = time.time()
 
-    # 6) Test the workspace with a simple command
+    # 7) Test the workspace with a simple command
     result = workspace.execute_command(
         "echo 'Custom agent server ready!' && python --version"
     )
@@ -147,7 +152,7 @@ with DockerWorkspace(
     )
     logger.info(f"Output: {result.stdout}")
 
-    # 7) Create conversation with the custom agent
+    # 8) Create conversation with the custom agent
     conversation = Conversation(
         agent=agent,
         workspace=workspace,
@@ -186,7 +191,7 @@ with DockerWorkspace(
             time.sleep(0.1)
         logger.info("✅ Events have stopped")
 
-        # 8) Access the collected bug reports
+        # 9) Access the collected bug reports
         # In a real application, you would:
         # - Query the agent server for collected data
         # - Store the data in a database
