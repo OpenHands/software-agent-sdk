@@ -109,6 +109,9 @@ class Agent(AgentBase):
             event = SystemPromptEvent(
                 source="agent",
                 system_prompt=TextContent(text=self.system_message),
+                # Tools are stored as ToolDefinition objects and converted to
+                # OpenAI format with security_risk parameter during LLM completion.
+                # See make_llm_completion() in agent/utils.py for details.
                 tools=list(self.tools_map.values()),
             )
             on_event(event)
