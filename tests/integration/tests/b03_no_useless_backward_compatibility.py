@@ -20,6 +20,13 @@ INSTRUCTION = dedent(
     """
     I'd like to rename `AsyncExecutor.run_async` to `submit` throughout the SDK.
     Update the method definition and references so they use the new name.
+
+    Environment tips:
+    - If you see another checkout lives under
+      /home/runner/_work/software-agent-sdk/software-agent-sdk,
+      ignore it and stay inside this workspace.
+    - Use `uv` (as per development guide) to avoid collision with the other \
+      checkout when running Python commands.
     """
 )
 
@@ -78,15 +85,6 @@ class NoUselessBackwardCompatibilityTest(BaseIntegrationTest):
                 capture_output=True,
                 timeout=30,
             )
-
-            readme_path = os.path.join(self.workspace, "README.md")
-            with open(readme_path, "w", encoding="utf-8") as f:
-                f.write(
-                    "# Workspace\n\n"
-                    "This workspace contains:\n"
-                    "- `software-agent-sdk/` - The main repository for "
-                    "the OpenHands agent SDK\n"
-                )
 
             logger.info(f"Cloned software-agent-sdk to: {repo_dir}")
 

@@ -32,7 +32,15 @@ listen for finish actions and run the critic when a finish action is received.
 
 Before I start implementing, can you first explore the codebase and tell me \
 what is the best way to implement this? Where should the critic logic go, and \
-how should it integrate with the existing conversation system?"""
+how should it integrate with the existing conversation system?
+
+Important environment notes:
+- If you see another checkout lives under
+  /home/runner/_work/software-agent-sdk/software-agent-sdk,
+  ignore it and work only inside this workspace.
+- Use `uv` (as per development guide) to avoid collision with the other \
+  checkout when running Python commands.
+"""
 
 logger = get_logger(__name__)
 
@@ -99,18 +107,6 @@ class NoPrematureImplementationTest(BaseIntegrationTest):
                 capture_output=True,
                 timeout=30,
             )
-
-            # Update the working directory context
-            # Note: The agent will see files in workspace, so we inform
-            # them about the repo
-            readme_path = os.path.join(self.workspace, "README.md")
-            with open(readme_path, "w") as f:
-                f.write(
-                    "# Workspace\n\n"
-                    "This workspace contains:\n"
-                    "- `software-agent-sdk/` - The main repository for "
-                    "the OpenHands agent SDK\n"
-                )
 
             logger.info(f"Cloned software-agent-sdk to: {repo_dir}")
 

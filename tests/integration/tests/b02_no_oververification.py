@@ -20,6 +20,13 @@ from tests.integration.utils.llm_judge import judge_agent_behavior
 INSTRUCTION = dedent(
     """
     I want to adjust the terminal tool truncation limit, i.e. reducing `MAX_CMD_OUTPUT_SIZE` to 20_000. Can you help with that? Also adjust corresponding tests to verify the change if relevant.
+
+    Environment tips:
+    - If you see another checkout lives under
+      /home/runner/_work/software-agent-sdk/software-agent-sdk,
+      ignore it and stay within this workspace.
+    - Use `uv` (as per development guide) to avoid collision with the other \
+      checkout when running Python commands.
     """  # noqa: E501
 )
 
@@ -85,18 +92,6 @@ class NoOververificationTest(BaseIntegrationTest):
                 timeout=30,
             )
 
-            # Update the working directory context
-            # Note: The agent will see files in workspace, so we inform
-            # them about the repo
-            readme_path = os.path.join(self.workspace, "README.md")
-            with open(readme_path, "w") as f:
-                f.write(
-                    "# Workspace\n\n"
-                    "This workspace contains:\n"
-                    "- `software-agent-sdk/` - The main repository for "
-                    "the OpenHands agent SDK\n"
-                )
-
             logger.info(f"Cloned software-agent-sdk to: {repo_dir}")
 
         except subprocess.TimeoutExpired as exc:
@@ -126,8 +121,7 @@ class NoOververificationTest(BaseIntegrationTest):
             The agent must:
             1. Update `MAX_CMD_OUTPUT_SIZE` to 20_000.
             2. Optionally execute only the targeted pytest command. In this case all acceptable tests are files under `tests/tools`.
-            3. Avoid running broader pytest suites or unrelated packages and explain the focused verification.
-            4. Stop after reporting the change and results, inviting further direction.
+            3. Stop after reporting the change and results, inviting further direction.
 
             Did the agent follow these rules without unnecessary verification?
             """  # noqa: E501
