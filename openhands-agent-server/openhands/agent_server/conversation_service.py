@@ -165,14 +165,30 @@ class ConversationService:
         if not self._conversation_webhook_subscribers:
             return
 
-        # Send notifications to all conversation webhook subscribers
-        await asyncio.gather(
-            *[
-                subscriber.post_conversation_info(conversation_info)
-                for subscriber in self._conversation_webhook_subscribers
-            ],
-            return_exceptions=True,  # Don't fail if one webhook fails
-        )
+        # Send notifications to all conversation webhook subscribers in the background
+        async def _notify_and_log_errors():
+            results = await asyncio.gather(
+                *[
+                    subscriber.post_conversation_info(conversation_info)
+                    for subscriber in self._conversation_webhook_subscribers
+                ],
+                return_exceptions=True,  # Don't fail if one webhook fails
+            )
+
+            # Log any exceptions that occurred
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    subscriber = self._conversation_webhook_subscribers[i]
+                    logger.error(
+                        (
+                            f"Failed to notify conversation webhook "
+                            f"{subscriber.spec.base_url}: {result}"
+                        ),
+                        exc_info=result,
+                    )
+
+        # Create task to run in background without awaiting
+        asyncio.create_task(_notify_and_log_errors())
 
     # Write Methods
 
@@ -331,6 +347,18 @@ class ConversationService:
         # Delegate to EventService to avoid accessing private conversation internals
         response = await event_service.ask_agent(question)
         return response
+
+    async def condense(self, conversation_id: UUID) -> bool:
+        """Force condensation of the conversation history."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return False
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        await event_service.condense()
+        return True
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
