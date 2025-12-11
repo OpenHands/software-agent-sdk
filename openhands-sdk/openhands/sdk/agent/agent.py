@@ -109,17 +109,7 @@ class Agent(AgentBase):
             event = SystemPromptEvent(
                 source="agent",
                 system_prompt=TextContent(text=self.system_message),
-                # Always expose a 'security_risk' parameter in tool schemas.
-                # This ensures the schema remains consistent, even if the
-                # security analyzer is disabled. Validation of this field
-                # happens dynamically at runtime depending on the analyzer
-                # configured. This allows weaker models to omit risk field
-                # and bypass validation requirements when analyzer is disabled.
-                # For detailed logic, see `_extract_security_risk` method.
-                tools=[
-                    t.to_openai_tool(add_security_risk_prediction=True)
-                    for t in self.tools_map.values()
-                ],
+                tools=list(self.tools_map.values()),
             )
             on_event(event)
 
