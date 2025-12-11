@@ -175,8 +175,9 @@ class TestGetSuffixLengthForTokenReduction:
             message_event("C" * 40),  # 40 chars -> 10 tokens
             message_event("D" * 40),  # 40 chars -> 10 tokens
         ]
-        # Total 40 tokens, reduce by 15 means keep suffix after removing 1 event (10 tokens)
-        # Actually need to remove 2 events (20 tokens) to exceed 15 token reduction
+        # Total 40 tokens, reduce by 15 means keep suffix after removing 1 event (10
+        # tokens). Actually need to remove 2 events (20 tokens) to exceed 15 token
+        # reduction
         suffix_length = get_suffix_length_for_token_reduction(events, mock_llm, 15)
         assert suffix_length == 2  # Keep last 2 events
 

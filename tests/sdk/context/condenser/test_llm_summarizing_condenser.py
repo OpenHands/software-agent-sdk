@@ -156,7 +156,8 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     # Create events with a condensation in the history
     # Need enough events so that after condensation, the view still exceeds max_size
     # Condensation will remove 2 events (events[3] and events[4]) plus itself
-    # So we need at least max_size + 1 + 3 = 14 events to exceed max_size after condensation
+    # So we need at least max_size + 1 + 3 = 14 events to exceed max_size after
+    # condensation
     events = [message_event(f"Event {i}") for i in range(14)]
 
     # Add a condensation to simulate previous summarization
@@ -486,7 +487,8 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
 
 
 def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
-    """Test that the minimum suffix is chosen when multiple reasons provide different targets.
+    """Test that the minimum suffix is chosen when multiple reasons provide different
+    targets.
 
     This test explicitly verifies the min() logic at line 200 of the condenser.
     """
