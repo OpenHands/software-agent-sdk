@@ -36,7 +36,7 @@ _MODEL_FAMILY_PATTERNS: dict[str, tuple[str, ...]] = {
 # Ordered heuristics to pick the most specific variant available for a family.
 _MODEL_VARIANT_PATTERNS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "openai_gpt": (
-        ("gpt-5-codex", ("gpt-5-codex",)),
+        ("gpt-5-codex", ("gpt-5-codex", "gpt-5.1-codex")),
         ("gpt-5", ("gpt-5",)),
     ),
 }
@@ -66,18 +66,15 @@ def _match_variant(
     if not patterns:
         return None
 
-    candidates: list[str] = []
-    normalized_model = _normalize(model_name)
-    if normalized_model:
-        candidates.append(normalized_model)
-    normalized_canonical = _normalize(canonical_name)
-    if normalized_canonical and normalized_canonical not in candidates:
-        candidates.append(normalized_canonical)
+    # Choose canonical_name if available, otherwise fall back to model_name
+    candidate = _normalize(canonical_name) or _normalize(model_name)
+    if not candidate:
+        return None
 
     for variant, substrings in patterns:
-        for candidate in candidates:
-            if any(pattern in candidate for pattern in substrings):
-                return variant
+        if any(sub in candidate for sub in substrings):
+            return variant
+
     return None
 
 
