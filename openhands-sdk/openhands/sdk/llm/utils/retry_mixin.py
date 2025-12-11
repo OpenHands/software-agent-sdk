@@ -16,7 +16,7 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 # Helpful alias for listener signature: (attempt_number, max_retries) -> None
-RetryListener = Callable[[int, int], None]
+RetryListener = Callable[[int, int, BaseException | None], None]
 
 
 class RetryMixin:
@@ -41,7 +41,12 @@ class RetryMixin:
             self.log_retry_attempt(retry_state)
 
             if retry_listener is not None:
-                retry_listener(retry_state.attempt_number, num_retries)
+                exc = (
+                    retry_state.outcome.exception()
+                    if retry_state.outcome is not None
+                    else None
+                )
+                retry_listener(retry_state.attempt_number, num_retries, exc)
 
             # If there is no outcome or no exception, nothing to tweak.
             if retry_state.outcome is None:

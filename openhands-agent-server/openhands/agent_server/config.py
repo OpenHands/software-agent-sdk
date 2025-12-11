@@ -126,6 +126,10 @@ class Config(BaseModel):
         default=False,
         description="Whether to enable VNC desktop functionality",
     )
+    preload_tools: bool = Field(
+        default=True,
+        description="Whether to preload tools",
+    )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,
         description=(

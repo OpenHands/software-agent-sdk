@@ -2,7 +2,7 @@
 
 import pytest
 
-from openhands.sdk.conversation.secret_source import LookupSecret
+from openhands.sdk.secret import LookupSecret
 from openhands.sdk.utils.cipher import Cipher
 
 
