@@ -395,7 +395,16 @@ class EventService:
         if request.accept:
             await self.run()
         else:
-            await self.pause()
+            await self.reject_pending_actions(request.reason)
+
+    async def reject_pending_actions(self, reason: str):
+        """Reject all pending actions and publish updated state."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.reject_pending_actions, reason
+        )
 
     async def pause(self):
         if self._conversation:
