@@ -205,31 +205,22 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             # Submit tool resolution tasks
             for tool_spec in self.tools:
                 future = executor.submit(resolve_tool, tool_spec, state)
-                futures.append(("tool", future))
+                futures.append(future)
 
             # Submit MCP tools creation if configured
             if self.mcp_config:
                 future = executor.submit(create_mcp_tools, self.mcp_config, 30)
-                futures.append(("mcp", future))
+                futures.append(future)
 
             # Submit built-in tools creation
             for tool_class in BUILT_IN_TOOLS:
                 future = executor.submit(tool_class.create, state)
-                futures.append(("builtin", future))
+                futures.append(future)
 
             # Collect results as they complete
-            for future_type, future in futures:
-                try:
-                    result = future.result()
-                    if future_type == "tool":
-                        tools.extend(result)
-                    elif future_type == "mcp":
-                        tools.extend(result)
-                    elif future_type == "builtin":
-                        tools.extend(result)
-                except Exception as e:
-                    logger.error(f"Failed to resolve {future_type} tools: {e}")
-                    raise
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
