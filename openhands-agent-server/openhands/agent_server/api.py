@@ -9,7 +9,6 @@ from fastapi.staticfiles import StaticFiles
 from starlette.requests import Request
 
 from openhands.agent_server.bash_router import bash_router
-from openhands.agent_server.browser_service import get_browser_service
 from openhands.agent_server.config import (
     Config,
     get_default_config,
@@ -30,6 +29,7 @@ from openhands.agent_server.server_details_router import (
     server_details_router,
 )
 from openhands.agent_server.sockets import sockets_router
+from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
@@ -44,7 +44,7 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
-    browser_service = get_browser_service()
+    tool_preload_service = get_tool_preload_service()
 
     # Define async functions for starting each service
     async def start_vscode_service():
@@ -71,23 +71,21 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         else:
             logger.info("Desktop service is disabled")
 
-    async def start_browser_service():
-        if browser_service is not None:
-            browser_started = await browser_service.start()
-            if browser_started:
-                logger.info("Browser service started successfully")
+    async def start_tool_preload_service():
+        if tool_preload_service is not None:
+            tool_preload_started = await tool_preload_service.start()
+            if tool_preload_started:
+                logger.info("Tool preload service started successfully")
             else:
-                logger.warning(
-                    "Browser service failed to start, continuing without browser"
-                )
+                logger.warning("Tool preload service failed to start - skipping")
         else:
-            logger.info("Browser service is disabled")
+            logger.info("Tool preload service is disabled")
 
     # Start all services concurrently
     await asyncio.gather(
         start_vscode_service(),
         start_desktop_service(),
-        start_browser_service(),
+        start_tool_preload_service(),
         return_exceptions=True,
     )
 
@@ -106,15 +104,15 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
                 if desktop_service is not None:
                     await desktop_service.stop()
 
-            async def stop_browser_service():
-                if browser_service is not None:
-                    await browser_service.stop()
+            async def stop_tool_preload_service():
+                if tool_preload_service is not None:
+                    await tool_preload_service.stop()
 
             # Stop all services concurrently
             await asyncio.gather(
                 stop_vscode_service(),
                 stop_desktop_service(),
-                stop_browser_service(),
+                stop_tool_preload_service(),
                 return_exceptions=True,
             )
 

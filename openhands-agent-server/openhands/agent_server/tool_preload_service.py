@@ -6,18 +6,22 @@ import sys
 
 from openhands.agent_server.config import get_default_config
 from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.schema import Action
+from openhands.sdk.tool.tool import create_action_type_with_risk
+from openhands.sdk.utils.models import get_known_concrete_subclasses
 
 
 _logger = get_logger(__name__)
 
 
-class BrowserService:
-    """Service which preloads chromium reducing time to start first conversation"""
+class ToolPreloadService:
+    """Service which preloads tools / chromium reducing time to
+    start first conversation"""
 
     running: bool = False
 
     async def start(self) -> bool:
-        """Preload chromium"""
+        """Preload tools"""
 
         # Skip if already running
         if self.running:
@@ -34,6 +38,12 @@ class BrowserService:
 
             # Creating an instance here to preload chomium
             BrowserToolExecutor()
+
+            # Pre-creating all these classes prevents processing which costs
+            # significant time per tool on the first conversation invocation.
+            for action_type in get_known_concrete_subclasses(Action):
+                create_action_type_with_risk(action_type)
+
             _logger.debug(f"Loaded {BrowserToolExecutor}")
             return True
         except Exception:
@@ -41,26 +51,26 @@ class BrowserService:
             return False
 
     async def stop(self) -> None:
-        """Stop the desktop process."""
+        """Stop the tool preload process."""
         self.running = False
 
     def is_running(self) -> bool:
-        """Check if desktop is running."""
+        """Check if tool preload is running."""
         return self.running
 
 
-_browser_service: BrowserService | None = None
+_tool_preload_service: ToolPreloadService | None = None
 
 
-def get_browser_service() -> BrowserService | None:
-    """Get the browser service instance if preload is enabled."""
-    global _browser_service
+def get_tool_preload_service() -> ToolPreloadService | None:
+    """Get the tool preload service instance if preload is enabled."""
+    global _tool_preload_service
     config = get_default_config()
 
-    if not config.preload_browser:
-        _logger.info("Browser preload is disabled in configuration")
+    if not config.preload_tools:
+        _logger.info("Tool preload is disabled in configuration")
         return None
 
-    if _browser_service is None:
-        _browser_service = BrowserService()
-    return _browser_service
+    if _tool_preload_service is None:
+        _tool_preload_service = ToolPreloadService()
+    return _tool_preload_service
