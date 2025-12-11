@@ -278,6 +278,12 @@ class LocalConversation(BaseConversation):
         """
 
         with self._state:
+            # If already IDLE and there is no new user message, there's nothing to do.
+            if (
+                self._state.execution_status == ConversationExecutionStatus.IDLE
+                and not getattr(self, "_new_user_message", False)
+            ):
+                return
             if self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,

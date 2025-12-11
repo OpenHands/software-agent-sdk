@@ -455,6 +455,22 @@ class TestConfirmationMode:
         assert isinstance(msg_events[0].llm_message.content[0], TextContent)
         assert msg_events[0].llm_message.content[0].text == "Hello, how can I help you?"
 
+        # Also verify equivalent behavior when LLM returns a Finish tool call next
+        finish_mock = self._mock_finish_action("Task completed via finish")
+        with patch(
+            "openhands.sdk.llm.llm.litellm_completion",
+            return_value=finish_mock.return_value,
+        ):
+            self.conversation.send_message(
+                Message(role="user", content=[TextContent(text="please finish")])
+            )
+            self.conversation.run()
+
+        assert (
+            self.conversation.state.execution_status
+            == ConversationExecutionStatus.FINISHED
+        )
+
     @pytest.mark.parametrize("should_reject", [True, False])
     def test_action_then_confirm_or_reject(self, should_reject: bool):
         """
@@ -491,6 +507,22 @@ class TestConfirmationMode:
             assert (
                 self.conversation.state.execution_status
                 == ConversationExecutionStatus.IDLE
+            )
+
+            # Also verify equivalent behavior when LLM returns a Finish tool call next
+            finish_mock = self._mock_finish_action("Task completed via finish")
+            with patch(
+                "openhands.sdk.llm.llm.litellm_completion",
+                return_value=finish_mock.return_value,
+            ):
+                self.conversation.send_message(
+                    Message(role="user", content=[TextContent(text="please finish")])
+                )
+                self.conversation.run()
+
+            assert (
+                self.conversation.state.execution_status
+                == ConversationExecutionStatus.FINISHED
             )
         else:
             self.conversation.reject_pending_actions("Not safe to run")

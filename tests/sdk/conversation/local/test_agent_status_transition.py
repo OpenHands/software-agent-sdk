@@ -442,9 +442,12 @@ def test_run_exits_immediately_when_already_finished(mock_completion):
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
     # Call run again without sending a new message
-    # Second run without new message still yields IDLE promptly
+    # Should exit immediately without calling LLM again
+    initial_call_count = mock_completion.call_count
     conversation.run()
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    # LLM should not be called again
+    assert mock_completion.call_count == initial_call_count
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
