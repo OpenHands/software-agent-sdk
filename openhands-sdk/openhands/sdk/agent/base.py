@@ -212,11 +212,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 future = executor.submit(create_mcp_tools, self.mcp_config, 30)
                 futures.append(future)
 
-            # Submit built-in tools creation
-            for tool_class in BUILT_IN_TOOLS:
-                future = executor.submit(tool_class.create, state)
-                futures.append(future)
-
             # Collect results as they complete
             for future in futures:
                 result = future.result()
@@ -232,6 +227,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"Filtered to {len(tools)} tools after applying regex filter: "
                 f"{[tool.name for tool in tools]}",
             )
+
+        # Always include built-in tools; not subject to filtering
+        # Instantiate built-in tools using their .create() method
+        for tool_class in BUILT_IN_TOOLS:
+            tools.extend(tool_class.create(state))
 
         # Check tool types
         for tool in tools:
