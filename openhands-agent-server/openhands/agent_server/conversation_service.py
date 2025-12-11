@@ -165,14 +165,30 @@ class ConversationService:
         if not self._conversation_webhook_subscribers:
             return
 
-        # Send notifications to all conversation webhook subscribers
-        await asyncio.gather(
-            *[
-                subscriber.post_conversation_info(conversation_info)
-                for subscriber in self._conversation_webhook_subscribers
-            ],
-            return_exceptions=True,  # Don't fail if one webhook fails
-        )
+        # Send notifications to all conversation webhook subscribers in the background
+        async def _notify_and_log_errors():
+            results = await asyncio.gather(
+                *[
+                    subscriber.post_conversation_info(conversation_info)
+                    for subscriber in self._conversation_webhook_subscribers
+                ],
+                return_exceptions=True,  # Don't fail if one webhook fails
+            )
+
+            # Log any exceptions that occurred
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    subscriber = self._conversation_webhook_subscribers[i]
+                    logger.error(
+                        (
+                            f"Failed to notify conversation webhook "
+                            f"{subscriber.spec.base_url}: {result}"
+                        ),
+                        exc_info=result,
+                    )
+
+        # Create task to run in background without awaiting
+        asyncio.create_task(_notify_and_log_errors())
 
     # Write Methods
 

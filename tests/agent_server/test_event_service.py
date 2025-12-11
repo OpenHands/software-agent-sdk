@@ -1,12 +1,13 @@
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ConfirmationResponseRequest,
     EventPage,
     EventSortOrder,
     StoredConversation,
@@ -746,6 +747,68 @@ class TestEventServiceSendMessage:
             await event_service.send_message(system_message, run=False)
             mock_loop.run_in_executor.assert_any_call(
                 None, conversation.send_message, system_message
+            )
+
+
+class TestEventServiceRespondToConfirmation:
+    """Test cases for confirmation responses and rejection handling."""
+
+    @pytest.mark.asyncio
+    async def test_respond_to_confirmation_accept_calls_run(self, event_service):
+        """Accepting confirmation should trigger run and not rejection."""
+        event_service._conversation = MagicMock()
+        event_service.run = AsyncMock()
+        event_service.reject_pending_actions = AsyncMock()
+
+        request = ConfirmationResponseRequest(accept=True, reason="ignored")
+
+        await event_service.respond_to_confirmation(request)
+
+        event_service.run.assert_awaited_once_with()
+        event_service.reject_pending_actions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_confirmation_rejects_actions(self, event_service):
+        """Rejecting confirmation should call reject_pending_actions with reason."""
+        event_service._conversation = MagicMock()
+        event_service.run = AsyncMock()
+        event_service.reject_pending_actions = AsyncMock()
+
+        reason = "User rejected actions"
+        request = ConfirmationResponseRequest(accept=False, reason=reason)
+
+        await event_service.respond_to_confirmation(request)
+
+        event_service.reject_pending_actions.assert_awaited_once_with(reason)
+        event_service.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reject_pending_actions_inactive_service(self, event_service):
+        """Rejecting pending actions should fail when service is inactive."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.reject_pending_actions("any reason")
+
+    @pytest.mark.asyncio
+    async def test_reject_pending_actions_invokes_conversation(self, event_service):
+        """Rejecting pending actions should delegate to conversation via executor."""
+        conversation = MagicMock()
+        conversation.reject_pending_actions = MagicMock()
+        event_service._conversation = conversation
+
+        async def _mock_executor(*_args, **_kwargs):
+            return None
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.return_value = _mock_executor()
+
+            await event_service.reject_pending_actions("custom reason")
+
+            mock_loop.run_in_executor.assert_called_once_with(
+                None, conversation.reject_pending_actions, "custom reason"
             )
 
 

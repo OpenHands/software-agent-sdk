@@ -364,7 +364,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         action_type: type[Schema] | None = None,
     ) -> dict[str, Any]:
         action_type = action_type or self.action_type
-        action_type_with_risk = _create_action_type_with_risk(action_type)
+        action_type_with_risk = create_action_type_with_risk(action_type)
 
         add_security_risk_prediction = add_security_risk_prediction and (
             self.annotations is None or (not self.annotations.readOnlyHint)
@@ -460,7 +460,7 @@ class ToolDefinition[ActionT, ObservationT](DiscriminatedUnionMixin, ABC):
         raise ValueError(error_msg)
 
 
-def _create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
+def create_action_type_with_risk(action_type: type[Schema]) -> type[Schema]:
     action_type_with_risk = _action_types_with_risk.get(action_type)
     if action_type_with_risk:
         return action_type_with_risk

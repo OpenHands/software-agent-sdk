@@ -624,10 +624,10 @@ class TestTool:
 
     def test_security_risk_is_required_field_in_schema(self):
         """Test that _create_action_type_with_risk always makes security_risk a required field."""  # noqa: E501
-        from openhands.sdk.tool.tool import _create_action_type_with_risk
+        from openhands.sdk.tool.tool import create_action_type_with_risk
 
         # Test with a simple action type
-        action_type_with_risk = _create_action_type_with_risk(ToolMockAction)
+        action_type_with_risk = create_action_type_with_risk(ToolMockAction)
 
         # Get the schema and check that security_risk is in required fields
         schema = action_type_with_risk.to_mcp_schema()
