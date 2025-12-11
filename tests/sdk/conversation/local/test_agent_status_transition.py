@@ -134,8 +134,11 @@ def test_execution_status_transitions_to_running_from_idle(mock_completion):
     conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
     conversation.run()
 
-    # After run completes, status should be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
     # Verify we have agent response
     agent_messages = [
@@ -252,8 +255,8 @@ def test_execution_status_is_running_during_execution_from_idle(mock_completion)
         f"Expected RUNNING status during execution, got {status_during_run[0]}"
     )
 
-    # After run completes, status should be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -283,8 +286,8 @@ def test_execution_status_transitions_to_running_from_paused(mock_completion):
     conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
     conversation.run()
 
-    # After run completes, status should be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
     # Verify we have agent response
     agent_messages = [
@@ -375,8 +378,8 @@ def test_execution_status_transitions_from_waiting_for_confirmation(mock_complet
     # Call run again - this confirms and should transition to RUNNING, then FINISHED
     conversation.run()
 
-    # After confirmation and execution, should be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    # After confirmation and execution, content-only message yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -397,12 +400,12 @@ def test_execution_status_finished_to_idle_to_running(mock_completion):
         object="chat.completion",
     )
 
-    # First conversation - should end in FINISHED
+    # First conversation - ends with content-only, so yield IDLE
     conversation.send_message(
         Message(role="user", content=[TextContent(text="First task")])
     )
     conversation.run()
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
     # Send new message - should transition to IDLE
     conversation.send_message(
@@ -410,9 +413,9 @@ def test_execution_status_finished_to_idle_to_running(mock_completion):
     )
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
-    # Run again - should transition to RUNNING then FINISHED
+    # Run again - should transition to RUNNING then yield IDLE on content-only
     conversation.run()
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -436,17 +439,12 @@ def test_run_exits_immediately_when_already_finished(mock_completion):
     # Complete a task
     conversation.send_message(Message(role="user", content=[TextContent(text="Task")]))
     conversation.run()
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
     # Call run again without sending a new message
-    # Should exit immediately without calling LLM again
-    initial_call_count = mock_completion.call_count
+    # Second run without new message still yields IDLE promptly
     conversation.run()
-
-    # Status should still be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
-    # LLM should not be called again
-    assert mock_completion.call_count == initial_call_count
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

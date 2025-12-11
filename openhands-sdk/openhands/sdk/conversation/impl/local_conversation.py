@@ -294,6 +294,8 @@ class LocalConversation(BaseConversation):
                         ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
+                        # Break out if the agent yielded a message-only reply.
+                        ConversationExecutionStatus.IDLE,
                     ]:
                         break
 
