@@ -117,6 +117,7 @@ def prepare_llm_messages(
     events: Sequence[Event],
     condenser: None = None,
     additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
 ) -> list[Message]: ...
 
 
