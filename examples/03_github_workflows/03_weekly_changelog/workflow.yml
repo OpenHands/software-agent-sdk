@@ -7,15 +7,15 @@
 name: Weekly Changelog Generation
 
 on:
-    # Manual trigger with optional date range override
+    # Manual trigger with optional range override
     workflow_dispatch:
         inputs:
-            start_date:
-                description: Start date (YYYY-MM-DD, leave empty for 7 days ago)
+            start_ref:
+                description: 'Start reference: date (YYYY-MM-DD), commit SHA, or tag (default: 7 days ago)'
                 required: false
                 type: string
-            end_date:
-                description: End date (YYYY-MM-DD, leave empty for today)
+            end_ref:
+                description: 'End reference: date (YYYY-MM-DD), commit SHA, or tag (default: today)'
                 required: false
                 type: string
             create_pr:
@@ -40,9 +40,9 @@ jobs:
             LLM_MODEL: <YOUR_LLM_MODEL>
             LLM_BASE_URL: <YOUR_LLM_BASE_URL>
 
-            # Date range for changelog
-            START_DATE: ${{ inputs.start_date || '' }}
-            END_DATE: ${{ inputs.end_date || '' }}
+            # Range for changelog (supports dates, commits, or tags)
+            START_REF: ${{ inputs.start_ref || '' }}
+            END_REF: ${{ inputs.end_ref || '' }}
             CREATE_PR: ${{ inputs.create_pr || 'true' }}
             REPO_NAME: ${{ github.repository }}
 
@@ -50,7 +50,7 @@ jobs:
             - name: Checkout agent-sdk repository
               uses: actions/checkout@v4
               with:
-                  repository: All-Hands-AI/agent-sdk
+                  repository: OpenHands/software-agent-sdk
                   path: agent-sdk
 
             - name: Checkout target repository
@@ -79,8 +79,8 @@ jobs:
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/tools"
+                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/software-agent-sdk.git@main#subdirectory=openhands-tools"
 
             - name: Check required configuration
               env:
@@ -97,16 +97,16 @@ jobs:
                     echo "LLM base URL: $LLM_BASE_URL"
                   fi
 
-                  if [ -n "$START_DATE" ]; then
-                    echo "Start date: $START_DATE"
+                  if [ -n "$START_REF" ]; then
+                    echo "Start ref: $START_REF"
                   else
-                    echo "Start date: 7 days ago (default)"
+                    echo "Start ref: 7 days ago (default)"
                   fi
 
-                  if [ -n "$END_DATE" ]; then
-                    echo "End date: $END_DATE"
+                  if [ -n "$END_REF" ]; then
+                    echo "End ref: $END_REF"
                   else
-                    echo "End date: today (default)"
+                    echo "End ref: today (default)"
                   fi
 
                   echo "Create PR: $CREATE_PR"

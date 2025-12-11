@@ -10,16 +10,25 @@ Your task is to analyze git commits and generate a well-structured
 CHANGELOG.md file following the Keep a Changelog format
 (https://keepachangelog.com/).
 
-## Date Range
-- **Start Date**: {start_date}
-- **End Date**: {end_date}
+## Range Information
+- **Start**: {start_ref} (type: {start_type})
+- **End**: {end_ref} (type: {end_type})
 
 ## Your Task
-1. Use bash commands to analyze git commits in the specified date range:
-   - Run `git log --since="{start_date}" --until="{end_date}"
+1. Use bash commands to analyze git commits in the specified range.
+   The git command depends on the reference types:
+
+   For date ranges (both start and end are dates):
+   - Run `git log --since="{start_ref}" --until="{end_ref}"
      --pretty=format:"%H|%s|%an|%ad" --date=short`
-   - Examine commit messages and diffs for context
-   - Look for conventional commit patterns (feat:, fix:, docs:, etc.)
+
+   For commit/tag ranges:
+   - Run `git log {start_ref}..{end_ref}
+     --pretty=format:"%H|%s|%an|%ad" --date=short`
+   - Note: This shows commits reachable from end_ref but not from start_ref
+
+   Then examine commit messages and diffs for context.
+   Look for conventional commit patterns (feat:, fix:, docs:, etc.)
 
 2. Categorize changes into these sections
 (only include sections with changes):
@@ -39,7 +48,7 @@ CHANGELOG.md file following the Keep a Changelog format
    The format is based on [Keep a Changelog]
    (https://keepachangelog.com/en/1.0.0/).
 
-   ## [Unreleased] - {end_date}
+   ## [VERSION_OR_UNRELEASED] - DATE
 
    ### Added
    - Description of new feature ([commit_hash](link))
@@ -49,6 +58,11 @@ CHANGELOG.md file following the Keep a Changelog format
 
    ... (other sections as needed)
    ```
+
+   For the version header:
+   - If end_ref is a tag (e.g., v1.0.0), use that as the version: `## [1.0.0] - DATE`
+   - Otherwise, use `## [Unreleased] - DATE`
+   - Get the actual date from the commits or use today's date
 
 4. For each change entry:
    - Write a clear, concise description

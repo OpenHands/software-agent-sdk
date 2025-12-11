@@ -10,8 +10,12 @@ Usage:
     python test_local.py
 
 Optional environment variables you can override:
-    START_DATE: Start date (YYYY-MM-DD), default: 7 days ago
-    END_DATE: End date (YYYY-MM-DD), default: today
+    START_REF: Start reference - date (YYYY-MM-DD), commit SHA, or tag.
+        Default: 7 days ago
+    END_REF: End reference - date (YYYY-MM-DD), commit SHA, or tag.
+        Default: today
+    START_DATE: Alias for START_REF (backward compatibility)
+    END_DATE: Alias for END_REF (backward compatibility)
     LLM_MODEL: Model to use, default: openhands/claude-sonnet-4-5-20250929
     CREATE_PR: Whether to create PR, default: false (recommended for local testing)
 """
@@ -32,17 +36,24 @@ def main():
         sys.exit(1)
 
     # Set default values if not already set
-    if not os.getenv("START_DATE"):
+    # Check both new (START_REF) and old (START_DATE) env vars
+    if not os.getenv("START_REF") and not os.getenv("START_DATE"):
         # Default to 7 days ago
         default_start = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-        os.environ["START_DATE"] = default_start
-        print(f"Using default START_DATE: {default_start}")
+        os.environ["START_REF"] = default_start
+        print(f"Using default START_REF: {default_start}")
+    else:
+        start = os.getenv("START_REF") or os.getenv("START_DATE")
+        print(f"Using START_REF: {start}")
 
-    if not os.getenv("END_DATE"):
+    if not os.getenv("END_REF") and not os.getenv("END_DATE"):
         # Default to today
         default_end = datetime.now().strftime("%Y-%m-%d")
-        os.environ["END_DATE"] = default_end
-        print(f"Using default END_DATE: {default_end}")
+        os.environ["END_REF"] = default_end
+        print(f"Using default END_REF: {default_end}")
+    else:
+        end = os.getenv("END_REF") or os.getenv("END_DATE")
+        print(f"Using END_REF: {end}")
 
     if not os.getenv("LLM_MODEL"):
         os.environ["LLM_MODEL"] = "openhands/claude-sonnet-4-5-20250929"
@@ -52,10 +63,14 @@ def main():
         os.environ["CREATE_PR"] = "false"
         print("CREATE_PR=false (no PR will be created, safe for local testing)")
 
+    # Get the actual refs being used
+    start_ref = os.getenv("START_REF") or os.getenv("START_DATE")
+    end_ref = os.getenv("END_REF") or os.getenv("END_DATE")
+
     print("\n" + "=" * 60)
     print("Starting local changelog generation test")
     print("=" * 60)
-    print(f"Date range: {os.environ['START_DATE']} to {os.environ['END_DATE']}")
+    print(f"Range: {start_ref} to {end_ref}")
     print(f"Model: {os.environ['LLM_MODEL']}")
     print(f"Working directory: {os.getcwd()}")
     print("=" * 60 + "\n")
