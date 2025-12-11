@@ -216,11 +216,11 @@ class TestServiceParallelization:
     """Test that services are started and stopped in parallel."""
 
     async def test_services_start_in_parallel(self):
-        """Test that VSCode, Desktop, and Browser services start concurrently."""
+        """Test that VSCode, Desktop, and Tool Preload services start concurrently."""
         # Create mock services that take some time to start
         mock_vscode_service = AsyncMock()
         mock_desktop_service = AsyncMock()
-        mock_browser_service = AsyncMock()
+        mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
         # Make each service take 0.1 seconds to start
@@ -230,7 +230,7 @@ class TestServiceParallelization:
 
         mock_vscode_service.start = AsyncMock(side_effect=slow_start)
         mock_desktop_service.start = AsyncMock(side_effect=slow_start)
-        mock_browser_service.start = AsyncMock(side_effect=slow_start)
+        mock_tool_preload_service.start = AsyncMock(side_effect=slow_start)
 
         # Mock the service getters
         with (
@@ -247,8 +247,8 @@ class TestServiceParallelization:
                 return_value=mock_desktop_service,
             ),
             patch(
-                "openhands.agent_server.api.get_browser_service",
-                return_value=mock_browser_service,
+                "openhands.agent_server.api.get_tool_preload_service",
+                return_value=mock_tool_preload_service,
             ),
         ):
             # Create a mock FastAPI app
@@ -273,14 +273,14 @@ class TestServiceParallelization:
             # Verify all services were started
             mock_vscode_service.start.assert_called_once()
             mock_desktop_service.start.assert_called_once()
-            mock_browser_service.start.assert_called_once()
+            mock_tool_preload_service.start.assert_called_once()
 
     async def test_services_stop_in_parallel(self):
-        """Test that VSCode, Desktop, and Browser services stop concurrently."""
+        """Test that VSCode, Desktop, and Tool Preload services stop concurrently."""
         # Create mock services that take some time to stop
         mock_vscode_service = AsyncMock()
         mock_desktop_service = AsyncMock()
-        mock_browser_service = AsyncMock()
+        mock_tool_preload_service = AsyncMock()
         mock_conversation_service = AsyncMock()
 
         # Make each service take 0.1 seconds to stop
@@ -289,10 +289,10 @@ class TestServiceParallelization:
 
         mock_vscode_service.start = AsyncMock(return_value=True)
         mock_desktop_service.start = AsyncMock(return_value=True)
-        mock_browser_service.start = AsyncMock(return_value=True)
+        mock_tool_preload_service.start = AsyncMock(return_value=True)
         mock_vscode_service.stop = AsyncMock(side_effect=slow_stop)
         mock_desktop_service.stop = AsyncMock(side_effect=slow_stop)
-        mock_browser_service.stop = AsyncMock(side_effect=slow_stop)
+        mock_tool_preload_service.stop = AsyncMock(side_effect=slow_stop)
 
         # Mock the service getters
         with (
@@ -309,8 +309,8 @@ class TestServiceParallelization:
                 return_value=mock_desktop_service,
             ),
             patch(
-                "openhands.agent_server.api.get_browser_service",
-                return_value=mock_browser_service,
+                "openhands.agent_server.api.get_tool_preload_service",
+                return_value=mock_tool_preload_service,
             ),
         ):
             # Create a mock FastAPI app
@@ -324,7 +324,7 @@ class TestServiceParallelization:
             # Verify all services were stopped
             mock_vscode_service.stop.assert_called_once()
             mock_desktop_service.stop.assert_called_once()
-            mock_browser_service.stop.assert_called_once()
+            mock_tool_preload_service.stop.assert_called_once()
 
     async def test_services_handle_none_values(self):
         """Test that the lifespan handles None service values correctly."""
@@ -338,7 +338,9 @@ class TestServiceParallelization:
             ),
             patch("openhands.agent_server.api.get_vscode_service", return_value=None),
             patch("openhands.agent_server.api.get_desktop_service", return_value=None),
-            patch("openhands.agent_server.api.get_browser_service", return_value=None),
+            patch(
+                "openhands.agent_server.api.get_tool_preload_service", return_value=None
+            ),
         ):
             # Create a mock FastAPI app
             mock_app = AsyncMock()
