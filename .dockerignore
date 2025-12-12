@@ -251,6 +251,7 @@ tests/
 .github/
 scripts/
 examples/
+!examples/02_remote_agent_server/05_custom_tool/custom_tools/
 .ruff_cache/
 .uv-cache/
 Makefile
