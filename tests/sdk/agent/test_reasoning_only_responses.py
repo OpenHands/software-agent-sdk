@@ -119,9 +119,9 @@ def test_agent_finishes_after_content_only_response():
     conversation.send_message("Analyze this")
     conversation.run()
 
-    # Verify agent was called once - content responses finish immediately
+    # Verify agent was called once - content-only responses yield to user
     assert llm._call_count == 1
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
     # Verify the content message was emitted
     msg_events = [

@@ -214,10 +214,9 @@ class TestPauseFunctionality:
         # Run resets pause flag at start and proceeds normally
         self.conversation.run()
 
-        # Agent should be finished (pause was reset at start of run)
+        # With content-only reply, yield to user (IDLE)
         assert (
-            self.conversation.state.execution_status
-            == ConversationExecutionStatus.FINISHED
+            self.conversation.state.execution_status == ConversationExecutionStatus.IDLE
         )
 
         # Should have pause event from the pause() call
@@ -259,10 +258,9 @@ class TestPauseFunctionality:
         # First run() call resets pause and runs normally
         self.conversation.run()
 
-        # Agent should be finished (pause was reset at start of run)
+        # With content-only reply, yield to user (IDLE)
         assert (
-            self.conversation.state.execution_status
-            == ConversationExecutionStatus.FINISHED
+            self.conversation.state.execution_status == ConversationExecutionStatus.IDLE
         )
 
         # Should have agent message since run completed normally

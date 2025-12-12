@@ -119,6 +119,7 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+    _new_user_message: bool = PrivateAttr(default=False)
 
     # ===== Public "events" facade (Sequence[Event]) =====
     @property

@@ -271,6 +271,13 @@ class Agent(AgentBase):
         # Emit VLLM token ids if enabled
         self._maybe_emit_vllm_tokens(llm_response, on_event)
 
+        # If the model produced user-facing content (no tool calls), yield control
+        # back to the user. Setting IDLE avoids continuing the loop and hitting
+        # stuck detection due to repeated assistant messages.
+        if has_content:
+            state.execution_status = ConversationExecutionStatus.IDLE
+            return
+
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
     ) -> bool:

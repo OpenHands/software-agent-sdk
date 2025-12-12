@@ -227,6 +227,8 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
                 )  # now we have a new message
+            # Signal that a new user message arrived during or between steps
+            self._state._new_user_message = True
 
             # TODO: We should add test cases for all these scenarios
             activated_skill_names: list[str] = []
@@ -275,11 +277,19 @@ class LocalConversation(BaseConversation):
         """
 
         with self._state:
-            if self._state.execution_status in [
+            promote = self._state.execution_status in [
                 ConversationExecutionStatus.IDLE,
                 ConversationExecutionStatus.PAUSED,
                 ConversationExecutionStatus.ERROR,
-            ]:
+            ]
+            # Do not promote IDLE->RUNNING when no new user message is present;
+            # allow the run loop to proceed and exit via the normal lifecycle.
+            if (
+                self._state.execution_status == ConversationExecutionStatus.IDLE
+                and not self._state._new_user_message
+            ):
+                promote = False
+            if promote:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
@@ -287,15 +297,33 @@ class LocalConversation(BaseConversation):
             while True:
                 logger.debug(f"Conversation run iteration {iteration}")
                 with self._state:
-                    # Pause attempts to acquire the state lock
-                    # Before value can be modified step can be taken
-                    # Ensure step conditions are checked when lock is already acquired
-                    if self._state.execution_status in [
-                        ConversationExecutionStatus.FINISHED,
+                    # Early status handling before deciding to step again
+                    status = self._state.execution_status
+                    # Hard terminal statuses
+                    if status in [
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
                     ]:
                         break
+                    # If FINISHED or IDLE, continue only if a new user message arrived
+                    if status in [
+                        ConversationExecutionStatus.FINISHED,
+                        ConversationExecutionStatus.IDLE,
+                    ]:
+                        if self._state._new_user_message:
+                            # Allow one more iteration to process the new message
+                            self._state.execution_status = (
+                                ConversationExecutionStatus.RUNNING
+                            )
+                        else:
+                            break
+
+                    # Clear the new-user-message flag just before stepping;
+                    # any message arriving during this step will set it again.
+                    self._state._new_user_message = False
+                    # Pause attempts to acquire the state lock
+                    # Before value can be modified step can be taken
+                    # Ensure step conditions are checked when lock is already acquired
 
                     # Check for stuck patterns if enabled
                     if self._stuck_detector:
@@ -322,18 +350,19 @@ class LocalConversation(BaseConversation):
                     )
                     iteration += 1
 
-                    # Check for non-finished terminal conditions
-                    # Note: We intentionally do NOT check for FINISHED status here.
-                    # This allows concurrent user messages to be processed:
-                    # 1. Agent finishes and sets status to FINISHED
-                    # 2. User sends message concurrently via send_message()
-                    # 3. send_message() waits for FIFO lock, then sets status to IDLE
-                    # 4. Run loop continues to next iteration and processes the message
-                    # 5. Without this design, concurrent messages would be lost
+                    # Check for terminal conditions. We still do NOT break on FINISHED
+                    # to allow a concurrent user message to be processed on next loop.
+                    # For IDLE (content-only reply), break only if no new user message
+                    # arrived during this iteration.
                     if (
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                         or iteration >= self.max_iteration_per_run
+                    ):
+                        break
+                    if (
+                        self.state.execution_status == ConversationExecutionStatus.IDLE
+                        and not self._state._new_user_message
                     ):
                         break
         except Exception as e:

@@ -119,8 +119,8 @@ def test_execution_status_transitions_to_running_from_idle(mock_completion):
     # Verify initial state is IDLE
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
-    # Mock LLM to return a message that finishes execution
-    mock_completion.return_value = ModelResponse(
+    # First turn: content-only; second turn: Finish tool call
+    msg_only_resp = ModelResponse(
         id="response_msg",
         choices=[
             Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
@@ -129,13 +129,70 @@ def test_execution_status_transitions_to_running_from_idle(mock_completion):
         model="test-model",
         object="chat.completion",
     )
+    finish_call = ChatCompletionMessageToolCall(
+        id="finish_call_1",
+        type="function",
+        function=Function(
+            name="finish",
+            arguments='{"message": "Task completed via finish"}',
+        ),
+    )
+    finish_resp = ModelResponse(
+        id="response_finish",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll finish now",
+                    tool_calls=[finish_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+    mock_completion.side_effect = [msg_only_resp, finish_resp]
 
     # Send message and run
     conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
     conversation.run()
 
-    # After run completes, status should be FINISHED
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Next turn: mock a Finish tool call and verify transition to FINISHED
+    finish_call = ChatCompletionMessageToolCall(
+        id="finish_call_1",
+        type="function",
+        function=Function(
+            name="finish",
+            arguments='{"message": "Task completed via finish"}',
+        ),
+    )
+    mock_completion.side_effect = None
+    mock_completion.return_value = ModelResponse(
+        id="response_finish",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll finish now",
+                    tool_calls=[finish_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Second turn please finish")])
+    )
+    prior_calls = mock_completion.call_count
+    conversation.run()
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert mock_completion.call_count == prior_calls + 1
 
     # Verify we have agent response
     agent_messages = [
@@ -144,6 +201,13 @@ def test_execution_status_transitions_to_running_from_idle(mock_completion):
         if isinstance(event, MessageEvent) and event.source == "agent"
     ]
     assert len(agent_messages) == 1
+
+    # Now send a new message and verify finish path transitions to FINISHED
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Second turn please finish")])
+    )
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -252,8 +316,41 @@ def test_execution_status_is_running_during_execution_from_idle(mock_completion)
         f"Expected RUNNING status during execution, got {status_during_run[0]}"
     )
 
-    # After run completes, status should be FINISHED
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Next turn: mock a Finish tool call and verify transition to FINISHED
+    finish_call = ChatCompletionMessageToolCall(
+        id="finish_call_1",
+        type="function",
+        function=Function(
+            name="finish",
+            arguments='{"message": "Task completed via finish"}',
+        ),
+    )
+    mock_completion.side_effect = None
+    mock_completion.return_value = ModelResponse(
+        id="response_finish",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll finish now",
+                    tool_calls=[finish_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Second turn please finish")])
+    )
+    prior_calls = mock_completion.call_count
+    conversation.run()
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert mock_completion.call_count == prior_calls + 1
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -268,8 +365,8 @@ def test_execution_status_transitions_to_running_from_paused(mock_completion):
     conversation.pause()
     assert conversation.state.execution_status == ConversationExecutionStatus.PAUSED
 
-    # Mock LLM to return a message that finishes execution
-    mock_completion.return_value = ModelResponse(
+    # First turn: content-only; second turn: Finish tool call
+    msg_only_resp = ModelResponse(
         id="response_msg",
         choices=[
             Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
@@ -278,13 +375,70 @@ def test_execution_status_transitions_to_running_from_paused(mock_completion):
         model="test-model",
         object="chat.completion",
     )
+    finish_call = ChatCompletionMessageToolCall(
+        id="finish_call_1",
+        type="function",
+        function=Function(
+            name="finish",
+            arguments='{"message": "Task completed via finish"}',
+        ),
+    )
+    finish_resp = ModelResponse(
+        id="response_finish",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll finish now",
+                    tool_calls=[finish_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+    mock_completion.side_effect = [msg_only_resp, finish_resp]
 
     # Send message and run
     conversation.send_message(Message(role="user", content=[TextContent(text="Hello")]))
     conversation.run()
 
-    # After run completes, status should be FINISHED
+    # After run completes, content-only response yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+
+    # Next turn: mock a Finish tool call and verify transition to FINISHED
+    finish_call = ChatCompletionMessageToolCall(
+        id="finish_call_1",
+        type="function",
+        function=Function(
+            name="finish",
+            arguments='{"message": "Task completed via finish"}',
+        ),
+    )
+    mock_completion.side_effect = None
+    mock_completion.return_value = ModelResponse(
+        id="response_finish",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll finish now",
+                    tool_calls=[finish_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Second turn please finish")])
+    )
+    prior_calls = mock_completion.call_count
+    conversation.run()
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert mock_completion.call_count == prior_calls + 1
 
     # Verify we have agent response
     agent_messages = [
@@ -293,6 +447,13 @@ def test_execution_status_transitions_to_running_from_paused(mock_completion):
         if isinstance(event, MessageEvent) and event.source == "agent"
     ]
     assert len(agent_messages) == 1
+
+    # Now send a new message and verify finish path transitions to FINISHED
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Second turn please finish")])
+    )
+    conversation.run()
+    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -375,8 +536,8 @@ def test_execution_status_transitions_from_waiting_for_confirmation(mock_complet
     # Call run again - this confirms and should transition to RUNNING, then FINISHED
     conversation.run()
 
-    # After confirmation and execution, should be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    # After confirmation and execution, content-only message yields control (IDLE)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -386,8 +547,8 @@ def test_execution_status_finished_to_idle_to_running(mock_completion):
     agent = Agent(llm=llm, tools=[])
     conversation = Conversation(agent=agent)
 
-    # Mock LLM to return completion messages
-    mock_completion.return_value = ModelResponse(
+    # First turn: content-only; second turn: Finish tool call
+    msg_only_resp = ModelResponse(
         id="response_msg",
         choices=[
             Choices(message=LiteLLMMessage(role="assistant", content="Task completed"))
@@ -396,13 +557,39 @@ def test_execution_status_finished_to_idle_to_running(mock_completion):
         model="test-model",
         object="chat.completion",
     )
+    finish_call = ChatCompletionMessageToolCall(
+        id="finish_call_1",
+        type="function",
+        function=Function(
+            name="finish",
+            arguments='{"message": "Task completed via finish"}',
+        ),
+    )
+    finish_resp = ModelResponse(
+        id="response_finish",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="I'll finish now",
+                    tool_calls=[finish_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+    mock_completion.side_effect = [msg_only_resp, finish_resp]
 
-    # First conversation - should end in FINISHED
+    # First conversation - ends with content-only, so yield IDLE
     conversation.send_message(
         Message(role="user", content=[TextContent(text="First task")])
     )
+    prior_calls = mock_completion.call_count
     conversation.run()
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    assert mock_completion.call_count == prior_calls + 1
 
     # Send new message - should transition to IDLE
     conversation.send_message(
@@ -410,9 +597,11 @@ def test_execution_status_finished_to_idle_to_running(mock_completion):
     )
     assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
 
-    # Run again - should transition to RUNNING then FINISHED
+    # Run again - should transition to RUNNING then FINISHED on finish tool call
+    prior_calls = mock_completion.call_count
     conversation.run()
     assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert mock_completion.call_count == prior_calls + 1
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -435,16 +624,18 @@ def test_run_exits_immediately_when_already_finished(mock_completion):
 
     # Complete a task
     conversation.send_message(Message(role="user", content=[TextContent(text="Task")]))
+    prior_calls = mock_completion.call_count
     conversation.run()
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    assert mock_completion.call_count == prior_calls + 1
 
     # Call run again without sending a new message
     # Should exit immediately without calling LLM again
     initial_call_count = mock_completion.call_count
+    prior_calls = mock_completion.call_count
     conversation.run()
-
-    # Status should still be FINISHED
-    assert conversation.state.execution_status == ConversationExecutionStatus.FINISHED
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    assert mock_completion.call_count == prior_calls + 1
     # LLM should not be called again
     assert mock_completion.call_count == initial_call_count
 
