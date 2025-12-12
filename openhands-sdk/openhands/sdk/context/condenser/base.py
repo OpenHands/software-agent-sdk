@@ -57,6 +57,68 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
         """
         return False
 
+    # Shared token-budget utilities (for condenser authors)
+    @staticmethod
+    def compute_token_budget(llm, token_margin_ratio: float) -> int | None:
+        """Compute usable input-token budget for a target LLM.
+
+        Returns an integer budget (>= 0) or None if limits are unknown.
+        """
+        try:
+            max_input = getattr(llm, "max_input_tokens", None)
+            if not max_input:
+                return None
+            max_output = getattr(llm, "max_output_tokens", 0) or 0
+            headroom = int(max_input * token_margin_ratio)
+            return max(0, int(max_input) - int(max_output) - headroom)
+        except Exception:
+            return None
+
+    @staticmethod
+    def estimate_token_count(llm, events) -> int:
+        """Estimate tokens for a sequence of LLMConvertibleEvent using the given LLM.
+
+        Falls back to 0 on failure.
+        """
+        try:
+            from openhands.sdk.event.base import LLMConvertibleEvent
+
+            messages = LLMConvertibleEvent.events_to_messages(list(events))
+            return int(llm.get_token_count(messages))
+        except Exception:
+            return 0
+
+    @staticmethod
+    def max_tail_within_budget(view: View, llm, keep_first: int, budget: int) -> int:
+        """Binary-search the longest tail we can keep under the token budget.
+
+        Counts tokens using the provided LLM. The head is fixed to keep_first.
+        Returns number of tail events to keep (>= 0).
+        """
+        from openhands.sdk.event.base import LLMConvertibleEvent
+
+        head = view[:keep_first]
+        total_len = len(view)
+        max_tail_possible = max(0, total_len - keep_first)
+        low, high = 0, max_tail_possible
+        best = 0
+        while low <= high:
+            mid = (low + high) // 2
+            kept_events = list(head) + (list(view[-mid:]) if mid > 0 else [])
+            msgs = LLMConvertibleEvent.events_to_messages(kept_events)
+            try:
+                t = int(llm.get_token_count(msgs))
+            except Exception:
+                # If counting fails, be conservative and stop expanding
+                high = mid - 1
+                continue
+            if t <= budget:
+                best = mid
+                low = mid + 1
+            else:
+                high = mid - 1
+        return best
+
 
 class PipelinableCondenserBase(CondenserBase):
     """Abstract condenser interface which may be pipelined. (Since a pipeline
