@@ -1,4 +1,5 @@
 from openhands.sdk.conversation.state import ConversationState
+from openhands.sdk.conversation.types import StuckDetectionThresholds
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -26,9 +27,31 @@ class StuckDetector:
     """
 
     state: ConversationState
+    thresholds: StuckDetectionThresholds
 
-    def __init__(self, state: ConversationState):
+    def __init__(
+        self,
+        state: ConversationState,
+        thresholds: StuckDetectionThresholds | None = None,
+    ):
         self.state = state
+        self.thresholds = thresholds or StuckDetectionThresholds()
+
+    @property
+    def action_observation_threshold(self) -> int:
+        return self.thresholds.action_observation
+
+    @property
+    def action_error_threshold(self) -> int:
+        return self.thresholds.action_error
+
+    @property
+    def monologue_threshold(self) -> int:
+        return self.thresholds.monologue
+
+    @property
+    def alternating_pattern_threshold(self) -> int:
+        return self.thresholds.alternating_pattern
 
     def is_stuck(self) -> bool:
         """Check if the agent is currently stuck."""
@@ -49,8 +72,13 @@ class StuckDetector:
 
         events = events[last_user_msg_index + 1 :]
 
-        # it takes 3 actions minimum to detect a loop, otherwise nothing to do here
-        if len(events) < 3:
+        # Determine minimum events needed
+        min_threshold = min(
+            self.action_observation_threshold,
+            self.action_error_threshold,
+            self.monologue_threshold,
+        )
+        if len(events) < min_threshold:
             return False
 
         logger.debug(f"Checking for stuck patterns in {len(events)} events")
@@ -58,19 +86,21 @@ class StuckDetector:
             f"Events after last user message: {[type(e).__name__ for e in events]}"
         )
 
-        # the first few scenarios detect 3 or 4 repeated steps
-        # prepare the last 4 actions and observations, to check them out
+        # Collect enough actions and observations for detection
+        max_needed = max(self.action_observation_threshold, self.action_error_threshold)
         last_actions: list[Event] = []
         last_observations: list[Event] = []
 
-        # retrieve the last four actions and observations starting from
-        # the end of history, wherever they are
+        # Retrieve the last N actions and observations from the end of history
         for event in reversed(events):
-            if isinstance(event, ActionEvent) and len(last_actions) < 4:
+            if isinstance(event, ActionEvent) and len(last_actions) < max_needed:
                 last_actions.append(event)
-            elif isinstance(event, ObservationBaseEvent) and len(last_observations) < 4:
+            elif (
+                isinstance(event, ObservationBaseEvent)
+                and len(last_observations) < max_needed
+            ):
                 last_observations.append(event)
-            if len(last_actions) >= 4 and len(last_observations) >= 4:
+            if len(last_actions) >= max_needed and len(last_observations) >= max_needed:
                 break
 
         # Check all stuck patterns
@@ -86,8 +116,8 @@ class StuckDetector:
         if self._is_stuck_monologue(events):
             return True
 
-        # scenario 4: action, observation alternating pattern on the last six steps
-        if len(events) >= 6:
+        # scenario 4: action, observation alternating pattern
+        if len(events) >= self.alternating_pattern_threshold:
             if self._is_stuck_alternating_action_observation(events):
                 return True
 
@@ -102,18 +132,21 @@ class StuckDetector:
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> bool:
         # scenario 1: same action, same observation
-        # it takes 4 actions and 4 observations to detect a loop
-        # assert len(last_actions) == 4 and len(last_observations) == 4
+        threshold = self.action_observation_threshold
 
-        # Check for a loop of 4 identical action-observation pairs
-        if len(last_actions) == 4 and len(last_observations) == 4:
-            logger.debug("Found 4 actions and 4 observations, checking for equality")
+        # Check for a loop of identical action-observation pairs
+        if len(last_actions) >= threshold and len(last_observations) >= threshold:
+            logger.debug(
+                f"Found {len(last_actions)} actions and "
+                f"{len(last_observations)} observations, checking for equality"
+            )
             actions_equal = all(
-                self._event_eq(last_actions[0], action) for action in last_actions
+                self._event_eq(last_actions[0], action)
+                for action in last_actions[:threshold]
             )
             observations_equal = all(
                 self._event_eq(last_observations[0], observation)
-                for observation in last_observations
+                for observation in last_observations[:threshold]
             )
             logger.debug(
                 f"Actions equal: {actions_equal}, "
@@ -135,15 +168,20 @@ class StuckDetector:
         self, last_actions: list[Event], last_observations: list[Event]
     ) -> bool:
         # scenario 2: same action, errors
-        # it takes 3 actions and 3 observations to detect a loop
-        # check if the last three actions are the same and result in errors
-        if len(last_actions) < 3 or len(last_observations) < 3:
+        threshold = self.action_error_threshold
+        if len(last_actions) < threshold or len(last_observations) < threshold:
             return False
 
-        # are the last three actions the "same"?
-        if all(self._event_eq(last_actions[0], action) for action in last_actions[:3]):
-            # and the last three observations are all errors?
-            if all(isinstance(obs, AgentErrorEvent) for obs in last_observations[:3]):
+        # are the last N actions the "same"?
+        if all(
+            self._event_eq(last_actions[0], action)
+            for action in last_actions[:threshold]
+        ):
+            # and the last N observations are all errors?
+            if all(
+                isinstance(obs, AgentErrorEvent)
+                for obs in last_observations[:threshold]
+            ):
                 logger.warning("Action, Error loop detected")
                 return True
 
@@ -155,10 +193,11 @@ class StuckDetector:
         # check for repeated MessageActions with source=AGENT
         # see if the agent is engaged in a good old monologue, telling
         # itself the same thing over and over
-        if len(events) < 3:
+        threshold = self.monologue_threshold
+        if len(events) < threshold:
             return False
 
-        # Look for 3 consecutive agent messages without user interruption
+        # Look for N consecutive agent messages without user interruption
         agent_message_count = 0
 
         for event in reversed(events):
@@ -174,40 +213,37 @@ class StuckDetector:
                 # Other events (actions/observations) don't count as monologue
                 break
 
-        return agent_message_count >= 3
+        return agent_message_count >= threshold
 
     def _is_stuck_alternating_action_observation(self, events: list[Event]) -> bool:
         # scenario 4: alternating action-observation loop
-        # needs 6 actions and 6 observations to detect the ping-pong pattern
+        threshold = self.alternating_pattern_threshold
 
         last_actions: list[Event] = []
         last_observations: list[Event] = []
 
-        # collect most recent 6 actions and 6 observations
+        # collect most recent N actions and N observations
         for event in reversed(events):
-            if isinstance(event, ActionEvent) and len(last_actions) < 6:
+            if isinstance(event, ActionEvent) and len(last_actions) < threshold:
                 last_actions.append(event)
             elif (
                 isinstance(event, (ObservationEvent, AgentErrorEvent))
-                and len(last_observations) < 6
+                and len(last_observations) < threshold
             ):
                 last_observations.append(event)
 
-            if len(last_actions) == 6 and len(last_observations) == 6:
+            if len(last_actions) == threshold and len(last_observations) == threshold:
                 break
 
-        if len(last_actions) == 6 and len(last_observations) == 6:
-            actions_equal = (
-                self._event_eq(last_actions[0], last_actions[2])
-                and self._event_eq(last_actions[0], last_actions[4])
-                and self._event_eq(last_actions[1], last_actions[3])
-                and self._event_eq(last_actions[1], last_actions[5])
+        if len(last_actions) == threshold and len(last_observations) == threshold:
+            # Check alternating pattern: [A, B, A, B, A, B] where even/odd match
+            actions_equal = all(
+                self._event_eq(last_actions[i], last_actions[i + 2])
+                for i in range(threshold - 2)
             )
-            observations_equal = (
-                self._event_eq(last_observations[0], last_observations[2])
-                and self._event_eq(last_observations[0], last_observations[4])
-                and self._event_eq(last_observations[1], last_observations[3])
-                and self._event_eq(last_observations[1], last_observations[5])
+            observations_equal = all(
+                self._event_eq(last_observations[i], last_observations[i + 2])
+                for i in range(threshold - 2)
             )
 
             if actions_equal and observations_equal:

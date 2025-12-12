@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, overload
 
@@ -7,6 +8,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    StuckDetectionThresholds,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -56,6 +58,9 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -73,6 +78,9 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -90,6 +98,9 @@ class Conversation:
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -114,6 +125,7 @@ class Conversation:
                 token_callbacks=token_callbacks,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
+                stuck_detection_thresholds=stuck_detection_thresholds,
                 visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
@@ -126,6 +138,7 @@ class Conversation:
             token_callbacks=token_callbacks,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,
             workspace=workspace,
             persistence_dir=persistence_dir,
