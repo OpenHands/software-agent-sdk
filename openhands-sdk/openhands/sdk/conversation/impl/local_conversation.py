@@ -277,17 +277,19 @@ class LocalConversation(BaseConversation):
         """
 
         with self._state:
-            # If already IDLE and there is no new user message, there's nothing to do.
+            promote = self._state.execution_status in [
+                ConversationExecutionStatus.IDLE,
+                ConversationExecutionStatus.PAUSED,
+                ConversationExecutionStatus.ERROR,
+            ]
+            # Do not promote IDLE->RUNNING when no new user message is present;
+            # allow the run loop to proceed and exit via the normal lifecycle.
             if (
                 self._state.execution_status == ConversationExecutionStatus.IDLE
                 and not self._state._new_user_message
             ):
-                return
-            if self._state.execution_status in [
-                ConversationExecutionStatus.IDLE,
-                ConversationExecutionStatus.PAUSED,
-                ConversationExecutionStatus.ERROR,
-            ]:
+                promote = False
+            if promote:
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
