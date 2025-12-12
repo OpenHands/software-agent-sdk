@@ -120,6 +120,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "- An absolute path (e.g., '/path/to/custom_prompt.j2')"
         ),
     )
+    security_policy_filename: str = Field(
+        default="security_policy.j2",
+        description=(
+            "Security policy template filename. Can be either:\n"
+            "- A relative filename (e.g., 'security_policy.j2') loaded from the "
+            "agent's prompts directory\n"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+        ),
+    )
     system_prompt_kwargs: dict[str, object] = Field(
         default_factory=dict,
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
@@ -164,6 +173,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Add security_policy_filename to template kwargs
+        template_kwargs["security_policy_filename"] = self.security_policy_filename
+
         system_message = render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
