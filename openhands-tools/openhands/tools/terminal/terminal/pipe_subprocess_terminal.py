@@ -1,7 +1,8 @@
 """Pipe-based terminal backend for CI environments where PTY doesn't work."""
 
+import fcntl
 import os
-import queue
+import select
 import shutil
 import signal
 import subprocess
@@ -43,7 +44,7 @@ class PipeSubprocessTerminal(TerminalInterface):
     output_lock: threading.Lock
     reader_thread: threading.Thread | None
     _current_command_running: bool
-    _stdin_queue: queue.Queue
+    _stdout_fd: int | None
 
     def __init__(
         self,
@@ -59,7 +60,7 @@ class PipeSubprocessTerminal(TerminalInterface):
         self.reader_thread = None
         self._current_command_running = False
         self.shell_path = shell_path
-        self._stdin_queue = queue.Queue()
+        self._stdout_fd = None
         self._stop_reader = threading.Event()
 
     def initialize(self) -> None:
@@ -110,6 +111,15 @@ class PipeSubprocessTerminal(TerminalInterface):
             bufsize=0,
             preexec_fn=os.setsid,
         )
+
+        # Set stdout to non-blocking for select-based reading
+        if self.process.stdout:
+            fd = self.process.stdout.fileno()
+            flags = fcntl.fcntl(fd, fcntl.F_GETFL)
+            fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+            self._stdout_fd = fd
+        else:
+            self._stdout_fd = None
 
         # Start output reader thread
         self._stop_reader.clear()
@@ -174,33 +184,45 @@ class PipeSubprocessTerminal(TerminalInterface):
             raise
 
     def _read_output_continuously(self) -> None:
-        """Continuously read output from subprocess stdout."""
-        if self.process is None or self.process.stdout is None:
+        """Continuously read output from subprocess stdout using select."""
+        if self._stdout_fd is None:
+            logger.error("Pipe reader: stdout fd is None")
             return
+
+        logger.debug(f"Pipe reader thread started, fd={self._stdout_fd}")
 
         try:
             while not self._stop_reader.is_set():
-                if self.process.poll() is not None:
-                    # Process ended, read remaining output
-                    remaining = self.process.stdout.read()
-                    if remaining:
-                        text = remaining.decode("utf-8", errors="replace")
-                        with self.output_lock:
-                            self._add_text_to_buffer(text)
+                # Check if process is still alive
+                if self.process and self.process.poll() is not None:
+                    logger.debug("Pipe reader: process ended")
                     break
 
-                # Read available data (use small reads for pseudo non-blocking)
+                # Use select to wait for data (same pattern as PTY terminal)
                 try:
-                    chunk = self.process.stdout.read1(4096)  # type: ignore
-                    if chunk:
-                        text = chunk.decode("utf-8", errors="replace")
-                        with self.output_lock:
-                            self._add_text_to_buffer(text)
-                    else:
-                        time.sleep(0.01)
-                except Exception as e:
-                    logger.debug(f"Error reading stdout: {e}")
-                    time.sleep(0.01)
+                    r, _, _ = select.select([self._stdout_fd], [], [], 0.1)
+                except (ValueError, OSError):
+                    # FD closed or invalid
+                    break
+
+                if not r:
+                    continue
+
+                try:
+                    chunk = os.read(self._stdout_fd, 4096)
+                    if not chunk:
+                        logger.debug("Pipe reader: EOF")
+                        break
+                    text = chunk.decode("utf-8", errors="replace")
+                    logger.debug(f"Pipe reader got {len(chunk)} bytes: {text[:100]!r}")
+                    with self.output_lock:
+                        self._add_text_to_buffer(text)
+                except BlockingIOError:
+                    # No data available (non-blocking)
+                    continue
+                except OSError as e:
+                    logger.debug(f"Pipe reader OSError: {e}")
+                    break
         except Exception as e:
             logger.error(f"Pipe reader thread error: {e}", exc_info=True)
 
