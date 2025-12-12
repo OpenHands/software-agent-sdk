@@ -1,6 +1,8 @@
 """Tests for Conversation factory functionality."""
 
+import tempfile
 import uuid
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
@@ -108,3 +110,112 @@ def test_conversation_factory_type_inference(mock_ws_client, agent, remote_works
 
     assert isinstance(local_conv, LocalConversation)
     assert isinstance(remote_conv, RemoteConversation)
+
+
+def test_conversation_factory_load_repo_skills_with_skills_dir(agent):
+    """Test load_repo_skills=True loads skills from workspace."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        workspace = Path(temp_dir)
+
+        # Create .openhands/skills directory with a skill
+        skills_dir = workspace / ".openhands" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "test_skill.md").write_text(
+            "---\nname: test_skill\n---\nTest skill content."
+        )
+
+        conversation = Conversation(
+            agent=agent,
+            workspace=workspace,
+            load_repo_skills=True,
+        )
+
+        assert isinstance(conversation, LocalConversation)
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        assert "test_skill" in skill_names
+
+
+def test_conversation_factory_load_repo_skills_merges_with_existing(agent):
+    """Test that repo skills merge with existing agent context skills."""
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.context.skills import Skill
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        workspace = Path(temp_dir)
+
+        # Create .openhands/skills directory with a skill
+        skills_dir = workspace / ".openhands" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "repo_skill.md").write_text(
+            "---\nname: repo_skill\n---\nRepo skill content."
+        )
+
+        # Create agent with existing skill in context
+        existing_skill = Skill(
+            name="existing_skill",
+            content="Existing skill content.",
+            trigger=None,
+        )
+        agent_with_context = Agent(
+            llm=agent.llm,
+            tools=[],
+            agent_context=AgentContext(skills=[existing_skill]),
+        )
+
+        conversation = Conversation(
+            agent=agent_with_context,
+            workspace=workspace,
+            load_repo_skills=True,
+        )
+
+        assert isinstance(conversation, LocalConversation)
+        assert conversation.agent.agent_context is not None
+        skill_names = [s.name for s in conversation.agent.agent_context.skills]
+        # Both skills should be present
+        assert "existing_skill" in skill_names
+        assert "repo_skill" in skill_names
+
+
+def test_conversation_factory_load_repo_skills_existing_takes_precedence(agent):
+    """Test that existing skills take precedence over repo skills with same name."""
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.context.skills import Skill
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        workspace = Path(temp_dir)
+
+        # Create .openhands/skills directory with a skill
+        skills_dir = workspace / ".openhands" / "skills"
+        skills_dir.mkdir(parents=True)
+        (skills_dir / "duplicate.md").write_text(
+            "---\nname: duplicate\n---\nRepo skill content."
+        )
+
+        # Create agent with skill that has same name
+        existing_skill = Skill(
+            name="duplicate",
+            content="Existing skill content.",
+            trigger=None,
+        )
+        agent_with_context = Agent(
+            llm=agent.llm,
+            tools=[],
+            agent_context=AgentContext(skills=[existing_skill]),
+        )
+
+        conversation = Conversation(
+            agent=agent_with_context,
+            workspace=workspace,
+            load_repo_skills=True,
+        )
+
+        assert isinstance(conversation, LocalConversation)
+        assert conversation.agent.agent_context is not None
+        # Only one skill with that name
+        duplicates = [
+            s for s in conversation.agent.agent_context.skills if s.name == "duplicate"
+        ]
+        assert len(duplicates) == 1
+        # Existing skill takes precedence
+        assert duplicates[0].content == "Existing skill content."

@@ -44,6 +44,55 @@ from openhands.sdk.workspace import LocalWorkspace
 logger = get_logger(__name__)
 
 
+def _load_and_merge_repo_skills(
+    agent: AgentBase, workspace_path: Path, logger: object
+) -> AgentBase:
+    """Load repository skills and return an updated agent with merged context.
+
+    Since Agent is a frozen Pydantic model, this returns a new agent instance
+    with the updated context rather than modifying the original.
+
+    Args:
+        agent: The original agent
+        workspace_path: Path to the workspace/repository root
+        logger: Logger instance for debug output
+
+    Returns:
+        A new Agent instance with repo skills merged into its context,
+        or the original agent if no repo skills were found.
+    """
+    from openhands.sdk.context.agent_context import AgentContext
+    from openhands.sdk.context.skills import load_repo_skills
+
+    repo_skills = load_repo_skills(workspace_path)
+    if not repo_skills:
+        logger.debug("No repo skills found to load")  # type: ignore[attr-defined]
+        return agent
+
+    logger.info(  # type: ignore[attr-defined]
+        f"Loaded {len(repo_skills)} repo skills: {[s.name for s in repo_skills]}"
+    )
+
+    if agent.agent_context is None:
+        # Create a new AgentContext with the loaded skills
+        new_context = AgentContext(skills=repo_skills)
+    else:
+        # Merge with existing skills, avoiding duplicates
+        existing_names = {skill.name for skill in agent.agent_context.skills}
+        merged_skills = list(agent.agent_context.skills)
+        for skill in repo_skills:
+            if skill.name not in existing_names:
+                merged_skills.append(skill)
+            else:
+                logger.warning(  # type: ignore[attr-defined]
+                    f"Skipping repo skill '{skill.name}' (already in agent context)"
+                )
+        new_context = agent.agent_context.model_copy(update={"skills": merged_skills})
+
+    # Return a new agent with the updated context
+    return agent.model_copy(update={"agent_context": new_context})
+
+
 class LocalConversation(BaseConversation):
     agent: AgentBase
     workspace: LocalWorkspace
@@ -70,6 +119,7 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        load_repo_skills: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -92,13 +142,16 @@ class LocalConversation(BaseConversation):
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
             stuck_detection: Whether to enable stuck detection
+            load_repo_skills: Whether to automatically load skills from the
+                workspace's .openhands/skills/ and .openhands/microagents/
+                directories. Skills are loaded and merged into the agent's
+                context before the conversation starts.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
 
-        self.agent = agent
         if isinstance(workspace, (str, Path)):
             # LocalWorkspace accepts both str and Path via BeforeValidator
             workspace = LocalWorkspace(working_dir=workspace)
@@ -109,6 +162,12 @@ class LocalConversation(BaseConversation):
         ws_path = Path(self.workspace.working_dir)
         if not ws_path.exists():
             ws_path.mkdir(parents=True, exist_ok=True)
+
+        # Load repo skills if requested (before agent initialization)
+        if load_repo_skills:
+            agent = _load_and_merge_repo_skills(agent, ws_path, logger)
+
+        self.agent = agent
 
         # Create-or-resume: factory inspects BASE_STATE to decide
         desired_id = conversation_id or uuid.uuid4()

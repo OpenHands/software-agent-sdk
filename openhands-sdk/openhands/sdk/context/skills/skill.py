@@ -494,6 +494,61 @@ def _update_skills_repository(
         return None
 
 
+def load_repo_skills(workspace_path: str | Path) -> list[Skill]:
+    """Load skills from the workspace's .openhands directory.
+
+    Searches for skills in {workspace_path}/.openhands/skills/ and
+    {workspace_path}/.openhands/microagents/ (legacy). Skills from both
+    directories are merged, with skills/ taking precedence for duplicate names.
+
+    Args:
+        workspace_path: Path to the workspace/repository root directory.
+
+    Returns:
+        List of Skill objects loaded from the workspace directories.
+        Returns empty list if no skills found or loading fails.
+    """
+    if isinstance(workspace_path, str):
+        workspace_path = Path(workspace_path)
+
+    all_skills: list[Skill] = []
+    seen_names: set[str] = set()
+
+    # Check both current (.openhands/skills) and legacy (.openhands/microagents) paths
+    repo_skills_dirs = [
+        workspace_path / ".openhands" / "skills",
+        workspace_path / ".openhands" / "microagents",  # Legacy support
+    ]
+
+    for skills_dir in repo_skills_dirs:
+        if not skills_dir.exists():
+            logger.debug(f"Repo skills directory does not exist: {skills_dir}")
+            continue
+
+        try:
+            logger.debug(f"Loading repo skills from {skills_dir}")
+            repo_skills, knowledge_skills = load_skills_from_dir(skills_dir)
+
+            # Merge repo and knowledge skills
+            for skills_dict in [repo_skills, knowledge_skills]:
+                for name, skill in skills_dict.items():
+                    if name not in seen_names:
+                        all_skills.append(skill)
+                        seen_names.add(name)
+                    else:
+                        logger.warning(
+                            f"Skipping duplicate repo skill '{name}' from {skills_dir}"
+                        )
+
+        except Exception as e:
+            logger.warning(f"Failed to load repo skills from {skills_dir}: {str(e)}")
+
+    logger.debug(
+        f"Loaded {len(all_skills)} repo skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills
+
+
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     branch: str = PUBLIC_SKILLS_BRANCH,
