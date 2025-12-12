@@ -83,6 +83,44 @@ class Skill(BaseModel):
     }
 
     @classmethod
+    def should_include_for_model(
+        cls,
+        skill_name: str,
+        llm_model: str | None = None,
+        llm_model_canonical: str | None = None,
+    ) -> bool:
+        """Decide if a third-party repo skill should be included for a model.
+
+        Only applies to vendor-specific files (e.g., "claude", "gemini"). If
+        no model information is provided, return True (backward-compatible).
+        """
+        if not llm_model and not llm_model_canonical:
+            return True
+
+        def _is_vendor(model: str | None, vendor: str) -> bool:
+            if not model:
+                return False
+            ml = model.lower()
+            if vendor == "claude":
+                return "claude" in ml or "anthropic" in ml
+            if vendor == "gemini":
+                return "gemini" in ml
+            return vendor in ml
+
+        is_claude = _is_vendor(llm_model, "claude") or _is_vendor(
+            llm_model_canonical, "claude"
+        )
+        is_gemini = _is_vendor(llm_model, "gemini") or _is_vendor(
+            llm_model_canonical, "gemini"
+        )
+
+        if skill_name == "claude":
+            return is_claude
+        if skill_name == "gemini":
+            return is_gemini
+        return True
+
+    @classmethod
     def _handle_third_party(cls, path: Path, file_content: str) -> Union["Skill", None]:
         # Determine the agent name based on file type
         skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
@@ -285,6 +323,8 @@ class Skill(BaseModel):
 
 def load_skills_from_dir(
     skill_dir: str | Path,
+    llm_model: str | None = None,
+    llm_model_canonical: str | None = None,
 ) -> tuple[dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -292,6 +332,8 @@ def load_skills_from_dir(
 
     Args:
         skill_dir: Path to the skills directory (e.g. .openhands/skills)
+        llm_model: Optional current model identifier for vendor-gating.
+        llm_model_canonical: Optional canonical model name for vendor-gating.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills) dictionaries.
@@ -326,7 +368,26 @@ def load_skills_from_dir(
     # Process all files in one loop
     for file in chain(special_files, md_files):
         try:
-            skill = Skill.load(file, skill_dir)
+            # Vendor gating for third-party files based on filename
+            fname = file.name.lower()
+            vendor_skill_name = Skill.PATH_TO_THIRD_PARTY_SKILL_NAME.get(fname)
+            if vendor_skill_name in (
+                "claude",
+                "gemini",
+            ) and not Skill.should_include_for_model(
+                vendor_skill_name,
+                llm_model=llm_model,
+                llm_model_canonical=llm_model_canonical,
+            ):
+                logger.info(
+                    f"Skipping vendor-specific instructions from {file} for model"
+                )
+                continue
+
+            skill = Skill.load(
+                file,
+                skill_dir,
+            )
             if skill.trigger is None:
                 repo_skills[skill.name] = skill
             else:
@@ -554,6 +615,8 @@ def load_public_skills(
                     path=skill_file,
                     skill_dir=repo_path,
                 )
+                if skill is None:
+                    continue
                 all_skills.append(skill)
                 logger.debug(f"Loaded public skill: {skill.name}")
             except Exception as e:
