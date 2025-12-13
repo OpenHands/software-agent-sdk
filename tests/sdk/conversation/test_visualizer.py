@@ -1,6 +1,8 @@
 """Tests for the conversation visualizer and event visualization."""
 
 import json
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -24,7 +26,11 @@ from openhands.sdk.llm import (
     MessageToolCall,
     TextContent,
 )
-from openhands.sdk.tool import Action
+from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 
 
 class VisualizerMockAction(Action):
@@ -48,6 +54,40 @@ class VisualizerCustomAction(Action):
         for i, task in enumerate(self.task_list):
             content.append(f"\n  {i + 1}. {task.get('title', 'Untitled')}")
         return content
+
+
+class VisualizerMockObservation(Observation):
+    """Mock observation for testing."""
+
+    pass
+
+
+class VisualizerMockExecutor(ToolExecutor):
+    """Mock executor for testing."""
+
+    def __call__(
+        self,
+        action: VisualizerMockAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> VisualizerMockObservation:
+        return VisualizerMockObservation.from_text("test")
+
+
+class VisualizerMockTool(
+    ToolDefinition[VisualizerMockAction, VisualizerMockObservation]
+):
+    """Mock tool for testing."""
+
+    @classmethod
+    def create(cls, *args, **kwargs) -> Sequence[Self]:
+        return [
+            cls(
+                description="A test tool for demonstration",
+                action_type=VisualizerMockAction,
+                observation_type=VisualizerMockObservation,
+                executor=VisualizerMockExecutor(),
+            )
+        ]
 
 
 def create_tool_call(
@@ -98,18 +138,11 @@ def test_custom_action_visualize():
 
 def test_system_prompt_event_visualize():
     """Test SystemPromptEvent visualization."""
+    tool = VisualizerMockTool.create()[0]
+
     event = SystemPromptEvent(
         system_prompt=TextContent(text="You are a helpful assistant."),
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "test_tool",
-                    "description": "A test tool for demonstration",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }
-        ],
+        tools=[tool],
     )
 
     result = event.visualize
@@ -119,7 +152,7 @@ def test_system_prompt_event_visualize():
     assert "System Prompt:" in text_content
     assert "You are a helpful assistant." in text_content
     assert "Tools Available: 1" in text_content
-    assert "test_tool" in text_content
+    assert "visualizer_mock" in text_content
 
 
 def test_action_event_visualize():
@@ -150,11 +183,6 @@ def test_action_event_visualize():
 
 def test_observation_event_visualize():
     """Test ObservationEvent visualization."""
-    from openhands.sdk.tool import Observation
-
-    class VisualizerMockObservation(Observation):
-        pass
-
     observation = VisualizerMockObservation(
         content=[TextContent(text="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 .")]
     )

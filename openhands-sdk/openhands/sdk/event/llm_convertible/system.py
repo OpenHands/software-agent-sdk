@@ -1,12 +1,12 @@
 import json
 
-from litellm import ChatCompletionToolParam
 from pydantic import Field
 from rich.text import Text
 
 from openhands.sdk.event.base import N_CHAR_PREVIEW, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.tool import ToolDefinition
 
 
 class SystemPromptEvent(LLMConvertibleEvent):
@@ -14,8 +14,8 @@ class SystemPromptEvent(LLMConvertibleEvent):
 
     source: SourceType = "agent"
     system_prompt: TextContent = Field(..., description="The system prompt text")
-    tools: list[ChatCompletionToolParam] = Field(
-        ..., description="List of tools in OpenAI tool format"
+    tools: list[ToolDefinition] = Field(
+        ..., description="List of tools as ToolDefinition objects"
     )
 
     @property
@@ -26,26 +26,22 @@ class SystemPromptEvent(LLMConvertibleEvent):
         content.append(self.system_prompt.text)
         content.append(f"\n\nTools Available: {len(self.tools)}")
         for tool in self.tools:
-            # Build display-only copy to avoid mutating event data
-            tool_display = {
-                k: (v[:27] + "..." if isinstance(v, str) and len(v) > 30 else v)
-                for k, v in tool.items()
-            }
-            tool_fn = tool_display.get("function", None)
-            if tool_fn and isinstance(tool_fn, dict):
-                assert "name" in tool_fn
-                assert "description" in tool_fn
-                assert "parameters" in tool_fn
-                params_str = json.dumps(tool_fn["parameters"])
+            # Use ToolDefinition properties directly
+            description = tool.description.split("\n")[0][:100]
+            if len(description) < len(tool.description):
+                description += "..."
+
+            content.append(f"\n  - {tool.name}: {description}\n")
+
+            # Get parameters from the action type schema
+            try:
+                params_dict = tool.action_type.to_mcp_schema()
+                params_str = json.dumps(params_dict)
                 if len(params_str) > 200:
                     params_str = params_str[:197] + "..."
-                content.append(
-                    f"\n  - {tool_fn['name']}: "
-                    f"{tool_fn['description'].split('\n')[0][:100]}...\n",
-                )
                 content.append(f"  Parameters: {params_str}")
-            else:
-                content.append(f"\n  - Cannot access .function for {tool_display}")
+            except Exception:
+                content.append("  Parameters: <unavailable>")
         return content
 
     def to_llm_message(self) -> Message:

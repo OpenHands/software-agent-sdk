@@ -195,6 +195,15 @@ def make_llm_completion(
 
     Returns:
         LLMResponse from the LLM completion call
+
+    Note:
+        Always exposes a 'security_risk' parameter in tool schemas via
+        add_security_risk_prediction=True. This ensures the schema remains
+        consistent, even if the security analyzer is disabled. Validation of
+        this field happens dynamically at runtime depending on the analyzer
+        configured. This allows weaker models to omit risk field and bypass
+        validation requirements when analyzer is disabled. For detailed logic,
+        see `_extract_security_risk` method in agent.py.
     """
     if llm.uses_responses_api():
         return llm.responses(
