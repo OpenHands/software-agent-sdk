@@ -384,6 +384,12 @@ def main():
         help="Comma-separated list of specific test IDs to run",
     )
     parser.add_argument(
+        "--test-type",
+        choices=["all", "integration", "behavior"],
+        default="all",
+        help="Restrict execution to integration tests, behavior tests, or all",
+    )
+    parser.add_argument(
         "--output-dir",
         type=str,
         default="tests/integration/outputs",
@@ -399,11 +405,16 @@ def main():
     logger.info("LLM_CONFIG: %s", json.dumps(llm_config, indent=2))
     logger.info("NUM_WORKERS: %s", args.num_workers)
     logger.info("EVAL_NOTE: %s", args.eval_note)
+    logger.info("TEST_TYPE: %s", args.test_type)
     if args.eval_ids:
         logger.info("EVAL_IDS: %s", args.eval_ids)
 
     # Load all integration tests
     instances = load_integration_tests()
+
+    if args.test_type != "all":
+        instances = [inst for inst in instances if inst.test_type == args.test_type]
+        logger.info("Filtered to %d %s tests", len(instances), args.test_type)
 
     # Filter by specific test IDs if provided
     if args.eval_ids:

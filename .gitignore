@@ -209,3 +209,5 @@ openapi.json
 .worktrees/
 agent-sdk.workspace.code-workspace
 
+# Integration test outputs
+tests/integration/outputs/
