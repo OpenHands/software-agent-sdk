@@ -26,7 +26,7 @@ class SystemPromptEvent(LLMConvertibleEvent):
         content.append(self.system_prompt.text)
         content.append(f"\n\nTools Available: {len(self.tools)}")
         for tool in self.tools:
-            # Use ToolBase properties directly
+            # Use ToolDefinition properties directly
             description = tool.description.split("\n")[0][:100]
             if len(description) < len(tool.description):
                 description += "..."
