@@ -1,3 +1,5 @@
+from collections import defaultdict
+
 from openhands.sdk.conversation.state import ConversationState
 from openhands.sdk.event import (
     ActionEvent,
@@ -8,7 +10,9 @@ from openhands.sdk.event import (
     ObservationBaseEvent,
     ObservationEvent,
 )
+from openhands.sdk.event.types import EventID
 from openhands.sdk.logger import get_logger
+from openhands.sdk.tool.schema import Action, Observation
 
 
 logger = get_logger(__name__)
@@ -94,6 +98,10 @@ class StuckDetector:
         # scenario 5: context window error loop
         if len(events) >= 10:
             if self._is_stuck_context_window_error(events):
+                return True
+        # scenario 6:
+        if len(events) >= 12:
+            if self._is_stuck_repeating_in_recent_group(events):
                 return True
 
         return False
@@ -225,6 +233,128 @@ class StuckDetector:
         events between them.
         """
         # TODO: blocked by https://github.com/OpenHands/agent-sdk/issues/282
+        return False
+
+    def _is_stuck_repeating_in_recent_group(self, events: list[Event]) -> bool:
+        """
+        Event group-based repetitive loop detection
+        Core Logic: Group events by llm_response_id (events from the same round of
+        LLM decision form a group),
+        count the repetition times of core actions and observations/errors in recent
+        event groups,
+        and determine if the Agent is trapped in one of the following two loops:
+        1. Action-Error Loop: In the latest 3 event groups, the same core action
+        repeats ≥3 times AND the same core error repeats ≥3 times;
+        2. Action-Observation Loop: In the latest 4 event groups, the same core action
+          repeats ≥4 times AND the same core observation repeats ≥4 times.
+        Design Purpose: To address the limitations and poor adaptability of the existing
+        detection methods in scenarios where the LLM generates multiple actions at once.
+
+        Args:
+            events: Input event list (filtered in `is_stuck` to "events after the last
+            user message")
+        Returns:
+            bool: Whether trapped in a repetitive loop (True if stuck, False otherwise)
+
+        """
+        # Count dictionaries(key=core feature, value=repeat count)-(Action+Error)
+        repeat_err_action_counts: dict[tuple[str, Action | None, str], int] = (
+            defaultdict(int)
+        )
+        repeat_err_obs_counts: dict[tuple[str, str | Observation], int] = defaultdict(
+            int
+        )
+        # Count dictionaries(key=core feature, value=repeat count)-(Action+Observation)
+        repeat_action_counts: dict[tuple[str, Action | None, str], int] = defaultdict(
+            int
+        )
+        repeat_obs_counts: dict[tuple[str, str | Observation], int] = defaultdict(int)
+
+        least_group_id: EventID | None = None
+        group_num: int = 0
+
+        for event in events:
+            if isinstance(event, ActionEvent):
+                if least_group_id != event.llm_response_id:
+                    least_group_id = event.llm_response_id
+                    group_num += 1
+                action_key: tuple[str, Action | None, str] = (
+                    event.tool_name,
+                    event.action,
+                    event.source,
+                )
+                if group_num < 4:
+                    repeat_err_action_counts[action_key] += 1
+                if group_num > 4:
+                    break
+                repeat_action_counts[action_key] += 1
+
+            elif isinstance(event, (ObservationEvent, AgentErrorEvent)):
+                obs_content: str | Observation = (
+                    event.observation
+                    if isinstance(event, ObservationEvent)
+                    else event.error
+                )
+                obs_key: tuple[str, str | Observation] = (event.source, obs_content)
+
+                if group_num < 4 and isinstance(event, AgentErrorEvent):
+                    repeat_err_obs_counts[obs_key] += 1
+                repeat_obs_counts[obs_key] += 1
+
+        if group_num < 3:
+            return False
+        # When group=3, requiring the size to be greater than 3 indicates that at
+        # least one LLM call within the latest 3 groups has generated multiple actions.
+        if len(repeat_err_action_counts) > 3 and len(repeat_err_obs_counts) >= 3:
+            has_repeat_err_action: bool = any(
+                count >= 3 for count in repeat_err_action_counts.values()
+            )
+            has_repeat_err_obs: bool = any(
+                count >= 3 for count in repeat_err_obs_counts.values()
+            )
+
+            if has_repeat_err_action and has_repeat_err_obs:
+                top_action: tuple[str, Action | None, str] = max(
+                    repeat_err_action_counts.items(), key=lambda x: x[1]
+                )[0]
+                top_obs: tuple[str, str | Observation] = max(
+                    repeat_err_obs_counts.items(), key=lambda x: x[1]
+                )[0]
+                logger.warning(
+                    "Repeating Action-AgentErrorEvent loop detected "
+                    "(recent 3 groups):"
+                    f"Action(tool={top_action[0]}, action={top_action[1]})"
+                    f"x{repeat_err_action_counts[top_action]}, "
+                    f"AgentErrorEvent(content={top_obs[1]}) "
+                    f"x{repeat_err_obs_counts[top_obs]}"
+                )
+                return True
+
+        # When group=4, requiring the size to be greater than 4 indicates that at
+        # least one LLM call within the latest 4 groups has generated multiple actions.
+        if len(repeat_action_counts) > 4 and len(repeat_obs_counts) > 4:
+            has_repeat_action: bool = any(
+                count >= 4 for count in repeat_action_counts.values()
+            )
+            has_repeat_obs: bool = any(
+                count >= 4 for count in repeat_obs_counts.values()
+            )
+
+            if has_repeat_action and has_repeat_obs:
+                top_action: tuple[str, Action | None, str] = max(
+                    repeat_action_counts.items(), key=lambda x: x[1]
+                )[0]
+                top_obs: tuple[str, str | Observation] = max(
+                    repeat_obs_counts.items(), key=lambda x: x[1]
+                )[0]
+                logger.warning(
+                    f"Repeating Action-Observation loop detected (recent 4 groups): "
+                    f"Action(tool={top_action[0]}, action={top_action[1]}) "
+                    f"x{repeat_action_counts[top_action]}, "
+                    f"Observation(content={top_obs[1]}) x{repeat_obs_counts[top_obs]}"
+                )
+                return True
+
         return False
 
     def _event_eq(self, event1: Event, event2: Event) -> bool:
