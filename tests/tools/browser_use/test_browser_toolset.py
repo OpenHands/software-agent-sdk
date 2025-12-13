@@ -11,7 +11,10 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolDefinition
 from openhands.sdk.workspace import LocalWorkspace
 from openhands.tools.browser_use import BrowserToolSet
-from openhands.tools.browser_use.impl import BrowserToolExecutor
+from openhands.tools.browser_use.impl import get_browser_executor_class
+
+
+BrowserToolExecutor = get_browser_executor_class()
 
 
 def _create_test_conv_state(temp_dir: str) -> ConversationState:
