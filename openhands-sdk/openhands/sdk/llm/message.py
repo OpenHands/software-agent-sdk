@@ -120,8 +120,8 @@ class ThinkingBlock(BaseModel):
 
     type: Literal["thinking"] = "thinking"
     thinking: str = Field(..., description="The thinking content")
-    signature: str = Field(
-        ..., description="Cryptographic signature for the thinking block"
+    signature: str | None = Field(
+        default=None, description="Cryptographic signature for the thinking block"
     )
 
 
