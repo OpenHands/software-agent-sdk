@@ -167,7 +167,9 @@ class ConversationState(OpenHandsModel):
         Else: create fresh (agent required), persist base, and return.
         """
         file_store = (
-            LocalFileStore(persistence_dir) if persistence_dir else InMemoryFileStore()
+            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
+            if persistence_dir
+            else InMemoryFileStore()
         )
 
         try:
