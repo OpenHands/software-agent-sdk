@@ -935,6 +935,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # by default, uses = supports
         return get_features(self._model_name_for_capabilities()).supports_responses_api
 
+    def is_gpt5_family(self) -> bool:
+        """Return True if the configured model belongs to the GPT-5 chat family.
+
+        Notes:
+            - Excludes GPT-5 Codex variants (e.g., "gpt-5-codex"), which have
+              different prompting expectations.
+        """
+        return "gpt-5" in self.model and "codex" not in self.model
+
     @property
     def model_info(self) -> dict | None:
         """Returns the model info dictionary."""
