@@ -746,6 +746,21 @@ class RemoteConversation(BaseConversation):
         data = resp.json()
         return data["title"]
 
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method sends a condensation request to the remote agent server.
+        The server will use the existing condensation request pattern to trigger
+        condensation if a condenser is configured and handles condensation requests.
+
+        The condensation will be applied on the server side and will modify the
+        conversation state by adding a condensation event to the history.
+
+        Raises:
+            HTTPError: If the server returns an error (e.g., no condenser configured).
+        """
+        _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
+
     def close(self) -> None:
         """Close the conversation and clean up resources.
 
