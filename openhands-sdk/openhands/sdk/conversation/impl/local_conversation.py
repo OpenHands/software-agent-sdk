@@ -93,6 +93,9 @@ class LocalConversation(BaseConversation):
                        - None: No visualization
             stuck_detection: Whether to enable stuck detection
         """
+        # Initialize the registry early so profile references resolve during resume.
+        self.llm_registry = LLMRegistry()
+
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
@@ -121,6 +124,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            llm_registry=self.llm_registry,
         )
 
         # Default callback: persist every event to state
@@ -165,7 +169,6 @@ class LocalConversation(BaseConversation):
             self.agent.init_state(self._state, on_event=self._on_event)
 
         # Register existing llms in agent
-        self.llm_registry = LLMRegistry()
         self.llm_registry.subscribe(self._state.stats.register_llm)
         for llm in list(self.agent.get_all_llms()):
             self.llm_registry.add(llm)
@@ -210,6 +213,7 @@ class LocalConversation(BaseConversation):
 
         Args:
             message: Either a string (which will be converted to a user message)
+
                     or a Message object
             sender: Optional identifier of the sender. Can be used to track
                    message origin in multi-agent scenarios. For example, when

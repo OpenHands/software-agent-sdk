@@ -1,3 +1,4 @@
+import gc
 from abc import ABC
 from typing import ClassVar
 
@@ -190,6 +191,9 @@ def test_duplicate_kind():
 
         class Cat(Animal):
             pass
+
+    # Ensure the failed subclass definition does not leak into subsequent tests.
+    gc.collect()
 
 
 def test_enhanced_error_message_for_unknown_kind():

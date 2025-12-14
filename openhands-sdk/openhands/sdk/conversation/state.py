@@ -3,7 +3,7 @@ import json
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import AliasChoices, Field, PrivateAttr
 
@@ -18,6 +18,13 @@ from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObserva
 from openhands.sdk.event.base import Event
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm_registry import LLMRegistry
+
+
+from openhands.sdk.persistence import INLINE_CONTEXT_KEY, should_inline_conversations
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -147,7 +154,13 @@ class ConversationState(OpenHandsModel):
         """
         Persist base state snapshot (no events; events are file-backed).
         """
-        payload = self.model_dump_json(exclude_none=True)
+        inline_mode = should_inline_conversations()
+        # Pass the inline preference down so LLM serialization knows whether to
+        # inline credentials or persist a profile reference.
+        payload = self.model_dump_json(
+            exclude_none=True,
+            context={INLINE_CONTEXT_KEY: inline_mode},
+        )
         fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
@@ -160,11 +173,16 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        llm_registry: "LLMRegistry | None" = None,
     ) -> "ConversationState":
         """
         If base_state.json exists: resume (attach EventLog,
             reconcile agent, enforce id).
         Else: create fresh (agent required), persist base, and return.
+
+        Args:
+            llm_registry: Optional registry used to expand profile references when
+                conversations persist profile IDs instead of inline credentials.
         """
         file_store = (
             LocalFileStore(persistence_dir) if persistence_dir else InMemoryFileStore()
@@ -175,9 +193,22 @@ class ConversationState(OpenHandsModel):
         except FileNotFoundError:
             base_text = None
 
+        inline_mode = should_inline_conversations()
+        # Keep validation and serialization in sync when loading previously
+        # persisted state.
+        context: dict[str, object] = {INLINE_CONTEXT_KEY: inline_mode}
+        if not inline_mode:
+            registry = llm_registry
+            if registry is None:
+                from openhands.sdk.llm.llm_registry import LLMRegistry
+
+                registry = LLMRegistry()
+            context["llm_registry"] = registry
+
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            base_payload = json.loads(base_text)
+            state = cls.model_validate(base_payload, context=context)
 
             # Enforce conversation id match
             if state.id != id:
