@@ -135,7 +135,10 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
-    assert result.summary_offset == keep_first
+    # summary_offset should be the smallest manipulation index > keep_first
+    # Since all events are MessageEvents, manipulation indices are [0,1,2,3,4,...]
+    # The smallest index > keep_first (3) is 4
+    assert result.summary_offset == keep_first + 1
     assert len(result.forgotten_event_ids) > 0
 
     # LLM should be called once
@@ -161,6 +164,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     events = [message_event(f"Event {i}") for i in range(14)]
 
     # Add a condensation to simulate previous summarization
+    # The summary will be inserted at keep_first due to summary_offset
     condensation = Condensation(
         forgotten_event_ids=[events[3].id, events[4].id],
         summary="Previous summary content",
@@ -185,8 +189,9 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     messages = call_args[1]["messages"]  # Get keyword arguments
     prompt_text = messages[0].content[0].text
 
-    # The prompt should contain the previous summary
-    assert "Previous summary content" in prompt_text
+    # The prompt should contain the previous summary (it's in <PREVIOUS SUMMARY> section)
+    # The summary is now retrieved from the view, which should have it at the summary event
+    assert "Previous summary content" in prompt_text or "<PREVIOUS SUMMARY>" in prompt_text
 
 
 def test_invalid_config(mock_llm: LLM) -> None:
@@ -336,8 +341,11 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
 
     # Forgotten events should be from index keep_first to -(7)
     # Total events in view = 25 (CondensationRequest is not in view.events)
-    # Forgotten: events[2:18] = 16 events
-    expected_forgotten_count = 25 - keep_first - 7
+    # With manipulation indices, the forgetting start is the smallest index > keep_first
+    # For MessageEvents, manipulation indices are [0,1,2,3,...], so start = keep_first + 1 = 3
+    # The forgetting end is the smallest index >= (25 - 7) = 18, which is 18
+    # Forgotten: events[3:18] = 15 events (one less due to boundary adjustment)
+    expected_forgotten_count = 25 - (keep_first + 1) - 7
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
@@ -515,5 +523,8 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Forgotten events: events[keep_first : -12] = events[2:28] = 26 events
-    expected_forgotten_count = 40 - keep_first - 12
+    # With manipulation indices, start = keep_first + 1 = 3 (smallest index > 2)
+    # End = 28 (smallest index >= 28)
+    # Forgotten: events[3:28] = 25 events (one less due to boundary adjustment)
+    expected_forgotten_count = 40 - (keep_first + 1) - 12
     assert len(result.forgotten_event_ids) == expected_forgotten_count

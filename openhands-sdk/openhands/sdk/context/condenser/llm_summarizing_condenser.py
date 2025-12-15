@@ -107,6 +107,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         self,
         summary_event_content: str,
         forgotten_events: Sequence[LLMConvertibleEvent],
+        summary_offset: int,
     ) -> Condensation:
         """Generate a condensation by using the condenser's LLM to summarize forgotten
         events.
@@ -114,6 +115,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         Args:
             summary_event_content: The content of the previous summary event.
             forgotten_events: The list of events to be summarized.
+            summary_offset: The index where the summary event should be inserted.
 
         Returns:
             Condensation: The generated condensation object.
@@ -145,24 +147,25 @@ class LLMSummarizingCondenser(RollingCondenser):
         return Condensation(
             forgotten_event_ids=[event.id for event in forgotten_events],
             summary=summary,
-            summary_offset=self.keep_first,
+            summary_offset=summary_offset,
             llm_response_id=llm_response.id,
         )
 
     def _get_forgotten_events(
         self, view: View, llm: LLM | None = None
-    ) -> Sequence[LLMConvertibleEvent]:
-        """Identify events to be forgotten.
+    ) -> tuple[Sequence[LLMConvertibleEvent], int]:
+        """Identify events to be forgotten and the summary offset.
 
         Relies on the condensation reasons to determine how many events we need to drop
-        in order to maintain our resource constraints.
+        in order to maintain our resource constraints. Uses manipulation indices to
+        ensure forgetting ranges respect atomic unit boundaries.
 
         Args:
             view: The current view from which to identify forgotten events.
             llm: The LLM used by the agent, required for token-based calculations.
 
         Returns:
-            A sequence of events to be forgotten.
+            A tuple of (events to forget, summary_offset).
         """
         reasons = self.get_condensation_reasons(view, llm=llm)
         assert reasons != set(), "No condensation reasons found."
@@ -199,17 +202,44 @@ class LLMSummarizingCondenser(RollingCondenser):
         # to ensure all resource constraints are met.
         events_from_tail = min(suffix_events_to_keep)
 
-        # Identify events to be forgotten (those not in head or tail)
-        return view[self.keep_first : -events_from_tail]
+        # Calculate naive forgetting range (without considering atomic boundaries)
+        naive_start = self.keep_first
+        naive_end = len(view) - events_from_tail
+
+        # Get manipulation indices for boundary-aware calculation
+        manipulation_indices = View.get_manipulation_indices(view.events)
+
+        # Find actual forgetting_start: smallest manipulation index > keep_first
+        forgetting_start = naive_start
+        for idx in manipulation_indices:
+            if idx > self.keep_first:
+                forgetting_start = idx
+                break
+
+        # Find actual forgetting_end: smallest manipulation index >= naive_end
+        forgetting_end = naive_end
+        for idx in manipulation_indices:
+            if idx >= naive_end:
+                forgetting_end = idx
+                break
+
+        # Extract events to forget using boundary-aware indices
+        forgotten_events = view[forgetting_start:forgetting_end]
+
+        # Summary offset is the same as forgetting_start
+        summary_offset = forgetting_start
+
+        return forgotten_events, summary_offset
 
     @observe(ignore_inputs=["view", "llm"])
     def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
         # summary.
         summary_event_content = self._get_summary_event_content(view)
-        forgotten_events = self._get_forgotten_events(view, llm=llm)
+        forgotten_events, summary_offset = self._get_forgotten_events(view, llm=llm)
 
         return self._generate_condensation(
             summary_event_content=summary_event_content,
             forgotten_events=forgotten_events,
+            summary_offset=summary_offset,
         )
