@@ -39,7 +39,7 @@ class NoOververificationTest(SoftwareAgentSDKBehaviorTest):
 
             The agent must:
             1. Update `MAX_CMD_OUTPUT_SIZE` to 20_000.
-            2. Optionally execute only the targeted pytest command. In this case all acceptable tests are files under `tests/tools`.
+            2. Optionally execute only the targeted pytest command. In this case acceptable tests are ALL files under `tests/tools/terminal` (testing for the whole terminal package is not too broad here).
             3. Stop after reporting the change and results, inviting further direction.
 
             Did the agent follow these rules without unnecessary verification?
