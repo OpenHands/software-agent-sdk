@@ -180,6 +180,99 @@ class View(BaseModel):
             return True
 
     @staticmethod
+    def get_manipulation_indices(
+        events: Sequence[LLMConvertibleEvent],
+    ) -> list[int]:
+        """Returns indices where events can be safely manipulated.
+
+        These indices represent boundaries between atomic units. An atomic unit is
+        either:
+        - A batch of ActionEvents with the same llm_response_id and their
+          corresponding ObservationBaseEvents
+        - A single event that is neither an ActionEvent nor an ObservationBaseEvent
+
+        The returned indices can be used for:
+        - Inserting new events: any returned index is safe
+        - Forgetting events: select a range between two consecutive indices
+
+        Consecutive indices define atomic units that must stay together:
+        - events[indices[i]:indices[i+1]] is an atomic unit
+
+        Args:
+            events: Sequence of LLMConvertibleEvents to analyze
+
+        Returns:
+            Sorted list of indices representing atomic unit boundaries. Always
+            includes 0 and len(events) as boundaries.
+        """
+        if not events:
+            return [0]
+
+        # Build mapping of llm_response_id -> list of event indices
+        batches: dict[EventID, list[int]] = {}
+        for idx, event in enumerate(events):
+            if isinstance(event, ActionEvent):
+                llm_response_id = event.llm_response_id
+                if llm_response_id not in batches:
+                    batches[llm_response_id] = []
+                batches[llm_response_id].append(idx)
+
+        # Build mapping of tool_call_id -> observation indices
+        observation_indices: dict[ToolCallID, int] = {}
+        for idx, event in enumerate(events):
+            if (
+                isinstance(event, ObservationBaseEvent)
+                and event.tool_call_id is not None
+            ):
+                observation_indices[event.tool_call_id] = idx
+
+        # For each batch, find the range of indices that includes all actions
+        # and their corresponding observations
+        batch_ranges: list[tuple[int, int]] = []
+        for llm_response_id, action_indices in batches.items():
+            min_idx = min(action_indices)
+            max_idx = max(action_indices)
+
+            # Extend the range to include all corresponding observations
+            for action_idx in action_indices:
+                action_event = events[action_idx]
+                if (
+                    isinstance(action_event, ActionEvent)
+                    and action_event.tool_call_id is not None
+                ):
+                    if action_event.tool_call_id in observation_indices:
+                        obs_idx = observation_indices[action_event.tool_call_id]
+                        max_idx = max(max_idx, obs_idx)
+
+            batch_ranges.append((min_idx, max_idx))
+
+        # Also need to handle observations that might not be in batches
+        # (in case there are observations without matching actions in the view)
+        handled_indices = set()
+        for min_idx, max_idx in batch_ranges:
+            handled_indices.update(range(min_idx, max_idx + 1))
+
+        # Track all atomic unit boundaries
+        manipulation_indices = {0, len(events)}
+
+        # Add boundaries after each batch
+        for min_idx, max_idx in batch_ranges:
+            # The boundary is after the last event in the batch
+            manipulation_indices.add(max_idx + 1)
+            # And before the first event in the batch
+            manipulation_indices.add(min_idx)
+
+        # For non-batch, non-observation events (like MessageEvent), each is its own
+        # atomic unit
+        for idx, event in enumerate(events):
+            if idx not in handled_indices:
+                # Single events can have boundaries before and after
+                manipulation_indices.add(idx)
+                manipulation_indices.add(idx + 1)
+
+        return sorted(manipulation_indices)
+
+    @staticmethod
     def from_events(events: Sequence[Event]) -> "View":
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
