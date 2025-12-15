@@ -167,7 +167,11 @@ You MUST use the submit_judgment tool to provide your evaluation. """
 
     try:
         # Get LLM response with tool calling
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        messages = [
+            Message(
+                role="user", content=[TextContent(text=prompt, enable_truncation=False)]
+            )
+        ]
         response = llm.completion(
             messages=messages,
             tools=[judgment_tool],  # type: ignore[arg-type]

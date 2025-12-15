@@ -169,11 +169,12 @@ class TextContent(BaseContent):
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", populate_by_name=True
     )
+    enable_truncation: bool = True
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""
         text = self.text
-        if len(text) > DEFAULT_TEXT_CONTENT_LIMIT:
+        if self.enable_truncation and len(text) > DEFAULT_TEXT_CONTENT_LIMIT:
             logger.warning(
                 f"TextContent text length ({len(text)}) exceeds limit "
                 f"({DEFAULT_TEXT_CONTENT_LIMIT}), truncating"

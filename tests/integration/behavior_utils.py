@@ -117,15 +117,13 @@ def check_bash_command_used(
     return bash_commands
 
 
-def get_conversation_summary(
-    collected_events: list[Event], max_length: int | None = None
-) -> str:
+def get_conversation_summary(collected_events: list[Event]) -> str:
     """
     Get a summary of the conversation including agent thoughts and actions.
+    We don't need to truncate here as the later serialization will handle that.
 
     Args:
         collected_events: List of events collected from conversation
-        max_length: Maximum length of the summary
 
     Returns:
         String summary of the conversation
@@ -146,10 +144,7 @@ def get_conversation_summary(
             event_type = event.__class__.__name__
             summary_parts.append(f"[{event_type}]\n{plain_text}\n")
 
-    summary = "\n".join(summary_parts)
-    if max_length is not None and len(summary) > max_length:
-        summary = summary[:max_length] + "..."
-    return summary
+    return "\n".join(summary_parts)
 
 
 def _matches_pattern(path: str, pattern: str) -> bool:
