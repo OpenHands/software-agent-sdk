@@ -106,8 +106,7 @@ class NoUselessBackwardCompatibilityTest(SoftwareAgentSDKBehaviorTest):
                and call sites).
             2. Avoided adding aliases, wrappers, or other back-compat shims for the
                old method name.
-            3. Wrapped up with a concise summary once the rename was complete and
-               asked users if they needed to maintain compatibility as a follow-up.
+            3. Wrapped up with a concise summary once the rename was complete.
 
             Did the agent follow these directions?
             """
