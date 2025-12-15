@@ -118,7 +118,7 @@ def check_bash_command_used(
 
 
 def get_conversation_summary(
-    collected_events: list[Event], max_length: int = 50000
+    collected_events: list[Event], max_length: int | None = None
 ) -> str:
     """
     Get a summary of the conversation including agent thoughts and actions.
@@ -147,7 +147,7 @@ def get_conversation_summary(
             summary_parts.append(f"[{event_type}]\n{plain_text}\n")
 
     summary = "\n".join(summary_parts)
-    if len(summary) > max_length:
+    if max_length is not None and len(summary) > max_length:
         summary = summary[:max_length] + "..."
     return summary
 

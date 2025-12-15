@@ -37,7 +37,7 @@ _MODEL_FAMILY_PATTERNS: dict[str, tuple[str, ...]] = {
 _MODEL_VARIANT_PATTERNS: dict[str, tuple[tuple[str, tuple[str, ...]], ...]] = {
     "openai_gpt": (
         ("gpt-5-codex", ("gpt-5-codex", "gpt-5.1-codex")),
-        ("gpt-5", ("gpt-5",)),
+        ("gpt-5", ("gpt-5", "gpt-5.1")),
     ),
 }
 
