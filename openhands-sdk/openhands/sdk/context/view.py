@@ -112,7 +112,23 @@ class View(BaseModel):
         for llm_response_id, batch_event_ids in batches.items():
             # Check if any event in this batch is being forgotten
             if any(event_id in forgotten_event_ids for event_id in batch_event_ids):
-                # If so, forget all events in this batch
+                # Check if this is a partial batch (not all events forgotten)
+                forgotten_in_batch = [
+                    eid for eid in batch_event_ids if eid in forgotten_event_ids
+                ]
+                if len(forgotten_in_batch) < len(batch_event_ids):
+                    # Partial batch violation - warn about it
+                    added_count = len(batch_event_ids) - len(forgotten_in_batch)
+                    logger.warning(
+                        f"Batch atomicity violation detected: condenser forgot "
+                        f"{len(forgotten_in_batch)}/{len(batch_event_ids)} events "
+                        f"in batch with llm_response_id={llm_response_id}. "
+                        f"Adding {added_count} events to maintain atomicity. "
+                        f"Consider using View.get_manipulation_indices() in "
+                        f"condenser implementation to avoid partial batch forgetting."
+                    )
+
+                # Forget all events in this batch
                 updated_forgotten_ids.update(batch_event_ids)
                 logger.debug(
                     f"Enforcing batch atomicity: forgetting entire batch "
@@ -133,6 +149,30 @@ class View(BaseModel):
         """
         action_tool_call_ids = View._get_action_tool_call_ids(events)
         observation_tool_call_ids = View._get_observation_tool_call_ids(events)
+
+        # Check for unmatched events and warn if found
+        unmatched_actions = [
+            event
+            for event in events
+            if isinstance(event, ActionEvent)
+            and event.tool_call_id is not None
+            and event.tool_call_id not in observation_tool_call_ids
+        ]
+        unmatched_observations = [
+            event
+            for event in events
+            if isinstance(event, ObservationBaseEvent)
+            and event.tool_call_id is not None
+            and event.tool_call_id not in action_tool_call_ids
+        ]
+
+        if unmatched_actions or unmatched_observations:
+            logger.warning(
+                f"Unmatched tool calls detected: {len(unmatched_actions)} "
+                f"unmatched actions, {len(unmatched_observations)} unmatched "
+                f"observations will be filtered. This may indicate atomicity "
+                f"issues in condensation or incomplete action/observation pairs."
+            )
 
         return [
             event
