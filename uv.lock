@@ -1533,7 +1533,7 @@ wheels = [
 
 [[package]]
 name = "lmnr"
-version = "0.7.20"
+version = "0.7.24"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "grpcio" },
@@ -1553,9 +1553,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "tqdm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d4/c0/996403cc2f6967881a42af4b27ff8931956d57ab3ed2d8bf11e5b37aed40/lmnr-0.7.20.tar.gz", hash = "sha256:1f484cd618db2d71af65f90a0b8b36d20d80dc91a5138b811575c8677bf7c4fd", size = 194075, upload-time = "2025-11-04T16:53:34.49Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/f7/77/db0400c1d72c1a060f337cac77ce5265874c9a08d57bed9719a67ec7b786/lmnr-0.7.24.tar.gz", hash = "sha256:aa6973f46fc4ba95c9061c1feceb58afc02eb43c9376c21e32545371ff6123d7", size = 203111, upload-time = "2025-11-30T10:26:54.531Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b5/df/4665a3931b2fbc5f5b66e4906ffab106f3f65ab7e78732ecdaf3ba4a3076/lmnr-0.7.20-py3-none-any.whl", hash = "sha256:5f9fa7444e6f96c25e097f66484ff29e632bdd1de0e9346948bf5595f4a8af38", size = 247465, upload-time = "2025-11-04T16:53:32.713Z" },
+    { url = "https://files.pythonhosted.org/packages/e9/e3/b622a2e6430699381476b842822fb32c9d242fd8e2028cfdb7a493b1d172/lmnr-0.7.24-py3-none-any.whl", hash = "sha256:ad780d4a62ece897048811f3368639c240a9329ab31027da8c96545137a3a08a", size = 264639, upload-time = "2025-11-30T10:26:52.968Z" },
 ]
 
 [[package]]
@@ -2123,7 +2123,7 @@ requires-dist = [
     { name = "fastmcp", specifier = ">=2.11.3" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "litellm", specifier = ">=1.80.7" },
-    { name = "lmnr", specifier = ">=0.7.20" },
+    { name = "lmnr", specifier = ">=0.7.24" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "python-frontmatter", specifier = ">=1.1.0" },
     { name = "python-json-logger", specifier = ">=3.3.0" },
