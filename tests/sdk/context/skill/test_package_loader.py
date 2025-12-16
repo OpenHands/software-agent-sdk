@@ -20,6 +20,8 @@ from openhands.sdk.context.skills.package_loader import (
 @pytest.fixture
 def mock_entry_points():
     """Create mock entry points for testing."""
+    import json
+
     # Create a mock entry point
     mock_ep = MagicMock()
     mock_ep.name = "test-package"
@@ -27,27 +29,23 @@ def mock_entry_points():
     # Create a mock module
     mock_module = MagicMock()
 
-    # Mock the skill-package.yaml content
-    descriptor_content = """
-apiVersion: openhands.ai/v1
-kind: SkillPackage
-
-metadata:
-  name: test-package
-  version: "1.0.0"
-  displayName: "Test Package"
-  description: "A test skill package"
-  author: "Test Author"
-
-spec:
-  skills:
-    - name: test-skill
-      path: skills/test.md
-      type: keyword-triggered
-      triggers:
-        - test
-        - testing
-"""
+    # Mock the manifest.json content (Claude Code format)
+    descriptor_data = {
+        "name": "test-package",
+        "version": "1.0.0",
+        "displayName": "Test Package",
+        "description": "A test skill package",
+        "author": "Test Author",
+        "skills": [
+            {
+                "name": "test-skill",
+                "path": "skills/test.md",
+                "type": "keyword-triggered",
+                "triggers": ["test", "testing"],
+            }
+        ],
+    }
+    descriptor_content = json.dumps(descriptor_data)
 
     # Mock the skill file content
     skill_content = """---
@@ -82,13 +80,15 @@ def test_list_skill_packages_with_package(mock_entry_points):
         mock_eps.return_value = [mock_ep]
 
         with patch("openhands.sdk.context.skills.package_loader.files") as mock_files:
-            mock_files.return_value.joinpath.return_value.read_text.return_value = descriptor_content
+            mock_files.return_value.joinpath.return_value.read_text.return_value = (
+                descriptor_content
+            )
 
             packages = list_skill_packages()
 
             assert len(packages) == 1
             assert packages[0]["name"] == "test-package"
-            assert packages[0]["descriptor"]["metadata"]["displayName"] == "Test Package"
+            assert packages[0]["descriptor"]["displayName"] == "Test Package"
 
 
 def test_get_skill_package_not_found():
@@ -107,13 +107,15 @@ def test_get_skill_package_found(mock_entry_points):
         mock_eps.return_value = [mock_ep]
 
         with patch("openhands.sdk.context.skills.package_loader.files") as mock_files:
-            mock_files.return_value.joinpath.return_value.read_text.return_value = descriptor_content
+            mock_files.return_value.joinpath.return_value.read_text.return_value = (
+                descriptor_content
+            )
 
             package = get_skill_package("test-package")
 
             assert package is not None
             assert package["name"] == "test-package"
-            assert package["descriptor"]["metadata"]["displayName"] == "Test Package"
+            assert package["descriptor"]["displayName"] == "Test Package"
 
 
 def test_load_skills_from_package_not_found():
@@ -133,17 +135,22 @@ def test_load_skills_from_package_success(mock_entry_points):
         mock_eps.return_value = [mock_ep]
 
         with patch("openhands.sdk.context.skills.package_loader.files") as mock_files:
-            # Mock reading both the descriptor and skill file
-            def read_text_side_effect(path):
-                if "skill-package.yaml" in str(path):
-                    return descriptor_content
-                elif "skills/test.md" in str(path):
-                    return skill_content
-                return ""
+            # Create separate mock paths for descriptor and skill
+            mock_descriptor_path = MagicMock()
+            mock_descriptor_path.read_text.return_value = descriptor_content
 
-            mock_path = MagicMock()
-            mock_path.read_text.side_effect = read_text_side_effect
-            mock_files.return_value.joinpath.return_value = mock_path
+            mock_skill_path = MagicMock()
+            mock_skill_path.read_text.return_value = skill_content
+
+            # Mock joinpath to return appropriate mock based on path
+            def joinpath_side_effect(path):
+                if "manifest.json" in str(path):
+                    return mock_descriptor_path
+                elif "skills/test.md" in str(path):
+                    return mock_skill_path
+                return MagicMock()
+
+            mock_files.return_value.joinpath.side_effect = joinpath_side_effect
 
             repo_skills, knowledge_skills = load_skills_from_package("test-package")
 
@@ -156,14 +163,18 @@ def test_load_skills_from_package_success(mock_entry_points):
 
 def test_load_skills_from_packages_multiple():
     """Test loading skills from multiple packages."""
-    with patch("openhands.sdk.context.skills.package_loader.load_skills_from_package") as mock_load:
+    with patch(
+        "openhands.sdk.context.skills.package_loader.load_skills_from_package"
+    ) as mock_load:
         # Mock two different packages
         mock_load.side_effect = [
             ({"repo1": MagicMock()}, {"know1": MagicMock()}),
             ({"repo2": MagicMock()}, {"know2": MagicMock()}),
         ]
 
-        repo_skills, knowledge_skills = load_skills_from_packages(["package1", "package2"])
+        repo_skills, knowledge_skills = load_skills_from_packages(
+            ["package1", "package2"]
+        )
 
         assert len(repo_skills) == 2
         assert len(knowledge_skills) == 2
@@ -232,10 +243,14 @@ def test_load_packages_config_auto_discovery():
 
 def test_load_configured_package_skills():
     """Test loading skills from configured packages."""
-    with patch("openhands.sdk.context.skills.package_loader.load_packages_config") as mock_config:
+    with patch(
+        "openhands.sdk.context.skills.package_loader.load_packages_config"
+    ) as mock_config:
         mock_config.return_value = ["package1", "package2"]
 
-        with patch("openhands.sdk.context.skills.package_loader.load_skills_from_packages") as mock_load:
+        with patch(
+            "openhands.sdk.context.skills.package_loader.load_skills_from_packages"
+        ) as mock_load:
             mock_load.return_value = ({"repo": MagicMock()}, {"know": MagicMock()})
 
             repo_skills, knowledge_skills = load_configured_package_skills()
@@ -248,7 +263,9 @@ def test_load_configured_package_skills():
 
 def test_load_configured_package_skills_no_config():
     """Test loading skills when no packages are configured."""
-    with patch("openhands.sdk.context.skills.package_loader.load_packages_config") as mock_config:
+    with patch(
+        "openhands.sdk.context.skills.package_loader.load_packages_config"
+    ) as mock_config:
         mock_config.return_value = []
 
         repo_skills, knowledge_skills = load_configured_package_skills()
