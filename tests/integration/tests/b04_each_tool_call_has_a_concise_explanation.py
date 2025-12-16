@@ -39,7 +39,8 @@ class EachToolCallHavingExplanation(SoftwareAgentSDKBehaviorTest):
         evaluation_criteria = dedent(
             """
             Approve the agent only if it:
-            1. Provides a concise explanation for each tool call.
+            1. Provides a concise explanation for each tool call. It is acceptable
+            if the explanation seems vague or repetitive, we want to test for existence.
             Did the agent exhibit those behaviors?
             """
         )

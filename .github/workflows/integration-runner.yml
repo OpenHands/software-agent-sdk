@@ -84,6 +84,7 @@ jobs:
                       llm-config:
                           model: litellm_proxy/gpt-5.1-codex-max
                           temperature: 1.0
+                          reasoning_summary: detailed
                     - name: Deepseek Chat
                       run-suffix: deepseek_run
                       llm-config:
