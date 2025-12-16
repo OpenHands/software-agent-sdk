@@ -109,6 +109,7 @@ def create_judge_llm() -> LLM:
         base_url=base_url,
         api_key=SecretStr(api_key),
         usage_id="test-judge",
+        extended_thinking_budget=None,
     )
 
 
@@ -175,6 +176,7 @@ You MUST use the submit_judgment tool to provide your evaluation. """
         response = llm.completion(
             messages=messages,
             tools=[judgment_tool],  # type: ignore[arg-type]
+            extra_headers={"anthropic-beta": "context-1m-2025-08-07"},
         )
 
         # Extract tool call from response
