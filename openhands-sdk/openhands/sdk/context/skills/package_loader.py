@@ -4,8 +4,7 @@ This module provides functionality to discover and load skills from
 installed Python packages that register as OpenHands skill packages
 via entry points.
 
-Supports both manifest.json (Claude Code-aligned) and skill-package.yaml
-(legacy) descriptor formats.
+Packages must use manifest.json (Claude Code-aligned) descriptor format.
 """
 
 import json
@@ -25,7 +24,7 @@ logger = get_logger(__name__)
 
 
 def _load_descriptor(package_module) -> dict[str, Any]:
-    """Load package descriptor, trying manifest.json first, then skill-package.yaml.
+    """Load package descriptor from manifest.json.
     
     Args:
         package_module: The loaded package module
@@ -34,18 +33,11 @@ def _load_descriptor(package_module) -> dict[str, Any]:
         Parsed descriptor dictionary
         
     Raises:
-        FileNotFoundError: If neither descriptor file is found
+        FileNotFoundError: If manifest.json is not found
+        json.JSONDecodeError: If manifest.json is invalid
     """
-    # Try manifest.json first (new Claude Code-aligned format)
-    try:
-        json_content = files(package_module).joinpath("manifest.json").read_text()
-        return json.loads(json_content)
-    except (FileNotFoundError, json.JSONDecodeError):
-        pass
-    
-    # Fall back to skill-package.yaml (legacy format)
-    yaml_content = files(package_module).joinpath("skill-package.yaml").read_text()
-    return yaml.safe_load(yaml_content)
+    json_content = files(package_module).joinpath("manifest.json").read_text()
+    return json.loads(json_content)
 
 
 def list_skill_packages() -> list[dict[str, Any]]:
@@ -57,14 +49,12 @@ def list_skill_packages() -> list[dict[str, Any]]:
 
     Returns:
         List of dicts with 'name' (str) and 'descriptor' (dict) keys.
-        The descriptor contains the parsed manifest.json or skill-package.yaml content.
+        The descriptor contains the parsed manifest.json content.
 
     Example:
         >>> packages = list_skill_packages()
         >>> for pkg in packages:
-        ...     # Handle both old YAML format (nested) and new JSON format (flat)
-        ...     metadata = pkg['descriptor'].get('metadata', pkg['descriptor'])
-        ...     print(f"{pkg['name']}: {metadata.get('displayName', 'Unknown')}")
+        ...     print(f"{pkg['name']}: {pkg['descriptor'].get('displayName', 'Unknown')}")
     """
     eps = entry_points(group="openhands.skill_packages")
 
@@ -75,7 +65,7 @@ def list_skill_packages() -> list[dict[str, Any]]:
             # Load the package module
             package_module = ep.load()
 
-            # Load descriptor (tries manifest.json first, falls back to YAML)
+            # Load descriptor from manifest.json
             descriptor = _load_descriptor(package_module)
 
             packages.append({"name": ep.name, "descriptor": descriptor, "module": package_module})
@@ -98,9 +88,7 @@ def get_skill_package(package_name: str) -> dict[str, Any] | None:
     Example:
         >>> pkg = get_skill_package('simple-code-review')
         >>> if pkg:
-        ...     # Handle both formats
-        ...     metadata = pkg['descriptor'].get('metadata', pkg['descriptor'])
-        ...     print(metadata.get('displayName', 'Unknown'))
+        ...     print(pkg['descriptor'].get('displayName', 'Unknown'))
     """
     eps = entry_points(group="openhands.skill_packages")
 
@@ -110,7 +98,7 @@ def get_skill_package(package_name: str) -> dict[str, Any] | None:
                 # Load the package module
                 package_module = ep.load()
 
-                # Load descriptor (tries manifest.json first, falls back to YAML)
+                # Load descriptor from manifest.json
                 descriptor = _load_descriptor(package_module)
 
                 return {"name": ep.name, "descriptor": descriptor, "module": package_module}
@@ -151,13 +139,8 @@ def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[
     knowledge_skills = {}
 
     # Load skills defined in the descriptor
-    # Handle both formats: YAML has nested structure (spec.skills), JSON has flat structure (skills)
-    if "spec" in descriptor:
-        # Old YAML format: skills are in spec.skills
-        skills_spec = descriptor.get("spec", {}).get("skills", [])
-    else:
-        # New JSON format: skills are at top level
-        skills_spec = descriptor.get("skills", [])
+    # manifest.json format: skills are at top level
+    skills_spec = descriptor.get("skills", [])
 
     logger.debug(f"Loading {len(skills_spec)} skills from package '{package_name}'")
 
