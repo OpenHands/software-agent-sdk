@@ -189,9 +189,12 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     messages = call_args[1]["messages"]  # Get keyword arguments
     prompt_text = messages[0].content[0].text
 
-    # The prompt should contain the previous summary (it's in <PREVIOUS SUMMARY> section)
-    # The summary is now retrieved from the view, which should have it at the summary event
-    assert "Previous summary content" in prompt_text or "<PREVIOUS SUMMARY>" in prompt_text
+    # The prompt should contain the previous summary (it's in <PREVIOUS SUMMARY> sec.)
+    # The summary is now retrieved from the view, which should have it at the summary
+    # event
+    assert (
+        "Previous summary content" in prompt_text or "<PREVIOUS SUMMARY>" in prompt_text
+    )
 
 
 def test_invalid_config(mock_llm: LLM) -> None:
@@ -342,7 +345,8 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     # Forgotten events should be from index keep_first to -(7)
     # Total events in view = 25 (CondensationRequest is not in view.events)
     # With manipulation indices, the forgetting start is the smallest index > keep_first
-    # For MessageEvents, manipulation indices are [0,1,2,3,...], so start = keep_first + 1 = 3
+    # For MessageEvents, manipulation indices are [0,1,2,3,...], so:
+    # start = keep_first + 1 = 3
     # The forgetting end is the smallest index >= (25 - 7) = 18, which is 18
     # Forgotten: events[3:18] = 15 events (one less due to boundary adjustment)
     expected_forgotten_count = 25 - (keep_first + 1) - 7

@@ -37,7 +37,7 @@ def create_action_event(
 
     return ActionEvent(
         thought=[TextContent(text="Test thought")],
-        thinking_blocks=thinking_blocks or [],
+        thinking_blocks=thinking_blocks or [],  # type: ignore
         action=action,
         tool_name=tool_name,
         tool_call_id=tool_call_id,
@@ -134,9 +134,7 @@ def test_batch_of_actions_simple() -> None:
         ThinkingBlock(type="thinking", thinking="Thinking...", signature="sig1")
     ]
 
-    action1 = create_action_event(
-        "response_1", "tool_call_1", thinking_blocks=thinking
-    )
+    action1 = create_action_event("response_1", "tool_call_1", thinking_blocks=thinking)
     action2 = create_action_event("response_1", "tool_call_2")
     action3 = create_action_event("response_1", "tool_call_3")
 
@@ -182,7 +180,16 @@ def test_multiple_separate_batches() -> None:
     obs2_1 = create_observation_event("tool_call_3")
     obs2_2 = create_observation_event("tool_call_4")
 
-    events = [action1_1, action1_2, obs1_1, obs1_2, action2_1, action2_2, obs2_1, obs2_2]
+    events = [
+        action1_1,
+        action1_2,
+        obs1_1,
+        obs1_2,
+        action2_1,
+        action2_2,
+        obs2_1,
+        obs2_2,
+    ]
     indices = View.get_manipulation_indices(events)
 
     # Two atomic units: batch1 (indices 0-3) and batch2 (indices 4-7)
