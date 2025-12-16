@@ -1,3 +1,5 @@
+"""Secret sources and types for handling sensitive data."""
+
 from abc import ABC, abstractmethod
 
 import httpx
@@ -45,7 +47,7 @@ class LookupSecret(SecretSource):
     headers: dict[str, str] = Field(default_factory=dict)
 
     def get_value(self):
-        response = httpx.get(self.url, headers=self.headers)
+        response = httpx.get(self.url, headers=self.headers, timeout=30.0)
         response.raise_for_status()
         return response.text
 
@@ -84,3 +86,7 @@ def _is_secret_header(key: str):
         if secret in key:
             return True
     return False
+
+
+# Type alias for secret values - can be a plain string or a SecretSource
+SecretValue = str | SecretSource

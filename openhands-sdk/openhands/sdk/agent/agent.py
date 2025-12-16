@@ -28,6 +28,7 @@ from openhands.sdk.event import (
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.llm import (
+    LLMResponse,
     Message,
     MessageToolCall,
     ReasoningItemModel,
@@ -185,7 +186,7 @@ class Agent(AgentBase):
             )
             on_event(error_message)
             return
-        except LLMContextWindowExceedError:
+        except LLMContextWindowExceedError as e:
             # If condenser is available and handles requests, trigger condensation
             if (
                 self.condenser is not None
@@ -196,11 +197,23 @@ class Agent(AgentBase):
                 )
                 on_event(CondensationRequest())
                 return
-            # No condenser available; re-raise for client handling
-            raise
+            # No condenser available or doesn't handle requests; log helpful warning
+            self._log_context_window_exceeded_warning()
+            raise e
 
         # LLMResponse already contains the converted message and metrics snapshot
         message: Message = llm_response.message
+
+        # Check if this is a reasoning-only response (e.g., from reasoning models)
+        # or a message-only response without tool calls
+        has_reasoning = (
+            message.responses_reasoning_item is not None
+            or message.reasoning_content is not None
+            or (message.thinking_blocks and len(message.thinking_blocks) > 0)
+        )
+        has_content = any(
+            isinstance(c, TextContent) and c.text.strip() for c in message.content
+        )
 
         if message.tool_calls and len(message.tool_calls) > 0:
             if not all(isinstance(c, TextContent) for c in message.content):
@@ -241,29 +254,30 @@ class Agent(AgentBase):
             if action_events:
                 self._execute_actions(conversation, action_events, on_event)
 
-        else:
+            # Emit VLLM token ids if enabled before returning
+            self._maybe_emit_vllm_tokens(llm_response, on_event)
+            return
+
+        # No tool calls - emit message event for reasoning or content responses
+        if not has_reasoning and not has_content:
+            logger.warning("LLM produced empty response - continuing agent loop")
+
+        msg_event = MessageEvent(
+            source="agent",
+            llm_message=message,
+            llm_response_id=llm_response.id,
+        )
+        on_event(msg_event)
+
+        # Emit VLLM token ids if enabled
+        self._maybe_emit_vllm_tokens(llm_response, on_event)
+
+        # Finish conversation if LLM produced content (awaits user input)
+        # Continue if only reasoning without content (e.g., GPT-5 codex thinking)
+        if has_content:
             logger.debug("LLM produced a message response - awaits user input")
             state.execution_status = ConversationExecutionStatus.FINISHED
-            msg_event = MessageEvent(
-                source="agent",
-                llm_message=message,
-                llm_response_id=llm_response.id,
-            )
-            on_event(msg_event)
-
-        # If using VLLM, we can get the raw prompt and response tokens
-        # that can be useful for RL training.
-        if (
-            "return_token_ids" in self.llm.litellm_extra_body
-        ) and self.llm.litellm_extra_body["return_token_ids"]:
-            token_event = TokenEvent(
-                source="agent",
-                prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
-                response_token_ids=llm_response.raw_response["choices"][0][
-                    "provider_specific_fields"
-                ]["token_ids"],
-            )
-            on_event(token_event)
+            return
 
     def _requires_user_confirmation(
         self, state: ConversationState, action_events: list[ActionEvent]
@@ -488,3 +502,113 @@ class Agent(AgentBase):
         if tool.name == FinishTool.name:
             state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
+
+    def _maybe_emit_vllm_tokens(
+        self, llm_response: LLMResponse, on_event: ConversationCallbackType
+    ) -> None:
+        if (
+            "return_token_ids" in self.llm.litellm_extra_body
+        ) and self.llm.litellm_extra_body["return_token_ids"]:
+            token_event = TokenEvent(
+                source="agent",
+                prompt_token_ids=llm_response.raw_response["prompt_token_ids"],
+                response_token_ids=llm_response.raw_response["choices"][0][
+                    "provider_specific_fields"
+                ]["token_ids"],
+            )
+            on_event(token_event)
+
+    def _log_context_window_exceeded_warning(self) -> None:
+        """Log a helpful warning when context window is exceeded without a condenser."""
+        if self.condenser is None:
+            logger.warning(
+                "\n"
+                "=" * 80 + "\n"
+                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+                "=" * 80 + "\n"
+                "\n"
+                "The LLM's context window has been exceeded, but no condenser is "
+                "configured.\n"
+                "\n"
+                "Current configuration:\n"
+                f"  • Condenser: None\n"
+                f"  • LLM Model: {self.llm.model}\n"
+                "\n"
+                "To prevent this error, configure a condenser to automatically "
+                "summarize\n"
+                "conversation history when it gets too long.\n"
+                "\n"
+                "Example configuration:\n"
+                "\n"
+                "  from openhands.sdk import Agent, LLM\n"
+                "  from openhands.sdk.context.condenser import "
+                "LLMSummarizingCondenser\n"
+                "\n"
+                "  agent = Agent(\n"
+                "      llm=LLM(model='your-model'),\n"
+                "      condenser=LLMSummarizingCondenser(\n"
+                "          llm=LLM(model='your-model'),  # Can use same or "
+                "cheaper model\n"
+                "          max_size=120,  # Maximum events before condensation\n"
+                "          keep_first=4   # Number of initial events to preserve\n"
+                "      )\n"
+                "  )\n"
+                "\n"
+                "For more information, see: "
+                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+                "=" * 80
+            )
+        else:
+            condenser_type = type(self.condenser).__name__
+            handles_requests = self.condenser.handles_condensation_requests()
+            condenser_config = self.condenser.model_dump(
+                exclude={"llm"}, exclude_none=True
+            )
+            condenser_llm_obj = getattr(self.condenser, "llm", None)
+            condenser_llm = (
+                condenser_llm_obj.model if condenser_llm_obj is not None else "N/A"
+            )
+
+            logger.warning(
+                "\n"
+                "=" * 80 + "\n"
+                "⚠️  CONTEXT WINDOW EXCEEDED ERROR\n"
+                "=" * 80 + "\n"
+                "\n"
+                "The LLM's context window has been exceeded.\n"
+                "\n"
+                "Current configuration:\n"
+                f"  • Condenser Type: {condenser_type}\n"
+                f"  • Handles Condensation Requests: {handles_requests}\n"
+                f"  • Condenser LLM: {condenser_llm}\n"
+                f"  • Agent LLM Model: {self.llm.model}\n"
+                f"  • Condenser Config: {json.dumps(condenser_config, indent=4)}\n"
+                "\n"
+                "Your condenser is configured but does not handle condensation "
+                "requests\n"
+                "(handles_condensation_requests() returned False).\n"
+                "\n"
+                "To fix this:\n"
+                "  1. Use LLMSummarizingCondenser which handles condensation "
+                "requests, OR\n"
+                "  2. Implement handles_condensation_requests() in your custom "
+                "condenser\n"
+                "\n"
+                "Example with LLMSummarizingCondenser:\n"
+                "\n"
+                "  from openhands.sdk.context.condenser import "
+                "LLMSummarizingCondenser\n"
+                "\n"
+                "  agent = Agent(\n"
+                "      llm=LLM(model='your-model'),\n"
+                "      condenser=LLMSummarizingCondenser(\n"
+                "          llm=LLM(model='your-model'),\n"
+                "          max_size=120,\n"
+                "          keep_first=4\n"
+                "      )\n"
+                "  )\n"
+                "\n"
+                "For more information, see: "
+                "https://docs.openhands.dev/sdk/guides/context-condenser\n"
+                "=" * 80
+            )

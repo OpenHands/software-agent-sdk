@@ -105,7 +105,9 @@ def test_tool_no_fallback_behavior_json() -> None:
     }
     tool_json = json.dumps(tool_dict)
 
-    with pytest.raises(ValueError, match="Unknown kind 'UnknownToolType'"):
+    with pytest.raises(
+        ValueError, match="Unexpected kind 'UnknownToolType' for ToolDefinition"
+    ):
         ToolDefinition.model_validate_json(tool_json)
 
 

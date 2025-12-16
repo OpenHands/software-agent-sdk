@@ -24,6 +24,7 @@ class ModelFeatures:
     supports_responses_api: bool
     force_string_serializer: bool
     send_reasoning_content: bool
+    supports_prompt_cache_retention: bool
 
 
 # Pattern tables capturing current behavior. Keep patterns lowercase.
@@ -66,6 +67,14 @@ PROMPT_CACHE_PATTERNS: list[str] = [
     # Anthropic Haiku 4.5 variants (dash only; official IDs use hyphens)
     "claude-haiku-4-5",
     "claude-opus-4-5",
+]
+
+# Models that support a top-level prompt_cache_retention parameter
+PROMPT_CACHE_RETENTION_PATTERNS: list[str] = [
+    # OpenAI GPT-5+ family
+    "gpt-5",
+    # GPT-4.1 too
+    "gpt-4.1",
 ]
 
 SUPPORTS_STOP_WORDS_FALSE_PATTERNS: list[str] = [
@@ -118,6 +127,9 @@ def get_features(model: str) -> ModelFeatures:
         supports_responses_api=model_matches(model, RESPONSES_API_PATTERNS),
         force_string_serializer=model_matches(model, FORCE_STRING_SERIALIZER_PATTERNS),
         send_reasoning_content=model_matches(model, SEND_REASONING_CONTENT_PATTERNS),
+        supports_prompt_cache_retention=model_matches(
+            model, PROMPT_CACHE_RETENTION_PATTERNS
+        ),
     )
 
 

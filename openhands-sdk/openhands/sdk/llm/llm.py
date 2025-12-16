@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
 import httpx  # noqa: F401
 from pydantic import (
-    AliasChoices,
     BaseModel,
     ConfigDict,
     Field,
@@ -172,6 +171,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ge=1,
         description="The maximum number of output tokens. This is sent to the LLM.",
     )
+    model_canonical_name: str | None = Field(
+        default=None,
+        description=(
+            "Optional canonical model name for feature registry lookups. "
+            "The OpenHands SDK maintains a model feature registry that "
+            "maps model names to capabilities (e.g., vision support, "
+            "prompt caching, responses API support). When using proxied or "
+            "aliased model identifiers, set this field to the canonical "
+            "model name (e.g., 'openai/gpt-4o') to ensure correct "
+            "capability detection. If not provided, the 'model' field "
+            "will be used for capability lookups."
+        ),
+    )
     extra_headers: dict[str, str] | None = Field(
         default=None,
         description="Optional HTTP headers to forward to LiteLLM requests.",
@@ -235,10 +247,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "like HuggingFace and Groq."
         ),
     )
-    reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
         default="high",
         description="The effort to put into reasoning. "
-        "This is a string that can be one of 'low', 'medium', 'high', or 'none'. "
+        "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
+        "or 'none'. "
         "Can apply to all reasoning models.",
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
@@ -248,9 +261,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Requires verified OpenAI organization. Only sent when explicitly set.",
     )
     enable_encrypted_reasoning: bool = Field(
-        default=False,
+        default=True,
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
+    )
+    # Prompt cache retention only applies to GPT-5+ models; filtered in chat options
+    prompt_cache_retention: str | None = Field(
+        default="24h",
+        description=(
+            "Retention policy for prompt cache. Only sent for GPT-5+ models; "
+            "explicitly stripped for all other models."
+        ),
     )
     extended_thinking_budget: int | None = Field(
         default=200_000,
@@ -268,7 +289,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     usage_id: str = Field(
         default="default",
-        validation_alias=AliasChoices("usage_id", "service_id"),
         serialization_alias="usage_id",
         description=(
             "Unique usage identifier for the LLM. Used for registry lookups, "
@@ -296,7 +316,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
-    retry_listener: SkipJsonSchema[Callable[[int, int], None] | None] = Field(
+    retry_listener: SkipJsonSchema[
+        Callable[[int, int, BaseException | None], None] | None
+    ] = Field(
         default=None,
         exclude=True,
     )
@@ -350,7 +372,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("openhands/"):
             model_name = model_val.removeprefix("openhands/")
             d["model"] = f"litellm_proxy/{model_name}"
-            d["base_url"] = "https://llm-proxy.app.all-hands.dev/"
+            # Set base_url (default to the app proxy when base_url is unset or None)
+            # Use `or` instead of dict.get() to handle explicit None values
+            d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
@@ -405,6 +429,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _retry_listener_fn(
+        self, attempt_number: int, num_retries: int, _err: BaseException | None
+    ) -> None:
+        if self.retry_listener is not None:
+            self.retry_listener(attempt_number, num_retries, _err)
+        if self._telemetry is not None and _err is not None:
+            self._telemetry.on_error(_err)
 
     # =========================================================================
     # Serializers
@@ -539,7 +571,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
@@ -651,7 +683,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 "kwargs": {k: v for k, v in call_kwargs.items()},
                 "context_window": self.max_input_tokens or 0,
             }
-        self._telemetry.on_request(log_ctx=log_ctx)
 
         # Perform call with retries
         @self.retry_decorator(
@@ -660,9 +691,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+            assert self._telemetry is not None
+            self._telemetry.on_request(log_ctx=log_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
@@ -693,7 +726,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
                     # telemetry (latency, cost). Token usage mapping we handle after.
-                    assert self._telemetry is not None
                     self._telemetry.on_response(ret)
                     return ret
 
@@ -802,11 +834,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Capabilities, formatting, and info
     # =========================================================================
+    def _model_name_for_capabilities(self) -> str:
+        """Return canonical name for capability lookups (e.g., vision support)."""
+        return self.model_canonical_name or self.model
+
     def _init_model_info_and_caps(self) -> None:
         self._model_info = get_litellm_model_info(
             secret_api_key=self.api_key,
             base_url=self.base_url,
-            model=self.model,
+            model=self._model_name_for_capabilities(),
         )
 
         # Context window and max_output_tokens
@@ -866,9 +902,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # we can go with it, but we will need to keep an eye if model_info is correct for Vertex or other providers  # noqa: E501
         # remove when litellm is updated to fix https://github.com/BerriAI/litellm/issues/5608  # noqa: E501
         # Check both the full model name and the name after proxy prefix for vision support  # noqa: E501
+        model_for_caps = self._model_name_for_capabilities()
         return (
-            supports_vision(self.model)
-            or supports_vision(self.model.split("/")[-1])
+            supports_vision(model_for_caps)
+            or supports_vision(model_for_caps.split("/")[-1])
             or (
                 self._model_info is not None
                 and self._model_info.get("supports_vision", False)
@@ -887,13 +924,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return False
         # We don't need to look-up model_info, because
         # only Anthropic models need explicit caching breakpoints
-        return self.caching_prompt and get_features(self.model).supports_prompt_cache
+        return (
+            self.caching_prompt
+            and get_features(self._model_name_for_capabilities()).supports_prompt_cache
+        )
 
     def uses_responses_api(self) -> bool:
         """Whether this model uses the OpenAI Responses API path."""
 
         # by default, uses = supports
-        return get_features(self.model).supports_responses_api
+        return get_features(self._model_name_for_capabilities()).supports_responses_api
 
     @property
     def model_info(self) -> dict | None:
@@ -930,7 +970,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             message.cache_enabled = self.is_caching_prompt_active()
             message.vision_enabled = self.vision_is_active()
             message.function_calling_enabled = self.native_tool_calling
-            model_features = get_features(self.model)
+            model_features = get_features(self._model_name_for_capabilities())
             message.force_string_serializer = (
                 self.force_string_serializer
                 if self.force_string_serializer is not None
@@ -954,10 +994,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """
         msgs = copy.deepcopy(messages)
 
-        # Set only vision flag; skip cache_enabled and force_string_serializer
+        # Determine vision based on model detection
         vision_active = self.vision_is_active()
-        for m in msgs:
-            m.vision_enabled = vision_active
 
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
