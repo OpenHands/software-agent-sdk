@@ -35,7 +35,7 @@ class NoOververificationTest(SoftwareAgentSDKBehaviorTest):
         evaluation_criteria = dedent(
             """
             Verify that the agent did not over-verify the truncation limit change
-            by running test suites broader than necessary if not asked or required.
+            by running test suites much broader than necessary, or repeatedly.
 
             The agent must:
             1. Update `MAX_CMD_OUTPUT_SIZE` to 20_000.
