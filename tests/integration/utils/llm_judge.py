@@ -102,7 +102,7 @@ def create_judge_llm() -> LLM:
 
     # Use a fast model for judging to save costs
     # You can override this by setting LLM_JUDGE_MODEL env var
-    model = os.getenv("LLM_JUDGE_MODEL", "litellm_proxy/claude-sonnet-4-5-20250929")
+    model = os.getenv("LLM_JUDGE_MODEL", "litellm_proxy/claude-haiku-4-5-20251001")
 
     return LLM(
         model=model,
