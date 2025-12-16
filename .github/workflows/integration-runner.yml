@@ -13,6 +13,10 @@ on:
                 description: Reason for manual trigger
                 required: true
                 default: ''
+            test_type:
+                description: Select which tests to run (all, integration, behavior)
+                required: false
+                default: all
     schedule:
         - cron: 30 22 * * * # Runs at 10:30pm UTC every day
 
@@ -21,25 +25,42 @@ env:
 
 jobs:
     post-initial-comment:
-        if: github.event_name == 'pull_request_target' && github.event.label.name == 'integration-test'
+        if: >
+            github.event_name == 'pull_request_target' && (
+                github.event.label.name == 'integration-test' ||
+                github.event.label.name == 'behavior-test'
+            )
         runs-on: ubuntu-latest
         permissions:
             pull-requests: write
         steps:
-            - name: Comment on PR
+            - name: Comment on PR (integration tests)
+              if: github.event.label.name == 'integration-test'
               uses: KeisukeYamashita/create-comment@v1
               with:
                   unique: false
                   comment: |
                       Hi! I started running the integration tests on your PR. You will receive a comment with the results shortly.
+            - name: Comment on PR (behavior tests)
+              if: github.event.label.name == 'behavior-test'
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  unique: false
+                  comment: |
+                      Hi! I started running the behavior tests on your PR. You will receive a comment with the results shortly.
 
     run-integration-tests:
-        # Security: Only run when 'integration-test' label is present, via workflow_dispatch, or on schedule
+        # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
         # This prevents automatic execution on fork PRs without maintainer approval
         # Note: uses always() to run even when post-initial-comment is skipped (e.g., for workflow_dispatch)
         if: |
             always() && (
-                github.event.label.name == 'integration-test' ||
+                (
+                    github.event_name == 'pull_request_target' && (
+                        github.event.label.name == 'integration-test' ||
+                        github.event.label.name == 'behavior-test'
+                    )
+                ) ||
                 github.event_name == 'workflow_dispatch' ||
                 github.event_name == 'schedule'
             )
@@ -63,6 +84,7 @@ jobs:
                       llm-config:
                           model: litellm_proxy/gpt-5.1-codex-max
                           temperature: 1.0
+                          reasoning_summary: detailed
                     - name: Deepseek Chat
                       run-suffix: deepseek_run
                       llm-config:
@@ -101,7 +123,36 @@ jobs:
                   uv sync --dev
                   uv pip install pytest
 
-      # Run integration test evaluation
+            # Run integration test evaluation
+            - name: Determine test selection
+              run: |
+                  TEST_TYPE_ARGS=""
+                  if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
+                    TEST_TYPE_ARGS="--test-type behavior"
+                    echo "behavior-test label detected; running behavior tests only."
+                  elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+                    test_type="${{ github.event.inputs.test_type }}"
+                    case "$test_type" in
+                      behavior)
+                        TEST_TYPE_ARGS="--test-type behavior"
+                        echo "workflow_dispatch requested behavior tests only."
+                        ;;
+                      integration)
+                        TEST_TYPE_ARGS="--test-type integration"
+                        echo "workflow_dispatch requested integration tests only."
+                        ;;
+                      ""|all)
+                        echo "workflow_dispatch requested full integration suite."
+                        ;;
+                      *)
+                        echo "workflow_dispatch provided unknown test_type '$test_type'; defaulting to full suite."
+                        ;;
+                    esac
+                  else
+                    echo "Running full integration test suite."
+                  fi
+                  echo "TEST_TYPE_ARGS=$TEST_TYPE_ARGS" >> "$GITHUB_ENV"
+
             - name: Run integration test evaluation for ${{ matrix.job-config.name }}
               env:
                   LLM_CONFIG: ${{ toJson(matrix.job-config.llm-config) }}
@@ -113,10 +164,13 @@ jobs:
                   AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
                   EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config.run-suffix }}"
 
+                  echo "Invoking test runner with TEST_TYPE_ARGS='$TEST_TYPE_ARGS'"
+
                   uv run python tests/integration/run_infer.py \
                     --llm-config "$LLM_CONFIG" \
                     --num-workers $N_PROCESSES \
-                    --eval-note "$EVAL_NOTE"
+                    --eval-note "$EVAL_NOTE" \
+                    $TEST_TYPE_ARGS
 
                   # get integration tests JSON results
                   RESULTS_FILE=$(find tests/integration/outputs/*${{ matrix.job-config.run-suffix }}* -name "results.json" -type f | head -n 1)
@@ -169,7 +223,17 @@ jobs:
 
     consolidate-results:
         needs: run-integration-tests
-        if: always() && (github.event.label.name == 'integration-test' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        if: |
+            always() && (
+                (
+                    github.event_name == 'pull_request_target' && (
+                        github.event.label.name == 'integration-test' ||
+                        github.event.label.name == 'behavior-test'
+                    )
+                ) ||
+                github.event_name == 'workflow_dispatch' ||
+                github.event_name == 'schedule'
+            )
         runs-on: blacksmith-2vcpu-ubuntu-2404
         permissions:
             contents: read

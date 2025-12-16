@@ -1,0 +1,125 @@
+---
+name: Prepare Release
+
+on:
+    workflow_dispatch:
+        inputs:
+            version:
+                description: Release version (e.g., 1.2.3)
+                required: true
+                type: string
+
+jobs:
+    prepare-release:
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        steps:
+            - name: Validate version format
+              run: |
+                  if ! [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                    echo "❌ Invalid version format. Expected: X.Y.Z (e.g., 1.2.3)"
+                    exit 1
+                  fi
+                  echo "✅ Version format is valid: ${{ inputs.version }}"
+
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+
+            - name: Configure Git
+              run: |
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            - name: Create release branch
+              run: |
+                  BRANCH_NAME="rel-${{ inputs.version }}"
+                  echo "Creating branch: $BRANCH_NAME"
+                  git checkout -b "$BRANCH_NAME"
+                  echo "BRANCH_NAME=$BRANCH_NAME" >> $GITHUB_ENV
+
+            - name: Set package version
+              run: |
+                  echo "🔧 Setting version to ${{ inputs.version }}"
+                  make set-package-version version=${{ inputs.version }}
+
+            - name: Commit version changes
+              run: |
+                  git add .
+                  if git diff --staged --quiet; then
+                    echo "No changes to commit"
+                  else
+                    git commit -m "Release v${{ inputs.version }}" -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                    echo "✅ Changes committed"
+                  fi
+
+            - name: Push release branch
+              run: |
+                  git push -u origin "${{ env.BRANCH_NAME }}"
+                  echo "✅ Branch pushed: ${{ env.BRANCH_NAME }}"
+
+            - name: Create Pull Request
+              env:
+                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  cat > pr_body.txt << 'EOF'
+                  ## Release v${{ inputs.version }}
+
+                  This PR prepares the release for version **${{ inputs.version }}**.
+
+                  ### Release Checklist
+                  - [x] Version set to ${{ inputs.version }}
+                  - [ ] Fix any deprecation deadlines if they exist
+                  - [ ] Integration tests pass (tagged with `integration-tests`)
+                  - [ ] Example checks pass (tagged with `test-examples`)
+                  - [ ] Draft release created at https://github.com/OpenHands/software-agent-sdk/releases/new
+                    - [ ] Select tag: `v${{ inputs.version }}`
+                    - [ ] Select branch: `${{ env.BRANCH_NAME }}`
+                    - [ ] Auto-generate release notes
+                    - [ ] Publish release (PyPI will auto-publish)
+                  - [ ] Evaluation on OpenHands Index
+
+                  ### Next Steps
+                  1. Review the version changes
+                  2. Address any deprecation deadlines
+                  3. Ensure integration tests pass
+                  4. Ensure example tests pass
+                  5. Create and publish the release
+
+                  Once the release is published on GitHub, the PyPI packages will be automatically published via the `pypi-release.yml` workflow.
+                  EOF
+
+                  gh pr create \
+                    --title "Release v${{ inputs.version }}" \
+                    --body-file pr_body.txt \
+                    --base main \
+                    --head "${{ env.BRANCH_NAME }}" \
+                    --label "integration-tests" \
+                    --label "test-examples"
+
+                  rm pr_body.txt
+                  echo "✅ Pull request created successfully!"
+
+                  # Get PR URL and display it
+                  PR_URL=$(gh pr view "${{ env.BRANCH_NAME }}" --json url --jq '.url')
+                  echo "🔗 PR URL: $PR_URL"
+                  echo "PR_URL=$PR_URL" >> $GITHUB_ENV
+
+            - name: Summary
+              run: |
+                  echo "## ✅ Release Preparation Complete!" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Version**: ${{ inputs.version }}" >> $GITHUB_STEP_SUMMARY
+                  echo "- **Branch**: ${{ env.BRANCH_NAME }}" >> $GITHUB_STEP_SUMMARY
+                  echo "- **PR URL**: ${{ env.PR_URL }}" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
+                  echo "1. Review the PR and address any deprecation deadlines" >> $GITHUB_STEP_SUMMARY
+                  echo "2. Wait for integration tests and example checks to pass" >> $GITHUB_STEP_SUMMARY
+                  echo "3. Create and publish the release on GitHub" >> $GITHUB_STEP_SUMMARY
+                  echo "4. PyPI will automatically publish when the release is created" >> $GITHUB_STEP_SUMMARY

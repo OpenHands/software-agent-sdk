@@ -74,7 +74,8 @@ class EventService:
             raise ValueError("inactive_service")
         return self._conversation
 
-    async def get_event(self, event_id: str) -> Event | None:
+    def _get_event_sync(self, event_id: str) -> Event | None:
+        """Private sync function to get event with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
         with self._conversation._state as state:
@@ -82,7 +83,13 @@ class EventService:
             event = state.events[index]
             return event
 
-    async def search_events(
+    async def get_event(self, event_id: str) -> Event | None:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_event_sync, event_id)
+
+    def _search_events_sync(
         self,
         page_id: str | None = None,
         limit: int = 100,
@@ -93,6 +100,7 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> EventPage:
+        """Private sync function to search events with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -161,7 +169,34 @@ class EventService:
 
         return EventPage(items=items, next_page_id=next_page_id)
 
-    async def count_events(
+    async def search_events(
+        self,
+        page_id: str | None = None,
+        limit: int = 100,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
+    ) -> EventPage:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._search_events_sync,
+            page_id,
+            limit,
+            kind,
+            source,
+            body,
+            sort_order,
+            timestamp__gte,
+            timestamp__lt,
+        )
+
+    def _count_events_sync(
         self,
         kind: str | None = None,
         source: str | None = None,
@@ -169,7 +204,7 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
-        """Count events matching the given filters."""
+        """Private sync function to count events with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -209,6 +244,28 @@ class EventService:
                 count += 1
 
         return count
+
+    async def count_events(
+        self,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
+    ) -> int:
+        """Count events matching the given filters."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._count_events_sync,
+            kind,
+            source,
+            body,
+            timestamp__gte,
+            timestamp__lt,
+        )
 
     def _event_matches_body(self, event: Event, body: str) -> bool:
         """Check if event's message content matches body filter (case-insensitive)."""
@@ -350,7 +407,9 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(self.stored.agent.model_dump())
+        agent = Agent.model_validate(
+            self.stored.agent.model_dump(context={"expose_secrets": True}),
+        )
 
         conversation = LocalConversation(
             agent=agent,
@@ -395,7 +454,16 @@ class EventService:
         if request.accept:
             await self.run()
         else:
-            await self.pause()
+            await self.reject_pending_actions(request.reason)
+
+    async def reject_pending_actions(self, reason: str):
+        """Reject all pending actions and publish updated state."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.reject_pending_actions, reason
+        )
 
     async def pause(self):
         if self._conversation:
