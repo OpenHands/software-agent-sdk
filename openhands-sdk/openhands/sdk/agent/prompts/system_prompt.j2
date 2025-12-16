@@ -107,11 +107,19 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
   - When possible, use more targeted approaches like finding the PID from a pidfile or using application-specific shutdown commands
 </PROCESS_MANAGEMENT>
 
+{%- set _imp -%}
+{%- if model_family -%}
+{%- include "model_specific/" ~ model_family ~ ".j2" ignore missing -%}
+{%- if model_variant -%}
+{%- include "model_specific/" ~ model_family ~ "/" ~ model_variant ~ ".j2" ignore missing -%}
+{%- endif -%}
+{%- endif -%}
+{%- endset -%}
+
+{%- set _imp_trimmed = _imp | trim -%}
+{%- if _imp_trimmed %}
+
 <IMPORTANT>
-{% if model_family %}
-{% include "model_specific/" ~ model_family ~ ".j2" ignore missing %}
-{% if model_variant %}
-{% include "model_specific/" ~ model_family ~ "/" ~ model_variant ~ ".j2" ignore missing %}
-{% endif %}
-{% endif %}
+{{ _imp_trimmed }}
 </IMPORTANT>
+{%- endif %}
