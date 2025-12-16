@@ -12,6 +12,7 @@ import time
 
 import pytest
 
+from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.io.local import LocalFileStore
 
 
@@ -352,3 +353,15 @@ def test_cache_with_nested_directories():
         # Other paths should still be cached
         full_path = store.get_full_path("x/y/z/file4.txt")
         assert full_path in store.cache
+
+
+def test_cache_with_evict_correct():
+    cache = MemoryLRUCache(1000, 2)
+    cache["key1"] = "a" * 500
+    cache["key2"] = "b" * 500
+    cache["key3"] = "c" * 100
+    # key1 should be evicted at this point (exceeds memory/entry limit)
+    assert "key2" in cache and "key3" in cache and "key1" not in cache
+    total_len = len(cache["key2"]) + len(cache["key3"])
+    # Verify memory statistics match the total size of key2 and key3
+    assert total_len == cache.current_memory

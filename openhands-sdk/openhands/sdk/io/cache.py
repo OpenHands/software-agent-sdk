@@ -21,9 +21,9 @@ class MemoryLRUCache(LRUCache):
     For non-string values, sys.getsizeof is used as a rough approximation.
     """
 
-    def __init__(self, max_memory: int, maxsize: int, *args, **kwargs):
+    def __init__(self, max_memory: int, max_size: int, *args, **kwargs):
         # Ensure minimum maxsize of 1 to avoid LRUCache issues
-        maxsize = max(1, maxsize)
+        maxsize = max(1, max_size)
         super().__init__(maxsize=maxsize, *args, **kwargs)
         self.max_memory = max_memory
         self.current_memory = 0
@@ -73,8 +73,7 @@ class MemoryLRUCache(LRUCache):
 
         # Evict items until we're under memory limit
         while self.current_memory > self.max_memory and len(self) > 0:
-            evicted_key, evicted_value = self.popitem()
-            self.current_memory -= self._get_size(evicted_value)
+            self.popitem()
 
         super().__setitem__(key, value)
 
