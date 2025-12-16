@@ -8,6 +8,12 @@ by analyzing collected events from conversations.
 import fnmatch
 
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.llm_convertible.observation import (
+    AgentErrorEvent,
+    ObservationEvent,
+)
+from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
+from openhands.sdk.utils import maybe_truncate
 
 
 def find_tool_calls(collected_events: list[Event], tool_name: str) -> list[Event]:
@@ -117,29 +123,52 @@ def check_bash_command_used(
     return bash_commands
 
 
-def get_conversation_summary(collected_events: list[Event]) -> str:
+def get_conversation_summary(
+    collected_events: list[Event], max_observation_chars: int = 5000
+) -> str:
     """
     Get a summary of the conversation including agent thoughts and actions.
-    We don't need to truncate here as the later serialization will handle that.
+
+    To prevent context window overflow in LLM judges, large observations are
+    truncated to preserve both the beginning and end of the output.
 
     Args:
         collected_events: List of events collected from conversation
+        max_observation_chars: Maximum characters for observation events.
+            Uses head + tail truncation (default: 5000 = ~2500 head + ~2500 tail)
 
     Returns:
         String summary of the conversation
     """
     summary_parts = []
-    from openhands.sdk.event.llm_convertible.system import SystemPromptEvent
+
+    # Custom truncation notice for judge context (simpler than default)
+    judge_truncate_notice = (
+        "\n... [Output truncated for brevity - showing head and tail] ...\n"
+    )
 
     for event in collected_events:
         # Skip the (very long) system prompt so judges see actual agent behavior
         if isinstance(event, SystemPromptEvent):
             continue
+
         # Use the event's visualize property to get Rich Text representation
         visualized = event.visualize
         # Convert to plain text
         plain_text = visualized.plain.strip()
+
         if plain_text:
+            # Truncate large observations to prevent context overflow
+            # Keep error events in full as they're usually small and critical
+            if isinstance(event, ObservationEvent) and not isinstance(
+                event, AgentErrorEvent
+            ):
+                plain_text = maybe_truncate(
+                    plain_text,
+                    truncate_after=max_observation_chars,
+                    truncate_notice=judge_truncate_notice,
+                )
+
             # Add event type label and content
             event_type = event.__class__.__name__
             summary_parts.append(f"[{event_type}]\n{plain_text}\n")
