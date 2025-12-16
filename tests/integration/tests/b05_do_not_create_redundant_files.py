@@ -1,3 +1,5 @@
+"""Test that the agent does not create redundant files when not asked."""
+
 from __future__ import annotations
 
 import os

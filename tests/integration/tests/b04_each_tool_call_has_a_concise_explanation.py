@@ -1,4 +1,4 @@
-"""Test that agent renames methods without adding backward compatibility shims."""
+"""Test that the agent provides a concise explanation for each tool call."""
 
 from __future__ import annotations
 

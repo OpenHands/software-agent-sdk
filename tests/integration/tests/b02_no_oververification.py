@@ -1,4 +1,7 @@
-"""Test that agent updates terminal truncation limit without broad test runs."""
+"""
+Test that agent updates terminal truncation limit without broad or
+repetitive test runs.
+"""
 
 from __future__ import annotations
 
