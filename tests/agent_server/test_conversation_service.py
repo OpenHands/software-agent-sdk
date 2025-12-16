@@ -1101,6 +1101,64 @@ class TestConversationServiceDeleteConversation:
             )
 
     @pytest.mark.asyncio
+    async def test_delete_conversation_notifies_webhooks_with_deleting_status(
+        self, conversation_service, sample_stored_conversation
+    ):
+        """Test that deleting a conversation triggers webhook notifications.
+
+        Verifies that the webhook receives a conversation info with execution_status
+        set to 'deleting' when delete_conversation is called.
+        """
+        # Create mock event service
+        mock_service = AsyncMock(spec=EventService)
+        mock_service.conversation_dir = "/tmp/test_conversation"
+        mock_service.stored = sample_stored_conversation
+        mock_state = ConversationState(
+            id=sample_stored_conversation.id,
+            agent=sample_stored_conversation.agent,
+            workspace=sample_stored_conversation.workspace,
+            execution_status=ConversationExecutionStatus.IDLE,
+            confirmation_policy=sample_stored_conversation.confirmation_policy,
+        )
+        mock_service.get_state.return_value = mock_state
+
+        conversation_id = sample_stored_conversation.id
+        conversation_service._event_services[conversation_id] = mock_service
+
+        # Mock webhook notification
+        with patch.object(
+            conversation_service, "_notify_conversation_webhooks", new=AsyncMock()
+        ) as mock_notify:
+            # Mock the directory removal
+            with patch(
+                "openhands.agent_server.conversation_service.safe_rmtree"
+            ) as mock_rmtree:
+                mock_rmtree.return_value = True
+
+                result = await conversation_service.delete_conversation(conversation_id)
+
+                # Verify deletion succeeded
+                assert result is True
+                assert conversation_id not in conversation_service._event_services
+
+                # Verify webhook was called
+                mock_notify.assert_called_once()
+
+                # Verify the conversation info passed to webhook has 'deleting' status
+                call_args = mock_notify.call_args[0]
+                conversation_info = call_args[0]
+                assert (
+                    conversation_info.execution_status
+                    == ConversationExecutionStatus.DELETING
+                )
+
+                # Verify event service was closed
+                mock_service.close.assert_called_once()
+
+                # Verify directories were removed
+                assert mock_rmtree.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_delete_conversation_webhook_failure(self, conversation_service):
         """Test delete_conversation continues when webhook notification fails."""
         conversation_id = uuid4()

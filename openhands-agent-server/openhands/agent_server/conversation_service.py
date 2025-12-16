@@ -256,6 +256,9 @@ class ConversationService:
                 conversation_info = _compose_conversation_info(
                     event_service.stored, state
                 )
+                conversation_info.execution_status = (
+                    ConversationExecutionStatus.DELETING
+                )
                 await self._notify_conversation_webhooks(conversation_info)
             except Exception as e:
                 logger.warning(
