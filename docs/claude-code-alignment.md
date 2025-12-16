@@ -2,9 +2,7 @@
 
 ## Overview
 
-The OpenHands SDK now supports loading skill packages with both:
-1. **manifest.json** (Claude Desktop Extensions-aligned format)
-2. **skill-package.yaml** (legacy format)
+The OpenHands SDK now requires skill packages to use the **manifest.json** (Claude Desktop Extensions-aligned format) for Scenario 1.
 
 This enables cross-platform package distribution and better integration with the Model Context Protocol (MCP) ecosystem.
 
@@ -14,34 +12,17 @@ This enables cross-platform package distribution and better integration with the
 
 ```python
 def _load_descriptor(package_module) -> dict[str, Any]:
-    """Load package descriptor, trying manifest.json first, then skill-package.yaml."""
+    """Load package descriptor from manifest.json."""
 ```
 
-This function:
-1. Attempts to load `manifest.json` from the package
-2. Falls back to `skill-package.yaml` if JSON not found
-3. Raises FileNotFoundError if neither file exists
+This function loads `manifest.json` from the package and parses it as JSON.
 
 ### Updated Functions
 
 All package loading functions now use `_load_descriptor()`:
 - `list_skill_packages()` - Lists all installed skill packages
 - `get_skill_package()` - Gets a specific package by name
-- `load_skills_from_package()` - Loads skills with format-aware spec extraction
-
-### Format Detection
-
-The `load_skills_from_package()` function auto-detects the descriptor format:
-
-```python
-# Handle both formats
-if "spec" in descriptor:
-    # Old YAML format: skills are in spec.skills
-    skills_spec = descriptor.get("spec", {}).get("skills", [])
-else:
-    # New JSON format: skills are at top level
-    skills_spec = descriptor.get("skills", [])
-```
+- `load_skills_from_package()` - Loads skills from flat JSON structure
 
 ## Descriptor Format Comparison
 
@@ -66,7 +47,9 @@ else:
 
 **Structure**: Flat, with `skills` at the top level
 
-### skill-package.yaml (Legacy Format)
+### skill-package.yaml (Previous Format - Reference)
+
+For reference, the previous YAML format looked like this:
 
 ```yaml
 apiVersion: openhands.ai/v1
@@ -88,20 +71,20 @@ spec:
         - review-code
 ```
 
-**Structure**: Nested, with `skills` under `spec.skills`
+**Note**: This format is no longer supported in Scenario 1. Packages must use `manifest.json`.
 
-## Backwards Compatibility
+## Migration from YAML
 
-The changes are **fully backwards compatible**:
+To migrate from `skill-package.yaml` to `manifest.json`:
 
-1. Existing packages with `skill-package.yaml` continue to work
-2. New packages can use `manifest.json`
-3. Packages can include both files during transition
-4. No changes required to existing code that uses package_loader
+1. Flatten the nested YAML structure
+2. Move metadata fields to the top level
+3. Move skills from `spec.skills` to top-level `skills` array
+4. Remove `apiVersion` and `kind` (now in `[tool.openhands]` in `pyproject.toml` if needed)
 
 ## Usage Examples
 
-### Loading Packages (No Changes Required)
+### Loading Packages
 
 ```python
 from openhands.sdk.context.skills.package_loader import (
@@ -110,42 +93,37 @@ from openhands.sdk.context.skills.package_loader import (
     load_skills_from_package
 )
 
-# List all packages - works with both formats
+# List all packages
 packages = list_skill_packages()
 for pkg in packages:
     print(f"Package: {pkg['name']}")
 
-# Get specific package - works with both formats  
+# Get specific package
 pkg = get_skill_package('simple-code-review')
 
-# Load skills - works with both formats
+# Load skills
 repo_skills, knowledge_skills = load_skills_from_package('simple-code-review')
 ```
 
 ### Accessing Descriptor Data
 
-When working directly with descriptors, handle both formats:
+Descriptors now use flat JSON structure:
 
 ```python
 pkg = get_skill_package('my-package')
 descriptor = pkg['descriptor']
 
-# Handle both nested (YAML) and flat (JSON) structures
-if 'metadata' in descriptor:
-    # Old YAML format
-    metadata = descriptor['metadata']
-    skills = descriptor.get('spec', {}).get('skills', [])
-else:
-    # New JSON format
-    metadata = descriptor
-    skills = descriptor.get('skills', [])
+# Access flat JSON structure
+display_name = descriptor.get('displayName', 'Unknown')
+skills = descriptor.get('skills', [])
 
-print(f"Display Name: {metadata.get('displayName', 'Unknown')}")
+print(f"Display Name: {display_name}")
+print(f"Skills: {len(skills)}")
 ```
 
 ## Creating New Packages
 
-### Recommended Approach: Use manifest.json
+### Required Format: manifest.json
 
 1. Create `manifest.json` in your package root:
 
@@ -192,39 +170,26 @@ my_awesome_skills = ["manifest.json", "skills/*.md"]
 my-awesome-skills = "my_awesome_skills"
 ```
 
-## Migration from YAML to JSON
+## Package Structure
 
-### Option 1: Add JSON alongside YAML (Recommended)
-
-Keep both files for maximum compatibility:
+Packages must include `manifest.json`:
 
 ```
 my-package/
-├── manifest.json          # New format
-├── skill-package.yaml     # Old format (for backwards compat)
+├── manifest.json          # Required
 ├── pyproject.toml
 └── my_package/
     ├── __init__.py
     ├── manifest.json      # Include in package
-    ├── skill-package.yaml # Include in package
     └── skills/
         └── skill.md
 ```
 
-Update pyproject.toml:
+Update pyproject.toml to include manifest.json:
 ```toml
 [tool.setuptools.package-data]
-my_package = ["manifest.json", "skill-package.yaml", "skills/*.md"]
+my_package = ["manifest.json", "skills/*.md"]
 ```
-
-### Option 2: Replace YAML with JSON
-
-Only do this if you don't need to support old SDK versions:
-
-1. Create `manifest.json` from `skill-package.yaml` content
-2. Remove `skill-package.yaml`
-3. Update package data to only include manifest.json
-4. Test with SDK
 
 ## Integration with OpenHands
 
@@ -239,7 +204,7 @@ No changes needed to your OpenHands agent code!
 
 ## Testing
 
-Test your package works with both formats:
+Test your package works:
 
 ```bash
 # Install your package
@@ -258,15 +223,15 @@ python -c "from openhands.sdk.context.skills.package_loader import load_skills_f
 2. **Standard Format**: JSON is more widely adopted than custom YAML
 3. **MCP Compatible**: Better integration with Model Context Protocol ecosystem
 4. **Developer Friendly**: Familiar format similar to npm package.json
-5. **No Breaking Changes**: Existing packages continue to work
+5. **Clean Design**: Single, well-defined format for Scenario 1
 
 ## Future Enhancements
 
 Potential future improvements:
 1. JSON Schema for manifest.json validation
-2. Conversion tool to migrate YAML to JSON
-3. Enhanced MCP tool integration
-4. Support for Claude Desktop-specific features
+2. Enhanced MCP tool integration
+3. Support for Claude Desktop-specific features
+4. Package validation utilities
 
 ## References
 
