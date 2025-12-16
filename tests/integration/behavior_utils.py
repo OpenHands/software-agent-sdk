@@ -124,7 +124,7 @@ def check_bash_command_used(
 
 
 def get_conversation_summary(
-    collected_events: list[Event], max_observation_chars: int = 5000
+    collected_events: list[Event], max_observation_chars: int = 2000
 ) -> str:
     """
     Get a summary of the conversation including agent thoughts and actions.
@@ -135,7 +135,7 @@ def get_conversation_summary(
     Args:
         collected_events: List of events collected from conversation
         max_observation_chars: Maximum characters for observation events.
-            Uses head + tail truncation (default: 5000 = ~2500 head + ~2500 tail)
+            Uses head + tail truncation (default: 2000 = ~1000 head + ~1000 tail)
 
     Returns:
         String summary of the conversation
