@@ -82,6 +82,40 @@ class EventService:
             event = state.events[index]
             return event
 
+    def _event_matches_filters(
+        self,
+        event: Event,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        timestamp_gte_str: str | None = None,
+        timestamp_lt_str: str | None = None,
+    ) -> bool:
+        """Check if an event matches the provided filters."""
+        # Apply kind filter if provided
+        if (
+            kind is not None
+            and f"{event.__class__.__module__}.{event.__class__.__name__}" != kind
+        ):
+            return False
+
+        # Apply source filter if provided
+        if source is not None and event.source != source:
+            return False
+
+        # Apply body filter if provided (case-insensitive substring match)
+        if body is not None:
+            if not self._event_matches_body(event, body):
+                return False
+
+        # Apply timestamp filters if provided (ISO string comparison)
+        if timestamp_gte_str is not None and event.timestamp < timestamp_gte_str:
+            return False
+        if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
+            return False
+
+        return True
+
     async def search_events(
         self,
         page_id: str | None = None,
@@ -100,37 +134,29 @@ class EventService:
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        # Collect all events
-        all_events = []
+        # Get a snapshot of the current event count without holding the lock
         with self._conversation._state as state:
-            for event in state.events:
-                # Apply kind filter if provided
-                if (
-                    kind is not None
-                    and f"{event.__class__.__module__}.{event.__class__.__name__}"
-                    != kind
+            event_count = len(state.events)
+
+        # Collect all matching events using lock-free approach
+        all_events = []
+        for i in range(event_count):
+            try:
+                # Acquire lock briefly for each individual event access
+                with self._conversation._state as state:
+                    event = state.events[i]
+
+                # Apply filters outside the lock
+                if self._event_matches_filters(
+                    event, kind, source, body, timestamp_gte_str, timestamp_lt_str
                 ):
-                    continue
+                    all_events.append(event)
 
-                # Apply source filter if provided
-                if source is not None and event.source != source:
-                    continue
-
-                # Apply body filter if provided (case-insensitive substring match)
-                if body is not None:
-                    if not self._event_matches_body(event, body):
-                        continue
-
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
-
-                all_events.append(event)
+            except (IndexError, KeyError):
+                # Event was removed or index changed during iteration
+                # This is acceptable for search operations - we'll work with
+                # the events we successfully retrieved
+                break
 
         # Sort events based on sort_order
         if sort_order == EventSortOrder.TIMESTAMP:
@@ -177,36 +203,29 @@ class EventService:
         timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
         timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
 
-        count = 0
+        # Get a snapshot of the current event count without holding the lock
         with self._conversation._state as state:
-            for event in state.events:
-                # Apply kind filter if provided
-                if (
-                    kind is not None
-                    and f"{event.__class__.__module__}.{event.__class__.__name__}"
-                    != kind
+            event_count = len(state.events)
+
+        # Count matching events using lock-free approach
+        count = 0
+        for i in range(event_count):
+            try:
+                # Acquire lock briefly for each individual event access
+                with self._conversation._state as state:
+                    event = state.events[i]
+
+                # Apply filters outside the lock
+                if self._event_matches_filters(
+                    event, kind, source, body, timestamp_gte_str, timestamp_lt_str
                 ):
-                    continue
+                    count += 1
 
-                # Apply source filter if provided
-                if source is not None and event.source != source:
-                    continue
-
-                # Apply body filter if provided (case-insensitive substring match)
-                if body is not None:
-                    if not self._event_matches_body(event, body):
-                        continue
-
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
-
-                count += 1
+            except (IndexError, KeyError):
+                # Event was removed or index changed during iteration
+                # This is acceptable for count operations - we'll work with
+                # the events we successfully retrieved
+                break
 
         return count
 
