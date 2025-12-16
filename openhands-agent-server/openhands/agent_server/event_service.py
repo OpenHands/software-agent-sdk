@@ -350,7 +350,10 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(self.stored.agent.model_dump())
+        agent = Agent.model_validate(
+            self.stored.agent.model_dump(context={"cipher": self.cipher}),
+            context={"cipher": self.cipher},
+        )
 
         conversation = LocalConversation(
             agent=agent,
