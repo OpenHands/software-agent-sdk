@@ -15,6 +15,9 @@ set -e
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Get the repository root (3 levels up from the example directory)
+REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+
 # Default tag
 TAG="${1:-custom-agent-server:latest}"
 
@@ -24,14 +27,16 @@ BASE_IMAGE="${BASE_IMAGE:-ghcr.io/openhands/agent-server:latest-python}"
 echo "🐳 Building custom agent server image..."
 echo "📦 Base image: $BASE_IMAGE"
 echo "🏷️  Tag: $TAG"
+echo "📂 Build context: $REPO_ROOT"
 echo ""
 
-# Build the image
+# Build the image from the repository root
+# The Dockerfile expects to be built from the repo root because it copies SDK packages
 docker build \
   -t "$TAG" \
   -f "$SCRIPT_DIR/Dockerfile" \
   --build-arg BASE_IMAGE="$BASE_IMAGE" \
-  "$SCRIPT_DIR"
+  "$REPO_ROOT"
 
 echo ""
 echo "✅ Custom agent server image built successfully!"
