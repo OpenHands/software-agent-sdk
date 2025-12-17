@@ -130,6 +130,9 @@ jobs:
                   if [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "behavior-test" ]; then
                     TEST_TYPE_ARGS="--test-type behavior"
                     echo "behavior-test label detected; running behavior tests only."
+                  elif [ "${{ github.event_name }}" = "pull_request_target" ] && [ "${{ github.event.label.name }}" = "integration-test" ]; then
+                    TEST_TYPE_ARGS="--test-type integration"
+                    echo "integration-test label detected; running integration tests only."
                   elif [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
                     test_type="${{ github.event.inputs.test_type }}"
                     case "$test_type" in
