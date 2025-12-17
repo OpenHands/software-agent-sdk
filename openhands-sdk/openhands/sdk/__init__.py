@@ -1,7 +1,12 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.sdk.agent import Agent, AgentBase
-from openhands.sdk.context import AgentContext, load_project_skills
+from openhands.sdk.context import (
+    AgentContext,
+    load_project_skills,
+    load_skills_from_dir,
+    load_user_skills,
+)
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -100,5 +105,7 @@ __all__ = [
     "LocalWorkspace",
     "RemoteWorkspace",
     "load_project_skills",
+    "load_skills_from_dir",
+    "load_user_skills",
     "__version__",
 ]
