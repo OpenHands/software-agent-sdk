@@ -174,6 +174,27 @@ def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gp
     )
     assert opts_51_codex_mini_resp.get("prompt_cache_retention") == "24h"
 
+    # New GPT-5.2 variants should include prompt_cache_retention
+    llm_52 = LLM(model="openai/gpt-5.2")
+    assert (
+        select_chat_options(llm_52, {}, has_tools=False).get("prompt_cache_retention")
+        == "24h"
+    )
+    assert (
+        select_responses_options(llm_52, {}, include=None, store=None).get(
+            "prompt_cache_retention"
+        )
+        == "24h"
+    )
+
+    llm_52_chat_latest = LLM(model="openai/gpt-5.2-chat-latest")
+    assert (
+        select_chat_options(llm_52_chat_latest, {}, has_tools=False).get(
+            "prompt_cache_retention"
+        )
+        == "24h"
+    )
+
     # GPT-5.1 (non-mini) should include prompt_cache_retention; mini variants should not
     llm_51_mini = LLM(model="openai/gpt-5.1-mini")
     opts_51_mini_chat = select_chat_options(llm_51_mini, {}, has_tools=False)

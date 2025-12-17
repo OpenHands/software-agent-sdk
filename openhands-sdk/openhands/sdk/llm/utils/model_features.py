@@ -93,6 +93,7 @@ PROMPT_CACHE_MODELS: list[str] = [
 
 # Models that support a top-level prompt_cache_retention parameter
 # Source: OpenAI Prompt Caching docs (extended retention), which list:
+#   - gpt-5.2
 #   - gpt-5.1
 #   - gpt-5.1-codex
 #   - gpt-5.1-codex-mini
@@ -102,7 +103,7 @@ PROMPT_CACHE_MODELS: list[str] = [
 #   - gpt-4.1
 # Use ordered include/exclude rules (last wins) to naturally express exceptions.
 PROMPT_CACHE_RETENTION_MODELS: list[str] = [
-    # Broad allow for GPT-5 family and GPT-4.1
+    # Broad allow for GPT-5 family and GPT-4.1 (covers gpt-5.2 and variants)
     "gpt-5",
     "gpt-4.1",
     # Exclude all mini variants by default

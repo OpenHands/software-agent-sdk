@@ -250,6 +250,10 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5.1", True),
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
+        # New GPT-5.2 family should support extended retention
+        ("gpt-5.2", True),
+        ("openai/gpt-5.2-chat-latest", True),
+        ("openai/gpt-5.2-pro", True),
         ("openai/gpt-5-mini", False),
         ("gpt-4o", False),
         ("openai/gpt-4.1", True),
