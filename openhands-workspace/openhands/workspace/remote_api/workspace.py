@@ -79,23 +79,14 @@ class APIRemoteWorkspace(RemoteWorkspace):
     _runtime_url: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
 
-    @property
-    def client(self) -> httpx.Client:
-        """Override client property to use api_timeout for HTTP requests."""
-        client = self._client
-        if client is None:
-            # Use api_timeout for the read timeout to allow longer operations
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=self.api_timeout,
-                write=10.0,
-                pool=10.0,
-            )
-            client = httpx.Client(
-                base_url=self.host, timeout=timeout, headers=self._headers
-            )
-            self._client = client
-        return client
+    def _create_client_timeout(self) -> httpx.Timeout:
+        """Create timeout configuration with custom api_timeout."""
+        return httpx.Timeout(
+            connect=10.0,
+            read=self.api_timeout,
+            write=10.0,
+            pool=10.0,
+        )
 
     @property
     def _api_headers(self):
@@ -138,11 +129,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         logger.info(f"Runtime ready at {self._runtime_url}")
         self.host = self._runtime_url.rstrip("/")
         self.api_key = self._session_api_key
-        # Reset HTTP client with new host and API key
-        self.reset_client()
-        # Verify client is properly initialized
-        assert self.client is not None
-        assert self.client.base_url == self.host
+        # Client will automatically recreate with new credentials on next use
 
     def _check_existing_runtime(self) -> bool:
         """Check if there's an existing runtime for this session."""

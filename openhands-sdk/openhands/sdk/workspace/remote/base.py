@@ -29,12 +29,17 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
     """
 
     _client: httpx.Client | None = PrivateAttr(default=None)
+    _cached_api_key: str | None = PrivateAttr(default=None)
+    _cached_host: str | None = PrivateAttr(default=None)
 
     def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
 
         This is useful when connection parameters (host, api_key) have changed
         and the client needs to be recreated with new values.
+
+        Note: With automatic credential detection, manual reset is rarely needed.
+        The client will automatically recreate itself when credentials change.
         """
         if self._client is not None:
             try:
@@ -42,21 +47,41 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             except Exception:
                 pass
         self._client = None
+        self._cached_api_key = None
+        self._cached_host = None
+
+    def _create_client_timeout(self) -> httpx.Timeout:
+        """Create timeout configuration."""
+        # Configure reasonable timeouts for HTTP requests
+        # - connect: 10 seconds to establish connection
+        # - read: 60 seconds to read response (for LLM operations)
+        # - write: 10 seconds to send request
+        # - pool: 10 seconds to get connection from pool
+        return httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
 
     @property
     def client(self) -> httpx.Client:
         client = self._client
+
+        # Check if credentials or host have changed
+        if client is not None and (
+            self._cached_api_key != self.api_key or self._cached_host != self.host
+        ):
+            # Credentials changed - reset and recreate client
+            self.reset_client()
+            client = None
+
         if client is None:
-            # Configure reasonable timeouts for HTTP requests
-            # - connect: 10 seconds to establish connection
-            # - read: 60 seconds to read response (for LLM operations)
-            # - write: 10 seconds to send request
-            # - pool: 10 seconds to get connection from pool
-            timeout = httpx.Timeout(connect=10.0, read=60.0, write=10.0, pool=10.0)
+            timeout = self._create_client_timeout()
             client = httpx.Client(
                 base_url=self.host, timeout=timeout, headers=self._headers
             )
             self._client = client
+
+            # Cache current credentials
+            self._cached_api_key = self.api_key
+            self._cached_host = self.host
+
         return client
 
     def _execute(self, generator: Generator[dict[str, Any], httpx.Response, Any]):

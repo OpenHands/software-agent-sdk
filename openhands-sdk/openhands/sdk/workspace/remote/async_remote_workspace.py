@@ -14,12 +14,17 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     """Async Remote Workspace Implementation."""
 
     _client: httpx.AsyncClient | None = PrivateAttr(default=None)
+    _cached_api_key: str | None = PrivateAttr(default=None)
+    _cached_host: str | None = PrivateAttr(default=None)
 
     async def reset_client(self) -> None:
         """Reset the HTTP client to force re-initialization.
 
         This is useful when connection parameters (host, api_key) have changed
         and the client needs to be recreated with new values.
+
+        Note: With automatic credential detection, manual reset is rarely needed.
+        The client will automatically recreate itself when credentials change.
         """
         if self._client is not None:
             try:
@@ -27,10 +32,22 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
             except Exception:
                 pass
         self._client = None
+        self._cached_api_key = None
+        self._cached_host = None
 
     @property
     def client(self) -> httpx.AsyncClient:
         client = self._client
+
+        # Check if credentials or host have changed
+        if client is not None and (
+            self._cached_api_key != self.api_key or self._cached_host != self.host
+        ):
+            # Credentials changed - mark old client for garbage collection
+            # (it will close when it's garbage collected)
+            self._client = None
+            client = None
+
         if client is None:
             # Configure reasonable timeouts for HTTP requests
             # - connect: 10 seconds to establish connection
@@ -42,6 +59,10 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
                 base_url=self.host, timeout=timeout, headers=self._headers
             )
             self._client = client
+
+            # Cache current credentials
+            self._cached_api_key = self.api_key
+            self._cached_host = self.host
         return client
 
     async def _execute(self, generator: Generator[dict[str, Any], httpx.Response, Any]):
