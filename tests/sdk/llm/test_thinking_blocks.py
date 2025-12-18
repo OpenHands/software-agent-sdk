@@ -59,6 +59,90 @@ def test_thinking_block_model():
     assert block.signature == "signature_hash_123"
 
 
+def test_thinking_block_without_signature():
+    """Test ThinkingBlock model with optional signature (Gemini 2.5 compatibility).
+
+    Gemini 2.5 models may return thinking blocks without signatures, unlike
+    Gemini 3 which always includes signatures. This test verifies that the
+    ThinkingBlock model correctly handles None signatures.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/1392
+    """
+    # Test thinking block without signature (Gemini 2.5 behavior)
+    block = ThinkingBlock(
+        thinking="Let me think about this step by step...",
+        signature=None,
+    )
+
+    assert block.type == "thinking"
+    assert block.thinking == "Let me think about this step by step..."
+    assert block.signature is None
+
+    # Test that serialization works correctly
+    serialized = block.model_dump()
+    assert serialized["type"] == "thinking"
+    assert serialized["thinking"] == "Let me think about this step by step..."
+    assert serialized["signature"] is None
+
+
+def test_thinking_block_from_litellm_without_signature():
+    """Test creating ThinkingBlock from LiteLLM response without signature.
+
+    This tests the integration with LiteLLM's ChatCompletionThinkingBlock
+    when the signature field is not present (Gemini 2.5 behavior).
+    """
+    # Create a LiteLLM thinking block without signature (Gemini 2.5 style)
+    litellm_thinking_block = ChatCompletionThinkingBlock(
+        type="thinking",
+        thinking="Analyzing the problem...",
+        # No signature field - this is valid for Gemini 2.5
+    )
+
+    # Create SDK ThinkingBlock from the LiteLLM block
+    block = ThinkingBlock(
+        type=litellm_thinking_block.get("type", "thinking"),
+        thinking=litellm_thinking_block.get("thinking", ""),
+        signature=litellm_thinking_block.get("signature"),
+    )
+
+    assert block.type == "thinking"
+    assert block.thinking == "Analyzing the problem..."
+    assert block.signature is None
+
+
+def test_message_from_llm_chat_message_with_thinking_no_signature():
+    """Test Message.from_llm_chat_message with thinking blocks without signature.
+
+    This tests the full flow of parsing a LiteLLM response with thinking blocks
+    that don't have signatures (Gemini 2.5 behavior).
+    """
+    # Create a mock LiteLLM message with thinking blocks without signature
+    thinking_block = ChatCompletionThinkingBlock(
+        type="thinking",
+        thinking="Let me analyze this problem...",
+        # No signature - Gemini 2.5 style
+    )
+
+    litellm_message = LiteLLMMessage(
+        role="assistant",
+        content="The answer is 42.",
+        thinking_blocks=[thinking_block],
+    )
+
+    message = Message.from_llm_chat_message(litellm_message)
+
+    assert message.role == "assistant"
+    assert len(message.content) == 1
+    assert isinstance(message.content[0], TextContent)
+    assert message.content[0].text == "The answer is 42."
+
+    # Check thinking blocks - signature should be None
+    assert len(message.thinking_blocks) == 1
+    assert isinstance(message.thinking_blocks[0], ThinkingBlock)
+    assert message.thinking_blocks[0].thinking == "Let me analyze this problem..."
+    assert message.thinking_blocks[0].signature is None
+
+
 def test_message_with_thinking_blocks():
     """Test Message with thinking blocks fields."""
     from openhands.sdk.llm.message import Message, TextContent, ThinkingBlock

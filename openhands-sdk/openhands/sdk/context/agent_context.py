@@ -14,7 +14,7 @@ from openhands.sdk.context.skills import (
 )
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
-from openhands.sdk.secret import SecretValue
+from openhands.sdk.secret import SecretSource, SecretValue
 
 
 logger = get_logger(__name__)
@@ -136,15 +136,23 @@ class AgentContext(BaseModel):
             logger.warning(f"Failed to load public skills: {str(e)}")
         return self
 
-    def get_secret_names(self) -> list[str]:
-        """Get the list of secret names from the secrets field.
+    def get_secret_infos(self) -> list[dict[str, str]]:
+        """Get secret information (name and description) from the secrets field.
 
         Returns:
-            List of secret names. Returns an empty list if no secrets are configured.
+            List of dictionaries with 'name' and 'description' keys.
+            Returns an empty list if no secrets are configured.
+            Description will be None if not available.
         """
         if not self.secrets:
             return []
-        return list(self.secrets.keys())
+        secret_infos = []
+        for name, secret_value in self.secrets.items():
+            description = None
+            if isinstance(secret_value, SecretSource):
+                description = secret_value.description
+            secret_infos.append({"name": name, "description": description})
+        return secret_infos
 
     def get_system_message_suffix(self) -> str | None:
         """Get the system message with repo skill content and custom suffix.
@@ -158,15 +166,15 @@ class AgentContext(BaseModel):
         repo_skills = [s for s in self.skills if s.trigger is None]
         logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
         # Build the workspace context information
-        secret_names = self.get_secret_names()
-        if repo_skills or self.system_message_suffix or secret_names:
+        secret_infos = self.get_secret_infos()
+        if repo_skills or self.system_message_suffix or secret_infos:
             # TODO(test): add a test for this rendering to make sure they work
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
                 repo_skills=repo_skills,
                 system_message_suffix=self.system_message_suffix or "",
-                secret_names=secret_names,
+                secret_infos=secret_infos,
             ).strip()
             return formatted_text
         elif self.system_message_suffix and self.system_message_suffix.strip():

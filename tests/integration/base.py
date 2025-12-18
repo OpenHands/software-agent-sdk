@@ -103,6 +103,7 @@ class BaseIntegrationTest(ABC):
             workspace=self.workspace,
             callbacks=[self.conversation_callback],
             visualizer=DefaultConversationVisualizer(),  # Use default visualizer
+            max_iteration_per_run=100,
         )
 
     def conversation_callback(self, event: Event):
