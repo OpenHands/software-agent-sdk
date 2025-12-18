@@ -2,13 +2,25 @@
 
 import asyncio
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import httpx
 import pytest
 
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.async_remote_workspace import AsyncRemoteWorkspace
+
+
+@pytest.fixture()
+def mock_async_client():
+    """Auto-mock AsyncRemoteWorkspace client to prevent real HTTP connections."""
+
+    with patch.object(
+        AsyncRemoteWorkspace, "client", new_callable=PropertyMock
+    ) as mock_prop:
+        mock_client = AsyncMock(spec=httpx.AsyncClient)
+        mock_prop.return_value = mock_client
+        yield mock_client
 
 
 def test_async_remote_workspace_initialization():
@@ -79,17 +91,15 @@ def test_async_headers_property_without_api_key():
 
 
 @pytest.mark.asyncio
-async def test_async_execute_method():
+async def test_async_execute_method(mock_async_client):
     """Test _execute method handles async generator protocol correctly."""
     workspace = AsyncRemoteWorkspace(
         host="http://localhost:8000", working_dir="workspace"
     )
 
     # Mock async client
-    mock_client = AsyncMock()
     mock_response = Mock()
-    mock_client.request.return_value = mock_response
-    workspace._client = mock_client
+    mock_async_client.request.return_value = mock_response
 
     # Create a simple generator that yields request kwargs and returns a result
     def test_generator():
@@ -99,7 +109,9 @@ async def test_async_execute_method():
     result = await workspace._execute(test_generator())
 
     assert result == "test_result"
-    mock_client.request.assert_called_once_with(method="GET", url="http://test.com")
+    mock_async_client.request.assert_called_once_with(
+        method="GET", url="http://test.com"
+    )
 
 
 @pytest.mark.asyncio
@@ -276,17 +288,15 @@ async def test_async_execute_with_exception_handling():
 
 
 @pytest.mark.asyncio
-async def test_async_execute_generator_completion():
+async def test_async_execute_generator_completion(mock_async_client):
     """Test _execute method properly handles StopIteration to get return value."""
     workspace = AsyncRemoteWorkspace(
         host="http://localhost:8000", working_dir="workspace"
     )
 
     # Mock async client
-    mock_client = AsyncMock()
     mock_response = Mock()
-    mock_client.request.return_value = mock_response
-    workspace._client = mock_client
+    mock_async_client.request.return_value = mock_response
 
     def test_generator():
         # First yield - get response
@@ -299,23 +309,21 @@ async def test_async_execute_generator_completion():
     result = await workspace._execute(test_generator())
 
     assert result == "final_result"
-    assert mock_client.request.call_count == 2
-    mock_client.request.assert_any_call(method="GET", url="http://test1.com")
-    mock_client.request.assert_any_call(method="POST", url="http://test2.com")
+    assert mock_async_client.request.call_count == 2
+    mock_async_client.request.assert_any_call(method="GET", url="http://test1.com")
+    mock_async_client.request.assert_any_call(method="POST", url="http://test2.com")
 
 
 @pytest.mark.asyncio
-async def test_async_execute_multiple_yields():
+async def test_async_execute_multiple_yields(mock_async_client):
     """Test _execute method handles multiple yields correctly."""
     workspace = AsyncRemoteWorkspace(
         host="http://localhost:8000", working_dir="workspace"
     )
 
     # Mock async client
-    mock_client = AsyncMock()
     responses = [Mock(), Mock(), Mock()]
-    mock_client.request.side_effect = responses
-    workspace._client = mock_client
+    mock_async_client.request.side_effect = responses
 
     def multi_yield_generator():
         # Multiple yields to simulate complex API interactions
@@ -327,10 +335,10 @@ async def test_async_execute_multiple_yields():
     result = await workspace._execute(multi_yield_generator())
 
     assert result == "complex_result"
-    assert mock_client.request.call_count == 3
-    mock_client.request.assert_any_call(method="POST", url="http://start.com")
-    mock_client.request.assert_any_call(method="GET", url="http://poll.com")
-    mock_client.request.assert_any_call(method="GET", url="http://result.com")
+    assert mock_async_client.request.call_count == 3
+    mock_async_client.request.assert_any_call(method="POST", url="http://start.com")
+    mock_async_client.request.assert_any_call(method="GET", url="http://poll.com")
+    mock_async_client.request.assert_any_call(method="GET", url="http://result.com")
 
 
 @pytest.mark.asyncio
