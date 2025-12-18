@@ -24,12 +24,18 @@ def _load_package_descriptor(package_module) -> dict[str, Any]:
     """Load package descriptor from either manifest.json or skill-package.yaml.
 
     Tries manifest.json first (Claude Code format), falls back to skill-package.yaml.
+    Normalizes manifest.json format to match skill-package.yaml structure for
+    backward compatibility.
 
     Args:
         package_module: The loaded package module
 
     Returns:
-        Package descriptor dict
+        Package descriptor dict with normalized structure:
+        {
+            "metadata": {"name", "version", "displayName", ...},
+            "spec": {"skills": [...]}
+        }
 
     Raises:
         FileNotFoundError: If neither manifest file is found
@@ -37,7 +43,9 @@ def _load_package_descriptor(package_module) -> dict[str, Any]:
     # Try manifest.json first (Claude Code format)
     try:
         manifest_content = files(package_module).joinpath("manifest.json").read_text()
-        return json.loads(manifest_content)
+        manifest = json.loads(manifest_content)
+        # Normalize manifest.json to skill-package.yaml structure
+        return _normalize_manifest(manifest)
     except FileNotFoundError:
         pass
 
@@ -50,6 +58,43 @@ def _load_package_descriptor(package_module) -> dict[str, Any]:
         raise FileNotFoundError(
             f"No manifest.json or skill-package.yaml found in package {pkg_name}"
         )
+
+
+def _normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Normalize manifest.json format to skill-package.yaml structure.
+
+    Converts flat Claude Code manifest format to nested skill-package.yaml format
+    for backward compatibility with existing code.
+
+    Args:
+        manifest: Raw manifest dict from manifest.json
+
+    Returns:
+        Normalized descriptor matching skill-package.yaml structure
+    """
+    # Extract author info
+    author = manifest.get("author", {})
+    if isinstance(author, str):
+        author_name = author
+    else:
+        author_name = author.get("name", "")
+
+    # Build normalized structure
+    normalized = {
+        "metadata": {
+            "name": manifest.get("name"),
+            "version": manifest.get("version"),
+            "displayName": manifest.get("displayName", manifest.get("name")),
+            "description": manifest.get("description", ""),
+            "author": author_name,
+            "license": manifest.get("license", ""),
+            "repository": manifest.get("repository", {}).get("url", ""),
+            "tags": manifest.get("keywords", []),
+        },
+        "spec": {"skills": manifest.get("skills", [])},
+    }
+
+    return normalized
 
 
 def list_skill_packages() -> list[dict[str, Any]]:
