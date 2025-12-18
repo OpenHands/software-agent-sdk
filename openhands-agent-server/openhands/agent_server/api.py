@@ -1,3 +1,4 @@
+import asyncio
 import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -28,6 +29,7 @@ from openhands.agent_server.server_details_router import (
     server_details_router,
 )
 from openhands.agent_server.sockets import sockets_router
+from openhands.agent_server.tool_preload_service import get_tool_preload_service
 from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
@@ -42,28 +44,50 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
     service = get_default_conversation_service()
     vscode_service = get_vscode_service()
     desktop_service = get_desktop_service()
+    tool_preload_service = get_tool_preload_service()
 
-    # Start VSCode service if enabled
-    if vscode_service is not None:
-        vscode_started = await vscode_service.start()
-        if vscode_started:
-            logger.info("VSCode service started successfully")
+    # Define async functions for starting each service
+    async def start_vscode_service():
+        if vscode_service is not None:
+            vscode_started = await vscode_service.start()
+            if vscode_started:
+                logger.info("VSCode service started successfully")
+            else:
+                logger.warning(
+                    "VSCode service failed to start, continuing without VSCode"
+                )
         else:
-            logger.warning("VSCode service failed to start, continuing without VSCode")
-    else:
-        logger.info("VSCode service is disabled")
+            logger.info("VSCode service is disabled")
 
-    # Start Desktop service if enabled
-    if desktop_service is not None:
-        desktop_started = await desktop_service.start()
-        if desktop_started:
-            logger.info("Desktop service started successfully")
+    async def start_desktop_service():
+        if desktop_service is not None:
+            desktop_started = await desktop_service.start()
+            if desktop_started:
+                logger.info("Desktop service started successfully")
+            else:
+                logger.warning(
+                    "Desktop service failed to start, continuing without desktop"
+                )
         else:
-            logger.warning(
-                "Desktop service failed to start, continuing without desktop"
-            )
-    else:
-        logger.info("Desktop service is disabled")
+            logger.info("Desktop service is disabled")
+
+    async def start_tool_preload_service():
+        if tool_preload_service is not None:
+            tool_preload_started = await tool_preload_service.start()
+            if tool_preload_started:
+                logger.info("Tool preload service started successfully")
+            else:
+                logger.warning("Tool preload service failed to start - skipping")
+        else:
+            logger.info("Tool preload service is disabled")
+
+    # Start all services concurrently
+    await asyncio.gather(
+        start_vscode_service(),
+        start_desktop_service(),
+        start_tool_preload_service(),
+        return_exceptions=True,
+    )
 
     async with service:
         # Store the initialized service in app state for dependency injection
@@ -71,11 +95,26 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         try:
             yield
         finally:
-            # Stop services on shutdown
-            if vscode_service is not None:
-                await vscode_service.stop()
-            if desktop_service is not None:
-                await desktop_service.stop()
+            # Define async functions for stopping each service
+            async def stop_vscode_service():
+                if vscode_service is not None:
+                    await vscode_service.stop()
+
+            async def stop_desktop_service():
+                if desktop_service is not None:
+                    await desktop_service.stop()
+
+            async def stop_tool_preload_service():
+                if tool_preload_service is not None:
+                    await tool_preload_service.stop()
+
+            # Stop all services concurrently
+            await asyncio.gather(
+                stop_vscode_service(),
+                stop_desktop_service(),
+                stop_tool_preload_service(),
+                return_exceptions=True,
+            )
 
 
 def _create_fastapi_instance() -> FastAPI:

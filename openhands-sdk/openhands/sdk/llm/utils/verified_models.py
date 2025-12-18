@@ -1,7 +1,14 @@
 VERIFIED_OPENAI_MODELS = [
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
     "gpt-5-codex",
     "gpt-5-2025-08-07",
     "gpt-5-mini-2025-08-07",
+    "gpt-5.1",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex-mini",
     "o4-mini",
     "gpt-4o",
     "gpt-4o-mini",
@@ -33,20 +40,21 @@ VERIFIED_MISTRAL_MODELS = [
     "devstral-small-2505",
     "devstral-small-2507",
     "devstral-medium-2507",
+    "devstral-2512",
+    "devstral-medium-2512",
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    "claude-sonnet-4-5-20250929",
-    "gemini-3-pro-preview",
-    "gpt-5-2025-08-07",
-    "gpt-5-codex",
-    "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
+    "claude-sonnet-4-5-20250929",
+    "gpt-5.1-codex-max",
+    "gpt-5.1-codex",
+    "gpt-5.1",
+    "gemini-3-pro-preview",
+    "deekseek-chat",
     "kimi-k2-thinking",
-    "gpt-5-mini-2025-08-07",
-    "claude-opus-4-1-20250805",
-    "devstral-small-2507",
-    "devstral-medium-2507",
+    "devstral-medium-2512",
+    "devstral-2512",
 ]
 
 
