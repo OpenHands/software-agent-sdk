@@ -55,15 +55,9 @@ if not cloud_api_key:
 cloud_api_url = os.getenv("OPENHANDS_CLOUD_API_URL", "https://app.all-hands.dev")
 logger.info(f"Using OpenHands Cloud API: {cloud_api_url}")
 
-# Optional: specify a sandbox spec ID for custom environments
-sandbox_spec_id = os.getenv("OPENHANDS_SANDBOX_SPEC_ID")
-if sandbox_spec_id:
-    logger.info(f"Using sandbox spec: {sandbox_spec_id}")
-
 with OpenHandsCloudWorkspace(
     cloud_api_url=cloud_api_url,
     cloud_api_key=cloud_api_key,
-    sandbox_spec_id=sandbox_spec_id,
 ) as workspace:
     agent = get_default_agent(llm=llm, cli_mode=True)
     received_events: list = []
@@ -98,3 +92,6 @@ with OpenHandsCloudWorkspace(
         print(f"EXAMPLE_COST: {cost}")
     finally:
         conversation.close()
+
+    logger.info("✅ Conversation completed successfully.")
+    logger.info(f"Total {len(received_events)} events received during conversation.")
