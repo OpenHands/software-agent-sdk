@@ -36,7 +36,7 @@ class WebhookSpec(BaseModel):
 
     # General parameters
     event_buffer_size: int = Field(
-        default=10,
+        default=5,
         ge=1,
         description=(
             "The number of events to buffer locally before posting to the webhook"
@@ -125,6 +125,10 @@ class Config(BaseModel):
     enable_vnc: bool = Field(
         default=False,
         description="Whether to enable VNC desktop functionality",
+    )
+    preload_tools: bool = Field(
+        default=True,
+        description="Whether to preload tools",
     )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,

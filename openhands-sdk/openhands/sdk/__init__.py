@@ -1,7 +1,12 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.sdk.agent import Agent, AgentBase
-from openhands.sdk.context import AgentContext
+from openhands.sdk.context import (
+    AgentContext,
+    load_project_skills,
+    load_skills_from_dir,
+    load_user_skills,
+)
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -21,11 +26,13 @@ from openhands.sdk.llm import (
     LLM,
     ImageContent,
     LLMRegistry,
+    LLMStreamChunk,
     Message,
     RedactedThinkingBlock,
     RegistryEvent,
     TextContent,
     ThinkingBlock,
+    TokenCallbackType,
 )
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import (
@@ -58,6 +65,8 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMStreamChunk",
+    "TokenCallbackType",
     "ConversationStats",
     "RegistryEvent",
     "Message",
@@ -95,5 +104,8 @@ __all__ = [
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "load_project_skills",
+    "load_skills_from_dir",
+    "load_user_skills",
     "__version__",
 ]

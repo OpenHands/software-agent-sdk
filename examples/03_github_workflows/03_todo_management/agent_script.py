@@ -55,7 +55,7 @@ def process_todo(todo_data: dict):
     llm_config = {
         "model": model,
         "api_key": api_key,
-        "service_id": "agent_script",
+        "usage_id": "agent_script",
         "drop_params": True,
     }
 

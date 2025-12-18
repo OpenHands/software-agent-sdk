@@ -197,3 +197,25 @@ def test_invalid_config(mock_llm: LLM) -> None:
     # Test keep_first must be less than max_size // 2 to leave room for condensation
     with pytest.raises(ValueError):
         LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=8)
+
+
+def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
+    """Condenser should not pass extra_body to llm.completion.
+
+    This prevents providers like 1p Anthropic from rejecting the request with
+    "extra_body: Extra inputs are not permitted".
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+
+    # Prepare a view that triggers condensation (len > max_size)
+    events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
+    view = View.from_events(events)
+
+    result = condenser.condense(view)
+    assert isinstance(result, Condensation)
+
+    # Ensure completion was called without an explicit extra_body kwarg
+    completion_mock = cast(MagicMock, mock_llm.completion)
+    assert completion_mock.call_count == 1
+    _, kwargs = completion_mock.call_args
+    assert "extra_body" not in kwargs
