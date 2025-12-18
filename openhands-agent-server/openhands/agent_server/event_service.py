@@ -442,13 +442,42 @@ class EventService:
         await self._publish_state_update()
 
     async def run(self):
-        """Run the conversation asynchronously."""
+        """Run the conversation asynchronously in the background.
+
+        This method starts the conversation run in a background task and returns
+        immediately. The conversation status can be monitored via the
+        GET /api/conversations/{id} endpoint or WebSocket events.
+
+        Raises:
+            ValueError: If the service is inactive or conversation is already running.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
+
+        # Check if already running
+        with self._conversation._state as state:
+            if state.execution_status == ConversationExecutionStatus.RUNNING:
+                raise ValueError("conversation_already_running")
+
+        # Check if there's already a running task
+        if self._run_task is not None and not self._run_task.done():
+            raise ValueError("conversation_already_running")
+
+        # Capture conversation reference for the closure
+        conversation = self._conversation
+
+        # Start run in background
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.run)
-        # Publish state update after run completes to ensure stats are updated
-        await self._publish_state_update()
+
+        async def _run_and_publish():
+            try:
+                await loop.run_in_executor(None, conversation.run)
+            finally:
+                # Publish state update after run completes to ensure stats are updated
+                await self._publish_state_update()
+
+        # Create task but don't await it - runs in background
+        self._run_task = asyncio.create_task(_run_and_publish())
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
