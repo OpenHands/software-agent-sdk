@@ -6,8 +6,8 @@ from openhands.sdk import Agent, LocalConversation
 from openhands.sdk.event import ActionEvent, ObservationEvent
 from openhands.sdk.llm import LLM, MessageToolCall, TextContent
 from openhands.tools.terminal.definition import (
-    ExecuteBashAction,
-    ExecuteBashObservation,
+    TerminalAction,
+    TerminalObservation,
 )
 
 
@@ -29,7 +29,7 @@ def test_custom_action_observation_threshold():
         action = ActionEvent(
             source="agent",
             thought=[TextContent(text="I need to run ls command")],
-            action=ExecuteBashAction(command="ls"),
+            action=TerminalAction(command="ls"),
             tool_name="execute_bash",
             tool_call_id="call_1",
             tool_call=MessageToolCall(
@@ -42,7 +42,7 @@ def test_custom_action_observation_threshold():
         )
         observation = ObservationEvent(
             source="environment",
-            observation=ExecuteBashObservation(
+            observation=TerminalObservation(
                 content=[TextContent(text="file1.txt")], command="ls", exit_code=0
             ),
             action_id=action.id,
