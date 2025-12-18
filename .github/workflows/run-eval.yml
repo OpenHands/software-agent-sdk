@@ -17,13 +17,14 @@ on:
                     - gaia
                     - swebench
                     - swtbench
+                    - commit0
             sdk_ref:
                 description: SDK commit/ref to evaluate
                 required: true
                 default: main
             eval_limit:
                 description: Number of instances to run
-                required: true
+                required: false
                 default: '1'
                 type: choice
                 options:
@@ -51,6 +52,10 @@ on:
                 required: false
                 default: main
                 type: string
+            instance_ids:
+                description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
+                required: false
+                default: ''
 
 
 env:
@@ -194,6 +199,7 @@ jobs:
                   BENCHMARK: ${{ github.event.inputs.benchmark || 'swebench' }}
                   TRIGGER_REASON: ${{ github.event.inputs.reason }}
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
+                  INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -205,7 +211,8 @@ jobs:
                     --arg pr "$PR_NUMBER" \
                     --arg benchmarks "$BENCHMARKS_BRANCH" \
                     --arg benchmark "$BENCHMARK" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark}}')
+                    --arg instance_ids "$INSTANCE_IDS" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \

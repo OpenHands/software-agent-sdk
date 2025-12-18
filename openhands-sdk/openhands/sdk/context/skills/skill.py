@@ -398,6 +398,67 @@ def load_user_skills() -> list[Skill]:
     return all_skills
 
 
+def load_project_skills(work_dir: str | Path) -> list[Skill]:
+    """Load skills from project-specific directories.
+
+    Searches for skills in {work_dir}/.openhands/skills/ and
+    {work_dir}/.openhands/microagents/ (legacy). Skills from both
+    directories are merged, with skills/ taking precedence for
+    duplicate names.
+
+    Args:
+        work_dir: Path to the project/working directory.
+
+    Returns:
+        List of Skill objects loaded from project directories.
+        Returns empty list if no skills found or loading fails.
+    """
+    if isinstance(work_dir, str):
+        work_dir = Path(work_dir)
+
+    all_skills = []
+    seen_names = set()
+
+    # Load project-specific skills from .openhands/skills and legacy microagents
+    project_skills_dirs = [
+        work_dir / ".openhands" / "skills",
+        work_dir / ".openhands" / "microagents",  # Legacy support
+    ]
+
+    for project_skills_dir in project_skills_dirs:
+        if not project_skills_dir.exists():
+            logger.debug(
+                f"Project skills directory does not exist: {project_skills_dir}"
+            )
+            continue
+
+        try:
+            logger.debug(f"Loading project skills from {project_skills_dir}")
+            repo_skills, knowledge_skills = load_skills_from_dir(project_skills_dir)
+
+            # Merge repo and knowledge skills
+            for skills_dict in [repo_skills, knowledge_skills]:
+                for name, skill in skills_dict.items():
+                    if name not in seen_names:
+                        all_skills.append(skill)
+                        seen_names.add(name)
+                    else:
+                        logger.warning(
+                            f"Skipping duplicate skill '{name}' from "
+                            f"{project_skills_dir}"
+                        )
+
+        except Exception as e:
+            logger.warning(
+                f"Failed to load project skills from {project_skills_dir}: {str(e)}"
+            )
+
+    logger.debug(
+        f"Loaded {len(all_skills)} project skills: {[s.name for s in all_skills]}"
+    )
+    return all_skills
+
+
 # Public skills repository configuration
 PUBLIC_SKILLS_REPO = "https://github.com/OpenHands/skills"
 PUBLIC_SKILLS_BRANCH = "main"
