@@ -13,15 +13,20 @@ when initialized, so all LLM calls are traced without any manual decoration!
 2. **Custom Function Tracing**: Use `@weave_op` for custom agent logic you
    want to trace (tool execution, agent steps, etc.)
 
-3. **Conversation Grouping**: Use `weave_attributes()` to group related
-   operations under a conversation or session.
+3. **Conversation Threading**: The SDK automatically wraps conversation runs
+   in `weave.thread()` to group all operations under the conversation ID.
+   This enables conversation-level tracing in the Weave UI!
+
+4. **Conversation Grouping**: Use `weave_attributes()` to add custom metadata
+   to operations (user_id, session_id, etc.)
 
 ## How It Works
 
 The SDK uses LiteLLM for all LLM calls. When you call `init_weave()`:
 1. Weave's `implicit_patch()` automatically patches LiteLLM
 2. All `litellm.completion()` and `litellm.acompletion()` calls are traced
-3. You see full traces in the Weave UI without any code changes!
+3. LocalConversation.run() wraps the event loop in `weave.thread(conversation_id)`
+4. You see full conversation traces in the Weave UI without any code changes!
 
 ## Prerequisites
 
@@ -152,8 +157,10 @@ def run_demo():
     if success:
         print("✅ Weave initialized successfully!")
         print(f"   View traces at: https://wandb.ai/{project}/weave")
-        print("\n   🎉 KEY FEATURE: All LiteLLM calls are now AUTOMATICALLY traced!")
-        print("   No need to decorate LLM calls - Weave patches LiteLLM for you.")
+        print("\n   🎉 KEY FEATURES:")
+        print("   • All LiteLLM calls are AUTOMATICALLY traced (no decoration needed)")
+        print("   • Conversation.run() automatically groups operations by conversation ID")
+        print("   • Use @weave_op for custom functions you want to trace")
     else:
         print("⚠️  Weave not initialized (missing credentials or package)")
         print("   Running demo without tracing...")
@@ -209,8 +216,13 @@ def run_demo():
 
     if is_weave_initialized():
         print(f"\n🔗 View your traces at: https://wandb.ai/{project}/weave")
-        print("\n💡 Remember: LLM calls via LiteLLM are traced AUTOMATICALLY!")
-        print("   Just use the SDK's LLM class normally - no decoration needed.")
+        print("\n💡 Key Integration Points:")
+        print("   • LLM calls via LiteLLM are traced AUTOMATICALLY")
+        print("   • Conversation.run() groups all operations by conversation ID")
+        print("   • Use @weave_op for custom agent logic you want to trace")
+        print("\n📝 In your code, just do:")
+        print("   from openhands.sdk.observability import init_weave")
+        print("   init_weave('your-project')  # That's it!")
     print("=" * 60)
 
 
