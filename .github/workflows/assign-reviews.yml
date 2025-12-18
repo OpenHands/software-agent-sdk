@@ -32,9 +32,35 @@ jobs:
             # PROMPT_LOCATION: 'https://example.com/prompts/maintenance.txt'
             # Option 2: Use direct text for the prompt
             PROMPT_STRING: >
-                Use GITHUB_TOKEN and the github API to organize open pull requests in the repo.
+                Use GITHUB_TOKEN and the github API to organize open pull requests and issues in the repo.
                 Read the sections below in order, and perform each in order. Do NOT take action
-                on the same issue twice.
+                on the same issue or PR twice.
+
+                # Issues with needs-info - Check for OP Response
+
+                Find all open issues that have the "needs-info" label. For each issue:
+                1. Identify the original poster (issue author)
+                2. Check if there are any comments from the original poster AFTER the "needs-info" label was added
+                3. To determine when the label was added, use: GET /repos/{owner}/{repo}/issues/{issue_number}/timeline
+                   and look for "labeled" events with the label "needs-info"
+                4. If the original poster has commented after the label was added:
+                   - Remove the "needs-info" label
+                   - Add the "needs-triage" label
+                # Issues with needs-triage
+
+                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 2 days:
+                1. First, check if the issue has already been triaged by verifying it does NOT have:
+                   - The "enhancement" label
+                   - Any "priority" label (priority:low, priority:medium, priority:high, etc.)
+                2. If the issue has already been triaged (has enhancement or priority label), remove the "needs-triage" label
+                3. For issues that have NOT been triaged yet:
+                   - Read the issue description and comments
+                   - Check if it is a bug report, feature request, or question and add the appropriate label
+                   - If it is a bug report and it does not have a priority label
+                     * Find an appropriate maintainer based on the issue topic and recent activity
+                     * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look and add the
+                appropriate priority label when you have
+                a chance?"
 
                 # Need Reviewer Action
 
@@ -90,10 +116,15 @@ jobs:
                 2. Were created more than 1 day ago
                 3. CI is passing and there are no merge conflicts
 
-                For each PR that truly has NO reviewers, read the git blame information for the files,
-                and find the most recent and active contributors to the file/location of the changes.
-                Assign one of these people as a reviewer, but try not to assign too many reviews to
-                any single person. Add this message:
+                For each PR that truly has NO reviewers:
+                1) Read git blame for changed files to identify recent, active contributors.
+                2) From those candidates, ONLY consider maintainers — repository collaborators with write access or higher. Verify via the GitHub API before
+                requesting review:
+                   - Preferred: GET /repos/{owner}/{repo}/collaborators (no permission filter). Filter client-side using either:
+                     role_name in ["write", "maintain", "admin"] OR permissions.push || permissions.admin. Note: paginate if > 30 collaborators.
+                   - Alternative: GET /repos/{owner}/{repo}/collaborators/{username}/permission and accept if permission in {push, maintain, admin}.
+                3) If multiple maintainers qualify, avoid assigning too many reviews to any single one.
+                4) Request review from exactly one maintainer and add this message:
 
                 [Automatic Post]: I have assigned {reviewer} as a reviewer based on git blame information.
                 Thanks in advance for the help!

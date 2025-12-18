@@ -41,9 +41,6 @@ class TmuxTerminal(TerminalInterface):
         if self._initialized:
             return
 
-        # Inherit environment variables from the parent process
-        env = os.environ.copy()
-
         self.server = libtmux.Server()
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
@@ -60,8 +57,9 @@ class TmuxTerminal(TerminalInterface):
             kill_session=True,
             x=1000,
             y=1000,
-            environment=env,
         )
+        for k, v in os.environ.items():
+            self.session.set_environment(k, v)
 
         # Set history limit to a large number to avoid losing history
         # https://unix.stackexchange.com/questions/43414/unlimited-history-in-tmux
@@ -74,7 +72,6 @@ class TmuxTerminal(TerminalInterface):
             window_name="terminal",
             window_shell=window_command,
             start_directory=self.work_dir,
-            environment=env,
         )
         active_pane = self.window.active_pane
         assert active_pane is not None, "Window should have an active pane"
@@ -83,8 +80,9 @@ class TmuxTerminal(TerminalInterface):
         _initial_window.kill()
 
         # Configure bash to use simple PS1 and disable PS2
+        # Disable history expansion to avoid ! mangling
         self.pane.send_keys(
-            f'export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
+            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
         )
         time.sleep(0.1)  # Wait for command to take effect
 

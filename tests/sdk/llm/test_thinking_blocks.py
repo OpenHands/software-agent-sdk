@@ -163,7 +163,7 @@ def test_message_serialization_without_thinking_blocks():
 
 
 def test_message_list_serializer_with_thinking_blocks():
-    """Test Message._list_serializer includes thinking blocks in content array."""
+    """Test Message._list_serializer includes thinking blocks as separate field."""
     thinking_block = ThinkingBlock(
         thinking="Let me think...",
         signature="sig_abc",
@@ -176,15 +176,19 @@ def test_message_list_serializer_with_thinking_blocks():
     )
 
     serialized = message._list_serializer()
-    content_list = serialized["content"]
 
-    # Should have thinking block first, then text content
-    assert len(content_list) == 2
-    assert content_list[0]["type"] == "thinking"
-    assert content_list[0]["thinking"] == "Let me think..."
-    assert content_list[0]["signature"] == "sig_abc"
-    assert content_list[1]["type"] == "text"
-    assert content_list[1]["text"] == "The answer is 42."
+    # Thinking blocks should be in a separate field, not in content
+    assert "thinking_blocks" in serialized
+    assert len(serialized["thinking_blocks"]) == 1
+    assert serialized["thinking_blocks"][0]["type"] == "thinking"
+    assert serialized["thinking_blocks"][0]["thinking"] == "Let me think..."
+    assert serialized["thinking_blocks"][0]["signature"] == "sig_abc"
+
+    # Content should only have text content
+    content_list = serialized["content"]
+    assert len(content_list) == 1
+    assert content_list[0]["type"] == "text"
+    assert content_list[0]["text"] == "The answer is 42."
 
 
 def test_message_event_thinking_blocks_property():
@@ -251,12 +255,18 @@ def test_multiple_thinking_blocks():
     assert message.thinking_blocks[1].thinking == "Second reasoning step"
     assert message.thinking_blocks[1].signature is not None
 
-    # Test serialization
+    # Test serialization - thinking blocks should be in separate field
     serialized = message._list_serializer()
+
+    # Verify thinking_blocks field
+    assert "thinking_blocks" in serialized
+    assert len(serialized["thinking_blocks"]) == 2
+    assert all(item["type"] == "thinking" for item in serialized["thinking_blocks"])
+
+    # Verify content only has text
     content_list = serialized["content"]
-    assert len(content_list) == 3  # 2 thinking blocks + 1 text content
-    assert all(item["type"] == "thinking" for item in content_list[:2])
-    assert content_list[2]["type"] == "text"
+    assert len(content_list) == 1
+    assert content_list[0]["type"] == "text"
 
 
 def test_llm_preserves_existing_thinking_blocks():
@@ -285,10 +295,168 @@ def test_llm_preserves_existing_thinking_blocks():
     # Format messages for LLM
     formatted_messages = llm.format_messages_for_llm(messages)
 
-    # Check that the existing thinking block is preserved and no duplicate is added
-    content = formatted_messages[0]["content"]
-    thinking_blocks = [item for item in content if item["type"] == "thinking"]
+    # Check that the existing thinking block is preserved in separate field
+    assert "thinking_blocks" in formatted_messages[0]
+    thinking_blocks = formatted_messages[0]["thinking_blocks"]
 
     assert len(thinking_blocks) == 1
     assert thinking_blocks[0]["thinking"] == "I already have a thinking block"
     assert thinking_blocks[0]["signature"] == "existing_sig"
+
+
+def test_thinking_blocks_in_message_dict():
+    """Test that thinking blocks are placed as a field in message_dict."""
+    thinking_block = ThinkingBlock(
+        thinking="Analyzing the problem...",
+        signature="sig_xyz",
+    )
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Here's my answer.")],
+        thinking_blocks=[thinking_block],
+        function_calling_enabled=True,  # Force list serializer
+    )
+
+    # Test via _list_serializer
+    message_dict = message._list_serializer()
+
+    # Verify thinking_blocks is a top-level field in message_dict
+    assert "thinking_blocks" in message_dict
+    assert isinstance(message_dict["thinking_blocks"], list)
+    assert len(message_dict["thinking_blocks"]) == 1
+
+    # Verify structure of thinking block in message_dict
+    thinking_dict = message_dict["thinking_blocks"][0]
+    assert thinking_dict["type"] == "thinking"
+    assert thinking_dict["thinking"] == "Analyzing the problem..."
+    assert thinking_dict["signature"] == "sig_xyz"
+
+    # Verify content is separate from thinking_blocks
+    assert "content" in message_dict
+    assert len(message_dict["content"]) == 1
+    assert message_dict["content"][0]["type"] == "text"
+
+
+def test_thinking_blocks_in_message_dict_via_to_chat_dict():
+    """Test that thinking blocks are included when calling to_chat_dict."""
+    thinking_block = ThinkingBlock(
+        thinking="Step-by-step reasoning...",
+        signature="sig_chat",
+    )
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Final result.")],
+        thinking_blocks=[thinking_block],
+        function_calling_enabled=True,
+    )
+
+    # Test via to_chat_dict which calls _list_serializer
+    chat_dict = message.to_chat_dict()
+
+    # Verify thinking_blocks field exists
+    assert "thinking_blocks" in chat_dict
+    assert len(chat_dict["thinking_blocks"]) == 1
+    assert chat_dict["thinking_blocks"][0]["thinking"] == "Step-by-step reasoning..."
+    assert chat_dict["thinking_blocks"][0]["signature"] == "sig_chat"
+
+
+def test_no_thinking_blocks_field_when_empty():
+    """Test that thinking_blocks field is not added when there are no blocks."""
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Simple response.")],
+        function_calling_enabled=True,
+    )
+
+    message_dict = message._list_serializer()
+
+    # When there are no thinking blocks, the field should not be present
+    assert "thinking_blocks" not in message_dict
+    assert "content" in message_dict
+
+
+def test_thinking_blocks_only_for_assistant_role():
+    """Test that thinking blocks are only added for assistant role messages."""
+    thinking_block = ThinkingBlock(
+        thinking="This should not appear...",
+        signature="sig_user",
+    )
+
+    # Create a user message with thinking blocks (unusual but possible)
+    user_message = Message(
+        role="user",
+        content=[TextContent(text="User input.")],
+        thinking_blocks=[thinking_block],
+        function_calling_enabled=True,
+    )
+
+    user_dict = user_message._list_serializer()
+
+    # Thinking blocks should not be added for non-assistant roles
+    assert "thinking_blocks" not in user_dict
+
+    # Now test with assistant role
+    assistant_message = Message(
+        role="assistant",
+        content=[TextContent(text="Assistant response.")],
+        thinking_blocks=[thinking_block],
+        function_calling_enabled=True,
+    )
+
+    assistant_dict = assistant_message._list_serializer()
+
+    # Thinking blocks should be added for assistant role
+    assert "thinking_blocks" in assistant_dict
+    assert len(assistant_dict["thinking_blocks"]) == 1
+
+
+def test_redacted_thinking_block_in_message_dict():
+    """Test that redacted thinking blocks are also properly placed in message_dict."""
+    from openhands.sdk.llm.message import RedactedThinkingBlock
+
+    redacted_block = RedactedThinkingBlock(
+        data="[REDACTED]",
+    )
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Response after redaction.")],
+        thinking_blocks=[redacted_block],
+        function_calling_enabled=True,
+    )
+
+    message_dict = message._list_serializer()
+
+    # Verify redacted thinking block is in message_dict
+    assert "thinking_blocks" in message_dict
+    assert len(message_dict["thinking_blocks"]) == 1
+    assert message_dict["thinking_blocks"][0]["type"] == "redacted_thinking"
+    assert message_dict["thinking_blocks"][0]["data"] == "[REDACTED]"
+
+
+def test_mixed_thinking_and_redacted_blocks():
+    """Test handling of mixed thinking and redacted thinking blocks."""
+    from openhands.sdk.llm.message import RedactedThinkingBlock
+
+    thinking_block = ThinkingBlock(
+        thinking="Active reasoning...",
+        signature="sig_active",
+    )
+    redacted_block = RedactedThinkingBlock(data="[REDACTED]")
+
+    message = Message(
+        role="assistant",
+        content=[TextContent(text="Mixed blocks response.")],
+        thinking_blocks=[thinking_block, redacted_block],
+        function_calling_enabled=True,
+    )
+
+    message_dict = message._list_serializer()
+
+    # Verify both types are in message_dict
+    assert "thinking_blocks" in message_dict
+    assert len(message_dict["thinking_blocks"]) == 2
+    assert message_dict["thinking_blocks"][0]["type"] == "thinking"
+    assert message_dict["thinking_blocks"][1]["type"] == "redacted_thinking"

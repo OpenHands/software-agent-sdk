@@ -13,16 +13,14 @@ from openhands.sdk.tool import (
     ToolDefinition,
     register_tool,
 )
-from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 
 
 # Lazy import to avoid hanging during module import
 if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.browser_use.impl import BrowserToolExecutor
 
-
-# Maximum output size for browser observations
-MAX_BROWSER_OUTPUT_SIZE = 50000
 
 # Mapping of base64 prefixes to MIME types for image detection
 BASE64_IMAGE_PREFIXES = {
@@ -54,6 +52,10 @@ class BrowserObservation(Observation):
     screenshot_data: str | None = Field(
         default=None, description="Base64 screenshot data if available"
     )
+    full_output_save_dir: str | None = Field(
+        default=None,
+        description="Directory where full output files are saved",
+    )
 
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
@@ -67,7 +69,14 @@ class BrowserObservation(Observation):
         content_text = self.text
         if content_text:
             llm_content.append(
-                TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
+                TextContent(
+                    text=maybe_truncate(
+                        content=content_text,
+                        truncate_after=DEFAULT_TEXT_CONTENT_LIMIT,
+                        save_dir=self.full_output_save_dir,
+                        tool_prefix="browser",
+                    )
+                )
             )
 
         if self.screenshot_data:
@@ -546,13 +555,31 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     @classmethod
     def create(
         cls,
+        conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
         # Import executor only when actually needed to
         # avoid hanging during module import
-        from openhands.tools.browser_use.impl import BrowserToolExecutor
+        import sys
 
-        executor = BrowserToolExecutor(**executor_config)
+        # Use Windows-specific executor on Windows systems
+        if sys.platform == "win32":
+            from openhands.tools.browser_use.impl_windows import (
+                WindowsBrowserToolExecutor,
+            )
+
+            executor = WindowsBrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+        else:
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            executor = BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
         for tool_class in [

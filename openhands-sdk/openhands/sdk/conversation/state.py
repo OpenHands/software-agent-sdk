@@ -2,6 +2,7 @@
 import json
 from collections.abc import Sequence
 from enum import Enum
+from pathlib import Path
 from typing import Any, Self
 
 from pydantic import AliasChoices, Field, PrivateAttr
@@ -41,6 +42,7 @@ class ConversationExecutionStatus(str, Enum):
     FINISHED = "finished"  # Conversation has completed the current task
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
+    DELETING = "deleting"  # Conversation is in the process of being deleted
 
 
 class ConversationState(OpenHandsModel):
@@ -123,6 +125,13 @@ class ConversationState(OpenHandsModel):
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def env_observation_persistence_dir(self) -> str | None:
+        """Directory for persisting environment observation files."""
+        if self.persistence_dir is None:
+            return None
+        return str(Path(self.persistence_dir) / "observations")
 
     def set_on_state_change(self, callback: ConversationCallbackType | None) -> None:
         """Set a callback to be called when state changes.

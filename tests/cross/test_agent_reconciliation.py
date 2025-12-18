@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import Agent
 from openhands.sdk.agent import AgentBase
+from openhands.sdk.context import AgentContext, Skill
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
 )
@@ -341,86 +342,29 @@ def test_conversation_persistence_lifecycle(mock_completion):
         assert len(new_conversation.state.events) >= original_event_count + 2
 
 
-def test_agent_resolve_diff_allows_security_analyzer_change():
-    """Test that security_analyzer can differ between runtime and persisted agents."""
-    from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+def test_conversation_restart_with_different_agent_context():
+    """
+    Test conversation restart when agent_context differs.
 
-    with tempfile.TemporaryDirectory():
-        # Create original agent WITH security analyzer
-        tools = [Tool(name="TerminalTool")]
-        llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
-        )
-        original_agent = Agent(
-            llm=llm, tools=tools, security_analyzer=LLMSecurityAnalyzer()
-        )
-
-        # Serialize and deserialize to simulate persistence
-        serialized = original_agent.model_dump_json()
-        deserialized_agent = AgentBase.model_validate_json(serialized)
-
-        # Verify deserialized agent has security analyzer
-        assert deserialized_agent.security_analyzer is not None
-        assert isinstance(deserialized_agent.security_analyzer, LLMSecurityAnalyzer)
-
-        # Create runtime agent WITHOUT security analyzer
-        llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
-        )
-        runtime_agent = Agent(llm=llm2, tools=tools, security_analyzer=None)
-
-        # Should resolve successfully even though security_analyzer differs
-        resolved = runtime_agent.resolve_diff_from_deserialized(deserialized_agent)
-
-        # Resolved agent should use runtime's security_analyzer (None)
-        assert resolved.security_analyzer is None
-        assert resolved.llm.model == runtime_agent.llm.model
-        assert resolved.__class__ == runtime_agent.__class__
-
-
-def test_agent_resolve_diff_allows_adding_security_analyzer():
-    """Test that security_analyzer can be added to a persisted agent without one."""
-    from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-
-    with tempfile.TemporaryDirectory():
-        # Create original agent WITHOUT security analyzer
-        tools = [Tool(name="TerminalTool")]
-        llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
-        )
-        original_agent = Agent(llm=llm, tools=tools, security_analyzer=None)
-
-        # Serialize and deserialize to simulate persistence
-        serialized = original_agent.model_dump_json()
-        deserialized_agent = AgentBase.model_validate_json(serialized)
-
-        # Verify deserialized agent has no security analyzer
-        assert deserialized_agent.security_analyzer is None
-
-        # Create runtime agent WITH security analyzer
-        llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
-        )
-        runtime_agent = Agent(
-            llm=llm2, tools=tools, security_analyzer=LLMSecurityAnalyzer()
-        )
-
-        # Should resolve successfully even though security_analyzer differs
-        resolved = runtime_agent.resolve_diff_from_deserialized(deserialized_agent)
-
-        # Resolved agent should use runtime's security_analyzer
-        assert resolved.security_analyzer is not None
-        assert isinstance(resolved.security_analyzer, LLMSecurityAnalyzer)
-        assert resolved.llm.model == runtime_agent.llm.model
-        assert resolved.__class__ == runtime_agent.__class__
-
-
-def test_conversation_restart_with_different_security_analyzer():
-    """Test restarting conversation with different security analyzer (issue #668)."""
-    from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-
+    This simulates resuming an ACP conversation in regular CLI mode.
+    """
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create conversation with security analyzer
+        # Simulate ACP mode: Create agent with user_provided_resources skill
+        acp_skill = Skill(
+            name="user_provided_resources",
+            content=(
+                "You may encounter sections labeled as user-provided additional "
+                "context or resources."
+            ),
+            trigger=None,
+        )
+        acp_context = AgentContext(
+            skills=[acp_skill],
+            system_message_suffix=(
+                "You current working directory is: /Users/jpshack/code/all-hands"
+            ),
+        )
+
         tools = [
             Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
@@ -428,18 +372,17 @@ def test_conversation_restart_with_different_security_analyzer():
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        agent_with_security = Agent(
-            llm=llm, tools=tools, security_analyzer=LLMSecurityAnalyzer()
-        )
+        acp_agent = Agent(llm=llm, tools=tools, agent_context=acp_context)
 
+        # Create conversation with ACP agent
         conversation = LocalConversation(
-            agent=agent_with_security,
+            agent=acp_agent,
             workspace=temp_dir,
             persistence_dir=temp_dir,
             visualizer=None,
         )
 
-        # Send a message to create some state
+        # Send a message to create state
         conversation.send_message(
             Message(role="user", content=[TextContent(text="test message")])
         )
@@ -447,76 +390,38 @@ def test_conversation_restart_with_different_security_analyzer():
         conversation_id = conversation.state.id
         del conversation
 
-        # Restart conversation WITHOUT security analyzer
-        # This should succeed (previously would fail with reconciliation error)
-        llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        # Simulate regular CLI mode: Create agent without user_provided_resources skill
+        # and different working directory
+        cli_skill = Skill(
+            name="project_info",
+            content="Information about the current project",
+            trigger=None,
         )
-        agent_without_security = Agent(llm=llm2, tools=tools, security_analyzer=None)
+        cli_context = AgentContext(
+            skills=[cli_skill],
+            system_message_suffix="You current working directory is: /Users/jpshack",
+        )
 
+        cli_agent = Agent(llm=llm, tools=tools, agent_context=cli_context)
+
+        # This should succeed - agent_context differences should be reconciled
         new_conversation = LocalConversation(
-            agent=agent_without_security,
+            agent=cli_agent,
             workspace=temp_dir,
             persistence_dir=temp_dir,
             conversation_id=conversation_id,
             visualizer=None,
         )
 
-        # Verify conversation loaded successfully
+        # Verify state was loaded and agent_context was updated
         assert new_conversation.id == conversation_id
-        assert new_conversation.agent.security_analyzer is None
         assert len(new_conversation.state.events) > 0
-
-
-def test_conversation_restart_adding_security_analyzer():
-    """Test restarting conversation and adding security analyzer (issue #668)."""
-    from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
-
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Create conversation WITHOUT security analyzer
-        tools = [
-            Tool(name="TerminalTool"),
-            Tool(name="FileEditorTool"),
-        ]
-        llm = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        # The new conversation should use the CLI agent's context
+        assert new_conversation.agent.agent_context is not None
+        assert len(new_conversation.agent.agent_context.skills) == 1
+        assert new_conversation.agent.agent_context.skills[0].name == "project_info"
+        assert new_conversation.agent.agent_context.system_message_suffix is not None
+        assert (
+            "You current working directory is: /Users/jpshack"
+            in new_conversation.agent.agent_context.system_message_suffix
         )
-        agent_without_security = Agent(llm=llm, tools=tools, security_analyzer=None)
-
-        conversation = LocalConversation(
-            agent=agent_without_security,
-            workspace=temp_dir,
-            persistence_dir=temp_dir,
-            visualizer=None,
-        )
-
-        # Send a message to create some state
-        conversation.send_message(
-            Message(role="user", content=[TextContent(text="test message")])
-        )
-
-        conversation_id = conversation.state.id
-        del conversation
-
-        # Restart conversation WITH security analyzer
-        # This should succeed
-        llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
-        )
-        agent_with_security = Agent(
-            llm=llm2, tools=tools, security_analyzer=LLMSecurityAnalyzer()
-        )
-
-        new_conversation = LocalConversation(
-            agent=agent_with_security,
-            workspace=temp_dir,
-            persistence_dir=temp_dir,
-            conversation_id=conversation_id,
-            visualizer=None,
-        )
-
-        # Verify conversation loaded successfully
-        assert new_conversation.id == conversation_id
-        assert new_conversation.state.security_analyzer is not None
-        assert isinstance(new_conversation.state.security_analyzer, LLMSecurityAnalyzer)
-        assert len(new_conversation.state.events) > 0

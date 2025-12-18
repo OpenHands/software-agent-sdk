@@ -18,7 +18,7 @@ class ConversationVisualizerBase(ABC):
 
     The typical usage pattern:
     1. Create a visualizer instance:
-       `viz = MyVisualizer(name="agent1")`
+       `viz = MyVisualizer()`
     2. Pass it to Conversation: `conv = Conversation(agent, visualizer=viz)`
     3. Conversation automatically calls `viz.initialize(state)` to attach the state
 
@@ -28,21 +28,10 @@ class ConversationVisualizerBase(ABC):
     Conversation will then calls `MyVisualizer()` followed by `initialize(state)`
     """
 
-    _name: str | None
     _state: "ConversationStateProtocol | None"
 
-    def __init__(
-        self,
-        name: str | None = None,
-    ):
-        """Initialize the visualizer base.
-
-        Args:
-            name: Optional name to prefix in panel titles to identify
-                                  which agent/conversation is speaking. Will be
-                                  capitalized automatically.
-        """
-        self._name = name.capitalize() if name else None
+    def __init__(self):
+        """Initialize the visualizer base."""
         self._state = None
 
     @final
@@ -59,14 +48,6 @@ class ConversationVisualizerBase(ABC):
             state: The conversation state object
         """
         self._state = state
-
-    def update_name(self, name: str | None) -> None:
-        """Update the name used for visualization.
-
-        Args:
-            name: New name to use for visualization
-        """
-        self._name = name.capitalize() if name else None
 
     @property
     def conversation_stats(self) -> "ConversationStats | None":
