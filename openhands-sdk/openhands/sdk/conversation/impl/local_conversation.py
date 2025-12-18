@@ -351,8 +351,6 @@ class LocalConversation(BaseConversation):
 
             # Re-raise with conversation id for better UX; include original traceback
             raise ConversationRunError(self._state.id, e) from e
-        finally:
-            self._end_observability_span()
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""

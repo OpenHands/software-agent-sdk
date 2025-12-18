@@ -250,13 +250,19 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5.1", True),
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
-        ("openai/gpt-5-mini", True),
+        # New GPT-5.2 family should support extended retention
+        ("gpt-5.2", True),
+        ("openai/gpt-5.2-chat-latest", True),
+        ("openai/gpt-5.2-pro", True),
+        ("openai/gpt-5-mini", False),
         ("gpt-4o", False),
         ("openai/gpt-4.1", True),
         ("litellm_proxy/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-5", True),
-        ("litellm_proxy/openai/gpt-5-mini", True),
+        ("litellm_proxy/openai/gpt-5-mini", False),
+        ("openai/gpt-5.1-mini", False),
+        ("openai/gpt-5-mini-2025-08-07", False),
     ],
 )
 def test_prompt_cache_retention_support(model, expected_retention):
