@@ -24,8 +24,8 @@ from openhands.sdk import LLM, Conversation
 from openhands.tools.preset.default import get_default_agent
 
 
-QUALITY_THRESHOLD = 90.0
-MAX_ITERATIONS = 5
+QUALITY_THRESHOLD = float(os.getenv("QUALITY_THRESHOLD", "90.0"))
+MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "5"))
 
 
 def setup_workspace() -> tuple[Path, Path, Path]:
@@ -261,8 +261,10 @@ Requirements:
 4. Convert COBOL data types to appropriate Java types
 5. Implement proper error handling with try-catch blocks
 6. Add JavaDoc comments explaining the purpose of each class and method
-7. Create a clean, maintainable object-oriented design
-8. Each Java file should be compilable and follow Java best practices
+7. In JavaDoc comments, include traceability to the original COBOL source using
+   the format: @source <program>:<line numbers> (e.g., @source CBACT01C.cbl:73-77)
+8. Create a clean, maintainable object-oriented design
+9. Each Java file should be compilable and follow Java best practices
 
 Read each COBOL file and create the corresponding Java file in the target directory.
 """
