@@ -19,6 +19,23 @@ from openhands.sdk.workspace import RemoteWorkspace
 class TestRemoteConversation:
     """Test RemoteConversation functionality."""
 
+    @pytest.fixture(autouse=True)
+    def _mock_workspace_client(self):
+        """Auto-mock RemoteWorkspace client to prevent real HTTP connections."""
+        from unittest.mock import PropertyMock, patch
+
+        from openhands.sdk.workspace import RemoteWorkspace
+
+        with patch.object(
+            RemoteWorkspace, "client", new_callable=PropertyMock
+        ) as mock_prop:
+            mock_client = Mock(spec=httpx.Client)
+            mock_prop.return_value = mock_client
+
+            # Make it accessible to setup_mock_client
+            self._workspace_mock_client = mock_client
+            yield
+
     def setup_method(self):
         """Set up test environment."""
         self.host: str = "http://localhost:8000"
@@ -31,8 +48,7 @@ class TestRemoteConversation:
 
     def setup_mock_client(self, conversation_id: str | None = None):
         """Set up mock client for the workspace with default responses."""
-        mock_client_instance = Mock()
-        self.workspace._client = mock_client_instance
+        mock_client_instance = self._workspace_mock_client
 
         # Default conversation ID
         if conversation_id is None:
