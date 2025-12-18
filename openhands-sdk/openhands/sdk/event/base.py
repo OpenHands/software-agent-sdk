@@ -89,8 +89,12 @@ class LLMConvertibleEvent(Event, ABC):
 
     @staticmethod
     def events_to_messages(events: list["LLMConvertibleEvent"]) -> list[Message]:
-        """Convert event stream to LLM message stream, handling multi-action batches"""
-        # TODO: We should add extensive tests for this
+        """Convert event stream to LLM message stream, handling multi-action batches.
+
+        This method also enforces tool call ordering to ensure that tool_result
+        messages immediately follow their corresponding tool_use messages. This is
+        required by providers like Anthropic.
+        """
         from openhands.sdk.event.llm_convertible import ActionEvent
 
         messages = []
@@ -100,7 +104,7 @@ class LLMConvertibleEvent(Event, ABC):
             event = events[i]
 
             if isinstance(event, ActionEvent):
-                # Collect all ActionEvents from same LLM respone
+                # Collect all ActionEvents from same LLM response
                 # This happens when function calling happens
                 batch_events: list[ActionEvent] = [event]
                 response_id = event.llm_response_id
@@ -123,7 +127,8 @@ class LLMConvertibleEvent(Event, ABC):
                 messages.append(event.to_llm_message())
                 i += 1
 
-        return messages
+        # Enforce tool call ordering: tool_results must immediately follow tool_use
+        return _enforce_tool_call_ordering(messages)
 
 
 def _combine_action_events(events: list["ActionEvent"]) -> Message:
@@ -147,3 +152,78 @@ def _combine_action_events(events: list["ActionEvent"]) -> Message:
         reasoning_content=events[0].reasoning_content,  # Shared reasoning content
         thinking_blocks=events[0].thinking_blocks,  # Shared thinking blocks
     )
+
+
+def _enforce_tool_call_ordering(messages: list[Message]) -> list[Message]:
+    """Enforce that tool_result messages immediately follow their tool_use messages.
+
+    LLM providers like Anthropic require that each tool_use block has a corresponding
+    tool_result block in the immediately following message. This function reorders
+    messages to ensure this constraint is satisfied.
+
+    The algorithm:
+    1. First pass: find all tool_call_ids that have matching assistant messages
+    2. Second pass: for each message:
+       - If assistant with tool_calls: add it, then add matching tool messages
+       - If tool message with matching assistant: skip (handled with assistant)
+       - If tool message without matching assistant: add as-is (orphaned)
+       - Otherwise: add the message
+
+    Note: This function does NOT filter out unmatched tool calls. That should be
+    done by View.filter_unmatched_tool_calls before calling events_to_messages.
+    This function only ensures proper ordering.
+
+    Args:
+        messages: List of messages that may have ordering issues
+
+    Returns:
+        List of messages with proper tool call ordering
+    """
+    if not messages:
+        return messages
+
+    # First pass: find tool_call_ids that have matching assistant messages
+    tool_call_ids_with_assistant: set[str] = set()
+    for msg in messages:
+        if msg.role == "assistant" and msg.tool_calls:
+            for tc in msg.tool_calls:
+                tool_call_ids_with_assistant.add(tc.id)
+
+    # Index all tool messages by their tool_call_id
+    tool_messages_by_id: dict[str, Message] = {}
+    for msg in messages:
+        if msg.role == "tool" and msg.tool_call_id:
+            tool_messages_by_id[msg.tool_call_id] = msg
+
+    # Track which tool messages we've used (to avoid duplicates)
+    used_tool_call_ids: set[str] = set()
+    result: list[Message] = []
+
+    for msg in messages:
+        if msg.role == "tool" and msg.tool_call_id:
+            # Check if this tool message has a matching assistant message
+            if msg.tool_call_id in tool_call_ids_with_assistant:
+                # Skip - will be added after its assistant message
+                continue
+            else:
+                # Orphaned tool message - add as-is
+                result.append(msg)
+                continue
+
+        if msg.role == "assistant" and msg.tool_calls:
+            # This is a tool_use message - find its tool_results
+            tool_call_ids = [tc.id for tc in msg.tool_calls]
+
+            # Add assistant message
+            result.append(msg)
+
+            # Add all matching tool messages immediately after (preserving order)
+            for tc_id in tool_call_ids:
+                if tc_id in tool_messages_by_id:
+                    result.append(tool_messages_by_id[tc_id])
+                    used_tool_call_ids.add(tc_id)
+        else:
+            # Regular message - just append
+            result.append(msg)
+
+    return result

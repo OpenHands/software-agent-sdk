@@ -453,3 +453,259 @@ class TestEventsToMessages:
         assert msgs[0].role == "assistant"
         assert msgs[1].role == "tool"
         assert msgs[1].tool_call_id == "call_ne"
+
+
+class TestEnforceToolCallOrdering:
+    """Test cases for _enforce_tool_call_ordering function.
+
+    These tests verify that tool_result messages are correctly reordered to
+    immediately follow their tool_use messages, as required by LLM providers
+    like Anthropic.
+    """
+
+    def test_already_correct_ordering(self):
+        """Test messages that are already in correct order remain unchanged."""
+        action_event = create_action_event(
+            thought_text="Running command",
+            tool_name="terminal",
+            tool_call_id="call_1",
+            llm_response_id="response_1",
+            action_args={"command": "ls"},
+        )
+
+        obs_event = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="file1.txt"),
+            action_id="action_1",
+            tool_name="terminal",
+            tool_call_id="call_1",
+        )
+
+        events = [action_event, obs_event]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 2
+        assert messages[0].role == "assistant"
+        assert messages[0].tool_calls is not None
+        assert messages[0].tool_calls[0].id == "call_1"
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_1"
+
+    def test_interleaved_user_message(self):
+        """Test that user message between tool_use and tool_result is handled.
+
+        This simulates the case where a user message is sent while waiting for
+        tool execution. The resulting messages should have tool_results
+        immediately after their tool_use.
+        """
+        action_event = create_action_event(
+            thought_text="Running command",
+            tool_name="terminal",
+            tool_call_id="call_1",
+            llm_response_id="response_1",
+            action_args={"command": "ls"},
+        )
+
+        user_msg = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user", content=[TextContent(text="What's happening?")]
+            ),
+        )
+
+        obs_event = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="file1.txt"),
+            action_id="action_1",
+            tool_name="terminal",
+            tool_call_id="call_1",
+        )
+
+        # Events in wrong order: action -> user_msg -> observation
+        events = [action_event, user_msg, obs_event]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        # Tool result should immediately follow tool_use
+        assert len(messages) == 3
+        assert messages[0].role == "assistant"
+        assert messages[0].tool_calls is not None
+        assert messages[0].tool_calls[0].id == "call_1"
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_1"
+        assert messages[2].role == "user"
+
+    def test_missing_tool_result_keeps_assistant(self):
+        """Test that assistant with tool_calls is kept even without tool_result.
+
+        Note: The filtering of unmatched tool calls is done by
+        View.filter_unmatched_tool_calls, not events_to_messages.
+        The _enforce_tool_call_ordering function only reorders.
+        """
+        action_event = create_action_event(
+            thought_text="Running command",
+            tool_name="terminal",
+            tool_call_id="call_1",
+            llm_response_id="response_1",
+            action_args={"command": "ls"},
+        )
+
+        user_msg = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Continue")]),
+        )
+
+        # No observation for the action
+        events = [action_event, user_msg]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        # Assistant with tool_calls is kept
+        # Filtering is done by View.filter_unmatched_tool_calls
+        assert len(messages) == 2
+        assert messages[0].role == "assistant"
+        assert messages[1].role == "user"
+
+    def test_parallel_tool_calls_with_all_results(self):
+        """Test parallel tool calls where all results are present."""
+        action1 = create_action_event(
+            thought_text="Getting weather for multiple cities",
+            tool_name="get_weather",
+            tool_call_id="call_sf",
+            llm_response_id="parallel_response",
+            action_args={"location": "SF"},
+        )
+
+        action2 = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="test"),
+            tool_name="get_weather",
+            tool_call_id="call_nyc",
+            tool_call=create_tool_call("call_nyc", "get_weather", {"location": "NYC"}),
+            llm_response_id="parallel_response",
+        )
+
+        obs1 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="Sunny in SF"),
+            action_id="action_1",
+            tool_name="get_weather",
+            tool_call_id="call_sf",
+        )
+
+        obs2 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="Cloudy in NYC"),
+            action_id="action_2",
+            tool_name="get_weather",
+            tool_call_id="call_nyc",
+        )
+
+        events = [action1, action2, obs1, obs2]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        # Should have 1 assistant message with 2 tool_calls, then 2 tool results
+        assert len(messages) == 3
+        assert messages[0].role == "assistant"
+        assert messages[0].tool_calls is not None
+        assert len(messages[0].tool_calls) == 2
+        assert messages[1].role == "tool"
+        assert messages[2].role == "tool"
+
+    def test_parallel_tool_calls_missing_one_result(self):
+        """Test parallel tool calls where one result is missing.
+
+        The assistant message is kept (filtering is done by
+        View.filter_unmatched_tool_calls). The present tool_result is
+        placed immediately after the assistant message.
+        """
+        action1 = create_action_event(
+            thought_text="Getting weather for multiple cities",
+            tool_name="get_weather",
+            tool_call_id="call_sf",
+            llm_response_id="parallel_response",
+            action_args={"location": "SF"},
+        )
+
+        action2 = ActionEvent(
+            source="agent",
+            thought=[],
+            action=EventsToMessagesMockAction(command="test"),
+            tool_name="get_weather",
+            tool_call_id="call_nyc",
+            tool_call=create_tool_call("call_nyc", "get_weather", {"location": "NYC"}),
+            llm_response_id="parallel_response",
+        )
+
+        # Only one observation - missing call_nyc result
+        obs1 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="Sunny in SF"),
+            action_id="action_1",
+            tool_name="get_weather",
+            tool_call_id="call_sf",
+        )
+
+        user_msg = MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="Continue")]),
+        )
+
+        events = [action1, action2, obs1, user_msg]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        # Assistant message is kept with present tool_result immediately after
+        # Filtering is done by View.filter_unmatched_tool_calls, not events_to_messages
+        assert len(messages) == 3
+        assert messages[0].role == "assistant"
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_sf"
+        assert messages[2].role == "user"
+
+    def test_multiple_sequential_tool_calls(self):
+        """Test multiple sequential tool calls are handled correctly."""
+        # First tool call
+        action1 = create_action_event(
+            thought_text="First command",
+            tool_name="terminal",
+            tool_call_id="call_1",
+            llm_response_id="response_1",
+            action_args={"command": "ls"},
+        )
+
+        obs1 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="file1.txt"),
+            action_id="action_1",
+            tool_name="terminal",
+            tool_call_id="call_1",
+        )
+
+        # Second tool call
+        action2 = create_action_event(
+            thought_text="Second command",
+            tool_name="terminal",
+            tool_call_id="call_2",
+            llm_response_id="response_2",
+            action_args={"command": "pwd"},
+        )
+
+        obs2 = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="/home"),
+            action_id="action_2",
+            tool_name="terminal",
+            tool_call_id="call_2",
+        )
+
+        events = [action1, obs1, action2, obs2]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 4
+        assert messages[0].role == "assistant"
+        assert messages[0].tool_calls[0].id == "call_1"  # type: ignore
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_1"
+        assert messages[2].role == "assistant"
+        assert messages[2].tool_calls[0].id == "call_2"  # type: ignore
+        assert messages[3].role == "tool"
+        assert messages[3].tool_call_id == "call_2"
