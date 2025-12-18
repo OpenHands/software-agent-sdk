@@ -1,14 +1,3 @@
-"""Example demonstrating Apptainer-based remote workspace for sandboxed execution.
-
-This example shows how to use ApptainerWorkspace instead of DockerWorkspace.
-Apptainer (formerly Singularity) is a container runtime that doesn't require
-root access, making it ideal for HPC and shared computing environments.
-
-Prerequisites:
-    - Apptainer installed (https://apptainer.org/docs/user/main/quick_start.html)
-    - LLM API key set in environment
-"""
-
 import os
 import platform
 import time
@@ -27,14 +16,13 @@ from openhands.workspace import ApptainerWorkspace
 
 logger = get_logger(__name__)
 
-
 # 1) Ensure we have LLM API key
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model="litellm_proxy/anthropic/<secret_hidden>",
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -49,14 +37,13 @@ def detect_platform():
 
 
 # 2) Create an Apptainer-based remote workspace that will set up and manage
-#    the Apptainer container automatically
+#    the Apptainer container automatically. Use `ApptainerWorkspace` with a
+#    pre-built image or provide a base_image to build on-demand.
+#    Apptainer (formerly Singularity) doesn't require root access, making it
+#    ideal for HPC and shared computing environments.
 with ApptainerWorkspace(
-    # Option 1: Use pre-built image (fastest, recommended)
-    server_image="ghcr.io/openhands/agent-server:main-python",
-    # Option 2: Build from base image (slower, but more flexible)
-    # base_image="nikolaik/python-nodejs:python3.12-nodejs22",
-    # Option 3: Use existing SIF file
-    # sif_file="/path/to/your/agent-server.sif",
+    # use pre-built image for faster startup
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:
@@ -78,14 +65,12 @@ with ApptainerWorkspace(
 
     # 5) Test the workspace with a simple command
     result = workspace.execute_command(
-        "echo 'Hello from Apptainer sandboxed environment!' && pwd"
+        "echo 'Hello from sandboxed environment!' && pwd"
     )
     logger.info(
         f"Command '{result.command}' completed with exit code {result.exit_code}"
     )
     logger.info(f"Output: {result.stdout}")
-
-    # 6) Create conversation
     conversation = Conversation(
         agent=agent,
         workspace=workspace,
@@ -103,6 +88,7 @@ with ApptainerWorkspace(
         logger.info("🚀 Running conversation...")
         conversation.run()
         logger.info("✅ First task completed!")
+        logger.info(f"Agent status: {conversation.state.execution_status}")
 
         # Wait for events to settle (no events for 2 seconds)
         logger.info("⏳ Waiting for events to stop...")
@@ -114,6 +100,13 @@ with ApptainerWorkspace(
         conversation.send_message("Great! Now delete that file.")
         conversation.run()
         logger.info("✅ Second task completed!")
+
+        # Report cost (must be before conversation.close())
+        conversation.state._cached_state = (
+            None  # Invalidate cache to fetch latest stats
+        )
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
     finally:
         print("\n🧹 Cleaning up conversation...")
         conversation.close()
