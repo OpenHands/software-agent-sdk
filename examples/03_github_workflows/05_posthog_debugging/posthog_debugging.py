@@ -18,7 +18,7 @@ Usage:
 Environment Variables Required:
     - POSTHOG_API_KEY: Your PostHog Personal API key
     - POSTHOG_PROJECT_ID: Your PostHog project ID
-    - POSTHOG_HOST: (optional) PostHog host (e.g., us.i.posthog.com, eu.i.posthog.com)
+    - POSTHOG_HOST: (optional) PostHog host (e.g., us.posthog.com, eu.posthog.com)
     - GITHUB_TOKEN: Your GitHub personal access token
     - LLM_API_KEY: API key for the LLM service
 """
@@ -51,6 +51,14 @@ from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
+
+DEFAULT_POSTHOG_HOST = "us.posthog.com"
+
+
+def get_posthog_host() -> str:
+    """Get PostHog host from environment, using default if not set or empty."""
+    host = os.getenv("POSTHOG_HOST", "")
+    return host if host else DEFAULT_POSTHOG_HOST
 
 
 def validate_environment():
@@ -95,45 +103,74 @@ def fetch_posthog_events(
     """
     posthog_api_key = os.getenv("POSTHOG_API_KEY")
     posthog_project_id = os.getenv("POSTHOG_PROJECT_ID")
-    posthog_host = os.getenv("POSTHOG_HOST", "us.i.posthog.com")
+    posthog_host = get_posthog_host()
 
     event_examples = []
 
     if query_type == "event-id":
-        # Fetch specific event by ID
-        api_url = (
-            f"https://{posthog_host}/api/projects/{posthog_project_id}/events/{query}"
-        )
+        # Fetch specific event by ID using HogQL query
+        api_url = f"https://{posthog_host}/api/projects/{posthog_project_id}/query/"
+
+        # Use HogQL to fetch event by UUID
+        hogql_query = f"SELECT * FROM events WHERE uuid = '{query}' LIMIT 1"
+
+        request_body = {
+            "query": {"kind": "HogQLQuery", "query": hogql_query},
+            "refresh": "blocking",
+        }
 
         print("📡 Fetching specific event from PostHog...")
         print(f"   Event ID: {query}")
         print(f"   API: {api_url}")
 
         headers = {
+            "Content-Type": "application/json",
             "Authorization": f"Bearer {posthog_api_key}",
         }
 
         try:
-            response = requests.get(api_url, headers=headers, timeout=30)
-            response.raise_for_status()
+            response = requests.post(
+                api_url, headers=headers, json=request_body, timeout=120
+            )
         except requests.exceptions.Timeout:
-            print("❌ Error: Request to PostHog API timed out")
+            print("❌ Error: Request to PostHog API timed out (120s)")
             sys.exit(1)
         except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching from PostHog API: {e}")
+            print(f"❌ Error connecting to PostHog API: {e}")
+            sys.exit(1)
+
+        if not response.ok:
+            print(f"❌ Error fetching from PostHog API: {response.status_code}")
+            try:
+                error_detail = response.json()
+                print(f"   Error details: {json.dumps(error_detail, indent=2)}")
+            except Exception:
+                print(f"   Response: {response.text[:500]}")
             sys.exit(1)
 
         try:
-            event_data = response.json()
+            response_data = response.json()
         except json.JSONDecodeError as e:
             print(f"❌ Error parsing PostHog API response: {e}")
             print(f"   Response: {response.text[:500]}")
             sys.exit(1)
 
+        # Parse HogQL response
+        results = response_data.get("results", [])
+        columns = response_data.get("columns", [])
+
+        if not results:
+            print(f"⚠️ No event found with ID: {query}")
+            sys.exit(1)
+
+        # Convert row to dict using column names
+        row = results[0]
+        event_data = dict(zip(columns, row))
+
         # Extract event details
         event_example = {
             "example_number": 1,
-            "event_id": event_data.get("id"),
+            "event_id": event_data.get("uuid"),
             "event": event_data.get("event"),
             "distinct_id": event_data.get("distinct_id"),
             "properties": event_data.get("properties", {}),
@@ -147,9 +184,10 @@ def fetch_posthog_events(
         api_url = f"https://{posthog_host}/api/projects/{posthog_project_id}/query/"
 
         # Build HogQL query to fetch events
-        # Query for events in the last 30 days
+        # Query for events in the last 1 day to avoid server-side timeouts
         hogql_query = (
             f"SELECT * FROM events WHERE event = '{query}' "
+            f"AND timestamp > now() - INTERVAL 1 DAY "
             f"ORDER BY timestamp DESC LIMIT {limit}"
         )
 
@@ -169,16 +207,23 @@ def fetch_posthog_events(
 
         try:
             response = requests.post(
-                api_url, headers=headers, json=request_body, timeout=30
+                api_url, headers=headers, json=request_body, timeout=120
             )
-            response.raise_for_status()
         except requests.exceptions.Timeout:
-            print("❌ Error: Request to PostHog API timed out")
+            print("❌ Error: Request to PostHog API timed out (120s)")
+            print("   Try reducing the number of events or using a more specific query")
             sys.exit(1)
         except requests.exceptions.RequestException as e:
-            print(f"❌ Error fetching from PostHog API: {e}")
-            if hasattr(e, "response") and e.response:
-                print(f"   Response: {e.response.text[:500]}")
+            print(f"❌ Error connecting to PostHog API: {e}")
+            sys.exit(1)
+
+        if not response.ok:
+            print(f"❌ Error fetching from PostHog API: {response.status_code}")
+            try:
+                error_detail = response.json()
+                print(f"   Error details: {json.dumps(error_detail, indent=2)}")
+            except Exception:
+                print(f"   Response: {response.text[:500]}")
             sys.exit(1)
 
         try:
@@ -188,8 +233,8 @@ def fetch_posthog_events(
             print(f"   Response: {response.text[:500]}")
             sys.exit(1)
 
-        # Check for API errors
-        if "error" in response_data:
+        # Check for API errors (PostHog returns "error": null on success)
+        if response_data.get("error"):
             print(f"❌ PostHog API error: {response_data['error']}")
             sys.exit(1)
 
@@ -504,7 +549,7 @@ def create_debugging_prompt(
 ) -> str:
     """Create the debugging prompt for the agent."""
     repos_list = "\n".join(f"- {repo}" for repo in repos)
-    posthog_host = os.getenv("POSTHOG_HOST", "us.i.posthog.com")
+    posthog_host = get_posthog_host()
     posthog_project_id = os.getenv("POSTHOG_PROJECT_ID")
     query_url = f"https://{posthog_host}/api/projects/{posthog_project_id}/query/"
     events_url = f"https://{posthog_host}/api/projects/{posthog_project_id}/events/"
@@ -598,7 +643,7 @@ def main():
     print("🔍 Starting PostHog debugging session")
     print(f"📊 Query: {args.query}")
     print(f"📁 Repositories: {', '.join(repos)}")
-    print(f"🌍 PostHog host: {os.getenv('POSTHOG_HOST', 'us.i.posthog.com')}")
+    print(f"🌍 PostHog host: {get_posthog_host()}")
     print(f"💼 Working directory: {working_dir}")
     print()
 

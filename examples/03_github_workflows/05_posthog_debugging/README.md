@@ -56,7 +56,7 @@ Configure these in your repository Settings → Secrets and variables → Action
 ```yaml
 POSTHOG_API_KEY: Your PostHog Personal API key
 POSTHOG_PROJECT_ID: Your PostHog project ID
-POSTHOG_HOST: PostHog host (e.g., us.i.posthog.com, eu.i.posthog.com)
+POSTHOG_HOST: PostHog host (e.g., us.posthog.com, eu.posthog.com)
 LLM_API_KEY: API key for LLM service
 LLM_BASE_URL: Base URL for LLM service (optional)
 ```
@@ -69,8 +69,8 @@ LLM_BASE_URL: Base URL for LLM service (optional)
    - Ensure the key has `query:read` scope
 2. **Project ID**: Found in your project URL: `https://app.posthog.com/project/{PROJECT_ID}/...`
 3. **Host**: 
-   - US Cloud: `us.i.posthog.com`
-   - EU Cloud: `eu.i.posthog.com`
+   - US Cloud: `us.posthog.com`
+   - EU Cloud: `eu.posthog.com`
    - Self-hosted: Your instance hostname
 
 ### Installation
