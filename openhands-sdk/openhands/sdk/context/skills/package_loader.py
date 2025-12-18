@@ -5,7 +5,7 @@ installed Python packages that register as OpenHands skill packages
 via entry points.
 """
 
-import sys
+import json
 from importlib.metadata import entry_points
 from importlib.resources import files
 from pathlib import Path
@@ -20,6 +20,38 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _load_package_descriptor(package_module) -> dict[str, Any]:
+    """Load package descriptor from either manifest.json or skill-package.yaml.
+
+    Tries manifest.json first (Claude Code format), falls back to skill-package.yaml.
+
+    Args:
+        package_module: The loaded package module
+
+    Returns:
+        Package descriptor dict
+
+    Raises:
+        FileNotFoundError: If neither manifest file is found
+    """
+    # Try manifest.json first (Claude Code format)
+    try:
+        manifest_content = files(package_module).joinpath("manifest.json").read_text()
+        return json.loads(manifest_content)
+    except FileNotFoundError:
+        pass
+
+    # Fall back to skill-package.yaml (legacy format)
+    try:
+        yaml_content = files(package_module).joinpath("skill-package.yaml").read_text()
+        return yaml.safe_load(yaml_content)
+    except FileNotFoundError:
+        pkg_name = package_module.__name__
+        raise FileNotFoundError(
+            f"No manifest.json or skill-package.yaml found in package {pkg_name}"
+        )
+
+
 def list_skill_packages() -> list[dict[str, Any]]:
     """Discover all installed OpenHands skill packages.
 
@@ -29,7 +61,7 @@ def list_skill_packages() -> list[dict[str, Any]]:
 
     Returns:
         List of dicts with 'name' (str) and 'descriptor' (dict) keys.
-        The descriptor contains the parsed skill-package.yaml content.
+        The descriptor contains the parsed manifest (JSON or YAML format).
 
     Example:
         >>> packages = list_skill_packages()
@@ -45,11 +77,12 @@ def list_skill_packages() -> list[dict[str, Any]]:
             # Load the package module
             package_module = ep.load()
 
-            # Load the YAML descriptor from the package
-            yaml_content = files(package_module).joinpath("skill-package.yaml").read_text()
-            descriptor = yaml.safe_load(yaml_content)
+            # Load the package descriptor (manifest.json or skill-package.yaml)
+            descriptor = _load_package_descriptor(package_module)
 
-            packages.append({"name": ep.name, "descriptor": descriptor, "module": package_module})
+            packages.append(
+                {"name": ep.name, "descriptor": descriptor, "module": package_module}
+            )
         except Exception as e:
             # Log warning but continue - don't fail if one package is broken
             logger.warning(f"Failed to load skill package {ep.name}: {e}")
@@ -79,11 +112,14 @@ def get_skill_package(package_name: str) -> dict[str, Any] | None:
                 # Load the package module
                 package_module = ep.load()
 
-                # Load the YAML descriptor from the package
-                yaml_content = files(package_module).joinpath("skill-package.yaml").read_text()
-                descriptor = yaml.safe_load(yaml_content)
+                # Load the package descriptor (manifest.json or skill-package.yaml)
+                descriptor = _load_package_descriptor(package_module)
 
-                return {"name": ep.name, "descriptor": descriptor, "module": package_module}
+                return {
+                    "name": ep.name,
+                    "descriptor": descriptor,
+                    "module": package_module,
+                }
             except Exception as e:
                 logger.error(f"Failed to load skill package {package_name}: {e}")
                 return None
@@ -91,7 +127,9 @@ def get_skill_package(package_name: str) -> dict[str, Any] | None:
     return None
 
 
-def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[str, Skill]]:
+def load_skills_from_package(
+    package_name: str,
+) -> tuple[dict[str, Skill], dict[str, Skill]]:
     """Load skills from a specific skill package.
 
     Args:
@@ -106,7 +144,9 @@ def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[
         ValueError: If package is not found or cannot be loaded
 
     Example:
-        >>> repo_skills, knowledge_skills = load_skills_from_package('simple-code-review')
+        >>> repo_skills, knowledge_skills = load_skills_from_package(
+        ...     'simple-code-review'
+        ... )
         >>> for name, skill in knowledge_skills.items():
         ...     print(f"Loaded skill: {name}")
     """
@@ -130,7 +170,9 @@ def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[
         skill_path = skill_spec.get("path")
 
         if not skill_name or not skill_path:
-            logger.warning(f"Skipping invalid skill spec in package '{package_name}': {skill_spec}")
+            logger.warning(
+                f"Skipping invalid skill spec in package '{package_name}': {skill_spec}"
+            )
             continue
 
         try:
@@ -144,8 +186,9 @@ def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[
             # Use Skill.load to parse the skill file properly
             # We need to create a temporary path for load() to work
             # Actually, let's parse it directly using frontmatter
-            import frontmatter as fm
             import io
+
+            import frontmatter as fm
 
             parsed = fm.load(io.StringIO(skill_content))
             content = parsed.content
@@ -156,10 +199,14 @@ def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[
             if "triggers" in metadata:
                 from openhands.sdk.context.skills.trigger import KeywordTrigger
 
-                trigger = KeywordTrigger(keywords=metadata["triggers"])
+                triggers_data = metadata["triggers"]
+                if isinstance(triggers_data, list):
+                    trigger = KeywordTrigger(keywords=triggers_data)
 
             # Create the Skill object
-            skill = Skill(name=skill_name, content=content, trigger=trigger, source=source)
+            skill = Skill(
+                name=skill_name, content=content, trigger=trigger, source=source
+            )
 
             # Categorize based on trigger
             if skill.trigger is None:
@@ -170,7 +217,8 @@ def load_skills_from_package(package_name: str) -> tuple[dict[str, Skill], dict[
             logger.debug(f"Loaded skill '{skill_name}' from package '{package_name}'")
 
         except Exception as e:
-            logger.error(f"Failed to load skill '{skill_name}' from package '{package_name}': {e}")
+            msg = f"Failed to load skill '{skill_name}' from '{package_name}': {e}"
+            logger.error(msg)
             continue
 
     logger.info(
