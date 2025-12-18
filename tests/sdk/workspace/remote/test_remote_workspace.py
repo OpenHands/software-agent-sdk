@@ -1,13 +1,25 @@
 """Unit tests for RemoteWorkspace class."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, PropertyMock, patch
 
 import httpx
 import pytest
 
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
+
+
+@pytest.fixture
+def mock_sync_client():
+    """Mock RemoteWorkspace client to prevent real HTTP connections."""
+
+    with patch.object(
+        RemoteWorkspace, "client", new_callable=PropertyMock
+    ) as mock_prop:
+        mock_client = MagicMock(spec=httpx.Client)
+        mock_prop.return_value = mock_client
+        yield mock_client
 
 
 def test_remote_workspace_initialization():
@@ -71,15 +83,13 @@ def test_headers_property_without_api_key():
     assert headers == {}
 
 
-def test_execute_method():
+def test_execute_method(mock_sync_client):
     """Test _execute method handles generator protocol correctly."""
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
     # Mock client
-    mock_client = MagicMock()
     mock_response = Mock()
-    mock_client.request.return_value = mock_response
-    workspace._client = mock_client
+    mock_sync_client.request.return_value = mock_response
 
     # Create a simple generator that yields request kwargs and returns a result
     def test_generator():
@@ -89,7 +99,9 @@ def test_execute_method():
     result = workspace._execute(test_generator())
 
     assert result == "test_result"
-    mock_client.request.assert_called_once_with(method="GET", url="http://test.com")
+    mock_sync_client.request.assert_called_once_with(
+        method="GET", url="http://test.com"
+    )
 
 
 @patch("openhands.sdk.workspace.remote.base.RemoteWorkspace._execute")
@@ -254,15 +266,13 @@ def test_execute_with_exception_handling():
         workspace._execute(failing_generator())
 
 
-def test_execute_generator_completion():
+def test_execute_generator_completion(mock_sync_client):
     """Test _execute method properly handles StopIteration to get return value."""
     workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
 
     # Mock client
-    mock_client = MagicMock()
     mock_response = Mock()
-    mock_client.request.return_value = mock_response
-    workspace._client = mock_client
+    mock_sync_client.request.return_value = mock_response
 
     def test_generator():
         # First yield - get response
@@ -275,6 +285,6 @@ def test_execute_generator_completion():
     result = workspace._execute(test_generator())
 
     assert result == "final_result"
-    assert mock_client.request.call_count == 2
-    mock_client.request.assert_any_call(method="GET", url="http://test1.com")
-    mock_client.request.assert_any_call(method="POST", url="http://test2.com")
+    assert mock_sync_client.request.call_count == 2
+    mock_sync_client.request.assert_any_call(method="GET", url="http://test1.com")
+    mock_sync_client.request.assert_any_call(method="POST", url="http://test2.com")
