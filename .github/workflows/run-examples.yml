@@ -20,7 +20,8 @@ permissions:
 
 jobs:
     test-examples:
-        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+        # Schedule trigger only runs in the main repository, not in forks
+        if: github.event.label.name == 'test-examples' || github.event_name == 'workflow_dispatch' || (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
         runs-on: blacksmith-2vcpu-ubuntu-2404
         timeout-minutes: 60
         steps:
