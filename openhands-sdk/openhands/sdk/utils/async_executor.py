@@ -1,5 +1,7 @@
+import atexit
 import inspect
 import threading
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -22,12 +24,28 @@ class AsyncExecutor:
         self._portal = None
         self._portal_cm = None
         self._lock = threading.Lock()
+        self._atexit_registered = False
 
     def _ensure_portal(self):
         with self._lock:
             if self._portal is None:
                 self._portal_cm = start_blocking_portal()
                 self._portal = self._portal_cm.__enter__()
+                # Register atexit handler to ensure cleanup on interpreter shutdown
+                if not self._atexit_registered:
+                    # Use weakref to avoid keeping the executor alive
+                    weak_self = weakref.ref(self)
+
+                    def cleanup():
+                        executor = weak_self()
+                        if executor is not None:
+                            try:
+                                executor.close()
+                            except Exception:
+                                pass
+
+                    atexit.register(cleanup)
+                    self._atexit_registered = True
             return self._portal
 
     def run_async(
