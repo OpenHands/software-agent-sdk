@@ -108,8 +108,13 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to enable GPU support with --gpus all.",
     )
+    cleanup_image: bool = Field(
+        default=False,
+        description="Whether to delete the Docker image when cleaning up workspace.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
+    _image_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
 
@@ -151,6 +156,9 @@ class DockerWorkspace(RemoteWorkspace):
             image: The Docker image tag to use.
             context: The Pydantic context from model_post_init.
         """
+        # Store the image name for cleanup
+        self._image_name = image
+
         # Determine port
         if self.host_port is None:
             self.host_port = find_available_tcp_port()
@@ -336,3 +344,15 @@ class DockerWorkspace(RemoteWorkspace):
             logger.info("Stopping container: %s", self._container_id)
             execute_command(["docker", "stop", self._container_id])
             self._container_id = None
+
+        # Optionally delete the Docker image
+        if self.cleanup_image and self._image_name:
+            logger.info("Deleting Docker image: %s", self._image_name)
+            result = execute_command(["docker", "rmi", "-f", self._image_name])
+            if result.returncode == 0:
+                logger.info("Successfully deleted image: %s", self._image_name)
+            else:
+                logger.warning(
+                    "Failed to delete image %s: %s", self._image_name, result.stderr
+                )
+            self._image_name = None
