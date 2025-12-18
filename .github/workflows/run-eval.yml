@@ -23,7 +23,7 @@ on:
                 default: main
             eval_limit:
                 description: Number of instances to run
-                required: true
+                required: false
                 default: '1'
                 type: choice
                 options:

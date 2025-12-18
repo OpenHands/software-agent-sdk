@@ -1,6 +1,6 @@
 [project]
 name = "openhands-sdk"
-version = "1.5.2"
+version = "1.6.0"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
@@ -14,7 +14,7 @@ dependencies = [
     "python-json-logger>=3.3.0",
     "tenacity>=9.1.2",
     "websockets>=12",
-    "lmnr>=0.7.20"
+    "lmnr>=0.7.24"
 ]
 
 [project.optional-dependencies]
