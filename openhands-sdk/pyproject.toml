@@ -14,7 +14,8 @@ dependencies = [
     "python-json-logger>=3.3.0",
     "tenacity>=9.1.2",
     "websockets>=12",
-    "lmnr>=0.7.24"
+    "lmnr>=0.7.24",
+    "weave>=0.52.22"
 ]
 
 [project.optional-dependencies]
