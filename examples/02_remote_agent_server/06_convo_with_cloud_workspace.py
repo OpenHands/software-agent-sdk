@@ -7,8 +7,13 @@ Usage:
   uv run examples/02_remote_agent_server/06_convo_with_cloud_workspace.py
 
 Requirements:
-  - LLM_API_KEY: API key for LLM access
+  - LLM_API_KEY: API key for direct LLM provider access (e.g., Anthropic API key)
   - OPENHANDS_CLOUD_API_KEY: API key for OpenHands Cloud access
+
+Note:
+  The LLM configuration is sent to the cloud sandbox, so you need an API key
+  that works directly with the LLM provider (not a local proxy). If using
+  Anthropic, set LLM_API_KEY to your Anthropic API key.
 """
 
 import os
@@ -32,10 +37,13 @@ logger = get_logger(__name__)
 api_key = os.getenv("LLM_API_KEY")
 assert api_key, "LLM_API_KEY required"
 
+# Note: Don't use a local proxy URL here - the cloud sandbox needs direct access
+# to the LLM provider. Use None for base_url to let LiteLLM use the default
+# provider endpoint, or specify the provider's direct URL.
 llm = LLM(
     usage_id="agent",
     model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
-    base_url=os.getenv("LLM_BASE_URL"),
+    base_url=os.getenv("LLM_BASE_URL") or None,
     api_key=SecretStr(api_key),
 )
 
