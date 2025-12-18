@@ -1,7 +1,7 @@
 """Tests for Conversation factory functionality."""
 
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, PropertyMock, patch
 
 import pytest
 from pydantic import SecretStr
@@ -22,29 +22,31 @@ def agent():
 
 @pytest.fixture
 def remote_workspace():
-    """Create RemoteWorkspace with mocked client."""
-    workspace = RemoteWorkspace(
-        host="http://localhost:8000", working_dir="/workspace/project"
-    )
+    with patch.object(
+        RemoteWorkspace, "client", new_callable=PropertyMock
+    ) as mock_prop:
+        mock_client = Mock()
+        mock_prop.return_value = mock_client
 
-    # Mock the workspace client
-    mock_client = Mock()
-    workspace._client = mock_client
+        """Create RemoteWorkspace with mocked client."""
+        workspace = RemoteWorkspace(
+            host="http://localhost:8000", working_dir="/workspace/project"
+        )
 
-    # Mock conversation creation response
-    conversation_id = str(uuid.uuid4())
-    mock_conv_response = Mock()
-    mock_conv_response.raise_for_status.return_value = None
-    mock_conv_response.json.return_value = {"id": conversation_id}
+        # Mock conversation creation response
+        conversation_id = str(uuid.uuid4())
+        mock_conv_response = Mock()
+        mock_conv_response.raise_for_status.return_value = None
+        mock_conv_response.json.return_value = {"id": conversation_id}
 
-    # Mock events response
-    mock_events_response = Mock()
-    mock_events_response.raise_for_status.return_value = None
-    mock_events_response.json.return_value = {"items": [], "next_page_id": None}
+        # Mock events response
+        mock_events_response = Mock()
+        mock_events_response.raise_for_status.return_value = None
+        mock_events_response.json.return_value = {"items": [], "next_page_id": None}
 
-    mock_client.request.side_effect = [mock_conv_response, mock_events_response]
+        mock_client.request.side_effect = [mock_conv_response, mock_events_response]
 
-    return workspace
+        yield workspace
 
 
 def test_conversation_factory_creates_local_by_default(agent):
