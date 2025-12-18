@@ -349,8 +349,10 @@ class LocalConversation(BaseConversation):
                 )
             )
 
-            # Re-raise with conversation id for better UX; include original traceback
-            raise ConversationRunError(self._state.id, e) from e
+            # Re-raise with conversation id and persistence dir for better UX
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""

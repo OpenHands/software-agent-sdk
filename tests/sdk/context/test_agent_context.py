@@ -1,6 +1,7 @@
 """Tests for AgentContext template rendering functionality."""
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.skills import (
@@ -8,6 +9,7 @@ from openhands.sdk.context.skills import (
     Skill,
 )
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.secret import StaticSecret
 
 
 class TestAgentContext:
@@ -494,30 +496,47 @@ defined in user's repository.\n"
         )
         assert result == (expected_content, [])
 
-    def test_get_secret_names_no_secrets(self):
-        """Test get_secret_names with no secrets configured."""
+    def test_get_secret_infos_no_secrets(self):
+        """Test get_secret_infos with no secrets configured."""
         context = AgentContext()
-        result = context.get_secret_names()
+        result = context.get_secret_infos()
         assert result == []
 
-    def test_get_secret_names_none_secrets(self):
-        """Test get_secret_names when secrets is None."""
+    def test_get_secret_infos_none_secrets(self):
+        """Test get_secret_infos when secrets is None."""
         context = AgentContext(secrets=None)
-        result = context.get_secret_names()
+        result = context.get_secret_infos()
         assert result == []
 
-    def test_get_secret_names_with_secrets(self):
-        """Test get_secret_names with multiple secrets."""
+    def test_get_secret_infos_with_secrets(self):
+        """Test get_secret_infos with multiple secrets."""
         secrets = {
-            "GITHUB_TOKEN": "test_token_123",
-            "API_KEY": "test_api_key",
-            "DATABASE_PASSWORD": "test_password",
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token_123"),
+                description="GitHub authentication token",
+            ),
+            "API_KEY": StaticSecret(
+                value=SecretStr("test_api_key"),
+                description="API key for external service",
+            ),
+            "DATABASE_PASSWORD": StaticSecret(
+                value=SecretStr("test_password"),
+                description="Database password",
+            ),
         }
         context = AgentContext(secrets=secrets)
-        result = context.get_secret_names()
-        # Order may vary, so use set comparison
-        assert set(result) == {"GITHUB_TOKEN", "API_KEY", "DATABASE_PASSWORD"}
+        result = context.get_secret_infos()
+        # Order may vary, so use set comparison for names
+        result_names = {info["name"] for info in result}
+        assert result_names == {"GITHUB_TOKEN", "API_KEY", "DATABASE_PASSWORD"}
         assert len(result) == 3
+        # Verify descriptions are included
+        result_dict = {info["name"]: info for info in result}
+        assert (
+            result_dict["GITHUB_TOKEN"]["description"] == "GitHub authentication token"
+        )
+        assert result_dict["API_KEY"]["description"] == "API key for external service"
+        assert result_dict["DATABASE_PASSWORD"]["description"] == "Database password"
 
     def test_get_system_message_suffix_with_secrets_only(self):
         """Test system message suffix with secrets but no repo skills or custom suffix.
@@ -526,8 +545,14 @@ defined in user's repository.\n"
         when no repo skills or custom suffix are present.
         """
         secrets = {
-            "GITHUB_TOKEN": "test_token",
-            "API_KEY": "test_key",
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token"),
+                description="GitHub authentication token",
+            ),
+            "API_KEY": StaticSecret(
+                value=SecretStr("test_key"),
+                description="API key for external service",
+            ),
         }
         context = AgentContext(secrets=secrets)
         result = context.get_system_message_suffix()
@@ -536,7 +561,9 @@ defined in user's repository.\n"
         assert "<CUSTOM_SECRETS>" in result
         assert "You have access to the following environment variables" in result
         assert "**$GITHUB_TOKEN**" in result
+        assert "GitHub authentication token" in result
         assert "**$API_KEY**" in result
+        assert "API key for external service" in result
         assert "</CUSTOM_SECRETS>" in result
 
     def test_get_system_message_suffix_with_secrets_and_repo_skills(self):
@@ -548,7 +575,10 @@ defined in user's repository.\n"
             trigger=None,
         )
         secrets = {
-            "GITHUB_TOKEN": "test_token",
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token"),
+                description="GitHub authentication token",
+            ),
         }
         context = AgentContext(skills=[repo_skill], secrets=secrets)
         result = context.get_system_message_suffix()
@@ -558,11 +588,15 @@ defined in user's repository.\n"
         assert "coding_standards" in result
         assert "<CUSTOM_SECRETS>" in result
         assert "**$GITHUB_TOKEN**" in result
+        assert "GitHub authentication token" in result
 
     def test_get_system_message_suffix_with_secrets_and_custom_suffix(self):
         """Test system message suffix with secrets and custom suffix."""
         secrets = {
-            "API_KEY": "test_key",
+            "API_KEY": StaticSecret(
+                value=SecretStr("test_key"),
+                description="API key for external service",
+            ),
         }
         context = AgentContext(
             secrets=secrets,
@@ -574,6 +608,7 @@ defined in user's repository.\n"
         assert "Custom system instructions." in result
         assert "<CUSTOM_SECRETS>" in result
         assert "**$API_KEY**" in result
+        assert "API key for external service" in result
 
     def test_get_system_message_suffix_with_all_components(self):
         """Test system message suffix with repo skills, secrets, and custom suffix."""
@@ -584,8 +619,14 @@ defined in user's repository.\n"
             trigger=None,
         )
         secrets = {
-            "GITHUB_TOKEN": "test_token",
-            "DATABASE_PASSWORD": "test_password",
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token"),
+                description="GitHub authentication token",
+            ),
+            "DATABASE_PASSWORD": StaticSecret(
+                value=SecretStr("test_password"),
+                description="Database password",
+            ),
         }
         context = AgentContext(
             skills=[repo_skill],
@@ -600,14 +641,25 @@ defined in user's repository.\n"
         assert "Additional custom instructions." in result
         assert "<CUSTOM_SECRETS>" in result
         assert "**$GITHUB_TOKEN**" in result
+        assert "GitHub authentication token" in result
         assert "**$DATABASE_PASSWORD**" in result
+        assert "Database password" in result
 
     def test_get_system_message_suffix_secrets_order(self):
         """Test that secret names appear in the output in a consistent order."""
         secrets = {
-            "Z_SECRET": "z_value",
-            "A_SECRET": "a_value",
-            "M_SECRET": "m_value",
+            "Z_SECRET": StaticSecret(
+                value=SecretStr("z_value"),
+                description="Z secret description",
+            ),
+            "A_SECRET": StaticSecret(
+                value=SecretStr("a_value"),
+                description="A secret description",
+            ),
+            "M_SECRET": StaticSecret(
+                value=SecretStr("m_value"),
+                description="M secret description",
+            ),
         }
         context = AgentContext(secrets=secrets)
         result = context.get_system_message_suffix()
@@ -615,5 +667,8 @@ defined in user's repository.\n"
         assert result is not None
         # Check that all secrets are present
         assert "**$Z_SECRET**" in result
+        assert "Z secret description" in result
         assert "**$A_SECRET**" in result
+        assert "A secret description" in result
         assert "**$M_SECRET**" in result
+        assert "M secret description" in result
