@@ -5,7 +5,6 @@ from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.agent.agent import Agent
 from openhands.sdk.llm import LLM
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 
 
 class TestAgentImmutability:
@@ -54,31 +53,6 @@ class TestAgentImmutability:
         assert any(
             keyword in msg1.lower() for keyword in ["assistant", "help", "task", "user"]
         )
-
-    def test_agent_with_different_configs_are_different(self):
-        """Test that agents with different configs produce different system messages."""
-        # Use LLMSecurityAnalyzer so that the security risk assessment section is
-        # included and cli_mode differences will be visible in the system message
-        security_analyzer = LLMSecurityAnalyzer()
-        agent1 = Agent(
-            llm=self.llm,
-            tools=[],
-            security_analyzer=security_analyzer,
-            system_prompt_kwargs={"cli_mode": True},
-        )
-        agent2 = Agent(
-            llm=self.llm,
-            tools=[],
-            security_analyzer=security_analyzer,
-            system_prompt_kwargs={"cli_mode": False},
-        )
-
-        # System messages should be different due to cli_mode
-        msg1 = agent1.system_message
-        msg2 = agent2.system_message
-
-        # They should be different (cli_mode affects the template)
-        assert msg1 != msg2
 
     def test_condenser_property_access(self):
         """Test that condenser property works correctly."""
@@ -151,13 +125,9 @@ class TestAgentImmutability:
 
     def test_agent_model_copy_creates_new_instance(self):
         """Test that model_copy creates a new Agent instance with modified fields."""
-        # Use LLMSecurityAnalyzer so that the security risk assessment section is
-        # included and cli_mode differences will be visible in the system message
-        security_analyzer = LLMSecurityAnalyzer()
         original_agent = Agent(
             llm=self.llm,
             tools=[],
-            security_analyzer=security_analyzer,
             system_prompt_kwargs={"cli_mode": True},
         )
 

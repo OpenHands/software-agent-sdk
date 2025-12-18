@@ -171,7 +171,10 @@ def test_get_closest_git_repo():
 
         # Test finding git repo from nested directory
         git_repo = get_closest_git_repo(nested_dir)
-        assert git_repo == Path(temp_dir)
+        # Compare resolved paths to avoid symlink differences on macOS
+        # Example: /var is a symlink to /private/var
+        assert git_repo is not None
+        assert git_repo.resolve() == Path(temp_dir).resolve()
 
         # Test with non-git directory
         with tempfile.TemporaryDirectory() as non_git_dir:

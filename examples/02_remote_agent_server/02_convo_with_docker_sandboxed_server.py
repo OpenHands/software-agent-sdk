@@ -22,7 +22,7 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
@@ -37,12 +37,17 @@ def detect_platform():
 
 
 # 2) Create a Docker-based remote workspace that will set up and manage
-#    the Docker container automatically
+#    the Docker container automatically. Use `DockerWorkspace` with a pre-built
+#    image or `DockerDevWorkspace` to automatically build the image on-demand.
+#    with DockerDevWorkspace(
+#        # dynamically build agent-server image
+#        base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+#        host_port=8010,
+#        platform=detect_platform(),
+#    ) as workspace:
 with DockerWorkspace(
-    # dynamically build agent-server image
-    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     # use pre-built image for faster startup
-    # server_image="ghcr.io/openhands/agent-server:main-python",
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:

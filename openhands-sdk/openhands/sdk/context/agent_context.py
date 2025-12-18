@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 import pathlib
+from collections.abc import Mapping
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -6,10 +9,12 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.skills import (
     Skill,
     SkillKnowledge,
+    load_public_skills,
     load_user_skills,
 )
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.logger import get_logger
+from openhands.sdk.secret import SecretValue
 
 
 logger = get_logger(__name__)
@@ -56,6 +61,23 @@ class AgentContext(BaseModel):
             "and ~/.openhands/microagents/ (for backward compatibility). "
         ),
     )
+    load_public_skills: bool = Field(
+        default=False,
+        description=(
+            "Whether to automatically load skills from the public OpenHands "
+            "skills repository at https://github.com/OpenHands/skills. "
+            "This allows you to get the latest skills without SDK updates."
+        ),
+    )
+    secrets: Mapping[str, SecretValue] | None = Field(
+        default=None,
+        description=(
+            "Dictionary mapping secret keys to values or secret sources. "
+            "Secrets are used for authentication and sensitive data handling. "
+            "Values can be either strings or SecretSource instances "
+            "(str | SecretSource)."
+        ),
+    )
 
     @field_validator("skills")
     @classmethod
@@ -93,6 +115,37 @@ class AgentContext(BaseModel):
 
         return self
 
+    @model_validator(mode="after")
+    def _load_public_skills(self):
+        """Load public skills from OpenHands skills repository if enabled."""
+        if not self.load_public_skills:
+            return self
+        try:
+            public_skills = load_public_skills()
+            # Merge public skills with explicit skills, avoiding duplicates
+            existing_names = {skill.name for skill in self.skills}
+            for public_skill in public_skills:
+                if public_skill.name not in existing_names:
+                    self.skills.append(public_skill)
+                else:
+                    logger.warning(
+                        f"Skipping public skill '{public_skill.name}' "
+                        f"(already in existing skills)"
+                    )
+        except Exception as e:
+            logger.warning(f"Failed to load public skills: {str(e)}")
+        return self
+
+    def get_secret_names(self) -> list[str]:
+        """Get the list of secret names from the secrets field.
+
+        Returns:
+            List of secret names. Returns an empty list if no secrets are configured.
+        """
+        if not self.secrets:
+            return []
+        return list(self.secrets.keys())
+
     def get_system_message_suffix(self) -> str | None:
         """Get the system message with repo skill content and custom suffix.
 
@@ -105,13 +158,15 @@ class AgentContext(BaseModel):
         repo_skills = [s for s in self.skills if s.trigger is None]
         logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
         # Build the workspace context information
-        if repo_skills:
+        secret_names = self.get_secret_names()
+        if repo_skills or self.system_message_suffix or secret_names:
             # TODO(test): add a test for this rendering to make sure they work
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
                 repo_skills=repo_skills,
                 system_message_suffix=self.system_message_suffix or "",
+                secret_names=secret_names,
             ).strip()
             return formatted_text
         elif self.system_message_suffix and self.system_message_suffix.strip():

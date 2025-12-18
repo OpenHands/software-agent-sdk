@@ -3,7 +3,7 @@ JSON schemas for structured integration test results.
 """
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -20,6 +20,7 @@ class TestResultData(BaseModel):
 
     success: bool
     reason: str | None = None
+    skipped: bool = False
 
 
 class TestInstanceResult(BaseModel):
@@ -27,6 +28,8 @@ class TestInstanceResult(BaseModel):
 
     instance_id: str
     test_result: TestResultData
+    test_type: Literal["integration", "behavior"]
+    required: bool  # True for integration tests, False for behavior tests
     cost: float = 0.0
     error_message: str | None = None
 
@@ -46,8 +49,17 @@ class ModelTestResults(BaseModel):
     # Summary statistics
     total_tests: int
     successful_tests: int
+    skipped_tests: int
     success_rate: float
     total_cost: float
+
+    # Type-specific statistics
+    integration_tests_total: int = 0
+    integration_tests_successful: int = 0
+    integration_tests_success_rate: float = 0.0
+    behavior_tests_total: int = 0
+    behavior_tests_successful: int = 0
+    behavior_tests_success_rate: float = 0.0
 
     # Additional metadata
     eval_note: str | None = None
@@ -75,7 +87,10 @@ class ModelTestResults(BaseModel):
                     test_result=TestResultData(
                         success=output.test_result.success,
                         reason=output.test_result.reason,
+                        skipped=output.test_result.skipped,
                     ),
+                    test_type=output.test_type,
+                    required=output.required,
                     cost=output.cost,
                     error_message=output.error_message,
                 )
@@ -84,8 +99,41 @@ class ModelTestResults(BaseModel):
         # Calculate summary statistics
         total_tests = len(test_instances)
         successful_tests = sum(1 for t in test_instances if t.test_result.success)
-        success_rate = successful_tests / total_tests if total_tests > 0 else 0.0
+        skipped_tests = sum(1 for t in test_instances if t.test_result.skipped)
+        # Exclude skipped tests from success rate calculation
+        non_skipped_tests = total_tests - skipped_tests
+        success_rate = (
+            successful_tests / non_skipped_tests if non_skipped_tests > 0 else 0.0
+        )
         total_cost = sum(t.cost for t in test_instances)
+
+        # Calculate type-specific statistics
+        integration_tests = [t for t in test_instances if t.test_type == "integration"]
+        behavior_tests = [t for t in test_instances if t.test_type == "behavior"]
+
+        integration_tests_total = len(integration_tests)
+        integration_tests_successful = sum(
+            1 for t in integration_tests if t.test_result.success
+        )
+        integration_skipped = sum(1 for t in integration_tests if t.test_result.skipped)
+        integration_non_skipped = integration_tests_total - integration_skipped
+        integration_tests_success_rate = (
+            integration_tests_successful / integration_non_skipped
+            if integration_non_skipped > 0
+            else 0.0
+        )
+
+        behavior_tests_total = len(behavior_tests)
+        behavior_tests_successful = sum(
+            1 for t in behavior_tests if t.test_result.success
+        )
+        behavior_skipped = sum(1 for t in behavior_tests if t.test_result.skipped)
+        behavior_non_skipped = behavior_tests_total - behavior_skipped
+        behavior_tests_success_rate = (
+            behavior_tests_successful / behavior_non_skipped
+            if behavior_non_skipped > 0
+            else 0.0
+        )
 
         return cls(
             model_name=model_name,
@@ -94,8 +142,15 @@ class ModelTestResults(BaseModel):
             test_instances=test_instances,
             total_tests=total_tests,
             successful_tests=successful_tests,
+            skipped_tests=skipped_tests,
             success_rate=success_rate,
             total_cost=total_cost,
+            integration_tests_total=integration_tests_total,
+            integration_tests_successful=integration_tests_successful,
+            integration_tests_success_rate=integration_tests_success_rate,
+            behavior_tests_total=behavior_tests_total,
+            behavior_tests_successful=behavior_tests_successful,
+            behavior_tests_success_rate=behavior_tests_success_rate,
             eval_note=eval_note,
             artifact_url=artifact_url,
         )
@@ -126,8 +181,13 @@ class ConsolidatedResults(BaseModel):
         # Calculate overall statistics
         total_tests_all = sum(r.total_tests for r in model_results)
         total_successful_all = sum(r.successful_tests for r in model_results)
+        total_skipped_all = sum(r.skipped_tests for r in model_results)
+        # Exclude skipped tests from overall success rate calculation
+        non_skipped_tests_all = total_tests_all - total_skipped_all
         overall_success_rate = (
-            total_successful_all / total_tests_all if total_tests_all > 0 else 0.0
+            total_successful_all / non_skipped_tests_all
+            if non_skipped_tests_all > 0
+            else 0.0
         )
         total_cost_all_models = sum(r.total_cost for r in model_results)
 

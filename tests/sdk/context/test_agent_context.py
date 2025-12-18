@@ -493,3 +493,127 @@ defined in user's repository.\n"
             text="Custom user instructions for empty messages."
         )
         assert result == (expected_content, [])
+
+    def test_get_secret_names_no_secrets(self):
+        """Test get_secret_names with no secrets configured."""
+        context = AgentContext()
+        result = context.get_secret_names()
+        assert result == []
+
+    def test_get_secret_names_none_secrets(self):
+        """Test get_secret_names when secrets is None."""
+        context = AgentContext(secrets=None)
+        result = context.get_secret_names()
+        assert result == []
+
+    def test_get_secret_names_with_secrets(self):
+        """Test get_secret_names with multiple secrets."""
+        secrets = {
+            "GITHUB_TOKEN": "test_token_123",
+            "API_KEY": "test_api_key",
+            "DATABASE_PASSWORD": "test_password",
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_secret_names()
+        # Order may vary, so use set comparison
+        assert set(result) == {"GITHUB_TOKEN", "API_KEY", "DATABASE_PASSWORD"}
+        assert len(result) == 3
+
+    def test_get_system_message_suffix_with_secrets_only(self):
+        """Test system message suffix with secrets but no repo skills or custom suffix.
+
+        This test verifies that secrets are included in the system message suffix
+        when no repo skills or custom suffix are present.
+        """
+        secrets = {
+            "GITHUB_TOKEN": "test_token",
+            "API_KEY": "test_key",
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<CUSTOM_SECRETS>" in result
+        assert "You have access to the following environment variables" in result
+        assert "**$GITHUB_TOKEN**" in result
+        assert "**$API_KEY**" in result
+        assert "</CUSTOM_SECRETS>" in result
+
+    def test_get_system_message_suffix_with_secrets_and_repo_skills(self):
+        """Test system message suffix with both secrets and repo skills."""
+        repo_skill = Skill(
+            name="coding_standards",
+            content="Follow PEP 8 style guidelines.",
+            source="coding_standards.md",
+            trigger=None,
+        )
+        secrets = {
+            "GITHUB_TOKEN": "test_token",
+        }
+        context = AgentContext(skills=[repo_skill], secrets=secrets)
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "coding_standards" in result
+        assert "<CUSTOM_SECRETS>" in result
+        assert "**$GITHUB_TOKEN**" in result
+
+    def test_get_system_message_suffix_with_secrets_and_custom_suffix(self):
+        """Test system message suffix with secrets and custom suffix."""
+        secrets = {
+            "API_KEY": "test_key",
+        }
+        context = AgentContext(
+            secrets=secrets,
+            system_message_suffix="Custom system instructions.",
+        )
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "Custom system instructions." in result
+        assert "<CUSTOM_SECRETS>" in result
+        assert "**$API_KEY**" in result
+
+    def test_get_system_message_suffix_with_all_components(self):
+        """Test system message suffix with repo skills, secrets, and custom suffix."""
+        repo_skill = Skill(
+            name="security_rules",
+            content="Always validate user input.",
+            source="security-rules.md",
+            trigger=None,
+        )
+        secrets = {
+            "GITHUB_TOKEN": "test_token",
+            "DATABASE_PASSWORD": "test_password",
+        }
+        context = AgentContext(
+            skills=[repo_skill],
+            secrets=secrets,
+            system_message_suffix="Additional custom instructions.",
+        )
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "security_rules" in result
+        assert "Additional custom instructions." in result
+        assert "<CUSTOM_SECRETS>" in result
+        assert "**$GITHUB_TOKEN**" in result
+        assert "**$DATABASE_PASSWORD**" in result
+
+    def test_get_system_message_suffix_secrets_order(self):
+        """Test that secret names appear in the output in a consistent order."""
+        secrets = {
+            "Z_SECRET": "z_value",
+            "A_SECRET": "a_value",
+            "M_SECRET": "m_value",
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        # Check that all secrets are present
+        assert "**$Z_SECRET**" in result
+        assert "**$A_SECRET**" in result
+        assert "**$M_SECRET**" in result

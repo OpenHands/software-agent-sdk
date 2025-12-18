@@ -40,7 +40,7 @@ class MockConversation(BaseConversation):
     def run(self) -> None:
         pass
 
-    def send_message(self, message: Any) -> None:
+    def send_message(self, message: Any, sender: str | None = None) -> None:
         pass
 
     def set_confirmation_policy(self, policy: Any) -> None:
@@ -51,6 +51,13 @@ class MockConversation(BaseConversation):
         return MagicMock()
 
     def update_secrets(self, secrets: Any) -> None:
+        pass
+
+    def ask_agent(self, question: str) -> str:
+        return "Mock response"
+
+    def condense(self) -> None:
+        """Mock implementation of condense method."""
         pass
 
 

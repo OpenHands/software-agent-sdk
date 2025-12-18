@@ -17,14 +17,13 @@ assert api_key is not None, "LLM_API_KEY environment variable is not set."
 
 llm = LLM(
     usage_id="agent",
-    model=os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
     base_url=os.getenv("LLM_BASE_URL"),
     api_key=SecretStr(api_key),
 )
 
+
 # Create a Docker-based remote workspace with extra ports for VSCode access
-
-
 def detect_platform():
     """Detects the correct Docker platform string."""
     import platform
@@ -36,7 +35,7 @@ def detect_platform():
 
 
 with DockerWorkspace(
-    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=18010,
     platform=detect_platform(),
     extra_ports=True,  # Expose extra ports for VSCode and VNC
@@ -97,7 +96,7 @@ with DockerWorkspace(
     while y != "y":
         y = input(
             "\n"
-            "Because you've enabled extra_ports=True in DockerWorkspace, "
+            "Because you've enabled extra_ports=True in DockerDevWorkspace, "
             "you can open VSCode Web to see the workspace.\n\n"
             f"VSCode URL: {vscode_url}\n\n"
             "The VSCode should have the OpenHands settings extension installed:\n"

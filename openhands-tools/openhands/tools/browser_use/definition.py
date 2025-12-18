@@ -13,16 +13,37 @@ from openhands.sdk.tool import (
     ToolDefinition,
     register_tool,
 )
-from openhands.sdk.utils import maybe_truncate
+from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 
 
 # Lazy import to avoid hanging during module import
 if TYPE_CHECKING:
+    from openhands.sdk.conversation.state import ConversationState
     from openhands.tools.browser_use.impl import BrowserToolExecutor
 
 
-# Maximum output size for browser observations
-MAX_BROWSER_OUTPUT_SIZE = 50000
+# Mapping of base64 prefixes to MIME types for image detection
+BASE64_IMAGE_PREFIXES = {
+    "/9j/": "image/jpeg",
+    "iVBORw0KGgo": "image/png",
+    "R0lGODlh": "image/gif",
+    "UklGR": "image/webp",
+}
+
+
+def detect_image_mime_type(base64_data: str) -> str:
+    """Detect MIME type from base64-encoded image data.
+
+    Args:
+        base64_data: Base64-encoded image data
+
+    Returns:
+        Detected MIME type, defaults to "image/png" if not detected
+    """
+    for prefix, mime_type in BASE64_IMAGE_PREFIXES.items():
+        if base64_data.startswith(prefix):
+            return mime_type
+    return "image/png"
 
 
 class BrowserObservation(Observation):
@@ -30,6 +51,10 @@ class BrowserObservation(Observation):
 
     screenshot_data: str | None = Field(
         default=None, description="Base64 screenshot data if available"
+    )
+    full_output_save_dir: str | None = Field(
+        default=None,
+        description="Directory where full output files are saved",
     )
 
     @property
@@ -44,19 +69,18 @@ class BrowserObservation(Observation):
         content_text = self.text
         if content_text:
             llm_content.append(
-                TextContent(text=maybe_truncate(content_text, MAX_BROWSER_OUTPUT_SIZE))
+                TextContent(
+                    text=maybe_truncate(
+                        content=content_text,
+                        truncate_after=DEFAULT_TEXT_CONTENT_LIMIT,
+                        save_dir=self.full_output_save_dir,
+                        tool_prefix="browser",
+                    )
+                )
             )
 
         if self.screenshot_data:
-            mime_type = "image/png"
-            if self.screenshot_data.startswith("/9j/"):
-                mime_type = "image/jpeg"
-            elif self.screenshot_data.startswith("iVBORw0KGgo"):
-                mime_type = "image/png"
-            elif self.screenshot_data.startswith("R0lGODlh"):
-                mime_type = "image/gif"
-            elif self.screenshot_data.startswith("UklGR"):
-                mime_type = "image/webp"
+            mime_type = detect_image_mime_type(self.screenshot_data)
             # Convert base64 to data URL format for ImageContent
             data_url = f"data:{mime_type};base64,{self.screenshot_data}"
             llm_content.append(ImageContent(image_urls=[data_url]))
@@ -531,13 +555,31 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     @classmethod
     def create(
         cls,
+        conv_state: "ConversationState",
         **executor_config,
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
         # Import executor only when actually needed to
         # avoid hanging during module import
-        from openhands.tools.browser_use.impl import BrowserToolExecutor
+        import sys
 
-        executor = BrowserToolExecutor(**executor_config)
+        # Use Windows-specific executor on Windows systems
+        if sys.platform == "win32":
+            from openhands.tools.browser_use.impl_windows import (
+                WindowsBrowserToolExecutor,
+            )
+
+            executor = WindowsBrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+        else:
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            executor = BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
         for tool_class in [

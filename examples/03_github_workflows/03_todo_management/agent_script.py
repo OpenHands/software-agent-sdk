@@ -13,7 +13,7 @@ Arguments:
 
 Environment Variables:
     LLM_API_KEY: API key for the LLM (required)
-    LLM_MODEL: Language model to use (default: openhands/claude-sonnet-4-5-20250929)
+    LLM_MODEL: Language model to use (default: anthropic/claude-sonnet-4-5-20250929)
     LLM_BASE_URL: Optional base URL for LLM API
     GITHUB_TOKEN: GitHub token for creating PRs (required)
     GITHUB_REPOSITORY: Repository in format owner/repo (required)
@@ -49,13 +49,13 @@ def process_todo(todo_data: dict):
         logger.error("LLM_API_KEY environment variable is not set.")
         sys.exit(1)
 
-    model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
     base_url = os.getenv("LLM_BASE_URL")
 
     llm_config = {
         "model": model,
         "api_key": api_key,
-        "service_id": "agent_script",
+        "usage_id": "agent_script",
         "drop_params": True,
     }
 

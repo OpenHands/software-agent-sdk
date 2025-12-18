@@ -2,6 +2,7 @@
 import json
 from collections.abc import Sequence
 from enum import Enum
+from pathlib import Path
 from typing import Any, Self
 
 from pydantic import AliasChoices, Field, PrivateAttr
@@ -17,6 +18,7 @@ from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObserva
 from openhands.sdk.event.base import Event
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -40,6 +42,7 @@ class ConversationExecutionStatus(str, Enum):
     FINISHED = "finished"  # Conversation has completed the current task
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
+    DELETING = "deleting"  # Conversation is in the process of being deleted
 
 
 class ConversationState(OpenHandsModel):
@@ -81,6 +84,10 @@ class ConversationState(OpenHandsModel):
         default=ConversationExecutionStatus.IDLE
     )
     confirmation_policy: ConfirmationPolicyBase = NeverConfirm()
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        default=None,
+        description="Optional security analyzer to evaluate action risks.",
+    )
 
     activated_knowledge_skills: list[str] = Field(
         default_factory=list,
@@ -118,6 +125,13 @@ class ConversationState(OpenHandsModel):
     @property
     def events(self) -> EventLog:
         return self._events
+
+    @property
+    def env_observation_persistence_dir(self) -> str | None:
+        """Directory for persisting environment observation files."""
+        if self.persistence_dir is None:
+            return None
+        return str(Path(self.persistence_dir) / "observations")
 
     def set_on_state_change(self, callback: ConversationCallbackType | None) -> None:
         """Set a callback to be called when state changes.
@@ -204,6 +218,8 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
+        # Record existing analyzer configuration in state
+        state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()

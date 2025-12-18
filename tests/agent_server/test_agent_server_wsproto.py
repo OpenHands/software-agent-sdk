@@ -77,7 +77,7 @@ async def test_agent_server_websocket_with_wsproto(agent_server):
         json={
             "agent": {
                 "llm": {
-                    "service_id": "test-llm",
+                    "usage_id": "test-llm",
                     "model": "test-provider/test-model",
                     "api_key": "test-key",
                 },

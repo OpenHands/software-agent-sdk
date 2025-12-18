@@ -7,7 +7,7 @@ from openhands.sdk import (
     Agent,
     Conversation,
 )
-from openhands.sdk.conversation.secret_source import SecretSource
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.tool import Tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
@@ -16,7 +16,7 @@ from openhands.tools.terminal import TerminalTool
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="agent",

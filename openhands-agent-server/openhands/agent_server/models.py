@@ -1,19 +1,20 @@
 from abc import ABC
 from datetime import datetime
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
-from openhands.sdk.conversation.secret_source import SecretSource
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.secret import SecretSource
+from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
@@ -158,11 +159,56 @@ class UpdateSecretsRequest(BaseModel):
         description="Dictionary mapping secret keys to values"
     )
 
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def convert_string_secrets(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Convert plain string secrets to StaticSecret objects.
+
+        This validator enables backward compatibility by automatically converting:
+        - Plain strings: "secret-value" → StaticSecret(value=SecretStr("secret-value"))
+        - Dict with value field: {"value": "secret-value"} → StaticSecret dict format
+        - Proper SecretSource objects: passed through unchanged
+        """
+        if not isinstance(v, dict):
+            return v
+
+        converted = {}
+        for key, value in v.items():
+            if isinstance(value, str):
+                # Convert plain string to StaticSecret dict format
+                converted[key] = {
+                    "kind": "StaticSecret",
+                    "value": value,
+                }
+            elif isinstance(value, dict):
+                if "value" in value and "kind" not in value:
+                    # Convert dict with value field to StaticSecret dict format
+                    converted[key] = {
+                        "kind": "StaticSecret",
+                        "value": value["value"],
+                    }
+                else:
+                    # Keep existing SecretSource objects or properly formatted dicts
+                    converted[key] = value
+            else:
+                # Keep other types as-is (will likely fail validation later)
+                converted[key] = value
+
+        return converted
+
 
 class SetConfirmationPolicyRequest(BaseModel):
     """Payload to set confirmation policy for a conversation."""
 
     policy: ConfirmationPolicyBase = Field(description="The confirmation policy to set")
+
+
+class SetSecurityAnalyzerRequest(BaseModel):
+    "Payload to set security analyzer for a conversation"
+
+    security_analyzer: SecurityAnalyzerBase | None = Field(
+        description="The security analyzer to set"
+    )
 
 
 class UpdateConversationRequest(BaseModel):
@@ -188,6 +234,18 @@ class GenerateTitleResponse(BaseModel):
     """Response containing the generated conversation title."""
 
     title: str = Field(description="The generated title for the conversation")
+
+
+class AskAgentRequest(BaseModel):
+    """Payload to ask the agent a simple question."""
+
+    question: str = Field(description="The question to ask the agent")
+
+
+class AskAgentResponse(BaseModel):
+    """Response containing the agent's answer."""
+
+    response: str = Field(description="The agent's response to the question")
 
 
 class BashEventBase(DiscriminatedUnionMixin, ABC):

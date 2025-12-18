@@ -15,6 +15,10 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
+)
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
@@ -130,6 +134,7 @@ def test_conversation_state_persistence_save_load():
         assert loaded_state.agent.__class__ == agent.__class__
         # Test model_dump equality
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
+
         # Also verify key fields are preserved
         assert loaded_state.id == state.id
         assert len(loaded_state.events) == len(state.events)
@@ -437,7 +442,12 @@ def test_agent_resolve_diff_different_class_raises_error():
         def init_state(self, state, on_event):
             pass
 
-        def step(self, conversation, on_event):
+        def step(
+            self,
+            conversation,
+            on_event: ConversationCallbackType,
+            on_token: ConversationTokenCallbackType | None = None,
+        ):
             pass
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
@@ -544,4 +554,5 @@ def test_conversation_with_agent_different_llm_config():
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
         # Test that the core state structure is preserved (excluding agent differences)
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
+
         assert new_dump == original_state_dump

@@ -639,7 +639,7 @@ def main():
         sys.exit(1)
 
     # Get LLM configuration from environment
-    model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+    model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
     base_url = os.getenv("LLM_BASE_URL")
 
     llm = LLM(

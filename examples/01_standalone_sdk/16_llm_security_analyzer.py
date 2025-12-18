@@ -94,7 +94,7 @@ def run_until_finished_with_security(
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
 assert api_key is not None, "LLM_API_KEY environment variable is not set."
-model = os.getenv("LLM_MODEL", "openhands/claude-sonnet-4-5-20250929")
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
 base_url = os.getenv("LLM_BASE_URL")
 llm = LLM(
     usage_id="security-analyzer",
@@ -111,14 +111,14 @@ tools = [
     Tool(name=FileEditorTool.name),
 ]
 
-# Agent with security analyzer
-security_analyzer = LLMSecurityAnalyzer()
-agent = Agent(llm=llm, tools=tools, security_analyzer=security_analyzer)
+# Agent
+agent = Agent(llm=llm, tools=tools)
 
 # Conversation with persisted filestore
 conversation = Conversation(
     agent=agent, persistence_dir="./.conversations", workspace="."
 )
+conversation.set_security_analyzer(LLMSecurityAnalyzer())
 conversation.set_confirmation_policy(ConfirmRisky())
 
 print("\n1) Safe command (LOW risk - should execute automatically)...")

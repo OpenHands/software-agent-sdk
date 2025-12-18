@@ -26,11 +26,23 @@ from openhands.sdk.event.llm_convertible import (
 from openhands.sdk.tool import Tool
 
 
+class SkipTest(Exception):
+    """
+    Exception raised to indicate that a test should be skipped.
+
+    This is useful for tests that require specific capabilities (e.g., vision)
+    that may not be available in all LLMs.
+    """
+
+    pass
+
+
 class TestResult(BaseModel):
     """Result of an integration test."""
 
     success: bool
     reason: str | None = None
+    skipped: bool = False
 
 
 class BaseIntegrationTest(ABC):
@@ -91,6 +103,7 @@ class BaseIntegrationTest(ABC):
             workspace=self.workspace,
             callbacks=[self.conversation_callback],
             visualizer=DefaultConversationVisualizer(),  # Use default visualizer
+            max_iteration_per_run=100,
         )
 
     def conversation_callback(self, event: Event):
@@ -187,6 +200,45 @@ class BaseIntegrationTest(ABC):
             TestResult: The result of the verification
         """
         pass
+
+    def add_judge_usage(
+        self, prompt_tokens: int, completion_tokens: int, cost: float
+    ) -> None:
+        """
+        Add LLM judge usage to conversation stats.
+
+        This ensures judge costs are included in the total test cost.
+
+        Args:
+            prompt_tokens: Number of prompt tokens used by judge
+            completion_tokens: Number of completion tokens used by judge
+            cost: Cost of the judge call
+        """
+        from openhands.sdk.llm.utils.metrics import TokenUsage
+
+        # Add to conversation stats for the test LLM
+        stats = self.conversation.conversation_stats
+        if stats:
+            try:
+                metrics = stats.get_metrics_for_usage("test-llm")
+                # Update accumulated metrics
+                if metrics.accumulated_token_usage:
+                    metrics.accumulated_token_usage.prompt_tokens = (
+                        metrics.accumulated_token_usage.prompt_tokens or 0
+                    ) + prompt_tokens
+                    metrics.accumulated_token_usage.completion_tokens = (
+                        metrics.accumulated_token_usage.completion_tokens or 0
+                    ) + completion_tokens
+                else:
+                    # Create new TokenUsage if it doesn't exist
+                    metrics.accumulated_token_usage = TokenUsage(
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                    )
+                metrics.accumulated_cost += cost
+            except Exception:
+                # If test-llm doesn't exist in stats yet, skip
+                pass
 
     def teardown(self):
         """
