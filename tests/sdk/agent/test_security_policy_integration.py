@@ -72,7 +72,6 @@ def test_custom_security_policy_in_system_message():
         custom_policy_path.write_text(custom_policy_content)
 
         # Copy required template files to temp directory
-        system_prompt_path = Path(temp_dir) / "system_prompt.j2"
         original_prompt_dir = (
             Path(__file__).parent.parent.parent.parent
             / "openhands-sdk"
@@ -81,14 +80,23 @@ def test_custom_security_policy_in_system_message():
             / "agent"
             / "prompts"
         )
+
+        # Copy system_prompt.j2
+        system_prompt_path = Path(temp_dir) / "system_prompt.j2"
         original_system_prompt = original_prompt_dir / "system_prompt.j2"
         shutil.copy2(original_system_prompt, system_prompt_path)
 
+        # Copy security_risk_assessment.j2
         security_risk_assessment_path = Path(temp_dir) / "security_risk_assessment.j2"
         original_security_risk_assessment = (
             original_prompt_dir / "security_risk_assessment.j2"
         )
         shutil.copy2(original_security_risk_assessment, security_risk_assessment_path)
+
+        # Copy self_documentation.j2
+        self_documentation_path = Path(temp_dir) / "self_documentation.j2"
+        original_self_documentation = original_prompt_dir / "self_documentation.j2"
+        shutil.copy2(original_self_documentation, self_documentation_path)
 
         # Create agent with custom security policy using absolute paths for both
         agent = Agent(
