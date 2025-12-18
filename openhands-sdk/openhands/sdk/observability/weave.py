@@ -1,58 +1,113 @@
 """Weave observability integration for OpenHands SDK.
 
-This module provides integration with Weights & Biases Weave for tracing
-and observability of agent operations. Weave automatically tracks LLM calls,
-tool executions, and agent steps.
+This module provides integration with Weights & Biases Weave for automatic
+tracing and observability of agent operations. It leverages Weave's built-in
+autopatching to automatically trace all LLM calls made through LiteLLM.
 
-Configuration:
-    Set the following environment variables to enable Weave tracing:
-    - WANDB_API_KEY: Your Weights & Biases API key
-    - WEAVE_PROJECT: The Weave project name (e.g., "my-team/my-project")
+## Key Features
 
-    Alternatively, call `init_weave()` directly with the project name.
+1. **Zero-config LLM tracing**: Just call `init_weave()` and all LiteLLM calls
+   are automatically traced - no manual decoration needed!
 
-Example:
-    >>> from openhands.sdk.observability.weave import maybe_init_weave, weave_op
-    >>> maybe_init_weave()  # Auto-initializes if env vars are set
-    >>>
-    >>> @weave_op(name="my_function")
-    >>> def my_function(x: int) -> int:
-    ...     return x + 1
+2. **Automatic integration patching**: Weave automatically patches LiteLLM,
+   OpenAI, Anthropic, and 30+ other providers when initialized.
+
+3. **Optional manual tracing**: Use `@weave.op` for custom agent logic that
+   you want to trace (tool execution, agent steps, etc.)
+
+4. **Thread grouping**: Group related operations under conversation threads.
+
+## How It Works
+
+The SDK uses LiteLLM for all LLM calls. When you call `init_weave()`:
+1. Weave's `implicit_patch()` automatically patches LiteLLM
+2. All `litellm.completion()` and `litellm.acompletion()` calls are traced
+3. You see full traces in the Weave UI without any code changes!
+
+## Environment Variables
+
+- `WANDB_API_KEY`: Your Weights & Biases API key
+- `WEAVE_PROJECT`: The Weave project name (e.g., "my-team/my-project")
+
+## Usage Examples
+
+### Basic Usage (Automatic LLM Tracing)
+
+```python
+from openhands.sdk.observability import init_weave
+from openhands.sdk import LLM
+
+# Initialize Weave - this automatically traces all LLM calls!
+init_weave("my-team/my-project")
+
+# All LLM calls are now automatically traced
+llm = LLM(model="gpt-4")
+response = llm.completion(messages=[{"role": "user", "content": "Hello!"}])
+# ^ This call appears in Weave UI automatically
+```
+
+### Custom Function Tracing
+
+```python
+import weave
+from openhands.sdk.observability import init_weave
+
+init_weave("my-team/my-project")
+
+# Use @weave.op for custom logic you want to trace
+@weave.op
+def process_agent_step(step: dict) -> dict:
+    # Your custom logic here
+    return {"processed": True}
+```
+
+### Conversation Thread Grouping
+
+```python
+from openhands.sdk.observability import init_weave, weave_attributes
+
+init_weave("my-team/my-project")
+
+# Group all operations under a conversation
+with weave_attributes(conversation_id="conv-123", user_id="user-456"):
+    # All LLM calls and traced functions within this block
+    # will be tagged with these attributes
+    response = llm.completion(...)
+```
 
 See Also:
     - Weave documentation: https://docs.wandb.ai/weave
     - Laminar integration: openhands.sdk.observability.laminar
 """
 
+from __future__ import annotations
+
+import logging
+import os
 from collections.abc import Callable
 from contextlib import contextmanager
-from functools import wraps
 from typing import Any, ParamSpec, TypeVar
 
-from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.utils import get_env
 
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
-# Type variables for generic function signatures
 P = ParamSpec("P")
 R = TypeVar("R")
 
-# Global state for Weave initialization
+# Global state
 _weave_initialized: bool = False
 _weave_client: Any = None
 
 
-def should_enable_weave() -> bool:
-    """Check if Weave should be enabled based on environment configuration.
+def get_weave_client() -> Any:
+    """Get the current Weave client instance.
 
     Returns:
-        True if WANDB_API_KEY and WEAVE_PROJECT are set, False otherwise.
+        The Weave client if initialized, None otherwise.
     """
-    api_key = get_env("WANDB_API_KEY")
-    project = get_env("WEAVE_PROJECT")
-    return bool(api_key and project)
+    return _weave_client
 
 
 def is_weave_initialized() -> bool:
@@ -61,30 +116,41 @@ def is_weave_initialized() -> bool:
     Returns:
         True if Weave is initialized and ready for tracing.
     """
-    global _weave_initialized
     return _weave_initialized
 
 
 def init_weave(
     project: str | None = None,
     api_key: str | None = None,
+    *,
+    settings: dict[str, Any] | None = None,
 ) -> bool:
-    """Initialize Weave for tracing.
+    """Initialize Weave for automatic tracing.
+
+    This is the main entry point for enabling Weave observability. When called,
+    Weave automatically patches LiteLLM and other supported libraries, so all
+    LLM calls are traced without any manual decoration.
 
     Args:
         project: The Weave project name (e.g., "my-team/my-project").
             If not provided, uses WEAVE_PROJECT environment variable.
         api_key: The Weights & Biases API key. If not provided, uses
             WANDB_API_KEY environment variable.
+        settings: Optional dict of Weave settings to configure behavior.
+            See Weave documentation for available settings.
 
     Returns:
         True if initialization was successful, False otherwise.
 
     Raises:
         ValueError: If no project is specified and WEAVE_PROJECT is not set.
-    """
-    import os
 
+    Example:
+        >>> from openhands.sdk.observability import init_weave
+        >>> init_weave("my-team/openhands-agent")
+        True
+        >>> # Now all LiteLLM calls are automatically traced!
+    """
     global _weave_initialized, _weave_client
 
     if _weave_initialized:
@@ -123,9 +189,20 @@ def init_weave(
         )
 
     try:
-        _weave_client = weave.init(project_name)
+        # Initialize Weave - this automatically:
+        # 1. Patches all already-imported integrations (LiteLLM, OpenAI, etc.)
+        # 2. Registers import hooks for future imports
+        init_kwargs: dict[str, Any] = {}
+        if settings:
+            init_kwargs["settings"] = settings
+
+        _weave_client = weave.init(project_name, **init_kwargs)
         _weave_initialized = True
-        logger.info(f"Weave initialized for project: {project_name}")
+
+        logger.info(
+            f"Weave initialized for project: {project_name}. "
+            "All LiteLLM calls will be automatically traced."
+        )
         return True
     except Exception as e:
         logger.error(f"Failed to initialize Weave: {e}")
@@ -135,149 +212,247 @@ def init_weave(
 def maybe_init_weave() -> bool:
     """Initialize Weave if environment variables are configured.
 
-    This is a convenience function that checks for WANDB_API_KEY and
-    WEAVE_PROJECT environment variables and initializes Weave if both are set.
+    This is a convenience function that initializes Weave only if both
+    WANDB_API_KEY and WEAVE_PROJECT environment variables are set.
+    Useful for conditional initialization based on environment.
 
     Returns:
-        True if Weave was initialized (or already initialized), False otherwise.
-    """
-    if is_weave_initialized():
-        return True
-
-    if should_enable_weave():
-        return init_weave()
-
-    logger.debug(
-        "Weave environment variables not set (WANDB_API_KEY, WEAVE_PROJECT). "
-        "Skipping Weave initialization."
-    )
-    return False
-
-
-def get_weave_client() -> Any:
-    """Get the current Weave client.
-
-    Returns:
-        The Weave client if initialized, None otherwise.
-    """
-    global _weave_client
-    return _weave_client
-
-
-def weave_op(
-    name: str | None = None,
-    *,
-    call_display_name: str | Callable[..., str] | None = None,
-    postprocess_inputs: Callable[..., dict[str, Any]] | None = None,
-    postprocess_output: Callable[..., Any] | None = None,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Decorator to trace a function with Weave.
-
-    This decorator wraps a function to automatically trace its inputs, outputs,
-    and execution time with Weave. If Weave is not initialized, the function
-    runs normally without tracing.
-
-    Args:
-        name: Optional name for the operation. Defaults to the function name.
-        call_display_name: Optional display name or callable that returns a
-            display name for each call.
-        postprocess_inputs: Optional function to transform inputs before logging.
-        postprocess_output: Optional function to transform output before logging.
-
-    Returns:
-        A decorator that wraps the function with Weave tracing.
+        True if Weave was initialized (or already was), False otherwise.
 
     Example:
-        >>> @weave_op(name="process_data")
-        >>> def process_data(data: dict) -> dict:
-        ...     return {"processed": True, **data}
+        >>> import os
+        >>> os.environ["WANDB_API_KEY"] = "your-key"
+        >>> os.environ["WEAVE_PROJECT"] = "my-team/my-project"
+        >>> from openhands.sdk.observability import maybe_init_weave
+        >>> maybe_init_weave()  # Initializes automatically
+        True
     """
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        @wraps(func)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            if not is_weave_initialized():
-                return func(*args, **kwargs)
+    if _weave_initialized:
+        return True
 
-            try:
-                import weave
+    if not should_enable_weave():
+        logger.debug(
+            "Weave environment variables not set (WANDB_API_KEY, WEAVE_PROJECT). "
+            "Skipping Weave initialization."
+        )
+        return False
 
-                # Build weave.op kwargs
-                op_kwargs: dict[str, Any] = {}
-                if name:
-                    op_kwargs["name"] = name
-                if call_display_name:
-                    op_kwargs["call_display_name"] = call_display_name
-                if postprocess_inputs:
-                    op_kwargs["postprocess_inputs"] = postprocess_inputs
-                if postprocess_output:
-                    op_kwargs["postprocess_output"] = postprocess_output
+    try:
+        return init_weave()
+    except ValueError:
+        return False
 
-                # Apply weave.op decorator dynamically
-                traced_func = weave.op(**op_kwargs)(func)
-                return traced_func(*args, **kwargs)
-            except Exception as e:
-                logger.debug(f"Weave tracing failed, running without trace: {e}")
-                return func(*args, **kwargs)
 
-        return wrapper
+def should_enable_weave() -> bool:
+    """Check if Weave should be enabled based on environment variables.
 
-    return decorator
+    Returns:
+        True if both WANDB_API_KEY and WEAVE_PROJECT are set.
+    """
+    return bool(get_env("WANDB_API_KEY") and get_env("WEAVE_PROJECT"))
 
 
 @contextmanager
-def weave_thread(thread_id: str):
-    """Context manager to group operations under a Weave thread.
+def weave_attributes(**attributes: Any):
+    """Context manager to add attributes to all operations within the block.
 
-    Weave threads allow grouping related operations (like all events in a
-    conversation) under a single trace hierarchy.
+    This is useful for grouping related operations (e.g., all events in a
+    conversation) or adding metadata to traces.
 
     Args:
-        thread_id: Unique identifier for the thread (e.g., conversation ID).
-
-    Yields:
-        The thread context if Weave is initialized, otherwise a no-op context.
+        **attributes: Key-value pairs to attach to all operations.
+            Common attributes: conversation_id, user_id, session_id, etc.
 
     Example:
-        >>> with weave_thread("conversation-123"):
-        ...     # All operations here will be grouped under the same thread
-        ...     process_message("Hello")
-        ...     generate_response()
+        >>> with weave_attributes(conversation_id="conv-123", user_id="user-456"):
+        ...     # All LLM calls and traced functions here will have these attributes
+        ...     response = llm.completion(messages=[...])
     """
-    if not is_weave_initialized():
+    if not _weave_initialized:
         yield
         return
 
     try:
         import weave
-
-        # Check if there's an active Weave client
-        client = weave.client.get_current_client()
-        if client is None:
-            yield
-            return
-
-        with weave.thread(thread_id):
+        with weave.attributes(attributes):
             yield
     except Exception as e:
-        logger.debug(f"Weave thread context failed: {e}")
+        logger.warning(f"Failed to set weave attributes: {e}")
         yield
 
 
-class WeaveSpanManager:
-    """Manages Weave spans for manual tracing.
+@contextmanager
+def weave_thread(thread_id: str):
+    """Context manager to group operations under a thread.
 
-    This class provides a stack-based approach to managing Weave spans,
-    similar to the SpanManager for Laminar. It's useful when you need
-    more control over span lifecycle than the decorator provides.
+    This is an alias for weave_attributes(thread_id=...) for convenience
+    and backward compatibility.
+
+    Args:
+        thread_id: Unique identifier for the thread (e.g., conversation ID).
+
+    Example:
+        >>> with weave_thread("conversation-123"):
+        ...     # All operations here will be grouped under the same thread
+        ...     response = llm.completion(messages=[...])
+    """
+    with weave_attributes(thread_id=thread_id):
+        yield
+
+
+def get_weave_op():
+    """Get the weave.op decorator for manual function tracing.
+
+    Returns the actual weave.op decorator if Weave is initialized,
+    otherwise returns a no-op decorator that just returns the function.
+
+    This is useful when you want to trace custom agent logic beyond
+    the automatic LLM call tracing.
+
+    Returns:
+        The weave.op decorator or a no-op decorator.
+
+    Example:
+        >>> from openhands.sdk.observability import init_weave, get_weave_op
+        >>> init_weave("my-project")
+        >>> weave_op = get_weave_op()
+        >>>
+        >>> @weave_op
+        ... def my_custom_function(x: int) -> int:
+        ...     return x * 2
+    """
+    if not _weave_initialized:
+        def noop_decorator(func):
+            return func
+        return noop_decorator
+
+    try:
+        import weave
+        return weave.op
+    except ImportError:
+        def noop_decorator(func):
+            return func
+        return noop_decorator
+
+
+def weave_op(
+    func: Callable[P, R] | None = None,
+    *,
+    name: str | None = None,
+    call_display_name: str | Callable[..., str] | None = None,
+    postprocess_inputs: Callable[..., dict[str, Any]] | None = None,
+    postprocess_output: Callable[..., Any] | None = None,
+) -> Callable[P, R] | Callable[[Callable[P, R]], Callable[P, R]]:
+    """Decorator to trace a function with Weave.
+
+    This is a convenience wrapper around weave.op that handles the case
+    when Weave is not initialized (returns the function unchanged).
+
+    Can be used with or without parentheses:
+        @weave_op
+        def my_func(): ...
+
+        @weave_op(name="custom_name")
+        def my_func(): ...
+
+    Args:
+        func: The function to decorate (when used without parentheses).
+        name: Optional name for the operation. Defaults to function name.
+        call_display_name: Display name for the call in the Weave UI.
+        postprocess_inputs: Function to transform inputs before logging.
+        postprocess_output: Function to transform output before logging.
+
+    Returns:
+        The decorated function or a decorator.
+    """
+    def decorator(fn: Callable[P, R]) -> Callable[P, R]:
+        if not _weave_initialized:
+            return fn
+
+        try:
+            import weave
+
+            op_kwargs: dict[str, Any] = {}
+            if name:
+                op_kwargs["name"] = name
+            if call_display_name:
+                op_kwargs["call_display_name"] = call_display_name
+            if postprocess_inputs:
+                op_kwargs["postprocess_inputs"] = postprocess_inputs
+            if postprocess_output:
+                op_kwargs["postprocess_output"] = postprocess_output
+
+            if op_kwargs:
+                return weave.op(**op_kwargs)(fn)
+            return weave.op(fn)
+        except Exception as e:
+            logger.warning(f"Failed to apply weave.op decorator: {e}")
+            return fn
+
+    # Handle both @weave_op and @weave_op(...) syntax
+    if func is not None:
+        return decorator(func)
+    return decorator
+
+
+def observe_weave(
+    name: str | None = None,
+    *,
+    ignore_inputs: list[str] | None = None,
+    ignore_output: bool = False,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Decorator for observing functions with Weave (Laminar-compatible interface).
+
+    This provides a similar interface to the Laminar `observe` decorator,
+    making it easier to switch between observability backends.
+
+    Args:
+        name: Optional name for the operation.
+        ignore_inputs: List of input parameter names to exclude from logging.
+        ignore_output: If True, don't log the output.
+
+    Returns:
+        A decorator that wraps the function for Weave tracing.
+
+    Example:
+        >>> @observe_weave(name="login", ignore_inputs=["password"])
+        ... def login(username: str, password: str) -> bool:
+        ...     return authenticate(username, password)
+    """
+    def postprocess_inputs_fn(inputs: dict[str, Any]) -> dict[str, Any]:
+        if not ignore_inputs:
+            return inputs
+        return {k: v for k, v in inputs.items() if k not in ignore_inputs}
+
+    def postprocess_output_fn(output: Any) -> Any:
+        if ignore_output:
+            return "[output hidden]"
+        return output
+
+    return weave_op(
+        name=name,
+        postprocess_inputs=postprocess_inputs_fn if ignore_inputs else None,
+        postprocess_output=postprocess_output_fn if ignore_output else None,
+    )
+
+
+class WeaveSpanManager:
+    """Manager for manual span lifecycle control.
+
+    This class provides fine-grained control over span creation and completion,
+    useful when automatic decoration is not suitable.
+
+    Note: For most use cases, the automatic LLM tracing and @weave_op decorator
+    are sufficient. Use this only when you need explicit span control.
 
     Example:
         >>> manager = WeaveSpanManager()
-        >>> manager.start_span("process_request", session_id="conv-123")
+        >>> manager.start_span("process_batch", inputs={"batch_size": 100})
         >>> try:
-        ...     # Do work
-        ...     pass
-        ... finally:
-        ...     manager.end_span()
+        ...     result = process_batch()
+        ...     manager.end_span(output=result)
+        ... except Exception as e:
+        ...     manager.end_span(error=str(e))
     """
 
     def __init__(self):
@@ -287,159 +462,85 @@ class WeaveSpanManager:
         self,
         name: str,
         inputs: dict[str, Any] | None = None,
-        session_id: str | None = None,
-    ) -> Any | None:
-        """Start a new Weave span.
+    ) -> Any:
+        """Start a new span.
 
         Args:
-            name: Name of the operation being traced.
-            inputs: Optional dictionary of input values to log.
-            session_id: Optional session ID for grouping related spans.
+            name: Name of the span/operation.
+            inputs: Input parameters to log.
 
         Returns:
-            The Weave call object if successful, None otherwise.
+            The span/call object if successful, None otherwise.
         """
-        if not is_weave_initialized():
+        if not _weave_initialized:
             return None
 
         try:
             import weave
 
-            client = get_weave_client()
-            if client is None:
-                return None
+            @weave.op(name=name)
+            def _span_op(**kwargs: Any) -> Any:
+                pass
 
-            # Create a call using the client API
-            call = client.create_call(
-                op=name,
-                inputs=inputs or {},
-            )
+            call = _span_op.call(inputs or {})
             self._call_stack.append(call)
             return call
         except Exception as e:
-            logger.debug(f"Failed to start Weave span: {e}")
+            logger.warning(f"Failed to start weave span: {e}")
             return None
 
-    def end_span(self, output: Any = None, error: Exception | None = None) -> None:
-        """End the most recent Weave span.
+    def end_span(
+        self,
+        output: Any = None,
+        error: str | None = None,
+    ) -> None:
+        """End the current span.
 
         Args:
-            output: Optional output value to log.
-            error: Optional exception if the operation failed.
+            output: Output value to log.
+            error: Error message if the span failed.
         """
         if not self._call_stack:
-            logger.debug("Attempted to end span, but stack is empty")
             return
 
         try:
             call = self._call_stack.pop()
-            client = get_weave_client()
-            if client and call:
-                if error:
-                    client.finish_call(call, output=None, exception=error)
-                else:
-                    client.finish_call(call, output=output)
+            if error:
+                call.finish(exception=Exception(error))
+            else:
+                call.finish(output=output)
         except Exception as e:
-            logger.debug(f"Failed to end Weave span: {e}")
+            logger.warning(f"Failed to end weave span: {e}")
 
 
-# Global span manager instance
-_span_manager: WeaveSpanManager | None = None
-
-
-def _get_span_manager() -> WeaveSpanManager:
-    """Get or create the global span manager."""
-    global _span_manager
-    if _span_manager is None:
-        _span_manager = WeaveSpanManager()
-    return _span_manager
+# Global span manager instance for convenience
+_global_span_manager = WeaveSpanManager()
 
 
 def start_weave_span(
     name: str,
     inputs: dict[str, Any] | None = None,
-    session_id: str | None = None,
-) -> Any | None:
-    """Start a new Weave span using the global span manager.
+) -> Any:
+    """Start a new Weave span using the global manager.
 
     Args:
-        name: Name of the operation being traced.
-        inputs: Optional dictionary of input values to log.
-        session_id: Optional session ID for grouping related spans.
+        name: Name of the span/operation.
+        inputs: Input parameters to log.
 
     Returns:
-        The Weave call object if successful, None otherwise.
+        The span/call object if successful, None otherwise.
     """
-    return _get_span_manager().start_span(name, inputs, session_id)
+    return _global_span_manager.start_span(name, inputs)
 
 
-def end_weave_span(output: Any = None, error: Exception | None = None) -> None:
-    """End the most recent Weave span using the global span manager.
+def end_weave_span(
+    output: Any = None,
+    error: str | None = None,
+) -> None:
+    """End the current Weave span using the global manager.
 
     Args:
-        output: Optional output value to log.
-        error: Optional exception if the operation failed.
+        output: Output value to log.
+        error: Error message if the span failed.
     """
-    try:
-        _get_span_manager().end_span(output, error)
-    except Exception:
-        logger.debug("Error ending Weave span")
-
-
-def observe_weave(
-    *,
-    name: str | None = None,
-    ignore_inputs: list[str] | None = None,
-    ignore_output: bool = False,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Unified observe decorator that works with both Weave and Laminar.
-
-    This decorator provides a consistent interface for observability that
-    works regardless of which backend (Weave or Laminar) is configured.
-    It prioritizes Weave if initialized, otherwise falls back to Laminar.
-
-    Args:
-        name: Optional name for the operation.
-        ignore_inputs: List of input parameter names to exclude from logging.
-        ignore_output: If True, don't log the function's output.
-
-    Returns:
-        A decorator that wraps the function with observability tracing.
-
-    Example:
-        >>> @observe_weave(name="agent.step", ignore_inputs=["state"])
-        >>> def step(self, state: State) -> Action:
-        ...     return self._process(state)
-    """
-    def decorator(func: Callable[P, R]) -> Callable[P, R]:
-        @wraps(func)
-        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
-            # Try Weave first
-            if is_weave_initialized():
-                try:
-                    import weave
-
-                    op_kwargs: dict[str, Any] = {}
-                    if name:
-                        op_kwargs["name"] = name
-
-                    # Handle input filtering via postprocess_inputs
-                    if ignore_inputs:
-                        def filter_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
-                            return {
-                                k: v for k, v in inputs.items()
-                                if k not in ignore_inputs
-                            }
-                        op_kwargs["postprocess_inputs"] = filter_inputs
-
-                    traced_func = weave.op(**op_kwargs)(func)
-                    return traced_func(*args, **kwargs)
-                except Exception as e:
-                    logger.debug(f"Weave tracing failed: {e}")
-
-            # Fall through to untraced execution
-            return func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
+    _global_span_manager.end_span(output, error)

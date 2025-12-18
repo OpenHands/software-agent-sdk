@@ -1,24 +1,44 @@
 #!/usr/bin/env python3
 """Demo script showing Weave observability integration with OpenHands SDK.
 
-This script demonstrates how to use Weave for tracing agent operations.
-It creates a simple agent that processes messages and shows how traces
-appear in the Weave UI.
+This script demonstrates how Weave provides **automatic LLM tracing** for the
+OpenHands SDK. The key insight is that Weave automatically patches LiteLLM
+when initialized, so all LLM calls are traced without any manual decoration!
 
-Prerequisites:
-    - Set WANDB_API_KEY environment variable (valid W&B API key)
-    - Set WEAVE_PROJECT environment variable (e.g., "your-team/openhands-demo")
-    - Optionally set OPENAI_API_KEY for LLM calls
+## Key Features Demonstrated
 
-Usage:
+1. **Automatic LLM Tracing**: Just call `init_weave()` and all LiteLLM calls
+   are automatically traced - no `@weave.op` decorators needed for LLM calls!
+
+2. **Custom Function Tracing**: Use `@weave_op` for custom agent logic you
+   want to trace (tool execution, agent steps, etc.)
+
+3. **Conversation Grouping**: Use `weave_attributes()` to group related
+   operations under a conversation or session.
+
+## How It Works
+
+The SDK uses LiteLLM for all LLM calls. When you call `init_weave()`:
+1. Weave's `implicit_patch()` automatically patches LiteLLM
+2. All `litellm.completion()` and `litellm.acompletion()` calls are traced
+3. You see full traces in the Weave UI without any code changes!
+
+## Prerequisites
+
+- Set WANDB_API_KEY environment variable (valid W&B API key)
+- Set WEAVE_PROJECT environment variable (e.g., "your-team/openhands-demo")
+- Optionally set OPENAI_API_KEY for actual LLM calls
+
+## Usage
+
     export WANDB_API_KEY="your-api-key"
     export WEAVE_PROJECT="your-team/openhands-demo"
     python examples/weave_observability_demo.py
 
 Note:
     If WANDB_API_KEY is not set or invalid, the demo will still run
-    but without Weave tracing. This allows testing the decorator
-    functionality without requiring valid credentials.
+    but without Weave tracing. This allows testing the functionality
+    without requiring valid credentials.
 """
 
 import os
@@ -27,15 +47,17 @@ import sys
 # Add the SDK to the path for development
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "openhands-sdk"))
 
-from openhands.sdk.observability.weave import (
+from openhands.sdk.observability import (
     init_weave,
     is_weave_initialized,
     maybe_init_weave,
     weave_op,
+    weave_attributes,
     weave_thread,
     start_weave_span,
     end_weave_span,
     observe_weave,
+    get_weave_op,
 )
 
 
@@ -130,6 +152,8 @@ def run_demo():
     if success:
         print("✅ Weave initialized successfully!")
         print(f"   View traces at: https://wandb.ai/{project}/weave")
+        print("\n   🎉 KEY FEATURE: All LiteLLM calls are now AUTOMATICALLY traced!")
+        print("   No need to decorate LLM calls - Weave patches LiteLLM for you.")
     else:
         print("⚠️  Weave not initialized (missing credentials or package)")
         print("   Running demo without tracing...")
@@ -139,20 +163,23 @@ def run_demo():
     print("-" * 60)
 
     # Demo 1: Simple decorated function
-    print("\n1️⃣  Processing a message with @weave_op decorator:")
+    print("\n1️⃣  Custom function tracing with @weave_op decorator:")
+    print("   (Use this for custom agent logic you want to trace)")
     result = process_message("Hello, this is a test message for the agent!")
     print(f"   Result: {result}")
 
     # Demo 2: Sentiment analysis with observe_weave
-    print("\n2️⃣  Analyzing sentiment with @observe_weave decorator:")
+    print("\n2️⃣  Laminar-compatible interface with @observe_weave:")
+    print("   (Easy migration from Laminar to Weave)")
     sentiment = analyze_sentiment("This is a great and excellent demo!")
     print(f"   Sentiment: {sentiment}")
 
-    # Demo 3: Thread grouping for conversation
-    print("\n3️⃣  Simulating a conversation with thread grouping:")
+    # Demo 3: Conversation grouping with weave_attributes
+    print("\n3️⃣  Conversation grouping with weave_attributes:")
+    print("   (Group all operations under a conversation ID)")
     conversation_id = "demo-conversation-001"
 
-    with weave_thread(conversation_id):
+    with weave_attributes(conversation_id=conversation_id, user_id="demo-user"):
         for i, msg in enumerate([
             "Hello, I need help with my code",
             "The function is not working correctly",
@@ -162,8 +189,19 @@ def run_demo():
             print(f"   Step {i}: sentiment={result['sentiment']}")
 
     # Demo 4: Manual span management
-    print("\n4️⃣  Manual span management:")
+    print("\n4️⃣  Manual span management (for advanced use cases):")
     result = manual_span_example()
+    print(f"   Result: {result}")
+
+    # Demo 5: Show how to get weave.op for dynamic decoration
+    print("\n5️⃣  Dynamic decoration with get_weave_op():")
+    op = get_weave_op()
+
+    @op
+    def dynamically_traced_function(x: int) -> int:
+        return x * 2
+
+    result = dynamically_traced_function(21)
     print(f"   Result: {result}")
 
     print("\n" + "=" * 60)
@@ -171,6 +209,8 @@ def run_demo():
 
     if is_weave_initialized():
         print(f"\n🔗 View your traces at: https://wandb.ai/{project}/weave")
+        print("\n💡 Remember: LLM calls via LiteLLM are traced AUTOMATICALLY!")
+        print("   Just use the SDK's LLM class normally - no decoration needed.")
     print("=" * 60)
 
 

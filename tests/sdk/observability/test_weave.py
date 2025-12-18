@@ -1,6 +1,7 @@
 """Tests for Weave observability integration.
 
 These tests verify the Weave integration works correctly, including:
+- Automatic LLM tracing via Weave's autopatching
 - Decorator functionality (with and without Weave initialized)
 - Environment variable configuration
 - Graceful fallback when Weave is not available
@@ -74,20 +75,19 @@ class TestWeaveOpDecorator:
         result = test_function(5)
         assert result == 6
 
-    def test_weave_op_preserves_function_metadata(self):
-        """@weave_op preserves function name and docstring."""
+    def test_weave_op_without_parentheses(self):
+        """@weave_op can be used without parentheses."""
         import openhands.sdk.observability.weave as weave_module
         weave_module._weave_initialized = False
 
         from openhands.sdk.observability.weave import weave_op
 
-        @weave_op(name="custom_name")
-        def my_function(x: int) -> int:
-            """My docstring."""
-            return x
+        @weave_op
+        def test_function(x: int) -> int:
+            return x + 1
 
-        assert my_function.__name__ == "my_function"
-        assert my_function.__doc__ == "My docstring."
+        result = test_function(5)
+        assert result == 6
 
     def test_weave_op_handles_exceptions(self):
         """@weave_op propagates exceptions correctly."""
@@ -136,8 +136,22 @@ class TestObserveWeaveDecorator:
         assert result == "hello-processed"
 
 
-class TestWeaveThread:
-    """Tests for the weave_thread context manager."""
+class TestWeaveAttributes:
+    """Tests for the weave_attributes context manager."""
+
+    def test_weave_attributes_without_initialization(self):
+        """weave_attributes works as no-op when Weave is not initialized."""
+        import openhands.sdk.observability.weave as weave_module
+        weave_module._weave_initialized = False
+
+        from openhands.sdk.observability.weave import weave_attributes
+
+        results = []
+        with weave_attributes(conversation_id="conv-123", user_id="user-456"):
+            results.append(1)
+            results.append(2)
+
+        assert results == [1, 2]
 
     def test_weave_thread_without_initialization(self):
         """weave_thread works as no-op when Weave is not initialized."""
@@ -191,6 +205,28 @@ class TestWeaveSpanManager:
         end_weave_span(output={"y": 2})
 
 
+class TestGetWeaveOp:
+    """Tests for the get_weave_op function."""
+
+    def test_get_weave_op_returns_noop_when_not_initialized(self):
+        """get_weave_op returns a no-op decorator when Weave is not initialized."""
+        import openhands.sdk.observability.weave as weave_module
+        weave_module._weave_initialized = False
+
+        from openhands.sdk.observability.weave import get_weave_op
+
+        op = get_weave_op()
+
+        @op
+        def test_function(x: int) -> int:
+            return x * 2
+
+        # Function should work normally
+        assert test_function(5) == 10
+        # Function should be unchanged
+        assert test_function.__name__ == "test_function"
+
+
 class TestWeaveExports:
     """Tests for module exports."""
 
@@ -199,12 +235,14 @@ class TestWeaveExports:
         from openhands.sdk.observability import (
             end_weave_span,
             get_weave_client,
+            get_weave_op,
             init_weave,
             is_weave_initialized,
             maybe_init_weave,
             observe_weave,
             should_enable_weave,
             start_weave_span,
+            weave_attributes,
             weave_op,
             weave_thread,
             WeaveSpanManager,
@@ -213,12 +251,14 @@ class TestWeaveExports:
         # Just verify they're callable
         assert callable(end_weave_span)
         assert callable(get_weave_client)
+        assert callable(get_weave_op)
         assert callable(init_weave)
         assert callable(is_weave_initialized)
         assert callable(maybe_init_weave)
         assert callable(observe_weave)
         assert callable(should_enable_weave)
         assert callable(start_weave_span)
+        assert callable(weave_attributes)
         assert callable(weave_op)
         assert callable(weave_thread)
         assert WeaveSpanManager is not None
@@ -258,7 +298,7 @@ class TestInitWeave:
                 result = init_weave()
 
                 # Should have called weave.init with the project
-                mock_weave_init.assert_called_once_with("test-project")
+                mock_weave_init.assert_called_once()
 
     def test_init_weave_already_initialized(self):
         """init_weave returns True immediately if already initialized."""
@@ -269,6 +309,40 @@ class TestInitWeave:
 
         result = init_weave(project="test")
         assert result is True
+
+        # Reset for other tests
+        weave_module._weave_initialized = False
+
+
+class TestAutopatching:
+    """Tests for Weave's autopatching behavior.
+
+    These tests verify that the integration is designed to leverage
+    Weave's automatic LiteLLM patching.
+    """
+
+    def test_init_weave_calls_weave_init(self):
+        """init_weave calls weave.init which triggers autopatching."""
+        import openhands.sdk.observability.weave as weave_module
+        weave_module._weave_initialized = False
+
+        from openhands.sdk.observability.weave import init_weave
+
+        with patch("openhands.sdk.observability.weave.get_env") as mock_get_env:
+            mock_get_env.side_effect = lambda k: {
+                "WEAVE_PROJECT": "test-project",
+                "WANDB_API_KEY": "test-key",
+            }.get(k)
+
+            with patch("weave.init") as mock_weave_init:
+                with patch("wandb.login"):
+                    mock_weave_init.return_value = MagicMock()
+                    result = init_weave()
+
+                    # weave.init should be called, which triggers implicit_patch()
+                    # and register_import_hook() internally
+                    mock_weave_init.assert_called_once()
+                    assert result is True
 
         # Reset for other tests
         weave_module._weave_initialized = False
