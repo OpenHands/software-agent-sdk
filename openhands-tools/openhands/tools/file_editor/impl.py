@@ -25,9 +25,12 @@ class FileEditorExecutor(ToolExecutor):
     def __init__(
         self,
         workspace_root: str | None = None,
+        base_path: str | None = None,
         allowed_edits_files: list[str] | None = None,
     ):
-        self.editor: FileEditor = FileEditor(workspace_root=workspace_root)
+        self.editor: FileEditor = FileEditor(
+            workspace_root=workspace_root, base_path=base_path
+        )
         self.allowed_edits_files: set[Path] | None = (
             {Path(f).resolve() for f in allowed_edits_files}
             if allowed_edits_files

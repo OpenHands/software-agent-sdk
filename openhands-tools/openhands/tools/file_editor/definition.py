@@ -184,6 +184,8 @@ CRITICAL REQUIREMENTS FOR USING THIS TOOL:
 
 3. REPLACEMENT: The `new_str` parameter should contain the edited lines that replace the `old_str`. Both strings must be different.
 
+4. BASE PATH RESTRICTION: All file operations are restricted to a base directory for security. Attempts to access files outside this directory will be rejected.
+
 Remember: when making multiple file edits in a row to the same file, you should prefer to send all edits in a single message with multiple calls to this tool, rather than multiple messages with a single call each.
 """  # noqa: E501
 
@@ -195,6 +197,7 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
     def create(
         cls,
         conv_state: "ConversationState",
+        base_path: str | None = None,
     ) -> Sequence["FileEditorTool"]:
         """Initialize FileEditorTool with a FileEditorExecutor.
 
@@ -202,12 +205,18 @@ class FileEditorTool(ToolDefinition[FileEditorAction, FileEditorObservation]):
             conv_state: Conversation state to get working directory from.
                          If provided, workspace_root will be taken from
                          conv_state.workspace
+            base_path:  Optional base directory that restricts all file operations.
+                         When set, all file paths must be within this directory.
+                         If None, defaults to workspace.working_dir for security.
         """
         # Import here to avoid circular imports
         from openhands.tools.file_editor.impl import FileEditorExecutor
 
         # Initialize the executor
-        executor = FileEditorExecutor(workspace_root=conv_state.workspace.working_dir)
+        executor = FileEditorExecutor(
+            workspace_root=conv_state.workspace.working_dir,
+            base_path=base_path or conv_state.workspace.working_dir,
+        )
 
         # Build the tool description with conditional image viewing support
         # Split TOOL_DESCRIPTION to insert image viewing line after the second bullet

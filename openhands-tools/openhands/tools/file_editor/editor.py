@@ -60,10 +60,12 @@ class FileEditor:
     _max_file_size: int
     _encoding_manager: EncodingManager
     _cwd: str
+    _base_path: Path | None
 
     def __init__(
         self,
         workspace_root: str | None = None,
+        base_path: str | None = None,
         max_file_size_mb: int | None = None,
     ):
         """Initialize the editor.
@@ -74,6 +76,9 @@ class FileEditor:
             workspace_root: Root directory that serves as the current working
                 directory for relative path suggestions. Must be an absolute path.
                 If None, no path suggestions will be provided for relative paths.
+            base_path: Base directory that restricts all file operations. When set,
+                all file paths must be within this directory. Must be an absolute path.
+                If None, no path restrictions are enforced.
         """
         self._history_manager = FileHistoryManager(max_history_per_file=10)
         self._max_file_size = (
@@ -82,6 +87,17 @@ class FileEditor:
 
         # Initialize encoding manager
         self._encoding_manager = EncodingManager()
+
+        # Set base_path for security enforcement
+        if base_path is not None:
+            base_path_obj = Path(base_path)
+            # Ensure base_path is an absolute path
+            if not base_path_obj.is_absolute():
+                base_path_obj = base_path_obj.resolve()
+            self._base_path = base_path_obj
+            logger.info(f"FileEditor base path restriction enabled: {self._base_path}")
+        else:
+            self._base_path = None
 
         # Set cwd (current working directory) if workspace_root is provided
         if workspace_root is not None:
@@ -551,7 +567,8 @@ class FileEditor:
 
         Validates:
         1. Path is absolute
-        2. Path and command are compatible
+        2. Path is within base_path (if set)
+        3. Path and command are compatible
         """
         # Check if its an absolute path
         if not path.is_absolute():
@@ -570,6 +587,22 @@ class FileEditor:
                 str(path),
                 suggestion_message,
             )
+
+        # Check if path is within base_path (if set)
+        if self._base_path is not None:
+            # Resolve the path to handle symlinks and relative components
+            resolved_path = path.resolve(strict=False)
+
+            # Check if resolved path is within base_path
+            try:
+                resolved_path.relative_to(self._base_path)
+            except ValueError:
+                raise EditorToolParameterInvalidError(
+                    "path",
+                    str(path),
+                    f"Path is outside the allowed base path. All file operations must "
+                    f"be within: {self._base_path}",
+                )
 
         # Check if path and command are compatible
         if command == "create" and path.exists():
