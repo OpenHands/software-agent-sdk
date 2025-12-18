@@ -97,9 +97,9 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     def _api_headers(self) -> dict[str, str]:
         """Headers for Cloud API requests.
 
-        Uses X-API-Key header for API key authentication.
+        Uses Bearer token authentication as per OpenHands Cloud API.
         """
-        return {"X-API-Key": self.cloud_api_key}
+        return {"Authorization": f"Bearer {self.cloud_api_key}"}
 
     def model_post_init(self, context: Any) -> None:
         """Set up the sandbox and initialize the workspace."""
@@ -287,7 +287,8 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             logger.info(f"Deleting sandbox {self._sandbox_id}...")
             self._send_api_request(
                 "DELETE",
-                f"{self.cloud_api_url}/api/v1/sandboxes/{self._sandbox_id}",
+                f"{self.cloud_api_url}/api/v1/sandboxes",
+                params={"sandbox_id": self._sandbox_id},
                 timeout=30.0,
             )
             logger.info(f"Sandbox {self._sandbox_id} deleted")

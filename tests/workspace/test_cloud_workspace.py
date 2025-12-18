@@ -61,8 +61,8 @@ def test_api_timeout_default_value():
         workspace.cleanup()
 
 
-def test_api_headers_uses_x_api_key():
-    """Test that _api_headers uses X-API-Key header."""
+def test_api_headers_uses_bearer_token():
+    """Test that _api_headers uses Bearer token authentication."""
     from openhands.workspace import OpenHandsCloudWorkspace
 
     with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
@@ -72,7 +72,7 @@ def test_api_headers_uses_x_api_key():
         )
 
         headers = workspace._api_headers
-        assert headers == {"X-API-Key": "test-api-key"}
+        assert headers == {"Authorization": "Bearer test-api-key"}
 
         # Clean up
         workspace._sandbox_id = None
@@ -164,7 +164,8 @@ def test_cleanup_deletes_sandbox():
 
             mock_request.assert_called_once_with(
                 "DELETE",
-                "https://cloud.example.com/api/v1/sandboxes/sandbox-123",
+                "https://cloud.example.com/api/v1/sandboxes",
+                params={"sandbox_id": "sandbox-123"},
                 timeout=30.0,
             )
             assert workspace._sandbox_id is None
@@ -214,8 +215,8 @@ def test_cleanup_handles_missing_sandbox_id():
             mock_request.assert_not_called()
 
 
-def test_send_api_request_includes_api_key_header():
-    """Test that _send_api_request includes X-API-Key header."""
+def test_send_api_request_includes_bearer_token():
+    """Test that _send_api_request includes Bearer token header."""
     from openhands.workspace import OpenHandsCloudWorkspace
 
     with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
@@ -238,7 +239,7 @@ def test_send_api_request_includes_api_key_header():
 
             mock_client.request.assert_called_once()
             call_kwargs = mock_client.request.call_args
-            assert call_kwargs[1]["headers"]["X-API-Key"] == "test-api-key"
+            assert call_kwargs[1]["headers"]["Authorization"] == "Bearer test-api-key"
 
         # Clean up
         workspace._sandbox_id = None
