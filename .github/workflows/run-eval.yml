@@ -17,6 +17,7 @@ on:
                     - gaia
                     - swebench
                     - swtbench
+                    - commit0
             sdk_ref:
                 description: SDK commit/ref to evaluate
                 required: true
