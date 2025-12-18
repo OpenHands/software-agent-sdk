@@ -21,11 +21,9 @@ logger = get_logger(__name__)
 
 
 def _load_package_descriptor(package_module) -> dict[str, Any]:
-    """Load package descriptor from either manifest.json or skill-package.yaml.
+    """Load package descriptor from manifest.json.
 
-    Tries manifest.json first (Claude Code format), falls back to skill-package.yaml.
-    Normalizes manifest.json format to match skill-package.yaml structure for
-    backward compatibility.
+    Loads and normalizes the Claude Code manifest.json format.
 
     Args:
         package_module: The loaded package module
@@ -38,39 +36,32 @@ def _load_package_descriptor(package_module) -> dict[str, Any]:
         }
 
     Raises:
-        FileNotFoundError: If neither manifest file is found
+        FileNotFoundError: If manifest.json is not found
     """
-    # Try manifest.json first (Claude Code format)
     try:
         manifest_content = files(package_module).joinpath("manifest.json").read_text()
         manifest = json.loads(manifest_content)
-        # Normalize manifest.json to skill-package.yaml structure
+        # Normalize manifest.json to internal structure
         return _normalize_manifest(manifest)
-    except FileNotFoundError:
-        pass
-
-    # Fall back to skill-package.yaml (legacy format)
-    try:
-        yaml_content = files(package_module).joinpath("skill-package.yaml").read_text()
-        return yaml.safe_load(yaml_content)
     except FileNotFoundError:
         pkg_name = package_module.__name__
         raise FileNotFoundError(
-            f"No manifest.json or skill-package.yaml found in package {pkg_name}"
+            f"No manifest.json found in package {pkg_name}. "
+            f"Skill packages must include a manifest.json file."
         )
 
 
 def _normalize_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
-    """Normalize manifest.json format to skill-package.yaml structure.
+    """Normalize manifest.json format to internal structure.
 
-    Converts flat Claude Code manifest format to nested skill-package.yaml format
-    for backward compatibility with existing code.
+    Converts flat Claude Code manifest format to the nested internal structure
+    used by the SDK for consistent access patterns.
 
     Args:
         manifest: Raw manifest dict from manifest.json
 
     Returns:
-        Normalized descriptor matching skill-package.yaml structure
+        Normalized descriptor with metadata/spec structure
     """
     # Extract author info
     author = manifest.get("author", {})
@@ -106,7 +97,7 @@ def list_skill_packages() -> list[dict[str, Any]]:
 
     Returns:
         List of dicts with 'name' (str) and 'descriptor' (dict) keys.
-        The descriptor contains the parsed manifest (JSON or YAML format).
+        The descriptor contains the parsed and normalized manifest.json.
 
     Example:
         >>> packages = list_skill_packages()
@@ -122,7 +113,7 @@ def list_skill_packages() -> list[dict[str, Any]]:
             # Load the package module
             package_module = ep.load()
 
-            # Load the package descriptor (manifest.json or skill-package.yaml)
+            # Load the package descriptor (manifest.json)
             descriptor = _load_package_descriptor(package_module)
 
             packages.append(
@@ -157,7 +148,7 @@ def get_skill_package(package_name: str) -> dict[str, Any] | None:
                 # Load the package module
                 package_module = ep.load()
 
-                # Load the package descriptor (manifest.json or skill-package.yaml)
+                # Load the package descriptor (manifest.json)
                 descriptor = _load_package_descriptor(package_module)
 
                 return {
