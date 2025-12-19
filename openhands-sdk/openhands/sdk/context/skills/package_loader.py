@@ -189,7 +189,9 @@ def load_skills_from_package(
             if "triggers" in metadata:
                 from openhands.sdk.context.skills.trigger import KeywordTrigger
 
-                trigger = KeywordTrigger(keywords=metadata["triggers"])
+                triggers_data = metadata["triggers"]
+                if isinstance(triggers_data, list):
+                    trigger = KeywordTrigger(keywords=triggers_data)
 
             # Create the Skill object
             skill = Skill(
