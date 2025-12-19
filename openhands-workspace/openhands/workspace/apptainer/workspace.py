@@ -131,6 +131,13 @@ class ApptainerWorkspace(RemoteWorkspace):
             "Defaults to ~/.apptainer_cache"
         ),
     )
+    use_fakeroot: bool = Field(
+        default=True,
+        description=(
+            "Whether to use --fakeroot for consistent file ownership. "
+            "Set to False if fakeroot is not supported in your environment."
+        ),
+    )
 
     _instance_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
@@ -272,17 +279,30 @@ class ApptainerWorkspace(RemoteWorkspace):
                 mount_path,
             )
 
+        # Build container options
+        container_opts: list[str] = [
+            "--writable-tmpfs",
+            "--cleanenv",  # Prevent host environment leakage
+            "--no-home",  # Don't mount host home directory
+        ]
+
+        # Add fakeroot for consistent file ownership (user appears as root)
+        if self.use_fakeroot:
+            container_opts.append("--fakeroot")
+
         # Run the agent server directly using exec (no instance needed)
         # This is more compatible with environments without systemd/FUSE
+        # Explicitly set PATH to ensure container's python is found
         server_cmd = [
             "apptainer",
             "exec",
-            "--writable-tmpfs",
+            *container_opts,
             *env_args,
             *bind_args,
             self._sif_path,
             "/bin/bash",
             "-c",
+            "export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && "
             f"cd /workspace && openhands-agent-server "
             f"--host 0.0.0.0 --port {self.host_port}",
         ]
