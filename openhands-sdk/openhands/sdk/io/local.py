@@ -117,29 +117,12 @@ class LocalFileStore(FileStore):
 
             if os.path.isfile(full_path):
                 os.remove(full_path)
+                del self.cache[full_path]
                 logger.debug(f"Removed local file: {full_path}")
             elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)
+                self.cache.clear()
                 logger.debug(f"Removed local directory: {full_path}")
 
-            # Clear cache after successful deletion
-            self._cache_delete(full_path)
         except Exception as e:
             logger.error(f"Error clearing local file store: {str(e)}")
-
-    def _cache_delete(self, path: str) -> None:
-        """Remove cached entries matching the given path prefix.
-
-        This is used to invalidate cache entries when files or directories
-        are deleted. All cache keys that start with the given path are removed.
-
-        Args:
-            path: Full path prefix to match for cache invalidation.
-        """
-        try:
-            keys_to_delete = [key for key in self.cache.keys() if key.startswith(path)]
-            for key in keys_to_delete:
-                del self.cache[key]
-            logger.debug(f"Cleared LRU cache: {path}")
-        except Exception as e:
-            logger.error(f"Error clearing LRU cache: {str(e)}")
