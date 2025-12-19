@@ -1,3 +1,4 @@
+import base64
 import os
 import shutil
 
@@ -61,12 +62,11 @@ class LocalFileStore(FileStore):
         if isinstance(contents, str):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(contents)
+            cache_content = contents
         else:
             with open(full_path, "wb") as f:
                 f.write(contents)
-        cache_content = (
-            contents.decode("utf-8") if isinstance(contents, bytes) else contents
-        )
+            cache_content = base64.b64encode(contents).decode("utf-8")
 
         self.cache[full_path] = cache_content
 
@@ -78,14 +78,13 @@ class LocalFileStore(FileStore):
 
         if not os.path.exists(full_path):
             raise FileNotFoundError(path)
-        result: str
         try:
             with open(full_path, encoding="utf-8") as f:
                 result = f.read()
         except UnicodeDecodeError:
             logger.debug(f"File {full_path} is binary, reading as bytes")
             with open(full_path, "rb") as f:
-                result = f.read().decode("utf-8")
+                result = base64.b64encode(f.read()).decode("utf-8")
 
         self.cache[full_path] = result
         return result
