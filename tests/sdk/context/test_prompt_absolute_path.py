@@ -25,6 +25,7 @@ def test_render_template_with_relative_path():
         prompt_dir=agent_prompts_dir,
         template_name="system_prompt.j2",
         cli_mode=False,
+        security_policy_filename="security_policy.j2",
     )
 
     # Verify result is a non-empty string
