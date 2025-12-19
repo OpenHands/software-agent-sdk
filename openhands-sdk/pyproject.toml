@@ -14,12 +14,12 @@ dependencies = [
     "python-json-logger>=3.3.0",
     "tenacity>=9.1.2",
     "websockets>=12",
-    "lmnr>=0.7.24",
-    "weave>=0.52.22"
+    "lmnr>=0.7.24"
 ]
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+weave = ["weave>=0.52.22", "wandb"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

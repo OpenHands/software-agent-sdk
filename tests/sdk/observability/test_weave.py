@@ -12,6 +12,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+# Check if weave is installed for tests that require it
+try:
+    import weave
+    WEAVE_INSTALLED = True
+except ImportError:
+    WEAVE_INSTALLED = False
+
+requires_weave = pytest.mark.skipif(
+    not WEAVE_INSTALLED,
+    reason="Weave package not installed"
+)
+
 
 class TestWeaveConfiguration:
     """Tests for Weave configuration and initialization."""
@@ -154,6 +166,7 @@ class TestWeaveExports:
 class TestInitWeave:
     """Tests for init_weave function."""
 
+    @requires_weave
     def test_init_weave_requires_project(self):
         """init_weave raises ValueError when no project is specified."""
         import openhands.sdk.observability.weave as weave_module
@@ -166,6 +179,25 @@ class TestInitWeave:
             with pytest.raises(ValueError, match="Weave project must be specified"):
                 init_weave()
 
+    def test_init_weave_returns_false_when_weave_not_installed(self):
+        """init_weave returns False when weave package is not installed."""
+        # This test verifies the expected behavior.
+        # When weave is not installed, init_weave should return False.
+        # Since weave is an optional dependency, we can test the actual
+        # behavior directly if weave isn't installed.
+        if WEAVE_INSTALLED:
+            pytest.skip("Weave is installed, cannot test missing module behavior")
+
+        import openhands.sdk.observability.weave as weave_module
+        weave_module._weave_initialized = False
+
+        from openhands.sdk.observability.weave import init_weave
+
+        result = init_weave(project="test-project")
+        # When weave is not installed, init_weave should return False
+        assert result is False
+
+    @requires_weave
     def test_init_weave_uses_env_project(self):
         """init_weave uses WEAVE_PROJECT from environment."""
         import openhands.sdk.observability.weave as weave_module
@@ -208,6 +240,7 @@ class TestAutopatching:
     Weave's automatic LiteLLM patching.
     """
 
+    @requires_weave
     def test_init_weave_calls_weave_init(self):
         """init_weave calls weave.init which triggers autopatching."""
         import openhands.sdk.observability.weave as weave_module
