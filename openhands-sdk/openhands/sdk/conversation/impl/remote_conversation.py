@@ -628,7 +628,7 @@ class RemoteConversation(BaseConversation):
         self,
         blocking: bool = True,
         poll_interval: float = 1.0,
-        timeout: float = 1800.0,
+        timeout: float = 3600.0,
     ) -> None:
         """Trigger a run on the server.
 
