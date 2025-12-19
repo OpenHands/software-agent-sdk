@@ -9,8 +9,44 @@ Tools:
     - write_file: Full file overwrite operations
     - edit: Find and replace with validation
     - list_directory: Directory listing with metadata
+
+Usage:
+    To use gemini-style tools instead of the standard FileEditorTool,
+    replace FileEditorTool with the four gemini tools:
+
+    ```python
+    from openhands.tools.gemini import GEMINI_FILE_TOOLS
+
+    agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(name=TerminalTool.name),
+            *GEMINI_FILE_TOOLS,  # Instead of Tool(name=FileEditorTool.name)
+        ],
+    )
+    ```
+
+    Or individually:
+
+    ```python
+    from openhands.tools.gemini import (
+        ReadFileTool, WriteFileTool, EditTool, ListDirectoryTool
+    )
+
+    agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(name=TerminalTool.name),
+            Tool(name=ReadFileTool.name),
+            Tool(name=WriteFileTool.name),
+            Tool(name=EditTool.name),
+            Tool(name=ListDirectoryTool.name),
+        ],
+    )
+    ```
 """
 
+from openhands.sdk import Tool
 from openhands.tools.gemini.edit import EditAction, EditObservation, EditTool
 from openhands.tools.gemini.list_directory import (
     ListDirectoryAction,
@@ -29,7 +65,18 @@ from openhands.tools.gemini.write_file import (
 )
 
 
+# Convenience list for easy replacement of FileEditorTool
+GEMINI_FILE_TOOLS: list[Tool] = [
+    Tool(name=ReadFileTool.name),
+    Tool(name=WriteFileTool.name),
+    Tool(name=EditTool.name),
+    Tool(name=ListDirectoryTool.name),
+]
+
 __all__ = [
+    # Convenience list
+    "GEMINI_FILE_TOOLS",
+    # Individual tools
     "ReadFileTool",
     "ReadFileAction",
     "ReadFileObservation",
