@@ -1,6 +1,10 @@
 from unittest.mock import patch
 
-from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+import pytest
+from litellm.types.llms.openai import (
+    ResponseAPIUsage,
+    ResponsesAPIResponse,
+)
 from openai.types.responses.response_function_tool_call import ResponseFunctionToolCall
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_output_text import ResponseOutputText
@@ -9,8 +13,9 @@ from openai.types.responses.response_reasoning_item import (
     Summary,
 )
 
-from openhands.sdk.llm.llm import LLM
+from openhands.sdk.llm import LLM
 from openhands.sdk.llm.message import Message, ReasoningItemModel, TextContent
+from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
 
 
@@ -96,6 +101,21 @@ def test_normalize_responses_kwargs_with_summary():
     assert r["summary"] == "detailed"
 
 
+def test_normalize_responses_kwargs_encrypted_reasoning_disabled():
+    """Test that encrypted reasoning is NOT included when
+    enable_encrypted_reasoning=False.
+    """
+    llm = LLM(model="gpt-4.1", reasoning_effort="medium")
+    # Explicitly disable encrypted reasoning (also the default)
+    llm.enable_encrypted_reasoning = False
+
+    out = select_responses_options(llm, {}, include=["text.output_text"], store=None)
+    # encrypted_content should NOT be in the include list
+    assert "reasoning.encrypted_content" not in out.get("include", [])
+    # But the original include item should still be there
+    assert "text.output_text" in out["include"]
+
+
 @patch("openhands.sdk.llm.llm.litellm_responses")
 def test_llm_responses_end_to_end(mock_responses_call):
     # Configure LLM
@@ -130,3 +150,74 @@ def test_llm_responses_end_to_end(mock_responses_call):
     ]
     # Telemetry should have recorded usage (one entry)
     assert len(llm._telemetry.metrics.token_usages) == 1  # type: ignore[attr-defined]
+
+
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-5.1-codex-mini",
+        "openai/gpt-5.1-codex-mini",
+    ],
+)
+def test_responses_reasoning_effort_none_not_sent_for_gpt_5_1(model):
+    llm = LLM(model=model, reasoning_effort=None)
+    out = select_responses_options(llm, {}, include=None, store=None)
+    # When reasoning_effort is None, there should be no 'reasoning' key
+    assert "reasoning" not in out
+
+
+def test_chat_and_responses_options_prompt_cache_retention_gpt_5_plus_and_non_gpt():
+    # Confirm allowed: 5.1 codex mini supports extended retention per docs
+    llm_51_codex_mini = LLM(model="openai/gpt-5.1-codex-mini")
+    opts_51_codex_mini_resp = select_responses_options(
+        llm_51_codex_mini, {}, include=None, store=None
+    )
+    assert opts_51_codex_mini_resp.get("prompt_cache_retention") == "24h"
+
+    # New GPT-5.2 variants should include prompt_cache_retention
+    llm_52 = LLM(model="openai/gpt-5.2")
+    assert (
+        select_chat_options(llm_52, {}, has_tools=False).get("prompt_cache_retention")
+        == "24h"
+    )
+    assert (
+        select_responses_options(llm_52, {}, include=None, store=None).get(
+            "prompt_cache_retention"
+        )
+        == "24h"
+    )
+
+    llm_52_chat_latest = LLM(model="openai/gpt-5.2-chat-latest")
+    assert (
+        select_chat_options(llm_52_chat_latest, {}, has_tools=False).get(
+            "prompt_cache_retention"
+        )
+        == "24h"
+    )
+
+    # GPT-5.1 (non-mini) should include prompt_cache_retention; mini variants should not
+    llm_51_mini = LLM(model="openai/gpt-5.1-mini")
+    opts_51_mini_chat = select_chat_options(llm_51_mini, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_51_mini_chat
+
+    opts_51_mini_resp = select_responses_options(
+        llm_51_mini, {}, include=None, store=None
+    )
+    assert "prompt_cache_retention" not in opts_51_mini_resp
+
+    llm_5_mini = LLM(model="openai/gpt-5-mini")
+    opts_5_mini_chat = select_chat_options(llm_5_mini, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_5_mini_chat
+
+    opts_5_mini_resp = select_responses_options(
+        llm_5_mini, {}, include=None, store=None
+    )
+    assert "prompt_cache_retention" not in opts_5_mini_resp
+
+    # Non-GPT-5.1 should not include it at all
+    llm_other = LLM(model="gpt-4o")
+    opts_other_chat = select_chat_options(llm_other, {}, has_tools=False)
+    assert "prompt_cache_retention" not in opts_other_chat
+
+    opts_other_resp = select_responses_options(llm_other, {}, include=None, store=None)
+    assert "prompt_cache_retention" not in opts_other_resp

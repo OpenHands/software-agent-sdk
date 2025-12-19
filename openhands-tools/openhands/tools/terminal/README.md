@@ -43,17 +43,19 @@ If bash cannot be found in PATH, the tool will raise a clear error asking you to
 
 ```python
 from openhands.sdk import Conversation
-from openhands.tools.terminal.definition import TerminalTool, ExecuteBashAction
+from openhands.tools.terminal.definition import TerminalTool, TerminalAction
 
 conversation = Conversation()
 tools = TerminalTool.create(conv_state=conversation.state)
 terminal = tools[0]
 
 # Execute a command
-action = ExecuteBashAction(command="echo 'Hello, World!'")
+action = TerminalAction(command="echo 'Hello, World!'")
 result = terminal.executor(action)
 print(result.text)
 ```
+
+**Note:** `TerminalAction` and `TerminalObservation` replace the deprecated `ExecuteBashAction` and `ExecuteBashObservation` (which will be removed in version 1.5.0).
 
 ### With Custom Shell on Nix/macOS
 

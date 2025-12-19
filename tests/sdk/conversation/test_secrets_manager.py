@@ -3,7 +3,7 @@
 from pydantic import SecretStr
 
 from openhands.sdk.conversation.secret_registry import SecretRegistry
-from openhands.sdk.conversation.secret_source import SecretSource, StaticSecret
+from openhands.sdk.secret import SecretSource, StaticSecret
 
 
 def test_update_secrets_with_static_values():

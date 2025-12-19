@@ -165,14 +165,30 @@ class ConversationService:
         if not self._conversation_webhook_subscribers:
             return
 
-        # Send notifications to all conversation webhook subscribers
-        await asyncio.gather(
-            *[
-                subscriber.post_conversation_info(conversation_info)
-                for subscriber in self._conversation_webhook_subscribers
-            ],
-            return_exceptions=True,  # Don't fail if one webhook fails
-        )
+        # Send notifications to all conversation webhook subscribers in the background
+        async def _notify_and_log_errors():
+            results = await asyncio.gather(
+                *[
+                    subscriber.post_conversation_info(conversation_info)
+                    for subscriber in self._conversation_webhook_subscribers
+                ],
+                return_exceptions=True,  # Don't fail if one webhook fails
+            )
+
+            # Log any exceptions that occurred
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    subscriber = self._conversation_webhook_subscribers[i]
+                    logger.error(
+                        (
+                            f"Failed to notify conversation webhook "
+                            f"{subscriber.spec.base_url}: {result}"
+                        ),
+                        exc_info=result,
+                    )
+
+        # Create task to run in background without awaiting
+        asyncio.create_task(_notify_and_log_errors())
 
     # Write Methods
 
@@ -184,8 +200,8 @@ class ConversationService:
             raise ValueError("inactive_service")
         conversation_id = request.conversation_id or uuid4()
 
-        if conversation_id in self._event_services:
-            existing_event_service = self._event_services[conversation_id]
+        existing_event_service = self._event_services.get(conversation_id)
+        if existing_event_service and existing_event_service.is_open():
             state = await existing_event_service.get_state()
             conversation_info = _compose_conversation_info(
                 existing_event_service.stored, state
@@ -239,6 +255,9 @@ class ConversationService:
                 state = await event_service.get_state()
                 conversation_info = _compose_conversation_info(
                     event_service.stored, state
+                )
+                conversation_info.execution_status = (
+                    ConversationExecutionStatus.DELETING
                 )
                 await self._notify_conversation_webhooks(conversation_info)
             except Exception as e:
@@ -319,6 +338,30 @@ class ConversationService:
         # Delegate to EventService to avoid accessing private conversation internals
         title = await event_service.generate_title(llm=llm, max_length=max_length)
         return title
+
+    async def ask_agent(self, conversation_id: UUID, question: str) -> str | None:
+        """Ask the agent a simple question without affecting conversation state."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return None
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        response = await event_service.ask_agent(question)
+        return response
+
+    async def condense(self, conversation_id: UUID) -> bool:
+        """Force condensation of the conversation history."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return False
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        await event_service.condense()
+        return True
 
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
@@ -402,8 +445,14 @@ class ConversationService:
             ]
         )
 
+        try:
+            await event_service.start()
+        except Exception:
+            # Clean up the event service if startup fails
+            await event_service.close()
+            raise
+
         event_services[stored.id] = event_service
-        await event_service.start()
         return event_service
 
 

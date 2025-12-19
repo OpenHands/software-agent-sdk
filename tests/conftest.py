@@ -1,6 +1,7 @@
 """Common test fixtures and utilities."""
 
 import uuid
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,6 +13,48 @@ from openhands.sdk.io import InMemoryFileStore
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import ToolExecutor
 from openhands.sdk.workspace import LocalWorkspace
+
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    group = parser.getgroup("examples")
+    group.addoption(
+        "--run-examples",
+        action="store_true",
+        default=False,
+        help="Execute example scripts. Disabled by default for faster test runs.",
+    )
+    group.addoption(
+        "--examples-results-dir",
+        action="store",
+        default=None,
+        help=(
+            "Directory to store per-example JSON results "
+            "(defaults to .example-test-results)."
+        ),
+    )
+
+
+@pytest.fixture(scope="session")
+def examples_enabled(pytestconfig: pytest.Config) -> bool:
+    return bool(pytestconfig.getoption("--run-examples"))
+
+
+@pytest.fixture(scope="session")
+def examples_results_dir(pytestconfig: pytest.Config) -> Path:
+    configured = pytestconfig.getoption("--examples-results-dir")
+    result_dir = (
+        Path(configured)
+        if configured is not None
+        else REPO_ROOT / ".example-test-results"
+    )
+    result_dir.mkdir(parents=True, exist_ok=True)
+    if not hasattr(pytestconfig, "workerinput"):
+        for existing in result_dir.glob("*.json"):
+            existing.unlink()
+    return result_dir
 
 
 @pytest.fixture
