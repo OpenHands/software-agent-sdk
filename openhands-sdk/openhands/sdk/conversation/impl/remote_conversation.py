@@ -638,7 +638,7 @@ class RemoteConversation(BaseConversation):
             poll_interval: Time in seconds between status polls (only used when
                 blocking=True). Default is 1.0 second.
             timeout: Maximum time in seconds to wait for the run to complete
-                (only used when blocking=True). Default is 1800 seconds (30 minutes).
+                (only used when blocking=True). Default is 3600 seconds.
 
         Raises:
             ConversationRunError: If the run fails or times out.
