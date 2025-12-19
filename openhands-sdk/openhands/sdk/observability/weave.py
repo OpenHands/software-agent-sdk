@@ -15,12 +15,12 @@ autopatching to automatically trace all LLM calls made through LiteLLM.
 3. **Optional manual tracing**: Use `@weave.op` for custom agent logic that
    you want to trace (tool execution, agent steps, etc.)
 
-4. **Thread grouping**: Group related operations under conversation threads.
+4. **Thread grouping**: Use `weave.thread()` to group operations by conversation.
 
 ## How It Works
 
 The SDK uses LiteLLM for all LLM calls. When you call `init_weave()`:
-1. Weave's `implicit_patch()` automatically patches LiteLLM
+1. Weave's autopatching automatically patches LiteLLM
 2. All `litellm.completion()` and `litellm.acompletion()` calls are traced
 3. You see full traces in the Weave UI without any code changes!
 
@@ -64,14 +64,15 @@ def process_agent_step(step: dict) -> dict:
 ### Conversation Thread Grouping
 
 ```python
-from openhands.sdk.observability import init_weave, weave_attributes
+import weave
+from openhands.sdk.observability import init_weave
 
 init_weave("my-team/my-project")
 
-# Group all operations under a conversation
-with weave_attributes(conversation_id="conv-123", user_id="user-456"):
+# Group all operations under a conversation thread
+with weave.thread("conversation-123"):
     # All LLM calls and traced functions within this block
-    # will be tagged with these attributes
+    # will be grouped under the same thread
     response = llm.completion(...)
 ```
 
@@ -85,7 +86,6 @@ from __future__ import annotations
 import logging
 import os
 from collections.abc import Callable
-from contextlib import contextmanager
 from typing import Any, ParamSpec, TypeVar
 
 from openhands.sdk.observability.utils import get_env
@@ -252,55 +252,7 @@ def should_enable_weave() -> bool:
     return bool(get_env("WANDB_API_KEY") and get_env("WEAVE_PROJECT"))
 
 
-@contextmanager
-def weave_attributes(**attributes: Any):
-    """Context manager to add attributes to all operations within the block.
-
-    This is useful for grouping related operations (e.g., all events in a
-    conversation) or adding metadata to traces.
-
-    Args:
-        **attributes: Key-value pairs to attach to all operations.
-            Common attributes: conversation_id, user_id, session_id, etc.
-
-    Example:
-        >>> with weave_attributes(conversation_id="conv-123", user_id="user-456"):
-        ...     # All LLM calls and traced functions here will have these attributes
-        ...     response = llm.completion(messages=[...])
-    """
-    if not _weave_initialized:
-        yield
-        return
-
-    try:
-        import weave
-        with weave.attributes(attributes):
-            yield
-    except Exception as e:
-        logger.warning(f"Failed to set weave attributes: {e}")
-        yield
-
-
-@contextmanager
-def weave_thread(thread_id: str):
-    """Context manager to group operations under a thread.
-
-    This is an alias for weave_attributes(thread_id=...) for convenience
-    and backward compatibility.
-
-    Args:
-        thread_id: Unique identifier for the thread (e.g., conversation ID).
-
-    Example:
-        >>> with weave_thread("conversation-123"):
-        ...     # All operations here will be grouped under the same thread
-        ...     response = llm.completion(messages=[...])
-    """
-    with weave_attributes(thread_id=thread_id):
-        yield
-
-
-def get_weave_op():
+def get_weave_op() -> Callable:
     """Get the weave.op decorator for manual function tracing.
 
     Returns the actual weave.op decorator if Weave is initialized,
@@ -359,11 +311,17 @@ def weave_op(
         func: The function to decorate (when used without parentheses).
         name: Optional name for the operation. Defaults to function name.
         call_display_name: Display name for the call in the Weave UI.
+            Can be a string or a callable that takes the Call object.
         postprocess_inputs: Function to transform inputs before logging.
         postprocess_output: Function to transform output before logging.
 
     Returns:
         The decorated function or a decorator.
+
+    Example:
+        >>> @weave_op(name="agent_step")
+        ... def step(action: dict) -> dict:
+        ...     return execute(action)
     """
     def decorator(fn: Callable[P, R]) -> Callable[P, R]:
         if not _weave_initialized:
@@ -393,154 +351,3 @@ def weave_op(
     if func is not None:
         return decorator(func)
     return decorator
-
-
-def observe_weave(
-    name: str | None = None,
-    *,
-    ignore_inputs: list[str] | None = None,
-    ignore_output: bool = False,
-) -> Callable[[Callable[P, R]], Callable[P, R]]:
-    """Decorator for observing functions with Weave (Laminar-compatible interface).
-
-    This provides a similar interface to the Laminar `observe` decorator,
-    making it easier to switch between observability backends.
-
-    Args:
-        name: Optional name for the operation.
-        ignore_inputs: List of input parameter names to exclude from logging.
-        ignore_output: If True, don't log the output.
-
-    Returns:
-        A decorator that wraps the function for Weave tracing.
-
-    Example:
-        >>> @observe_weave(name="login", ignore_inputs=["password"])
-        ... def login(username: str, password: str) -> bool:
-        ...     return authenticate(username, password)
-    """
-    def postprocess_inputs_fn(inputs: dict[str, Any]) -> dict[str, Any]:
-        if not ignore_inputs:
-            return inputs
-        return {k: v for k, v in inputs.items() if k not in ignore_inputs}
-
-    def postprocess_output_fn(output: Any) -> Any:
-        if ignore_output:
-            return "[output hidden]"
-        return output
-
-    return weave_op(
-        name=name,
-        postprocess_inputs=postprocess_inputs_fn if ignore_inputs else None,
-        postprocess_output=postprocess_output_fn if ignore_output else None,
-    )
-
-
-class WeaveSpanManager:
-    """Manager for manual span lifecycle control.
-
-    This class provides fine-grained control over span creation and completion,
-    useful when automatic decoration is not suitable.
-
-    Note: For most use cases, the automatic LLM tracing and @weave_op decorator
-    are sufficient. Use this only when you need explicit span control.
-
-    Example:
-        >>> manager = WeaveSpanManager()
-        >>> manager.start_span("process_batch", inputs={"batch_size": 100})
-        >>> try:
-        ...     result = process_batch()
-        ...     manager.end_span(output=result)
-        ... except Exception as e:
-        ...     manager.end_span(error=str(e))
-    """
-
-    def __init__(self):
-        self._call_stack: list[Any] = []
-
-    def start_span(
-        self,
-        name: str,
-        inputs: dict[str, Any] | None = None,
-    ) -> Any:
-        """Start a new span.
-
-        Args:
-            name: Name of the span/operation.
-            inputs: Input parameters to log.
-
-        Returns:
-            The span/call object if successful, None otherwise.
-        """
-        if not _weave_initialized:
-            return None
-
-        try:
-            import weave
-
-            @weave.op(name=name)
-            def _span_op(**kwargs: Any) -> Any:
-                pass
-
-            call = _span_op.call(inputs or {})
-            self._call_stack.append(call)
-            return call
-        except Exception as e:
-            logger.warning(f"Failed to start weave span: {e}")
-            return None
-
-    def end_span(
-        self,
-        output: Any = None,
-        error: str | None = None,
-    ) -> None:
-        """End the current span.
-
-        Args:
-            output: Output value to log.
-            error: Error message if the span failed.
-        """
-        if not self._call_stack:
-            return
-
-        try:
-            call = self._call_stack.pop()
-            if error:
-                call.finish(exception=Exception(error))
-            else:
-                call.finish(output=output)
-        except Exception as e:
-            logger.warning(f"Failed to end weave span: {e}")
-
-
-# Global span manager instance for convenience
-_global_span_manager = WeaveSpanManager()
-
-
-def start_weave_span(
-    name: str,
-    inputs: dict[str, Any] | None = None,
-) -> Any:
-    """Start a new Weave span using the global manager.
-
-    Args:
-        name: Name of the span/operation.
-        inputs: Input parameters to log.
-
-    Returns:
-        The span/call object if successful, None otherwise.
-    """
-    return _global_span_manager.start_span(name, inputs)
-
-
-def end_weave_span(
-    output: Any = None,
-    error: str | None = None,
-) -> None:
-    """End the current Weave span using the global manager.
-
-    Args:
-        output: Output value to log.
-        error: Error message if the span failed.
-    """
-    _global_span_manager.end_span(output, error)

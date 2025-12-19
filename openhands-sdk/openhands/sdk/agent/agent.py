@@ -41,7 +41,6 @@ from openhands.sdk.llm.exceptions import (
     LLMContextWindowExceedError,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.observability.context import trace_tool_call
 from openhands.sdk.observability.laminar import (
     maybe_init_laminar,
     observe,
@@ -479,24 +478,14 @@ class Agent(AgentBase):
                 "as it was checked earlier."
             )
 
-        # Execute actions with unified observability tracing
-        tool_name = extract_action_name(action_event)
-
-        # Extract inputs for tracing (safely serialize action data)
-        try:
-            inputs = action_event.action.model_dump(exclude_none=True)
-        except Exception:
-            inputs = None
-
-        # Use unified trace_tool_call for all observability tools (Weave, Laminar, etc.)
-        # Plus Laminar's @observe decorator for backward compatibility
-        with trace_tool_call(tool_name, inputs=inputs):
-            if should_enable_observability():
-                observation: Observation = observe(name=tool_name, span_type="TOOL")(
-                    tool
-                )(action_event.action, conversation)
-            else:
-                observation = tool(action_event.action, conversation)
+        # Execute actions!
+        if should_enable_observability():
+            tool_name = extract_action_name(action_event)
+            observation: Observation = observe(name=tool_name, span_type="TOOL")(tool)(
+                action_event.action, conversation
+            )
+        else:
+            observation = tool(action_event.action, conversation)
         assert isinstance(observation, Observation), (
             f"Tool '{tool.name}' executor must return an Observation"
         )

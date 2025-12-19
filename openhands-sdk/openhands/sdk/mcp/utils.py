@@ -10,7 +10,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
-from openhands.sdk.observability.context import trace_mcp_list_tools
 from openhands.sdk.tool.tool import ToolDefinition
 
 
@@ -37,19 +36,17 @@ async def _list_tools(client: MCPClient) -> list[ToolDefinition]:
     """List tools from an MCP client."""
     tools: list[ToolDefinition] = []
 
-    # Use unified MCP list tools tracing for all observability tools
-    with trace_mcp_list_tools():
-        async with client:
-            assert client.is_connected(), "MCP client is not connected."
-            mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
-            for mcp_tool in mcp_type_tools:
-                tool_sequence = MCPToolDefinition.create(
-                    mcp_tool=mcp_tool, mcp_client=client
-                )
-                tools.extend(tool_sequence)  # Flatten sequence into list
-        assert not client.is_connected(), (
-            "MCP client should be disconnected after listing tools."
-        )
+    async with client:
+        assert client.is_connected(), "MCP client is not connected."
+        mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
+        for mcp_tool in mcp_type_tools:
+            tool_sequence = MCPToolDefinition.create(
+                mcp_tool=mcp_tool, mcp_client=client
+            )
+            tools.extend(tool_sequence)  # Flatten sequence into list
+    assert not client.is_connected(), (
+        "MCP client should be disconnected after listing tools."
+    )
     return tools
 
 

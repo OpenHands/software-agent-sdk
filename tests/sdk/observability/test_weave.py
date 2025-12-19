@@ -104,107 +104,6 @@ class TestWeaveOpDecorator:
             failing_function()
 
 
-class TestObserveWeaveDecorator:
-    """Tests for the @observe_weave decorator."""
-
-    def test_observe_weave_without_initialization(self):
-        """@observe_weave runs function normally when Weave is not initialized."""
-        import openhands.sdk.observability.weave as weave_module
-        weave_module._weave_initialized = False
-
-        from openhands.sdk.observability.weave import observe_weave
-
-        @observe_weave(name="test_observe")
-        def test_function(x: int, y: int) -> int:
-            return x + y
-
-        result = test_function(3, 4)
-        assert result == 7
-
-    def test_observe_weave_with_ignore_inputs(self):
-        """@observe_weave correctly handles ignore_inputs parameter."""
-        import openhands.sdk.observability.weave as weave_module
-        weave_module._weave_initialized = False
-
-        from openhands.sdk.observability.weave import observe_weave
-
-        @observe_weave(name="test_ignore", ignore_inputs=["secret"])
-        def test_function(data: str, secret: str) -> str:
-            return f"{data}-processed"
-
-        result = test_function("hello", "my-secret")
-        assert result == "hello-processed"
-
-
-class TestWeaveAttributes:
-    """Tests for the weave_attributes context manager."""
-
-    def test_weave_attributes_without_initialization(self):
-        """weave_attributes works as no-op when Weave is not initialized."""
-        import openhands.sdk.observability.weave as weave_module
-        weave_module._weave_initialized = False
-
-        from openhands.sdk.observability.weave import weave_attributes
-
-        results = []
-        with weave_attributes(conversation_id="conv-123", user_id="user-456"):
-            results.append(1)
-            results.append(2)
-
-        assert results == [1, 2]
-
-    def test_weave_thread_without_initialization(self):
-        """weave_thread works as no-op when Weave is not initialized."""
-        import openhands.sdk.observability.weave as weave_module
-        weave_module._weave_initialized = False
-
-        from openhands.sdk.observability.weave import weave_thread
-
-        results = []
-        with weave_thread("test-thread-123"):
-            results.append(1)
-            results.append(2)
-
-        assert results == [1, 2]
-
-
-class TestWeaveSpanManager:
-    """Tests for the WeaveSpanManager class."""
-
-    def test_span_manager_without_initialization(self):
-        """WeaveSpanManager works gracefully when Weave is not initialized."""
-        import openhands.sdk.observability.weave as weave_module
-        weave_module._weave_initialized = False
-
-        from openhands.sdk.observability.weave import WeaveSpanManager
-
-        manager = WeaveSpanManager()
-
-        # start_span should return None when not initialized
-        result = manager.start_span("test_span", inputs={"key": "value"})
-        assert result is None
-
-        # end_span should not raise
-        manager.end_span(output={"result": "ok"})
-
-    def test_global_span_functions(self):
-        """Global span functions work without initialization."""
-        import openhands.sdk.observability.weave as weave_module
-        weave_module._weave_initialized = False
-
-        from openhands.sdk.observability.weave import (
-            start_weave_span,
-            end_weave_span,
-        )
-
-        # Should not raise
-        result = start_weave_span("test", inputs={"x": 1})
-        assert result is None
-
-        # Should not raise
-        end_weave_span(output={"y": 2})
-
-
 class TestGetWeaveOp:
     """Tests for the get_weave_op function."""
 
@@ -233,35 +132,23 @@ class TestWeaveExports:
     def test_all_exports_available(self):
         """All expected functions are exported from the module."""
         from openhands.sdk.observability import (
-            end_weave_span,
             get_weave_client,
             get_weave_op,
             init_weave,
             is_weave_initialized,
             maybe_init_weave,
-            observe_weave,
             should_enable_weave,
-            start_weave_span,
-            weave_attributes,
             weave_op,
-            weave_thread,
-            WeaveSpanManager,
         )
 
         # Just verify they're callable
-        assert callable(end_weave_span)
         assert callable(get_weave_client)
         assert callable(get_weave_op)
         assert callable(init_weave)
         assert callable(is_weave_initialized)
         assert callable(maybe_init_weave)
-        assert callable(observe_weave)
         assert callable(should_enable_weave)
-        assert callable(start_weave_span)
-        assert callable(weave_attributes)
         assert callable(weave_op)
-        assert callable(weave_thread)
-        assert WeaveSpanManager is not None
 
 
 class TestInitWeave:
