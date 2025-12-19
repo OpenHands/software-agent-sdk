@@ -1,7 +1,6 @@
 import atexit
 import uuid
 from collections.abc import Mapping
-from contextlib import nullcontext
 from pathlib import Path
 
 from openhands.sdk.agent.base import AgentBase
@@ -35,8 +34,8 @@ from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.context import get_conversation_context
 from openhands.sdk.observability.laminar import observe
-from openhands.sdk.observability.weave import is_weave_initialized
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -45,29 +44,6 @@ from openhands.sdk.workspace import LocalWorkspace
 
 
 logger = get_logger(__name__)
-
-
-def _get_weave_thread_context(conversation_id: str):
-    """Get Weave thread context manager if Weave is initialized.
-
-    This groups all operations within a conversation run under the same
-    Weave thread, enabling conversation-level tracing in the Weave UI.
-
-    Args:
-        conversation_id: The conversation ID to use as the thread ID.
-
-    Returns:
-        A weave.thread context manager if Weave is initialized,
-        otherwise a nullcontext (no-op).
-    """
-    if not is_weave_initialized():
-        return nullcontext()
-
-    try:
-        import weave
-        return weave.thread(conversation_id)
-    except Exception:
-        return nullcontext()
 
 
 class LocalConversation(BaseConversation):
@@ -322,9 +298,11 @@ class LocalConversation(BaseConversation):
         Can be paused between steps
 
         Note:
-            If Weave is initialized, all operations within this run are grouped
-            under a Weave thread using the conversation ID. This enables
-            conversation-level tracing in the Weave UI.
+            All operations within this run are automatically wrapped in
+            observability context managers for all enabled tools (Weave, Laminar,
+            etc.). This groups LLM calls and traced operations under the
+            conversation ID, enabling conversation-level tracing in observability
+            UIs.
         """
 
         with self._state:
@@ -336,9 +314,9 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
-        # Wrap the run loop in a Weave thread context if Weave is initialized.
+        # Wrap the run loop in observability context managers for all enabled tools.
         # This groups all LLM calls and traced operations under the conversation ID.
-        with _get_weave_thread_context(str(self.id)):
+        with get_conversation_context(str(self.id)):
             try:
                 while True:
                     logger.debug(f"Conversation run iteration {iteration}")
