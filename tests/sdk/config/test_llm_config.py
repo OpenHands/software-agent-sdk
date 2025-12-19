@@ -179,6 +179,8 @@ def test_llm_config_post_init_reasoning_effort_default():
     # Test that explicit reasoning_effort is preserved
     config = LLM(model="gpt-4", reasoning_effort="low", usage_id="test-llm")
     assert config.reasoning_effort == "low"
+    config = LLM(model="gpt-4", reasoning_effort="xhigh", usage_id="test-llm")
+    assert config.reasoning_effort == "xhigh"
 
 
 def test_llm_config_post_init_azure_api_version():

@@ -3,6 +3,7 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
@@ -11,6 +12,7 @@ from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
@@ -163,6 +165,18 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
         template_kwargs = dict(self.system_prompt_kwargs)
+        template_kwargs.setdefault("model_name", self.llm.model)
+        if (
+            "model_family" not in template_kwargs
+            or "model_variant" not in template_kwargs
+        ):
+            spec = get_model_prompt_spec(
+                self.llm.model, getattr(self.llm, "model_canonical_name", None)
+            )
+            if "model_family" not in template_kwargs and spec.family:
+                template_kwargs["model_family"] = spec.family
+            if "model_variant" not in template_kwargs and spec.variant:
+                template_kwargs["model_variant"] = spec.variant
         system_message = render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
@@ -196,13 +210,25 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             return
 
         tools: list[ToolDefinition] = []
-        for tool_spec in self.tools:
-            tools.extend(resolve_tool(tool_spec, state))
 
-        # Add MCP tools if configured
-        if self.mcp_config:
-            mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
-            tools.extend(mcp_tools)
+        # Use ThreadPoolExecutor to parallelize tool resolution
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+
+            # Submit tool resolution tasks
+            for tool_spec in self.tools:
+                future = executor.submit(resolve_tool, tool_spec, state)
+                futures.append(future)
+
+            # Submit MCP tools creation if configured
+            if self.mcp_config:
+                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                futures.append(future)
+
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
