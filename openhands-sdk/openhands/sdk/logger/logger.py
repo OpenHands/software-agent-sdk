@@ -83,7 +83,7 @@ def disable_logger(name: str, level: int = logging.CRITICAL) -> None:
 
 # Quiet chatty third-party loggers
 for name in ["litellm", "LiteLLM", "openai"]:
-    disable_logger(name, logging.DEBUG if _ENABLE_LITELLM_DEBUG else logging.WARNING)
+    disable_logger(name, logging.DEBUG if _ENABLE_LITELLM_DEBUG else logging.ERROR)
 for name in ["httpcore", "httpx", "libtmux"]:
     disable_logger(name, logging.WARNING)
 
