@@ -91,7 +91,9 @@ class View(BaseModel):
     @staticmethod
     def _build_action_batches(
         events: Sequence[Event],
-    ) -> tuple[dict[str, list[str]], dict[str, str], dict[str, ToolCallID]]:
+    ) -> tuple[
+        dict[EventID, list[EventID]], dict[EventID, EventID], dict[EventID, ToolCallID]
+    ]:
         """Build a map of llm_response_id -> list of ActionEvent IDs.
 
         Returns:
@@ -100,9 +102,9 @@ class View(BaseModel):
             - action_id_to_response_id: dict mapping ActionEvent ID to llm_response_id
             - action_id_to_tool_call_id: dict mapping ActionEvent ID to tool_call_id
         """
-        batches: dict[str, list[str]] = {}
-        action_id_to_response_id: dict[str, str] = {}
-        action_id_to_tool_call_id: dict[str, ToolCallID] = {}
+        batches: dict[EventID, list[EventID]] = {}
+        action_id_to_response_id: dict[EventID, EventID] = {}
+        action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
 
         for event in events:
             if isinstance(event, ActionEvent):
