@@ -613,6 +613,88 @@ def update_github_issue(
         # Don't exit - this is not critical
 
 
+def _extract_exception_info(properties: dict | str) -> dict | None:
+    """
+    Extract exception information from event properties.
+
+    Args:
+        properties: Event properties (dict or JSON string)
+
+    Returns:
+        Dict with exception_type, exception_message, stack_frames, or None
+    """
+    # Parse properties if it's a string
+    if isinstance(properties, str):
+        try:
+            properties = json.loads(properties)
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(properties, dict):
+        return None
+
+    # Try to extract from $exception_list (PostHog format)
+    exception_list = properties.get("$exception_list", [])
+    if exception_list and isinstance(exception_list, list):
+        exc = exception_list[0]
+        result = {
+            "exception_type": exc.get("type", "Unknown"),
+            "exception_message": exc.get("value", "No message"),
+            "stack_frames": [],
+        }
+
+        # Extract stack frames
+        stacktrace = exc.get("stacktrace", {})
+        frames = stacktrace.get("frames", [])
+        for frame in frames:
+            frame_info = {
+                "function": frame.get("mangled_name", frame.get("function", "?")),
+                "file": frame.get("source", frame.get("filename", "?")),
+                "line": frame.get("line", "?"),
+                "column": frame.get("column", "?"),
+            }
+            result["stack_frames"].append(frame_info)
+
+        return result
+
+    # Fallback: try $exception_types and $exception_values
+    exc_types = properties.get("$exception_types", [])
+    exc_values = properties.get("$exception_values", [])
+    if exc_types or exc_values:
+        return {
+            "exception_type": exc_types[0] if exc_types else "Unknown",
+            "exception_message": exc_values[0] if exc_values else "No message",
+            "stack_frames": [],
+        }
+
+    return None
+
+
+def _format_stack_trace(stack_frames: list[dict]) -> str:
+    """Format stack frames into a readable stack trace."""
+    if not stack_frames:
+        return "*No stack trace available*"
+
+    lines = []
+    for frame in stack_frames:
+        func = frame.get("function", "?")
+        file = frame.get("file", "?")
+        line = frame.get("line", "?")
+        col = frame.get("column", "")
+
+        # Clean up file path for display
+        if file.startswith("/"):
+            file = file.lstrip("/")
+
+        location = f"{file}:{line}"
+        if col:
+            location += f":{col}"
+
+        lines.append(f"  at {func} ({location})")
+
+    return "\n".join(lines)
+
+
 def format_issue_body(
     events_data: dict,
     identifier: str,
@@ -631,6 +713,7 @@ def format_issue_body(
     """
     examples = events_data.get("examples", [])
     query = events_data.get("query", "")
+    timeline = events_data.get("timeline", {})
 
     body_parts = []
 
@@ -638,34 +721,61 @@ def format_issue_body(
     if parent_issue_url:
         body_parts.append(f"**Parent Issue:** {parent_issue_url}\n")
 
-    # Add identifier for searchability
-    body_parts.append(f"**Identifier:** `{identifier}`\n")
+    # Extract exception info from first example
+    exception_info = None
+    if examples:
+        first_example = examples[0]
+        properties = first_example.get("properties", {})
+        exception_info = _extract_exception_info(properties)
 
-    # Add query info
-    body_parts.append(f"**Query:** `{query}`\n")
+    # === QUICK SUMMARY SECTION ===
+    body_parts.append("## 📋 Quick Summary\n")
 
-    # Add timeline information if available (critical for debugging)
-    timeline = events_data.get("timeline", {})
+    if exception_info:
+        exc_type = exception_info.get("exception_type", "Unknown")
+        exc_msg = exception_info.get("exception_message", "No message")
+        body_parts.append(f"**Error:** `{exc_type}: {exc_msg}`\n")
+
+    if timeline:
+        first_seen = timeline.get("first_seen", "")
+        if first_seen:
+            # Format date nicely
+            date_part = first_seen.split("T")[0] if "T" in first_seen else first_seen
+            body_parts.append(f"**First Occurred:** {date_part}")
+
+        total = timeline.get("total_count", 0)
+        days = timeline.get("days_analyzed", 30)
+        if total:
+            avg_per_day = total // days if days else total
+            body_parts.append(f"**Total Occurrences:** {total:,} (~{avg_per_day}/day)")
+
+    body_parts.append("")
+
+    # === STACK TRACE SECTION ===
+    if exception_info and exception_info.get("stack_frames"):
+        body_parts.append("## 🔍 Stack Trace\n")
+        body_parts.append("```")
+        body_parts.append(_format_stack_trace(exception_info["stack_frames"]))
+        body_parts.append("```\n")
+
+    # === TIMELINE SECTION ===
     if timeline:
         body_parts.append("## ⏰ Error Timeline\n")
-        body_parts.append(
-            "**This information is critical for identifying the root cause!**\n"
-        )
 
         if timeline.get("first_seen"):
             body_parts.append(f"- **First Seen:** {timeline['first_seen']}")
         if timeline.get("last_seen"):
             body_parts.append(f"- **Last Seen:** {timeline['last_seen']}")
-        if timeline.get("total_count"):
-            days = timeline.get("days_analyzed", 30)
-            body_parts.append(
-                f"- **Total Occurrences:** {timeline['total_count']} (last {days} days)"
-            )
 
-        # Add daily counts as a simple chart
+        body_parts.append("")
+
+        # Add daily counts as a table
         daily_counts = timeline.get("daily_counts", [])
         if daily_counts:
-            body_parts.append("\n### Daily Error Counts\n")
+            body_parts.append("<details>")
+            body_parts.append(
+                "<summary>📊 Daily Error Counts (click to expand)</summary>\n"
+            )
             body_parts.append("| Date | Count |")
             body_parts.append("|------|-------|")
             for day_data in daily_counts[-14:]:  # Last 14 days
@@ -674,41 +784,30 @@ def format_issue_body(
                 body_parts.append(
                     f"\n*Showing last 14 days of {len(daily_counts)} days with data*"
                 )
+            body_parts.append("</details>\n")
 
-        body_parts.append("")
-
-    # Add event summary
+    # === EVENT DETAILS SECTION ===
     if examples:
         first_example = examples[0]
-        body_parts.append("## Event Summary\n")
+        body_parts.append("## 📝 Event Details\n")
 
-        if first_example.get("event"):
-            body_parts.append(f"- **Event Name:** `{first_example['event']}`")
         if first_example.get("distinct_id"):
-            body_parts.append(f"- **Distinct ID:** `{first_example['distinct_id']}`")
+            body_parts.append(f"- **User:** `{first_example['distinct_id']}`")
         if first_example.get("timestamp"):
             body_parts.append(f"- **Timestamp:** {first_example['timestamp']}")
+        if first_example.get("event_id"):
+            body_parts.append(f"- **Event ID:** `{first_example['event_id']}`")
 
         body_parts.append("")
 
-        # Add properties if available
-        properties = first_example.get("properties", {})
-        if properties:
-            body_parts.append("## Event Properties\n")
-            body_parts.append("```json")
-            body_parts.append(json.dumps(properties, indent=2))
-            body_parts.append("```\n")
-
-    # Add note about full data
-    body_parts.append("## Full Event Data\n")
-    body_parts.append(
-        "The complete event data has been saved and will be analyzed "
-        "by the debugging agent.\n"
-    )
-
-    # Add JSON data as collapsible section
+    # === METADATA SECTION (collapsible) ===
     body_parts.append("<details>")
-    body_parts.append("<summary>View Full Event Data (JSON)</summary>\n")
+    body_parts.append("<summary>🔧 Technical Details</summary>\n")
+    body_parts.append(f"**Identifier:** `{identifier}`\n")
+    body_parts.append(f"**Query:** `{query}`\n")
+
+    # Add full JSON data
+    body_parts.append("**Full Event Data:**")
     body_parts.append("```json")
     body_parts.append(json.dumps(events_data, indent=2))
     body_parts.append("```")
