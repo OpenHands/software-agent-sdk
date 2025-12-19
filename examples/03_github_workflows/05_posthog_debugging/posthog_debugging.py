@@ -61,6 +61,67 @@ def get_posthog_host() -> str:
     return host if host else DEFAULT_POSTHOG_HOST
 
 
+def _extract_issue_title(examples: list[dict], query: str) -> str:
+    """
+    Extract a meaningful issue title from event examples.
+
+    For $exception events, tries to extract the exception type and message.
+    Falls back to the query if no meaningful info can be extracted.
+
+    Args:
+        examples: List of event examples
+        query: The original query string
+
+    Returns:
+        A descriptive title string (max 100 chars)
+    """
+    if not examples:
+        return query[:50]
+
+    first_event = examples[0]
+    properties = first_event.get("properties", {})
+
+    # Handle string properties (need to parse JSON)
+    if isinstance(properties, str):
+        try:
+            properties = json.loads(properties)
+        except json.JSONDecodeError:
+            properties = {}
+
+    # Try to extract exception info from $exception events
+    exception_types = properties.get("$exception_types", [])
+    exception_values = properties.get("$exception_values", [])
+
+    if exception_types and exception_values:
+        # Combine type and value for a descriptive title
+        exc_type = exception_types[0] if exception_types else "Error"
+        exc_value = exception_values[0] if exception_values else ""
+
+        if exc_value:
+            # Truncate long messages
+            if len(exc_value) > 60:
+                exc_value = exc_value[:57] + "..."
+            return f"{exc_type}: {exc_value}"
+        return exc_type
+
+    # Try $exception_list format
+    exception_list = properties.get("$exception_list", [])
+    if exception_list:
+        first_exc = exception_list[0]
+        exc_type = first_exc.get("type", "Error")
+        exc_value = first_exc.get("value", "")
+
+        if exc_value:
+            if len(exc_value) > 60:
+                exc_value = exc_value[:57] + "..."
+            return f"{exc_type}: {exc_value}"
+        return exc_type
+
+    # Fall back to event name or query
+    event_name = first_event.get("event", query)
+    return event_name[:50] if event_name else query[:50]
+
+
 def validate_environment():
     """Validate that all required environment variables are set."""
     required_vars = [
@@ -524,15 +585,10 @@ def setup_github_issue(
         return issue_number, issue_url
 
     # Create new issue
-    # Determine title from event data
+    # Determine title from event data - try to extract meaningful error info
     examples = events_data.get("examples", [])
-    if examples and examples[0].get("event"):
-        event_name = examples[0]["event"]
-    else:
-        # Use query as fallback
-        event_name = query[:50]
-
-    title = f"{issue_prefix}{event_name}"
+    title_suffix = _extract_issue_title(examples, query)
+    title = f"{issue_prefix}{title_suffix}"
 
     # Format issue body
     body = format_issue_body(events_data, identifier, issue_parent)
