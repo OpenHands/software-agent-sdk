@@ -65,9 +65,7 @@ class LocalFileStore(FileStore):
             with open(full_path, "wb") as f:
                 f.write(contents)
         cache_content = (
-            contents.decode("utf-8", errors="replace")
-            if isinstance(contents, bytes)
-            else contents
+            contents.decode("utf-8") if isinstance(contents, bytes) else contents
         )
 
         self.cache[full_path] = cache_content
@@ -87,7 +85,7 @@ class LocalFileStore(FileStore):
         except UnicodeDecodeError:
             logger.debug(f"File {full_path} is binary, reading as bytes")
             with open(full_path, "rb") as f:
-                result = f.read().decode("utf-8", errors="replace")
+                result = f.read().decode("utf-8")
 
         self.cache[full_path] = result
         return result
