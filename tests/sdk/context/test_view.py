@@ -608,7 +608,9 @@ def test_filter_unmatched_tool_calls_no_tool_events() -> None:
     """Test filter_unmatched_tool_calls with no tool events."""
     # Create mock non-tool events
     message_event_1 = create_autospec(MessageEvent, instance=True)
+    message_event_1.id = "msg_1"
     message_event_2 = create_autospec(MessageEvent, instance=True)
+    message_event_2.id = "msg_2"
 
     events = [message_event_1, message_event_2]
     result = View.filter_unmatched_tool_calls(events)  # type: ignore
@@ -623,20 +625,27 @@ def test_filter_unmatched_tool_calls_matched_pairs() -> None:
     """Test filter_unmatched_tool_calls with matched tool call pairs."""
     # Create mock events
     message_event = create_autospec(MessageEvent, instance=True)
+    message_event.id = "msg_1"
 
     # Matched pair 1
     action_event_1 = create_autospec(ActionEvent, instance=True)
     action_event_1.tool_call_id = "call_1"
+    action_event_1.id = "action_1"
+    action_event_1.llm_response_id = "response_1"
 
     observation_event_1 = create_autospec(ObservationEvent, instance=True)
     observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
 
     # Matched pair 2
     action_event_2 = create_autospec(ActionEvent, instance=True)
     action_event_2.tool_call_id = "call_2"
+    action_event_2.id = "action_2"
+    action_event_2.llm_response_id = "response_2"
 
     observation_event_2 = create_autospec(ObservationEvent, instance=True)
     observation_event_2.tool_call_id = "call_2"
+    observation_event_2.id = "obs_2"
 
     events = [
         message_event,
@@ -661,17 +670,23 @@ def test_filter_unmatched_tool_calls_unmatched_action() -> None:
     """Test filter_unmatched_tool_calls with unmatched ActionEvent."""
     # Create mock events
     message_event = create_autospec(MessageEvent, instance=True)
+    message_event.id = "msg_1"
 
     # Matched pair
     action_event_matched = create_autospec(ActionEvent, instance=True)
     action_event_matched.tool_call_id = "call_1"
+    action_event_matched.id = "action_1"
+    action_event_matched.llm_response_id = "response_1"
 
     observation_event_matched = create_autospec(ObservationEvent, instance=True)
     observation_event_matched.tool_call_id = "call_1"
+    observation_event_matched.id = "obs_1"
 
     # Unmatched ActionEvent
     action_event_unmatched = create_autospec(ActionEvent, instance=True)
     action_event_unmatched.tool_call_id = "call_2"
+    action_event_unmatched.id = "action_2"
+    action_event_unmatched.llm_response_id = "response_2"
 
     events = [
         message_event,
@@ -695,17 +710,22 @@ def test_filter_unmatched_tool_calls_unmatched_observation() -> None:
     """Test filter_unmatched_tool_calls with unmatched ObservationEvent."""
     # Create mock events
     message_event = create_autospec(MessageEvent, instance=True)
+    message_event.id = "msg_1"
 
     # Matched pair
     action_event_matched = create_autospec(ActionEvent, instance=True)
     action_event_matched.tool_call_id = "call_1"
+    action_event_matched.id = "action_1"
+    action_event_matched.llm_response_id = "response_1"
 
     observation_event_matched = create_autospec(ObservationEvent, instance=True)
     observation_event_matched.tool_call_id = "call_1"
+    observation_event_matched.id = "obs_1"
 
     # Unmatched ObservationEvent
     observation_event_unmatched = create_autospec(ObservationEvent, instance=True)
     observation_event_unmatched.tool_call_id = "call_2"
+    observation_event_unmatched.id = "obs_2"
 
     events = [
         message_event,
@@ -729,29 +749,40 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
     """Test filter_unmatched_tool_calls with complex mixed scenario."""
     # Create mock events
     message_event_1 = create_autospec(MessageEvent, instance=True)
+    message_event_1.id = "msg_1"
     message_event_2 = create_autospec(MessageEvent, instance=True)
+    message_event_2.id = "msg_2"
 
     # Matched pair 1
     action_event_1 = create_autospec(ActionEvent, instance=True)
     action_event_1.tool_call_id = "call_1"
+    action_event_1.id = "action_1"
+    action_event_1.llm_response_id = "response_1"
 
     observation_event_1 = create_autospec(ObservationEvent, instance=True)
     observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
 
     # Unmatched ActionEvent
     action_event_unmatched = create_autospec(ActionEvent, instance=True)
     action_event_unmatched.tool_call_id = "call_2"
+    action_event_unmatched.id = "action_unmatched"
+    action_event_unmatched.llm_response_id = "response_2"
 
     # Unmatched ObservationEvent
     observation_event_unmatched = create_autospec(ObservationEvent, instance=True)
     observation_event_unmatched.tool_call_id = "call_3"
+    observation_event_unmatched.id = "obs_unmatched"
 
     # Matched pair 2
     action_event_2 = create_autospec(ActionEvent, instance=True)
     action_event_2.tool_call_id = "call_4"
+    action_event_2.id = "action_2"
+    action_event_2.llm_response_id = "response_3"
 
     observation_event_2 = create_autospec(ObservationEvent, instance=True)
     observation_event_2.tool_call_id = "call_4"
+    observation_event_2.id = "obs_2"
 
     events = [
         message_event_1,
@@ -784,16 +815,22 @@ def test_filter_unmatched_tool_calls_none_tool_call_id() -> None:
     # Create mock events with None tool_call_id
     action_event_none = create_autospec(ActionEvent, instance=True)
     action_event_none.tool_call_id = None
+    action_event_none.id = "action_none"
+    action_event_none.llm_response_id = "response_1"
 
     observation_event_none = create_autospec(ObservationEvent, instance=True)
     observation_event_none.tool_call_id = None
+    observation_event_none.id = "obs_none"
 
     # Valid matched pair
     action_event_valid = create_autospec(ActionEvent, instance=True)
     action_event_valid.tool_call_id = "call_1"
+    action_event_valid.id = "action_valid"
+    action_event_valid.llm_response_id = "response_2"
 
     observation_event_valid = create_autospec(ObservationEvent, instance=True)
     observation_event_valid.tool_call_id = "call_1"
+    observation_event_valid.id = "obs_valid"
 
     events = [
         action_event_none,
