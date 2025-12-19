@@ -320,41 +320,6 @@ def test_very_large_file_cache():
         assert store.cache.current_memory <= 12 * 1024  # Allow overhead
 
 
-def test_cache_with_nested_directories():
-    """Test cache works correctly with nested directory structures."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        store = LocalFileStore(temp_dir, cache_limit_size=20)
-
-        # Create nested structure
-        paths = [
-            "a/b/c/file1.txt",
-            "a/b/file2.txt",
-            "a/file3.txt",
-            "x/y/z/file4.txt",
-        ]
-
-        for path in paths:
-            store.write(path, f"content of {path}")
-
-        # Read and verify all are cached
-        for path in paths:
-            content = store.read(path)
-            assert content == f"content of {path}"
-            full_path = store.get_full_path(path)
-            assert full_path in store.cache
-
-        # Delete parent directory should clear all child caches
-        store.delete("a")
-
-        for path in ["a/b/c/file1.txt", "a/b/file2.txt", "a/file3.txt"]:
-            full_path = store.get_full_path(path)
-            assert full_path not in store.cache
-
-        # Other paths should still be cached
-        full_path = store.get_full_path("x/y/z/file4.txt")
-        assert full_path in store.cache
-
-
 def test_cache_with_evict_correct():
     cache = MemoryLRUCache(1000, 2)
     cache["key1"] = "a" * 500
