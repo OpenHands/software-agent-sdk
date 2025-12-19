@@ -22,6 +22,8 @@ permissions:
 
 jobs:
     run-task:
+        # Only run scheduled jobs in the main repository, not in forks
+        if: github.repository == 'OpenHands/software-agent-sdk' || github.event_name == 'workflow_dispatch'
         runs-on: blacksmith-4vcpu-ubuntu-2404
         env:
             # Configuration (modify these values as needed)

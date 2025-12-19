@@ -67,6 +67,8 @@ REASONING_EFFORT_MODELS: list[str] = [
     "gpt-5",
     # Anthropic Opus 4.5
     "claude-opus-4-5",
+    # Nova 2 Lite
+    "nova-2-lite",
 ]
 
 EXTENDED_THINKING_MODELS: list[str] = [

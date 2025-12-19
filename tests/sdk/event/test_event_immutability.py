@@ -1,9 +1,9 @@
 """Tests for event immutability."""
 
 from collections.abc import Sequence
+from typing import TYPE_CHECKING, Self
 
 import pytest
-from litellm import ChatCompletionToolParam
 
 from openhands.sdk.event import (
     ActionEvent,
@@ -23,7 +23,12 @@ from openhands.sdk.llm import (
     MessageToolCall,
     TextContent,
 )
+from openhands.sdk.tool import ToolDefinition, ToolExecutor
 from openhands.sdk.tool.schema import Action, Observation
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 
 
 class EventsImmutabilityMockAction(Action):
@@ -40,6 +45,34 @@ class EventsImmutabilityMockObservation(Observation):
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         return [TextContent(text=self.result)]
+
+
+class EventsImmutabilityMockExecutor(ToolExecutor):
+    """Mock executor for testing."""
+
+    def __call__(
+        self,
+        action: EventsImmutabilityMockAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> EventsImmutabilityMockObservation:
+        return EventsImmutabilityMockObservation.from_text("test")
+
+
+class EventsImmutabilityMockTool(
+    ToolDefinition[EventsImmutabilityMockAction, EventsImmutabilityMockObservation]
+):
+    """Mock tool for testing."""
+
+    @classmethod
+    def create(cls, *args, **kwargs) -> Sequence[Self]:
+        return [
+            cls(
+                description="Test tool",
+                action_type=EventsImmutabilityMockAction,
+                observation_type=EventsImmutabilityMockObservation,
+                executor=EventsImmutabilityMockExecutor(),
+            )
+        ]
 
 
 def test_event_base_is_frozen():
@@ -66,14 +99,7 @@ def test_event_base_is_frozen():
 
 def test_system_prompt_event_is_frozen():
     """Test that SystemPromptEvent instances are frozen."""
-    tool = ChatCompletionToolParam(
-        type="function",
-        function={
-            "name": "test_tool",
-            "description": "Test tool",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    )
+    tool = EventsImmutabilityMockTool.create()[0]
 
     event = SystemPromptEvent(
         system_prompt=TextContent(text="Test system prompt"),
@@ -265,14 +291,7 @@ def test_event_model_copy_creates_new_instance():
 
 def test_event_immutability_prevents_mutation_bugs():
     """Test that frozen events prevent the type of mutation bugs fixed in PR #226."""
-    tool = ChatCompletionToolParam(
-        type="function_with_very_long_type_name_exceeding_thirty_characters",
-        function={
-            "name": "test_tool",
-            "description": "Test tool with long description",
-            "parameters": {"type": "object", "properties": {}},
-        },
-    )
+    tool = EventsImmutabilityMockTool.create()[0]
 
     event = SystemPromptEvent(
         system_prompt=TextContent(text="Test system prompt"),
@@ -280,16 +299,16 @@ def test_event_immutability_prevents_mutation_bugs():
     )
 
     # Store original tool data
-    original_tool_type = event.tools[0]["type"]
-    original_tool_name = event.tools[0]["function"]["name"]  # type: ignore[index]
+    original_tool_name = event.tools[0].name
+    original_tool_description = event.tools[0].description
 
     # Call visualize multiple times (this used to cause mutations)
     for _ in range(3):
         _ = event.visualize
 
     # Verify no mutation occurred - the event data should be unchanged
-    assert event.tools[0]["type"] == original_tool_type
-    assert event.tools[0]["function"]["name"] == original_tool_name  # type: ignore[index]
+    assert event.tools[0].name == original_tool_name
+    assert event.tools[0].description == original_tool_description
 
     # Verify that attempting to modify the event fields directly fails
     with pytest.raises(Exception):
