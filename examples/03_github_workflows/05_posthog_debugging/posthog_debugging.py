@@ -122,6 +122,95 @@ def _extract_issue_title(examples: list[dict], query: str) -> str:
     return event_name[:50] if event_name else query[:50]
 
 
+def _fetch_event_timeline(
+    event_name: str,
+    posthog_host: str,
+    posthog_project_id: str,
+    posthog_api_key: str,
+    days_back: int = 30,
+) -> dict:
+    """
+    Fetch timeline information about when an event first occurred and daily counts.
+
+    This helps identify when an error started occurring, which is critical for
+    correlating with code changes and deployments.
+
+    Args:
+        event_name: The event name to query (e.g., '$exception')
+        posthog_host: PostHog API host
+        posthog_project_id: PostHog project ID
+        posthog_api_key: PostHog API key
+        days_back: How many days back to look for first occurrence
+
+    Returns:
+        Dictionary with timeline information
+    """
+    api_url = f"https://{posthog_host}/api/projects/{posthog_project_id}/query/"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {posthog_api_key}",
+    }
+
+    timeline_info: dict = {
+        "first_seen": None,
+        "last_seen": None,
+        "total_count": 0,
+        "daily_counts": [],
+        "days_analyzed": days_back,
+    }
+
+    # Query 1: Get first and last occurrence timestamps and total count
+    summary_query = (
+        f"SELECT min(timestamp) as first_seen, max(timestamp) as last_seen, "
+        f"count() as total_count FROM events "
+        f"WHERE event = '{event_name}' "
+        f"AND timestamp > now() - INTERVAL {days_back} DAY"
+    )
+
+    try:
+        response = requests.post(
+            api_url,
+            headers=headers,
+            json={"query": {"kind": "HogQLQuery", "query": summary_query}},
+            timeout=60,
+        )
+        if response.ok:
+            data = response.json()
+            results = data.get("results", [])
+            if results and results[0]:
+                timeline_info["first_seen"] = results[0][0]
+                timeline_info["last_seen"] = results[0][1]
+                timeline_info["total_count"] = results[0][2]
+    except Exception as e:
+        print(f"⚠️  Warning: Could not fetch event timeline summary: {e}")
+
+    # Query 2: Get daily counts for the period
+    daily_query = (
+        f"SELECT toDate(timestamp) as day, count() as count FROM events "
+        f"WHERE event = '{event_name}' "
+        f"AND timestamp > now() - INTERVAL {days_back} DAY "
+        f"GROUP BY day ORDER BY day"
+    )
+
+    try:
+        response = requests.post(
+            api_url,
+            headers=headers,
+            json={"query": {"kind": "HogQLQuery", "query": daily_query}},
+            timeout=60,
+        )
+        if response.ok:
+            data = response.json()
+            results = data.get("results", [])
+            timeline_info["daily_counts"] = [
+                {"date": str(row[0]), "count": row[1]} for row in results
+            ]
+    except Exception as e:
+        print(f"⚠️  Warning: Could not fetch daily event counts: {e}")
+
+    return timeline_info
+
+
 def validate_environment():
     """Validate that all required environment variables are set."""
     required_vars = [
@@ -329,19 +418,36 @@ def fetch_posthog_events(
                 }
                 event_examples.append(event_example)
 
+    # Fetch timeline information (when error first occurred, daily counts)
+    timeline_info: dict = {}
+    if query_type == "event-query":
+        print("📊 Fetching event timeline (first occurrence, daily counts)...")
+        # These are validated by validate_environment() before this function is called
+        assert posthog_project_id is not None
+        assert posthog_api_key is not None
+        timeline_info = _fetch_event_timeline(
+            query, posthog_host, posthog_project_id, posthog_api_key, days_back=30
+        )
+        if timeline_info.get("first_seen"):
+            print(f"   First seen: {timeline_info['first_seen']}")
+            print(f"   Last seen: {timeline_info['last_seen']}")
+            print(f"   Total count (30 days): {timeline_info['total_count']}")
+
     # Save to file
     events_file = working_dir / "posthog_events.json"
+    events_data = {
+        "query": query,
+        "fetch_time": datetime.now().isoformat(),
+        "total_examples": len(event_examples),
+        "examples": event_examples,
+    }
+
+    # Add timeline info if available
+    if timeline_info:
+        events_data["timeline"] = timeline_info
+
     with open(events_file, "w") as f:
-        json.dump(
-            {
-                "query": query,
-                "fetch_time": datetime.now().isoformat(),
-                "total_examples": len(event_examples),
-                "examples": event_examples,
-            },
-            f,
-            indent=2,
-        )
+        json.dump(events_data, f, indent=2)
 
     print(f"✅ Fetched {len(event_examples)} event examples")
     print(f"📄 Saved to: {events_file}")
@@ -497,6 +603,39 @@ def format_issue_body(
 
     # Add query info
     body_parts.append(f"**Query:** `{query}`\n")
+
+    # Add timeline information if available (critical for debugging)
+    timeline = events_data.get("timeline", {})
+    if timeline:
+        body_parts.append("## ⏰ Error Timeline\n")
+        body_parts.append(
+            "**This information is critical for identifying the root cause!**\n"
+        )
+
+        if timeline.get("first_seen"):
+            body_parts.append(f"- **First Seen:** {timeline['first_seen']}")
+        if timeline.get("last_seen"):
+            body_parts.append(f"- **Last Seen:** {timeline['last_seen']}")
+        if timeline.get("total_count"):
+            days = timeline.get("days_analyzed", 30)
+            body_parts.append(
+                f"- **Total Occurrences:** {timeline['total_count']} (last {days} days)"
+            )
+
+        # Add daily counts as a simple chart
+        daily_counts = timeline.get("daily_counts", [])
+        if daily_counts:
+            body_parts.append("\n### Daily Error Counts\n")
+            body_parts.append("| Date | Count |")
+            body_parts.append("|------|-------|")
+            for day_data in daily_counts[-14:]:  # Last 14 days
+                body_parts.append(f"| {day_data['date']} | {day_data['count']} |")
+            if len(daily_counts) > 14:
+                body_parts.append(
+                    f"\n*Showing last 14 days of {len(daily_counts)} days with data*"
+                )
+
+        body_parts.append("")
 
     # Add event summary
     if examples:

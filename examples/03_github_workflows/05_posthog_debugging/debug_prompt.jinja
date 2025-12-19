@@ -29,6 +29,11 @@ I have already fetched event data and saved them to: `{{ events_file }}`
 This JSON file contains:
 - `query`: The PostHog query used to fetch these events
 - `total_examples`: Number of events in the file
+- `timeline`: **CRITICAL** - Information about when this error first started occurring:
+  - `first_seen`: Timestamp of the first occurrence (in the last 30 days)
+  - `last_seen`: Timestamp of the most recent occurrence
+  - `total_count`: Total number of occurrences
+  - `daily_counts`: Array of {date, count} showing error frequency over time
 - `examples`: Array of events, where each has:
   - `event_id`: Unique identifier for the event
   - `event`: Event name (e.g., '$exception', 'error', custom event names)
@@ -37,7 +42,7 @@ This JSON file contains:
   - `timestamp`: When the event occurred
   - `person_id`: Associated person ID (if available)
 
-**First, read the GitHub issue** to see the event summary, then read `{{ events_file }}` to understand the error patterns.
+**First, read the GitHub issue** to see the event summary and timeline, then read `{{ events_file }}` to understand the error patterns.
 
 ## Additional Context
 
@@ -91,24 +96,35 @@ Follow these steps systematically:
    - Common error messages in properties
    - Stack traces and their origins
    - Event context and properties
-   - Timestamps (when did errors start?)
 
-2. **Analyze the timeline** - Check when the errors started occurring/becoming frequent. Look at the timestamps in the event examples. This helps identify what code changes or deployment may have caused the issue. Code changed during the release cycle before the error occurred will be most suspicious.
+2. **⚠️ CRITICAL: Analyze the timeline** - This is the most important step for finding the root cause!
+   - Check the `timeline.first_seen` field to see when this error FIRST started occurring
+   - Look at `timeline.daily_counts` to see the pattern - did it spike suddenly or gradually increase?
+   - **If the error started recently (e.g., 1-7 days ago), there was likely a code change that caused it**
+   - Use `git log --since="YYYY-MM-DD"` to find commits made around the time the error first appeared
+   - Focus your investigation on code changes made in the release cycle BEFORE the first error occurrence
 
 3. **Clone repositories** - Clone the relevant repositories using:
    ```bash
    git clone https://$GITHUB_TOKEN@github.com/OWNER/REPO.git
    ```
 
-4. **Investigate the codebase** - Carefully read the code related to the error. Look at:
+4. **Correlate with code changes** - This is key to finding the root cause:
+   - Use `git log --oneline --since="DATE"` where DATE is 1-2 days before `first_seen`
+   - Look for commits that touch files mentioned in the stack trace
+   - Check for recent deployments or releases around that time
+   - Example: `git log --oneline --since="2025-12-15" -- path/to/file.ts`
+
+5. **Investigate the codebase** - Carefully read the code related to the error. Look at:
    - Files mentioned in stack traces (often in event properties)
-   - Recent commits (use git log)
+   - Recent commits that modified those files (use git log and git blame)
    - Related code paths
 
-5. **Develop hypotheses** - Think of 5 possible root causes and write sample code to test each hypothesis. Try to reproduce the error.
+6. **Develop hypotheses** - Think of 5 possible root causes and write sample code to test each hypothesis. Try to reproduce the error.
 
-6. **Create fix or summarize** - Based on your findings:
+7. **Create fix or summarize** - Based on your findings:
    - If reproducible: Create a fix and optionally open a draft PR
    - If not reproducible: Summarize your investigation, findings, and recommendations
+   - **Always include the timeline analysis** - when did the error start and what code changes correlate with it
 
 **Important**: Use the task_tracker tool to organize your work and keep track of your progress through these steps.
