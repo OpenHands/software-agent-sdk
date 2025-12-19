@@ -22,7 +22,6 @@ For more information on creating skill packages, see:
 import asyncio
 from pathlib import Path
 
-from openhands.sdk import Agent
 from openhands.sdk.context.skills import (
     get_skill_package,
     list_skill_packages,
@@ -101,7 +100,10 @@ async def load_and_inspect_skills(package_name: str):
     try:
         repo_skills, knowledge_skills = load_skills_from_package(package_name)
 
-        print(f"\nLoaded {len(repo_skills)} repo skills and {len(knowledge_skills)} knowledge skills")
+        print(
+            f"\nLoaded {len(repo_skills)} repo skills and "
+            f"{len(knowledge_skills)} knowledge skills"
+        )
 
         if repo_skills:
             print("\nRepo Skills (always active):")
