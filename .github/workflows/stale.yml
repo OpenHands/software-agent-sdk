@@ -9,6 +9,8 @@ on:
 
 jobs:
     stale:
+        # Only run scheduled jobs in the main repository, not in forks
+        if: github.repository == 'OpenHands/software-agent-sdk'
         runs-on: blacksmith-4vcpu-ubuntu-2204
         steps:
             - uses: actions/stale@v10

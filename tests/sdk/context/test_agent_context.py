@@ -9,7 +9,7 @@ from openhands.sdk.context.skills import (
     Skill,
 )
 from openhands.sdk.llm import Message, TextContent
-from openhands.sdk.secret import StaticSecret
+from openhands.sdk.secret import LookupSecret, StaticSecret
 
 
 class TestAgentContext:
@@ -537,6 +537,66 @@ defined in user's repository.\n"
         )
         assert result_dict["API_KEY"]["description"] == "API key for external service"
         assert result_dict["DATABASE_PASSWORD"]["description"] == "Database password"
+
+    def test_get_secret_infos_with_lookup_secrets(self):
+        """Test get_secret_infos with multiple LookupSecret instances."""
+        secrets = {
+            "API_TOKEN": LookupSecret(
+                url="https://api.example.com/token",
+                description="API token fetched from external service",
+            ),
+            "CONFIG_SECRET": LookupSecret(
+                url="https://config.example.com/secret",
+                description="Configuration secret from remote endpoint",
+            ),
+            "AUTH_KEY": LookupSecret(
+                url="https://auth.example.com/key",
+                description="Authentication key",
+            ),
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_secret_infos()
+        # Order may vary, so use set comparison for names
+        result_names = {info["name"] for info in result}
+        assert result_names == {"API_TOKEN", "CONFIG_SECRET", "AUTH_KEY"}
+        assert len(result) == 3
+        # Verify descriptions are included
+        result_dict = {info["name"]: info for info in result}
+        assert (
+            result_dict["API_TOKEN"]["description"]
+            == "API token fetched from external service"
+        )
+        assert (
+            result_dict["CONFIG_SECRET"]["description"]
+            == "Configuration secret from remote endpoint"
+        )
+        assert result_dict["AUTH_KEY"]["description"] == "Authentication key"
+
+    def test_get_secret_infos_with_mixed_secret_types(self):
+        """Test get_secret_infos with a mix of StaticSecret and LookupSecret."""
+        secrets = {
+            "STATIC_SECRET": StaticSecret(
+                value=SecretStr("static_value"),
+                description="A static secret",
+            ),
+            "LOOKUP_SECRET": LookupSecret(
+                url="https://example.com/secret",
+                description="A lookup secret",
+            ),
+            "PLAIN_STRING": "plain_string_value",  # Plain string has no description
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_secret_infos()
+        # Order may vary, so use set comparison for names
+        result_names = {info["name"] for info in result}
+        assert result_names == {"STATIC_SECRET", "LOOKUP_SECRET", "PLAIN_STRING"}
+        assert len(result) == 3
+        # Verify descriptions are included for SecretSource instances
+        result_dict = {info["name"]: info for info in result}
+        assert result_dict["STATIC_SECRET"]["description"] == "A static secret"
+        assert result_dict["LOOKUP_SECRET"]["description"] == "A lookup secret"
+        # Plain strings have no description
+        assert result_dict["PLAIN_STRING"]["description"] is None
 
     def test_get_system_message_suffix_with_secrets_only(self):
         """Test system message suffix with secrets but no repo skills or custom suffix.

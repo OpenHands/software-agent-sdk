@@ -67,6 +67,8 @@ REASONING_EFFORT_MODELS: list[str] = [
     "gpt-5",
     # Anthropic Opus 4.5
     "claude-opus-4-5",
+    # Nova 2 Lite
+    "nova-2-lite",
 ]
 
 EXTENDED_THINKING_MODELS: list[str] = [
@@ -141,6 +143,9 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
     "glm",  # e.g., GLM-4.5 / GLM-4.6
     # Kimi K2-Instruct requires string serialization only on Groq
     "groq/kimi-k2-instruct",  # explicit provider-prefixed IDs
+    # MiniMax-M2 via OpenRouter rejects array content with
+    # "Input should be a valid string" for ChatCompletionToolMessage.content
+    "openrouter/minimax",
 ]
 
 # Models that we should send full reasoning content
