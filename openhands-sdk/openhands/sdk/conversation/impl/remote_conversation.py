@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import threading
 import uuid
 from collections.abc import Mapping
@@ -16,7 +17,11 @@ from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    StuckDetectionThresholds,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -26,6 +31,7 @@ from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
 )
+from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -432,6 +438,9 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -447,6 +456,11 @@ class RemoteConversation(BaseConversation):
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
+            stuck_detection_thresholds: Optional configuration for stuck detection
+                      thresholds. Can be a StuckDetectionThresholds instance or
+                      a dict with keys: 'action_observation', 'action_error',
+                      'monologue', 'alternating_pattern'. Values are integers
+                      representing the number of repetitions before triggering.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -474,6 +488,15 @@ class RemoteConversation(BaseConversation):
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
             }
+            if stuck_detection_thresholds is not None:
+                # Convert to StuckDetectionThresholds if dict, then serialize
+                if isinstance(stuck_detection_thresholds, Mapping):
+                    threshold_config = StuckDetectionThresholds(
+                        **stuck_detection_thresholds
+                    )
+                else:
+                    threshold_config = stuck_detection_thresholds
+                payload["stuck_detection_thresholds"] = threshold_config.model_dump()
             resp = _send_request(
                 self._client, "POST", "/api/conversations", json=payload
             )
@@ -501,6 +524,12 @@ class RemoteConversation(BaseConversation):
         # Add callback to update state from websocket events
         state_update_callback = self._state.create_state_update_callback()
         self._callbacks.append(state_update_callback)
+
+        # Add callback to handle LLM completion logs
+        # Register callback if any LLM has log_completions enabled
+        if any(llm.log_completions for llm in agent.get_all_llms()):
+            llm_log_callback = self._create_llm_completion_log_callback()
+            self._callbacks.append(llm_log_callback)
 
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
@@ -540,6 +569,39 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
+
+    def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
+        """Create a callback that writes LLM completion logs to client filesystem."""
+
+        def callback(event: Event) -> None:
+            if not isinstance(event, LLMCompletionLogEvent):
+                return
+
+            # Find the LLM with matching usage_id
+            target_llm = None
+            for llm in self.agent.get_all_llms():
+                if llm.usage_id == event.usage_id:
+                    target_llm = llm
+                    break
+
+            if not target_llm or not target_llm.log_completions:
+                logger.debug(
+                    f"No LLM with log_completions enabled found "
+                    f"for usage_id={event.usage_id}"
+                )
+                return
+
+            try:
+                log_dir = target_llm.log_completions_folder
+                os.makedirs(log_dir, exist_ok=True)
+                log_path = os.path.join(log_dir, event.filename)
+                with open(log_path, "w") as f:
+                    f.write(event.log_data)
+                logger.debug(f"Wrote LLM completion log to {log_path}")
+            except Exception as e:
+                logger.warning(f"Failed to write LLM completion log: {e}")
+
+        return callback
 
     @property
     def id(self) -> ConversationID:
@@ -649,6 +711,33 @@ class RemoteConversation(BaseConversation):
             self._client, "POST", f"/api/conversations/{self._id}/secrets", json=payload
         )
 
+    def ask_agent(self, question: str) -> str:
+        """Ask the agent a simple, stateless question and get a direct LLM response.
+
+        This bypasses the normal conversation flow and does **not** modify, persist,
+        or become part of the conversation state. The request is not remembered by
+        the main agent, no events are recorded, and execution status is untouched.
+        It is also thread-safe and may be called while `conversation.run()` is
+        executing in another thread.
+
+        Args:
+            question: A simple string question to ask the agent
+
+        Returns:
+            A string response from the agent
+        """
+        # For remote conversations, delegate to the server endpoint
+        payload = {"question": question}
+
+        resp = _send_request(
+            self._client,
+            "POST",
+            f"/api/conversations/{self._id}/ask_agent",
+            json=payload,
+        )
+        data = resp.json()
+        return data["response"]
+
     @observe(name="conversation.generate_title", ignore_inputs=["llm"])
     def generate_title(self, llm: LLM | None = None, max_length: int = 50) -> str:
         """Generate a title for the conversation based on the first user message.
@@ -677,6 +766,21 @@ class RemoteConversation(BaseConversation):
         )
         data = resp.json()
         return data["title"]
+
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method sends a condensation request to the remote agent server.
+        The server will use the existing condensation request pattern to trigger
+        condensation if a condenser is configured and handles condensation requests.
+
+        The condensation will be applied on the server side and will modify the
+        conversation state by adding a condensation event to the history.
+
+        Raises:
+            HTTPError: If the server returns an error (e.g., no condenser configured).
+        """
+        _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
 
     def close(self) -> None:
         """Close the conversation and clean up resources.

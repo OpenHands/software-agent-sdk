@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
+from openhands.sdk.llm.utils.model_features import get_features
 
 
 def select_responses_options(
@@ -35,9 +36,11 @@ def select_responses_options(
     else:
         out.setdefault("store", False)
 
-    # Include encrypted reasoning if stateless
+    # Include encrypted reasoning only when the user enables it on the LLM,
+    # and only for stateless calls (store=False). Respect user choice.
     include_list = list(include) if include is not None else []
-    if not out.get("store", False):
+
+    if not out.get("store", False) and llm.enable_encrypted_reasoning:
         if "reasoning.encrypted_content" not in include_list:
             include_list.append("reasoning.encrypted_content")
     if include_list:
@@ -50,7 +53,14 @@ def select_responses_options(
         if llm.reasoning_summary:
             out["reasoning"]["summary"] = llm.reasoning_summary
 
-    # Always forward extra_body if provided; let the LLM provider validate
+    # Send prompt_cache_retention only if model supports it
+    if (
+        get_features(llm.model).supports_prompt_cache_retention
+        and llm.prompt_cache_retention
+    ):
+        out["prompt_cache_retention"] = llm.prompt_cache_retention
+
+    # Pass through user-provided extra_body unchanged
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
 

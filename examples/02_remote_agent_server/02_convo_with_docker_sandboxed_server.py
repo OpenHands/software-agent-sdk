@@ -37,12 +37,17 @@ def detect_platform():
 
 
 # 2) Create a Docker-based remote workspace that will set up and manage
-#    the Docker container automatically
+#    the Docker container automatically. Use `DockerWorkspace` with a pre-built
+#    image or `DockerDevWorkspace` to automatically build the image on-demand.
+#    with DockerDevWorkspace(
+#        # dynamically build agent-server image
+#        base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+#        host_port=8010,
+#        platform=detect_platform(),
+#    ) as workspace:
 with DockerWorkspace(
-    # dynamically build agent-server image
-    base_image="nikolaik/python-nodejs:python3.12-nodejs22",
     # use pre-built image for faster startup
-    # server_image="ghcr.io/openhands/agent-server:main-python",
+    server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8010,
     platform=detect_platform(),
 ) as workspace:

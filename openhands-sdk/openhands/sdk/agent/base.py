@@ -3,36 +3,32 @@ import re
 import sys
 from abc import ABC, abstractmethod
 from collections.abc import Generator, Iterable
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.security import analyzer
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
-from openhands.sdk.utils.deprecation import (
-    warn_deprecated,
-)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation import ConversationState, LocalConversation
-    from openhands.sdk.conversation.types import ConversationCallbackType
+    from openhands.sdk.conversation.types import (
+        ConversationCallbackType,
+        ConversationTokenCallbackType,
+    )
+
 
 logger = get_logger(__name__)
-
-
-AGENT_SECURITY_ANALYZER_DEPRECATION_DETAILS = (
-    "Use `conversation = Conversation(); "
-    "conversation.set_security_analyzer(...)` instead."
-)
 
 
 class AgentBase(DiscriminatedUnionMixin, ABC):
@@ -125,16 +121,19 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "- An absolute path (e.g., '/path/to/custom_prompt.j2')"
         ),
     )
+    security_policy_filename: str = Field(
+        default="security_policy.j2",
+        description=(
+            "Security policy template filename. Can be either:\n"
+            "- A relative filename (e.g., 'security_policy.j2') loaded from the "
+            "agent's prompts directory\n"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+        ),
+    )
     system_prompt_kwargs: dict[str, object] = Field(
         default_factory=dict,
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
         examples=[{"cli_mode": True}],
-    )
-
-    security_analyzer: analyzer.SecurityAnalyzerBase | None = Field(
-        default=None,
-        description="Optional security analyzer to evaluate action risks.",
-        examples=[{"kind": "LLMSecurityAnalyzer"}],
     )
 
     condenser: CondenserBase | None = Field(
@@ -157,24 +156,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
 
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_inputs(cls, data):
-        if not isinstance(data, dict):
-            return data
-        d = dict(data)
-
-        if "security_analyzer" in d and d["security_analyzer"]:
-            warn_deprecated(
-                "Agent.security_analyzer",
-                deprecated_in="1.1.0",
-                removed_in="1.3.0",
-                details=AGENT_SECURITY_ANALYZER_DEPRECATION_DETAILS,
-                stacklevel=3,
-            )
-
-        return d
-
     @property
     def prompt_dir(self) -> str:
         """Returns the directory where this class's module file is located."""
@@ -193,6 +174,20 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Add security_policy_filename to template kwargs
+        template_kwargs["security_policy_filename"] = self.security_policy_filename
+        template_kwargs.setdefault("model_name", self.llm.model)
+        if (
+            "model_family" not in template_kwargs
+            or "model_variant" not in template_kwargs
+        ):
+            spec = get_model_prompt_spec(
+                self.llm.model, getattr(self.llm, "model_canonical_name", None)
+            )
+            if "model_family" not in template_kwargs and spec.family:
+                template_kwargs["model_family"] = spec.family
+            if "model_variant" not in template_kwargs and spec.variant:
+                template_kwargs["model_variant"] = spec.variant
         system_message = render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
@@ -221,27 +216,30 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def _initialize(self, state: "ConversationState"):
         """Create an AgentBase instance from an AgentSpec."""
 
-        # 1) Migrate deprecated analyzer → state (if present)
-        if self.security_analyzer and not state.security_analyzer:
-            state.security_analyzer = self.security_analyzer
-            # 2) Clear on the immutable model (allowed via object.__setattr__)
-            try:
-                object.__setattr__(self, "security_analyzer", None)
-            except Exception:
-                logger.warning("Could not clear deprecated Agent.security_analyzer")
-
         if self._tools:
             logger.warning("Agent already initialized; skipping re-initialization.")
             return
 
         tools: list[ToolDefinition] = []
-        for tool_spec in self.tools:
-            tools.extend(resolve_tool(tool_spec, state))
 
-        # Add MCP tools if configured
-        if self.mcp_config:
-            mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
-            tools.extend(mcp_tools)
+        # Use ThreadPoolExecutor to parallelize tool resolution
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+
+            # Submit tool resolution tasks
+            for tool_spec in self.tools:
+                future = executor.submit(resolve_tool, tool_spec, state)
+                futures.append(future)
+
+            # Submit MCP tools creation if configured
+            if self.mcp_config:
+                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                futures.append(future)
+
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
@@ -281,6 +279,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         self,
         conversation: "LocalConversation",
         on_event: "ConversationCallbackType",
+        on_token: "ConversationTokenCallbackType | None" = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -292,14 +291,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         4.1 If conversation is finished, set state.execution_status to FINISHED
         4.2 Otherwise, just return, Conversation will kick off the next step
 
+        If the underlying LLM supports streaming, partial deltas are forwarded to
+        ``on_token`` before the full response is returned.
+
         NOTE: state will be mutated in-place.
         """
 
     def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
         """
         Return a new AgentBase instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key, security_analyzer) taken from
-        `self`.
+        explicitly whitelisted fields (e.g. api_key) taken from `self`.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
@@ -328,8 +329,11 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 )
                 updates["condenser"] = new_condenser
 
-        # Allow security_analyzer to differ - use the runtime (self) version
-        updates["security_analyzer"] = self.security_analyzer
+        # Reconcile agent_context - always use the current environment's agent_context
+        # This allows resuming conversations from different directories and handles
+        # cases where skills, working directory, or other context has changed
+        if self.agent_context is not None:
+            updates["agent_context"] = self.agent_context
 
         # Create maps by tool name for easy lookup
         runtime_tools_map = {tool.name: tool for tool in self.tools}
