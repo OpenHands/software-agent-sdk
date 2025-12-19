@@ -1,13 +1,10 @@
 """Tests for edit tool."""
 
-import pytest
-
-from openhands.tools.gemini_file_editor.edit import EditAction
-from openhands.tools.gemini_file_editor.executor import EditExecutor
+from openhands.tools.edit.definition import EditAction
+from openhands.tools.edit.impl import EditExecutor
 
 
-@pytest.mark.asyncio
-async def test_edit_basic_replacement(tmp_path):
+def test_edit_basic_replacement(tmp_path):
     """Test basic find/replace."""
     # Create a test file
     test_file = tmp_path / "test.py"
@@ -15,7 +12,7 @@ async def test_edit_basic_replacement(tmp_path):
 
     executor = EditExecutor(workspace_root=str(tmp_path))
     action = EditAction(file_path="test.py", old_string="'old'", new_string="'new'")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert not obs.is_new_file
@@ -23,8 +20,7 @@ async def test_edit_basic_replacement(tmp_path):
     assert test_file.read_text() == "def foo():\n    return 'new'\n"
 
 
-@pytest.mark.asyncio
-async def test_edit_multiple_replacements(tmp_path):
+def test_edit_multiple_replacements(tmp_path):
     """Test replacing multiple occurrences."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("foo bar foo baz foo\n")
@@ -36,15 +32,14 @@ async def test_edit_multiple_replacements(tmp_path):
         new_string="qux",
         expected_replacements=3,
     )
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.replacements_made == 3
     assert test_file.read_text() == "qux bar qux baz qux\n"
 
 
-@pytest.mark.asyncio
-async def test_edit_mismatch_expected_count(tmp_path):
+def test_edit_mismatch_expected_count(tmp_path):
     """Test error when replacement count doesn't match expected."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("foo bar foo\n")
@@ -56,21 +51,20 @@ async def test_edit_mismatch_expected_count(tmp_path):
         new_string="qux",
         expected_replacements=1,
     )
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "expected 1" in obs.text.lower()
     assert "found 2" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_edit_create_new_file(tmp_path):
+def test_edit_create_new_file(tmp_path):
     """Test creating a new file with empty old_string."""
     executor = EditExecutor(workspace_root=str(tmp_path))
     action = EditAction(
         file_path="new.py", old_string="", new_string="print('hello')\n"
     )
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.is_new_file
@@ -82,8 +76,7 @@ async def test_edit_create_new_file(tmp_path):
     assert test_file.read_text() == "print('hello')\n"
 
 
-@pytest.mark.asyncio
-async def test_edit_create_existing_file_error(tmp_path):
+def test_edit_create_existing_file_error(tmp_path):
     """Test error when trying to create file that already exists."""
     # Create existing file
     test_file = tmp_path / "existing.py"
@@ -93,14 +86,13 @@ async def test_edit_create_existing_file_error(tmp_path):
     action = EditAction(
         file_path="existing.py", old_string="", new_string="new content\n"
     )
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "already exists" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_edit_string_not_found(tmp_path):
+def test_edit_string_not_found(tmp_path):
     """Test error when old_string is not found."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello world\n")
@@ -109,41 +101,38 @@ async def test_edit_string_not_found(tmp_path):
     action = EditAction(
         file_path="test.txt", old_string="goodbye", new_string="farewell"
     )
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "could not find" in obs.text.lower()
     assert "0 occurrences" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_edit_identical_strings(tmp_path):
+def test_edit_identical_strings(tmp_path):
     """Test error when old_string and new_string are the same."""
     test_file = tmp_path / "test.txt"
     test_file.write_text("hello world\n")
 
     executor = EditExecutor(workspace_root=str(tmp_path))
     action = EditAction(file_path="test.txt", old_string="hello", new_string="hello")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "no changes" in obs.text.lower()
     assert "identical" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_edit_file_not_found(tmp_path):
+def test_edit_file_not_found(tmp_path):
     """Test error when file doesn't exist."""
     executor = EditExecutor(workspace_root=str(tmp_path))
     action = EditAction(file_path="nonexistent.txt", old_string="old", new_string="new")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "not found" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_edit_multiline_replacement(tmp_path):
+def test_edit_multiline_replacement(tmp_path):
     """Test replacing multiline text."""
     test_file = tmp_path / "test.py"
     test_file.write_text("def foo():\n    print('old')\n    return 1\n")
@@ -154,7 +143,7 @@ async def test_edit_multiline_replacement(tmp_path):
         old_string="    print('old')\n    return 1",
         new_string="    print('new')\n    return 2",
     )
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.replacements_made == 1

@@ -1,4 +1,4 @@
-"""Write file tool implementation (Gemini-style)."""
+"""Write file tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -109,7 +109,7 @@ class WriteFileTool(ToolDefinition[WriteFileAction, WriteFileObservation]):
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.gemini_file_editor.executor import WriteFileExecutor
+        from openhands.tools.write_file.impl import WriteFileExecutor
 
         executor = WriteFileExecutor(workspace_root=conv_state.workspace.working_dir)
 

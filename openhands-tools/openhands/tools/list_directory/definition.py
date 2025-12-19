@@ -1,11 +1,10 @@
-"""List directory tool implementation (Gemini-style)."""
+"""List directory tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
-from rich.table import Table
 from rich.text import Text
 
 from openhands.sdk.tool import (
@@ -76,11 +75,10 @@ class ListDirectoryObservation(Observation):
             if self.total_count == 0:
                 text.append("(empty directory)\n", style="dim")
             else:
-                table = Table(show_header=True, header_style="bold")
-                table.add_column("Type", style="cyan")
-                table.add_column("Name", style="white")
-                table.add_column("Size", justify="right", style="green")
-                table.add_column("Modified", style="yellow")
+                # Build a simple text-based table
+                lines = []
+                lines.append(f"{'Type':<6} {'Name':<40} {'Size':>10} {'Modified':<16}")
+                lines.append("-" * 76)
 
                 for entry in self.entries[:50]:
                     entry_type = "📁" if entry.is_directory else "📄"
@@ -88,16 +86,15 @@ class ListDirectoryObservation(Observation):
                         "-" if entry.is_directory else self._format_size(entry.size)
                     )
                     modified_str = entry.modified_time.strftime("%Y-%m-%d %H:%M")
-                    table.add_row(entry_type, entry.name, size_str, modified_str)
+                    # Truncate name if too long
+                    name = (
+                        entry.name[:38] + ".." if len(entry.name) > 40 else entry.name
+                    )
+                    lines.append(
+                        f"{entry_type:<6} {name:<40} {size_str:>10} {modified_str:<16}"
+                    )
 
-                from io import StringIO
-
-                from rich.console import Console
-
-                console = Console(file=StringIO(), force_terminal=True)
-                console.print(table)
-                table_output = console.file.getvalue()  # type: ignore[attr-defined]
-                text.append(table_output)
+                text.append("\n".join(lines) + "\n")
 
                 if self.is_truncated:
                     text.append(
@@ -153,9 +150,7 @@ class ListDirectoryTool(ToolDefinition[ListDirectoryAction, ListDirectoryObserva
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.gemini_file_editor.executor import (
-            ListDirectoryExecutor,
-        )
+        from openhands.tools.list_directory.impl import ListDirectoryExecutor
 
         executor = ListDirectoryExecutor(
             workspace_root=conv_state.workspace.working_dir

@@ -1,17 +1,14 @@
 """Tests for write_file tool."""
 
-import pytest
-
-from openhands.tools.gemini_file_editor.executor import WriteFileExecutor
-from openhands.tools.gemini_file_editor.write_file import WriteFileAction
+from openhands.tools.write_file.definition import WriteFileAction
+from openhands.tools.write_file.impl import WriteFileExecutor
 
 
-@pytest.mark.asyncio
-async def test_write_file_create_new(tmp_path):
+def test_write_file_create_new(tmp_path):
     """Test creating a new file."""
     executor = WriteFileExecutor(workspace_root=str(tmp_path))
     action = WriteFileAction(file_path="new.txt", content="hello world\n")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.is_new_file
@@ -24,8 +21,7 @@ async def test_write_file_create_new(tmp_path):
     assert (tmp_path / "new.txt").read_text() == "hello world\n"
 
 
-@pytest.mark.asyncio
-async def test_write_file_overwrite_existing(tmp_path):
+def test_write_file_overwrite_existing(tmp_path):
     """Test overwriting an existing file."""
     # Create existing file
     test_file = tmp_path / "existing.txt"
@@ -33,7 +29,7 @@ async def test_write_file_overwrite_existing(tmp_path):
 
     executor = WriteFileExecutor(workspace_root=str(tmp_path))
     action = WriteFileAction(file_path="existing.txt", content="new content\n")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert not obs.is_new_file
@@ -44,12 +40,11 @@ async def test_write_file_overwrite_existing(tmp_path):
     assert test_file.read_text() == "new content\n"
 
 
-@pytest.mark.asyncio
-async def test_write_file_create_directories(tmp_path):
+def test_write_file_create_directories(tmp_path):
     """Test creating parent directories."""
     executor = WriteFileExecutor(workspace_root=str(tmp_path))
     action = WriteFileAction(file_path="subdir/nested/file.txt", content="content\n")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.is_new_file
@@ -59,8 +54,7 @@ async def test_write_file_create_directories(tmp_path):
     assert (tmp_path / "subdir" / "nested" / "file.txt").read_text() == "content\n"
 
 
-@pytest.mark.asyncio
-async def test_write_file_directory_error(tmp_path):
+def test_write_file_directory_error(tmp_path):
     """Test writing to a directory path returns error."""
     # Create a directory
     test_dir = tmp_path / "testdir"
@@ -68,32 +62,30 @@ async def test_write_file_directory_error(tmp_path):
 
     executor = WriteFileExecutor(workspace_root=str(tmp_path))
     action = WriteFileAction(file_path="testdir", content="content\n")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "directory" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_write_file_absolute_path(tmp_path):
+def test_write_file_absolute_path(tmp_path):
     """Test writing with absolute path."""
     test_file = tmp_path / "test.txt"
 
     executor = WriteFileExecutor(workspace_root=str(tmp_path))
     action = WriteFileAction(file_path=str(test_file), content="content\n")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert test_file.exists()
     assert test_file.read_text() == "content\n"
 
 
-@pytest.mark.asyncio
-async def test_write_file_empty_content(tmp_path):
+def test_write_file_empty_content(tmp_path):
     """Test writing empty content."""
     executor = WriteFileExecutor(workspace_root=str(tmp_path))
     action = WriteFileAction(file_path="empty.txt", content="")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.is_new_file

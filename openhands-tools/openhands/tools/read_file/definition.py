@@ -1,4 +1,4 @@
-"""Read file tool implementation (Gemini-style)."""
+"""Read file tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -117,7 +117,7 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.gemini_file_editor.executor import ReadFileExecutor
+        from openhands.tools.read_file.impl import ReadFileExecutor
 
         executor = ReadFileExecutor(workspace_root=conv_state.workspace.working_dir)
 

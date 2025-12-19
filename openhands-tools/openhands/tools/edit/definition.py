@@ -1,4 +1,4 @@
-"""Edit tool implementation (Gemini-style)."""
+"""Edit tool definition (Gemini-style)."""
 
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
@@ -142,7 +142,7 @@ class EditTool(ToolDefinition[EditAction, EditObservation]):
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.gemini_file_editor.executor import EditExecutor
+        from openhands.tools.edit.impl import EditExecutor
 
         executor = EditExecutor(workspace_root=conv_state.workspace.working_dir)
 

@@ -1,13 +1,10 @@
 """Tests for list_directory tool."""
 
-import pytest
-
-from openhands.tools.gemini_file_editor.executor import ListDirectoryExecutor
-from openhands.tools.gemini_file_editor.list_directory import ListDirectoryAction
+from openhands.tools.list_directory.definition import ListDirectoryAction
+from openhands.tools.list_directory.impl import ListDirectoryExecutor
 
 
-@pytest.mark.asyncio
-async def test_list_directory_basic(tmp_path):
+def test_list_directory_basic(tmp_path):
     """Test listing directory contents."""
     # Create some files and directories
     (tmp_path / "file1.txt").write_text("content")
@@ -16,7 +13,7 @@ async def test_list_directory_basic(tmp_path):
 
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path=".")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.total_count == 3
@@ -33,23 +30,21 @@ async def test_list_directory_basic(tmp_path):
     assert subdir_entry.is_directory
 
 
-@pytest.mark.asyncio
-async def test_list_directory_empty(tmp_path):
+def test_list_directory_empty(tmp_path):
     """Test listing empty directory."""
     empty_dir = tmp_path / "empty"
     empty_dir.mkdir()
 
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path="empty")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.total_count == 0
     assert len(obs.entries) == 0
 
 
-@pytest.mark.asyncio
-async def test_list_directory_recursive(tmp_path):
+def test_list_directory_recursive(tmp_path):
     """Test recursive directory listing."""
     # Create nested structure
     (tmp_path / "file1.txt").write_text("content")
@@ -60,7 +55,7 @@ async def test_list_directory_recursive(tmp_path):
 
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path=".", recursive=True)
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     # Should include files and directories up to 2 levels deep
@@ -77,33 +72,30 @@ async def test_list_directory_recursive(tmp_path):
     assert "file3.txt" not in names
 
 
-@pytest.mark.asyncio
-async def test_list_directory_not_found(tmp_path):
+def test_list_directory_not_found(tmp_path):
     """Test listing non-existent directory."""
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path="nonexistent")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "not found" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_list_directory_not_a_directory(tmp_path):
+def test_list_directory_not_a_directory(tmp_path):
     """Test listing a file instead of directory."""
     test_file = tmp_path / "file.txt"
     test_file.write_text("content")
 
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path="file.txt")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert obs.is_error
     assert "not a directory" in obs.text.lower()
 
 
-@pytest.mark.asyncio
-async def test_list_directory_file_metadata(tmp_path):
+def test_list_directory_file_metadata(tmp_path):
     """Test that file metadata is included."""
     # Create a file
     test_file = tmp_path / "test.txt"
@@ -111,7 +103,7 @@ async def test_list_directory_file_metadata(tmp_path):
 
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path=".")
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert len(obs.entries) == 1
@@ -123,14 +115,13 @@ async def test_list_directory_file_metadata(tmp_path):
     assert entry.modified_time is not None
 
 
-@pytest.mark.asyncio
-async def test_list_directory_absolute_path(tmp_path):
+def test_list_directory_absolute_path(tmp_path):
     """Test listing with absolute path."""
     (tmp_path / "file.txt").write_text("content")
 
     executor = ListDirectoryExecutor(workspace_root=str(tmp_path))
     action = ListDirectoryAction(dir_path=str(tmp_path))
-    obs = await executor(action, _context=None)
+    obs = executor(action)
 
     assert not obs.is_error
     assert obs.total_count == 1
