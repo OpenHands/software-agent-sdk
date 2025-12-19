@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
-from openhands.tools.read_file.definition import (
+from openhands.tools.gemini.read_file.definition import (
     MAX_LINES_PER_READ,
     ReadFileAction,
     ReadFileObservation,

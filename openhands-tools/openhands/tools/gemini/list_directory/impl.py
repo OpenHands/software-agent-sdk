@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
-from openhands.tools.list_directory.definition import (
+from openhands.tools.gemini.list_directory.definition import (
     MAX_ENTRIES,
     FileEntry,
     ListDirectoryAction,

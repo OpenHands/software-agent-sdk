@@ -117,7 +117,7 @@ class ReadFileTool(ToolDefinition[ReadFileAction, ReadFileObservation]):
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.read_file.impl import ReadFileExecutor
+        from openhands.tools.gemini.read_file.impl import ReadFileExecutor
 
         executor = ReadFileExecutor(workspace_root=conv_state.workspace.working_dir)
 

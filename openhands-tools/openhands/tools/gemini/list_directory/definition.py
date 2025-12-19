@@ -150,7 +150,7 @@ class ListDirectoryTool(ToolDefinition[ListDirectoryAction, ListDirectoryObserva
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.list_directory.impl import ListDirectoryExecutor
+        from openhands.tools.gemini.list_directory.impl import ListDirectoryExecutor
 
         executor = ListDirectoryExecutor(
             workspace_root=conv_state.workspace.working_dir

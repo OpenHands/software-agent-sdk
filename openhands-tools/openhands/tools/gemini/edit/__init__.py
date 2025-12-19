@@ -1,10 +1,10 @@
 # Core tool interface
-from openhands.tools.edit.definition import (
+from openhands.tools.gemini.edit.definition import (
     EditAction,
     EditObservation,
     EditTool,
 )
-from openhands.tools.edit.impl import EditExecutor
+from openhands.tools.gemini.edit.impl import EditExecutor
 
 
 __all__ = [

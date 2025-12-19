@@ -1,7 +1,7 @@
 """Tests for write_file tool."""
 
-from openhands.tools.write_file.definition import WriteFileAction
-from openhands.tools.write_file.impl import WriteFileExecutor
+from openhands.tools.gemini.write_file.definition import WriteFileAction
+from openhands.tools.gemini.write_file.impl import WriteFileExecutor
 
 
 def test_write_file_create_new(tmp_path):

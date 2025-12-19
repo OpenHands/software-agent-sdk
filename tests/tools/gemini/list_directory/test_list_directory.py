@@ -1,7 +1,7 @@
 """Tests for list_directory tool."""
 
-from openhands.tools.list_directory.definition import ListDirectoryAction
-from openhands.tools.list_directory.impl import ListDirectoryExecutor
+from openhands.tools.gemini.list_directory.definition import ListDirectoryAction
+from openhands.tools.gemini.list_directory.impl import ListDirectoryExecutor
 
 
 def test_list_directory_basic(tmp_path):

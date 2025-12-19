@@ -1,11 +1,11 @@
 # Core tool interface
-from openhands.tools.list_directory.definition import (
+from openhands.tools.gemini.list_directory.definition import (
     FileEntry,
     ListDirectoryAction,
     ListDirectoryObservation,
     ListDirectoryTool,
 )
-from openhands.tools.list_directory.impl import ListDirectoryExecutor
+from openhands.tools.gemini.list_directory.impl import ListDirectoryExecutor
 
 
 __all__ = [

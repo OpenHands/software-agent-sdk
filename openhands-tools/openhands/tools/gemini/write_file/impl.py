@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
-from openhands.tools.write_file.definition import (
+from openhands.tools.gemini.write_file.definition import (
     WriteFileAction,
     WriteFileObservation,
 )

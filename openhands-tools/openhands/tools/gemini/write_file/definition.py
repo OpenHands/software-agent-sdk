@@ -109,7 +109,7 @@ class WriteFileTool(ToolDefinition[WriteFileAction, WriteFileObservation]):
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.write_file.impl import WriteFileExecutor
+        from openhands.tools.gemini.write_file.impl import WriteFileExecutor
 
         executor = WriteFileExecutor(workspace_root=conv_state.workspace.working_dir)
 

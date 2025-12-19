@@ -1,7 +1,7 @@
 """Tests for read_file tool."""
 
-from openhands.tools.read_file.definition import ReadFileAction
-from openhands.tools.read_file.impl import ReadFileExecutor
+from openhands.tools.gemini.read_file.definition import ReadFileAction
+from openhands.tools.gemini.read_file.impl import ReadFileExecutor
 
 
 def test_read_file_basic(tmp_path):

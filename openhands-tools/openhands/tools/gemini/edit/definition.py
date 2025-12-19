@@ -142,7 +142,7 @@ class EditTool(ToolDefinition[EditAction, EditObservation]):
         Args:
             conv_state: Conversation state to get working directory from.
         """
-        from openhands.tools.edit.impl import EditExecutor
+        from openhands.tools.gemini.edit.impl import EditExecutor
 
         executor = EditExecutor(workspace_root=conv_state.workspace.working_dir)
 

@@ -1,7 +1,7 @@
 """Tests for edit tool."""
 
-from openhands.tools.edit.definition import EditAction
-from openhands.tools.edit.impl import EditExecutor
+from openhands.tools.gemini.edit.definition import EditAction
+from openhands.tools.gemini.edit.impl import EditExecutor
 
 
 def test_edit_basic_replacement(tmp_path):
