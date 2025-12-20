@@ -49,7 +49,7 @@ def test_context_gates_gemini_vendor_file():
         assert "Claude-Specific Instructions" not in suffix
 
 
-def test_context_includes_both_for_other_models():
+def test_context_excludes_both_for_other_models():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         skills_dir = _write_repo_with_vendor_files(root)
