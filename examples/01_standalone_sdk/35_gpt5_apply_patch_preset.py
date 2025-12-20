@@ -1,8 +1,7 @@
 """Example: Using GPT-5 preset with ApplyPatchTool for file editing.
 
 This example demonstrates how to enable the GPT-5 preset, which swaps the
-standard claude-style FileEditorTool for ApplyPatchTool. This mirrors the
-Gemini example, but targets GPT-5 models.
+standard claude-style FileEditorTool for ApplyPatchTool.
 
 Usage:
     export OPENAI_API_KEY=...  # or set LLM_API_KEY
