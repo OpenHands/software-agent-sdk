@@ -6,18 +6,32 @@ This directory contains integration tests for the agent-sdk that use real LLM ca
 
 The integration tests are designed to verify that the agent-sdk works correctly with real LLM models by running complete workflows. Each test creates a temporary environment, provides the agent with specific tools, gives it an instruction, and then verifies the results.
 
+### Test Types
+
+Tests are classified into two types based on their filename prefix:
+
+- **Integration tests** (`t*.py`) - **REQUIRED**: Verify that the agent successfully completes essential tasks. These tests must pass for releases and focus on task completion and outcomes.
+- **Behavior tests** (`b*.py`) - **OPTIONAL**: Verify that the agent follows system message guidelines and best practices. These tests track quality improvements and focus on how the agent approaches problems. Failures don't block releases but should be addressed for optimal user experience.
+
+Success rates are calculated separately for each test type to track both completion capability and behavior quality.
+
+See [BEHAVIOR_TESTS.md](BEHAVIOR_TESTS.md) for more details on behavior testing.
+
 ## Directory Structure
 
 ```
 tests/integration/
 ├── README.md                    # This file
+├── BEHAVIOR_TESTS.md            # Documentation for behavior testing framework
 ├── __init__.py                  # Package initialization
 ├── base.py                      # Base classes for integration tests
 ├── run_infer.py                 # Main test runner script
 ├── run_infer.sh                 # Shell script wrapper for running tests
 ├── outputs/                     # Test results and reports (auto-generated)
-└── tests/                       # Individual test files (e.g., t01_fix_simple_typo_class_based.py)
-│   └── t*.py
+├── tests/                       # Individual test files
+│   ├── t*.py                    # Task completion tests (critical)
+│   └── b*.py                    # Agent behavior tests (ux)
+└── utils/                       # Test utilities (e.g., llm_judge.py)
 ```
 
 ## Running Integration Tests
@@ -49,3 +63,26 @@ The GitHub workflow runs integration tests in the following scenarios:
 1. **Pull Request Labels**: When a PR is labeled with `integration-test`
 2. **Manual Trigger**: Via workflow dispatch with a required reason
 3. **Scheduled Runs**: Daily at 10:30 PM UTC (cron: `30 22 * * *`)
+
+## Available Tests
+
+### Integration Tests (`t*.py`) - **Required**
+
+These tests must pass for releases and verify that the agent can successfully complete essential tasks:
+
+- **t01_fix_simple_typo** - Tests that the agent can fix typos in a file
+- **t02_add_bash_hello** - Tests that the agent can execute bash commands
+- **t03_jupyter_write_file** - Tests Jupyter notebook integration
+- **t04_git_staging** - Tests git operations
+- **t05_simple_browsing** - Tests web browsing capabilities
+- **t06_github_pr_browsing** - Tests GitHub PR browsing
+- **t07_interactive_commands** - Tests interactive command handling
+- **t08_image_file_viewing** - Tests image file viewing capabilities
+
+### Behavior Tests (`b*.py`) - **Optional**
+
+These tests track quality improvements and don't block releases. They verify that agents follow system message guidelines and handle complex, nuanced scenarios appropriately:
+
+- **b01_no_premature_implementation** - Tests that the agent doesn't start implementing when asked for advice. Uses a real codebase (software-agent-sdk checked out to a historical commit) to test that the agent explores, provides suggestions, and asks clarifying questions instead of immediately creating or editing files.
+
+For more details on behavior testing and guidelines for adding new tests, see [BEHAVIOR_TESTS.md](BEHAVIOR_TESTS.md).

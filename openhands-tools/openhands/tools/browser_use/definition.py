@@ -560,12 +560,26 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     ) -> list[ToolDefinition[BrowserAction, BrowserObservation]]:
         # Import executor only when actually needed to
         # avoid hanging during module import
-        from openhands.tools.browser_use.impl import BrowserToolExecutor
+        import sys
 
-        executor = BrowserToolExecutor(
-            full_output_save_dir=conv_state.env_observation_persistence_dir,
-            **executor_config,
-        )
+        # Use Windows-specific executor on Windows systems
+        if sys.platform == "win32":
+            from openhands.tools.browser_use.impl_windows import (
+                WindowsBrowserToolExecutor,
+            )
+
+            executor = WindowsBrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+        else:
+            from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+            executor = BrowserToolExecutor(
+                full_output_save_dir=conv_state.env_observation_persistence_dir,
+                **executor_config,
+            )
+
         # Each tool.create() returns a Sequence[Self], so we flatten the results
         tools: list[ToolDefinition[BrowserAction, BrowserObservation]] = []
         for tool_class in [

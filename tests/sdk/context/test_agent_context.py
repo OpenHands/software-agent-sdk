@@ -1,6 +1,7 @@
 """Tests for AgentContext template rendering functionality."""
 
 import pytest
+from pydantic import SecretStr
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.skills import (
@@ -8,6 +9,7 @@ from openhands.sdk.context.skills import (
     Skill,
 )
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.secret import LookupSecret, StaticSecret
 
 
 class TestAgentContext:
@@ -493,3 +495,240 @@ defined in user's repository.\n"
             text="Custom user instructions for empty messages."
         )
         assert result == (expected_content, [])
+
+    def test_get_secret_infos_no_secrets(self):
+        """Test get_secret_infos with no secrets configured."""
+        context = AgentContext()
+        result = context.get_secret_infos()
+        assert result == []
+
+    def test_get_secret_infos_none_secrets(self):
+        """Test get_secret_infos when secrets is None."""
+        context = AgentContext(secrets=None)
+        result = context.get_secret_infos()
+        assert result == []
+
+    def test_get_secret_infos_with_secrets(self):
+        """Test get_secret_infos with multiple secrets."""
+        secrets = {
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token_123"),
+                description="GitHub authentication token",
+            ),
+            "API_KEY": StaticSecret(
+                value=SecretStr("test_api_key"),
+                description="API key for external service",
+            ),
+            "DATABASE_PASSWORD": StaticSecret(
+                value=SecretStr("test_password"),
+                description="Database password",
+            ),
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_secret_infos()
+        # Order may vary, so use set comparison for names
+        result_names = {info["name"] for info in result}
+        assert result_names == {"GITHUB_TOKEN", "API_KEY", "DATABASE_PASSWORD"}
+        assert len(result) == 3
+        # Verify descriptions are included
+        result_dict = {info["name"]: info for info in result}
+        assert (
+            result_dict["GITHUB_TOKEN"]["description"] == "GitHub authentication token"
+        )
+        assert result_dict["API_KEY"]["description"] == "API key for external service"
+        assert result_dict["DATABASE_PASSWORD"]["description"] == "Database password"
+
+    def test_get_secret_infos_with_lookup_secrets(self):
+        """Test get_secret_infos with multiple LookupSecret instances."""
+        secrets = {
+            "API_TOKEN": LookupSecret(
+                url="https://api.example.com/token",
+                description="API token fetched from external service",
+            ),
+            "CONFIG_SECRET": LookupSecret(
+                url="https://config.example.com/secret",
+                description="Configuration secret from remote endpoint",
+            ),
+            "AUTH_KEY": LookupSecret(
+                url="https://auth.example.com/key",
+                description="Authentication key",
+            ),
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_secret_infos()
+        # Order may vary, so use set comparison for names
+        result_names = {info["name"] for info in result}
+        assert result_names == {"API_TOKEN", "CONFIG_SECRET", "AUTH_KEY"}
+        assert len(result) == 3
+        # Verify descriptions are included
+        result_dict = {info["name"]: info for info in result}
+        assert (
+            result_dict["API_TOKEN"]["description"]
+            == "API token fetched from external service"
+        )
+        assert (
+            result_dict["CONFIG_SECRET"]["description"]
+            == "Configuration secret from remote endpoint"
+        )
+        assert result_dict["AUTH_KEY"]["description"] == "Authentication key"
+
+    def test_get_secret_infos_with_mixed_secret_types(self):
+        """Test get_secret_infos with a mix of StaticSecret and LookupSecret."""
+        secrets = {
+            "STATIC_SECRET": StaticSecret(
+                value=SecretStr("static_value"),
+                description="A static secret",
+            ),
+            "LOOKUP_SECRET": LookupSecret(
+                url="https://example.com/secret",
+                description="A lookup secret",
+            ),
+            "PLAIN_STRING": "plain_string_value",  # Plain string has no description
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_secret_infos()
+        # Order may vary, so use set comparison for names
+        result_names = {info["name"] for info in result}
+        assert result_names == {"STATIC_SECRET", "LOOKUP_SECRET", "PLAIN_STRING"}
+        assert len(result) == 3
+        # Verify descriptions are included for SecretSource instances
+        result_dict = {info["name"]: info for info in result}
+        assert result_dict["STATIC_SECRET"]["description"] == "A static secret"
+        assert result_dict["LOOKUP_SECRET"]["description"] == "A lookup secret"
+        # Plain strings have no description
+        assert result_dict["PLAIN_STRING"]["description"] is None
+
+    def test_get_system_message_suffix_with_secrets_only(self):
+        """Test system message suffix with secrets but no repo skills or custom suffix.
+
+        This test verifies that secrets are included in the system message suffix
+        when no repo skills or custom suffix are present.
+        """
+        secrets = {
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token"),
+                description="GitHub authentication token",
+            ),
+            "API_KEY": StaticSecret(
+                value=SecretStr("test_key"),
+                description="API key for external service",
+            ),
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<CUSTOM_SECRETS>" in result
+        assert "You have access to the following environment variables" in result
+        assert "**$GITHUB_TOKEN**" in result
+        assert "GitHub authentication token" in result
+        assert "**$API_KEY**" in result
+        assert "API key for external service" in result
+        assert "</CUSTOM_SECRETS>" in result
+
+    def test_get_system_message_suffix_with_secrets_and_repo_skills(self):
+        """Test system message suffix with both secrets and repo skills."""
+        repo_skill = Skill(
+            name="coding_standards",
+            content="Follow PEP 8 style guidelines.",
+            source="coding_standards.md",
+            trigger=None,
+        )
+        secrets = {
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token"),
+                description="GitHub authentication token",
+            ),
+        }
+        context = AgentContext(skills=[repo_skill], secrets=secrets)
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "coding_standards" in result
+        assert "<CUSTOM_SECRETS>" in result
+        assert "**$GITHUB_TOKEN**" in result
+        assert "GitHub authentication token" in result
+
+    def test_get_system_message_suffix_with_secrets_and_custom_suffix(self):
+        """Test system message suffix with secrets and custom suffix."""
+        secrets = {
+            "API_KEY": StaticSecret(
+                value=SecretStr("test_key"),
+                description="API key for external service",
+            ),
+        }
+        context = AgentContext(
+            secrets=secrets,
+            system_message_suffix="Custom system instructions.",
+        )
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "Custom system instructions." in result
+        assert "<CUSTOM_SECRETS>" in result
+        assert "**$API_KEY**" in result
+        assert "API key for external service" in result
+
+    def test_get_system_message_suffix_with_all_components(self):
+        """Test system message suffix with repo skills, secrets, and custom suffix."""
+        repo_skill = Skill(
+            name="security_rules",
+            content="Always validate user input.",
+            source="security-rules.md",
+            trigger=None,
+        )
+        secrets = {
+            "GITHUB_TOKEN": StaticSecret(
+                value=SecretStr("test_token"),
+                description="GitHub authentication token",
+            ),
+            "DATABASE_PASSWORD": StaticSecret(
+                value=SecretStr("test_password"),
+                description="Database password",
+            ),
+        }
+        context = AgentContext(
+            skills=[repo_skill],
+            secrets=secrets,
+            system_message_suffix="Additional custom instructions.",
+        )
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "security_rules" in result
+        assert "Additional custom instructions." in result
+        assert "<CUSTOM_SECRETS>" in result
+        assert "**$GITHUB_TOKEN**" in result
+        assert "GitHub authentication token" in result
+        assert "**$DATABASE_PASSWORD**" in result
+        assert "Database password" in result
+
+    def test_get_system_message_suffix_secrets_order(self):
+        """Test that secret names appear in the output in a consistent order."""
+        secrets = {
+            "Z_SECRET": StaticSecret(
+                value=SecretStr("z_value"),
+                description="Z secret description",
+            ),
+            "A_SECRET": StaticSecret(
+                value=SecretStr("a_value"),
+                description="A secret description",
+            ),
+            "M_SECRET": StaticSecret(
+                value=SecretStr("m_value"),
+                description="M secret description",
+            ),
+        }
+        context = AgentContext(secrets=secrets)
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+        # Check that all secrets are present
+        assert "**$Z_SECRET**" in result
+        assert "Z secret description" in result
+        assert "**$A_SECRET**" in result
+        assert "A secret description" in result
+        assert "**$M_SECRET**" in result
+        assert "M secret description" in result
