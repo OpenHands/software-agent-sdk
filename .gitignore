@@ -208,5 +208,3 @@ openapi.json
 *.db
 .worktrees/
 agent-sdk.workspace.code-workspace
-*.code-workspace
-scripts/worktree.sh
