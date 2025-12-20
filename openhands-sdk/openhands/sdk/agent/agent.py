@@ -25,6 +25,7 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
     TokenEvent,
+    UserRejectObservation,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.llm import (
@@ -462,8 +463,26 @@ class Agent(AgentBase):
 
         It will call the tool's executor and update the state & call callback fn
         with the observation.
+
+        If the action was blocked by a PreToolUse hook (recorded in
+        state.blocked_actions), a UserRejectObservation is emitted instead
+        of executing the action.
         """
         state = conversation.state
+
+        # Check if this action was blocked by a PreToolUse hook
+        if action_event.id in state.blocked_actions:
+            reason = state.blocked_actions.pop(action_event.id)
+            logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
+            rejection = UserRejectObservation(
+                action_id=action_event.id,
+                tool_name=action_event.tool_name,
+                tool_call_id=action_event.tool_call_id,
+                rejection_reason=reason,
+            )
+            on_event(rejection)
+            return rejection
+
         tool = self.tools_map.get(action_event.tool_name, None)
         if tool is None:
             raise RuntimeError(

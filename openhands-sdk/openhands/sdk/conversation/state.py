@@ -94,6 +94,12 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    # Hook-blocked actions: action_id -> blocking reason
+    blocked_actions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Actions blocked by PreToolUse hooks, keyed by action ID",
+    )
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
