@@ -196,7 +196,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.agent_context:
             _system_message_suffix = self.agent_context.get_system_message_suffix(
                 llm_model=self.llm.model,
-                llm_model_canonical=getattr(self.llm, "model_canonical_name", None),
+                llm_model_canonical=self.llm.model_canonical_name,
             )
             if _system_message_suffix:
                 system_message += "\n\n" + _system_message_suffix
