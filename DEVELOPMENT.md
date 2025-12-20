@@ -8,6 +8,17 @@ cd agent-sdk
 make build
 ```
 
+### Environment Configuration
+
+For local development with the Agent Server, set the `OH_SECRET_KEY` environment variable to enable secret encryption:
+
+```bash
+# Generate a secure random key
+export OH_SECRET_KEY=$(openssl rand -hex 32)
+```
+
+**Important**: Without `OH_SECRET_KEY`, LLM API keys and other secrets will be redacted (not encrypted) in stored conversations and will be lost when the server restarts. See the [Agent Server README](openhands-agent-server/openhands/agent_server/README.md#secret-encryption) for more details.
+
 ## Code Quality
 
 ```bash
