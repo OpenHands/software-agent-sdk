@@ -24,6 +24,7 @@ llm = LLM(
     model=os.getenv("LLM_MODEL", "gemini/gemini-3-pro-preview"),
     api_key=os.getenv("LLM_API_KEY"),
     base_url=os.getenv("LLM_BASE_URL", None),
+    log_completions=True,
 )
 
 agent = Agent(
@@ -37,6 +38,8 @@ agent = Agent(
 cwd = os.getcwd()
 conversation = Conversation(agent=agent, workspace=cwd)
 
+# Ask the agent to create a file, then delete it afterwards
 conversation.send_message("Write 3 facts about the current project into FACTS.txt.")
+conversation.send_message("Now delete the FACTS.txt file you just created.")
 conversation.run()
 print("All done!")
