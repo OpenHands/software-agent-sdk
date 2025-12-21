@@ -14,7 +14,13 @@ def mock_apptainer_workspace():
     """Fixture to create a mocked ApptainerWorkspace with minimal setup."""
     from openhands.workspace import ApptainerWorkspace
 
-    with patch("openhands.workspace.apptainer.workspace.execute_command") as mock_exec:
+    with (
+        patch("openhands.workspace.apptainer.workspace.execute_command") as mock_exec,
+        patch(
+            "openhands.workspace.apptainer.workspace.check_port_available",
+            return_value=True,
+        ),
+    ):
         # Mock execute_command to return success
         mock_exec.return_value = Mock(returncode=0, stdout="", stderr="")
 
