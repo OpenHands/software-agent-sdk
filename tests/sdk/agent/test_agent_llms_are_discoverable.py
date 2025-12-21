@@ -23,7 +23,7 @@ def test_automatic_llm_discovery_for_multiple_llms():
     condenser_usage_id = "condenser"
 
     condenser = LLMSummarizingCondenser(
-        llm=LLM(model="test-model", usage_id=condenser_usage_id)
+        summarizing_llm=LLM(model="test-model", usage_id=condenser_usage_id)
     )
 
     agent = Agent(
@@ -46,7 +46,7 @@ def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
     condenser_usage_id = "condenser"
 
     condenser = LLMSummarizingCondenser(
-        llm=LLM(model="test-model", usage_id=condenser_usage_id)
+        summarizing_llm=LLM(model="test-model", usage_id=condenser_usage_id)
     )
 
     agent_llm = LLM(model="test-model", usage_id=llm_usage_id)

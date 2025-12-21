@@ -86,7 +86,7 @@ def mock_llm() -> LLM:
 def test_should_condense(mock_llm: LLM) -> None:
     """Test that LLMSummarizingCondenser correctly determines when to condense."""
     max_size = 100
-    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=max_size)
+    condenser = LLMSummarizingCondenser(summarizing_llm=mock_llm, max_size=max_size)
 
     # Create events below the threshold
     small_events = [message_event(f"Event {i}") for i in range(max_size)]
@@ -104,7 +104,7 @@ def test_should_condense(mock_llm: LLM) -> None:
 def test_condense_returns_view_when_no_condensation_needed(mock_llm: LLM) -> None:
     """Test that condenser returns the original view when no condensation is needed."""  # noqa: E501
     max_size = 100
-    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=max_size)
+    condenser = LLMSummarizingCondenser(summarizing_llm=mock_llm, max_size=max_size)
 
     events: list[Event] = [message_event(f"Event {i}") for i in range(max_size)]
     view = View.from_events(events)
@@ -122,7 +122,7 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
     max_size = 10
     keep_first = 3
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, keep_first=keep_first
+        summarizing_llm=mock_llm, max_size=max_size, keep_first=keep_first
     )
 
     # Set up mock response
@@ -147,7 +147,7 @@ def test_get_condensation_with_previous_summary(mock_llm: LLM) -> None:
     max_size = 10
     keep_first = 3
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, keep_first=keep_first
+        summarizing_llm=mock_llm, max_size=max_size, keep_first=keep_first
     )
 
     # Set up mock response
@@ -193,15 +193,15 @@ def test_invalid_config(mock_llm: LLM) -> None:
     """Test that LLMSummarizingCondenser validates configuration parameters."""
     # Test max_size must be positive
     with pytest.raises(ValueError):
-        LLMSummarizingCondenser(llm=mock_llm, max_size=0)
+        LLMSummarizingCondenser(summarizing_llm=mock_llm, max_size=0)
 
     # Test keep_first must be non-negative
     with pytest.raises(ValueError):
-        LLMSummarizingCondenser(llm=mock_llm, keep_first=-1)
+        LLMSummarizingCondenser(summarizing_llm=mock_llm, keep_first=-1)
 
     # Test keep_first must be less than max_size // 2 to leave room for condensation
     with pytest.raises(ValueError):
-        LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=8)
+        LLMSummarizingCondenser(summarizing_llm=mock_llm, max_size=10, keep_first=8)
 
 
 def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
@@ -210,7 +210,9 @@ def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
     This prevents providers like 1p Anthropic from rejecting the request with
     "extra_body: Extra inputs are not permitted".
     """
-    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+    condenser = LLMSummarizingCondenser(
+        summarizing_llm=mock_llm, max_size=10, keep_first=2
+    )
 
     # Prepare a view that triggers condensation (len > max_size)
     events: list[Event] = [message_event(f"Event {i}") for i in range(12)]
@@ -226,7 +228,9 @@ def test_get_condensation_does_not_pass_extra_body(mock_llm: LLM) -> None:
 
 def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     """Test that condenser accepts and works with optional agent llm parameter."""
-    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=10, keep_first=2)
+    condenser = LLMSummarizingCondenser(
+        summarizing_llm=mock_llm, max_size=10, keep_first=2
+    )
 
     # Create a separate mock for the agent's LLM
     agent_llm = MagicMock(spec=LLM)
@@ -255,7 +259,10 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     max_tokens = 100
     keep_first = 2
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=1000, max_tokens=max_tokens, keep_first=keep_first
+        summarizing_llm=mock_llm,
+        max_size=1000,
+        max_tokens=max_tokens,
+        keep_first=keep_first,
     )
 
     # Create a separate mock for the agent's LLM with token counting
@@ -307,7 +314,7 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     max_size = 20
     keep_first = 2
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, keep_first=keep_first
+        summarizing_llm=mock_llm, max_size=max_size, keep_first=keep_first
     )
 
     # Create events that exceed max_size AND include a condensation request
@@ -349,7 +356,10 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     max_tokens = 100
     keep_first = 2
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=1000, max_tokens=max_tokens, keep_first=keep_first
+        summarizing_llm=mock_llm,
+        max_size=1000,
+        max_tokens=max_tokens,
+        keep_first=keep_first,
     )
 
     # Create a separate mock for the agent's LLM with token counting
@@ -397,7 +407,10 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
     max_tokens = 100
     keep_first = 2
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, max_tokens=max_tokens, keep_first=keep_first
+        summarizing_llm=mock_llm,
+        max_size=max_size,
+        max_tokens=max_tokens,
+        keep_first=keep_first,
     )
 
     # Create a separate mock for the agent's LLM with token counting
@@ -443,7 +456,10 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     max_tokens = 100
     keep_first = 2
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, max_tokens=max_tokens, keep_first=keep_first
+        summarizing_llm=mock_llm,
+        max_size=max_size,
+        max_tokens=max_tokens,
+        keep_first=keep_first,
     )
 
     # Create a separate mock for the agent's LLM with token counting
@@ -495,7 +511,7 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     max_size = 30  # Set high so EVENTS triggers with specific target
     keep_first = 2
     condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, keep_first=keep_first
+        summarizing_llm=mock_llm, max_size=max_size, keep_first=keep_first
     )
 
     # Create a scenario where REQUEST and EVENTS give different suffix sizes

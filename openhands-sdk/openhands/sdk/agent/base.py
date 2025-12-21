@@ -321,8 +321,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if isinstance(self.condenser, LLMSummarizingCondenser) and isinstance(
                 persisted.condenser, LLMSummarizingCondenser
             ):
-                new_condenser_llm = self.condenser.llm.resolve_diff_from_deserialized(
-                    persisted.condenser.llm
+                new_condenser_llm = (
+                    self.condenser.summarizing_llm.resolve_diff_from_deserialized(
+                        persisted.condenser.summarizing_llm
+                    )
                 )
                 new_condenser = persisted.condenser.model_copy(
                     update={"llm": new_condenser_llm}

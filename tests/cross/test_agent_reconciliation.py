@@ -54,9 +54,12 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     assert isinstance(conversation1.agent.llm.api_key, SecretStr)
     assert conversation1.agent.llm.api_key.get_secret_value() == "llm-api-key"
     assert isinstance(conversation1.agent.condenser, LLMSummarizingCondenser)
-    assert conversation1.agent.condenser.llm.api_key is not None
-    assert isinstance(conversation1.agent.condenser.llm.api_key, SecretStr)
-    assert conversation1.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
+    assert conversation1.agent.condenser.summarizing_llm.api_key is not None
+    assert isinstance(conversation1.agent.condenser.summarizing_llm.api_key, SecretStr)
+    assert (
+        conversation1.agent.condenser.summarizing_llm.api_key.get_secret_value()
+        == "llm-api-key"
+    )
 
     # Attempt to restart the conversation - this should work without errors
     conversation2 = Conversation(
@@ -71,13 +74,16 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     assert isinstance(conversation2.agent.llm.api_key, SecretStr)
     assert conversation2.agent.llm.api_key.get_secret_value() == "llm-api-key"
     assert isinstance(conversation2.agent.condenser, LLMSummarizingCondenser)
-    assert conversation2.agent.condenser.llm.api_key is not None
-    assert isinstance(conversation2.agent.condenser.llm.api_key, SecretStr)
-    assert conversation2.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
+    assert conversation2.agent.condenser.summarizing_llm.api_key is not None
+    assert isinstance(conversation2.agent.condenser.summarizing_llm.api_key, SecretStr)
+    assert (
+        conversation2.agent.condenser.summarizing_llm.api_key.get_secret_value()
+        == "llm-api-key"
+    )
 
     # Verify that the agent configuration is properly reconciled
     assert conversation2.agent.llm.model == "gpt-4o-mini"
-    assert conversation2.agent.condenser.llm.model == "gpt-4o-mini"
+    assert conversation2.agent.condenser.summarizing_llm.model == "gpt-4o-mini"
     assert conversation2.agent.condenser.max_size == 80
     assert conversation2.agent.condenser.keep_first == 4
 

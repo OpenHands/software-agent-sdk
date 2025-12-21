@@ -61,7 +61,7 @@ def get_default_condenser(llm: LLM) -> CondenserBase:
     # Create a condenser to manage the context. The condenser will automatically
     # truncate conversation history when it exceeds max_size, and replaces the dropped
     # events with an LLM-generated summary.
-    condenser = LLMSummarizingCondenser(llm=llm, max_size=80, keep_first=4)
+    condenser = LLMSummarizingCondenser(summarizing_llm=llm, max_size=80, keep_first=4)
 
     return condenser
 

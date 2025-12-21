@@ -80,7 +80,7 @@ def get_gemini_tools(
 
 def get_gemini_condenser(llm: LLM) -> CondenserBase:
     """Get the default condenser for gemini preset."""
-    condenser = LLMSummarizingCondenser(llm=llm, max_size=80, keep_first=4)
+    condenser = LLMSummarizingCondenser(summarizing_llm=llm, max_size=80, keep_first=4)
     return condenser
 
 

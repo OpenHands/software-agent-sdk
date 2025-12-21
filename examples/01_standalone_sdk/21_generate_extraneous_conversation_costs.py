@@ -40,7 +40,9 @@ llm_condenser = LLM(
 )
 
 # Tools
-condenser = LLMSummarizingCondenser(llm=llm_condenser, max_size=10, keep_first=2)
+condenser = LLMSummarizingCondenser(
+    summarizing_llm=llm_condenser, max_size=10, keep_first=2
+)
 
 cwd = os.getcwd()
 agent = Agent(

@@ -60,7 +60,9 @@ def create_test_agent_with_condenser() -> Agent:
         api_key=SecretStr("test-key"),
         usage_id="test-condenser-llm",
     )
-    condenser = LLMSummarizingCondenser(llm=condenser_llm, max_size=100, keep_first=5)
+    condenser = LLMSummarizingCondenser(
+        summarizing_llm=condenser_llm, max_size=100, keep_first=5
+    )
     return Agent(llm=llm, condenser=condenser, tools=[])
 
 
