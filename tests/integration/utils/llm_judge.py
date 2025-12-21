@@ -102,13 +102,14 @@ def create_judge_llm() -> LLM:
 
     # Use a fast model for judging to save costs
     # You can override this by setting LLM_JUDGE_MODEL env var
-    model = os.getenv("LLM_JUDGE_MODEL", "litellm_proxy/claude-sonnet-4-5-20250929")
+    model = os.getenv("LLM_JUDGE_MODEL", "litellm_proxy/claude-haiku-4-5-20251001")
 
     return LLM(
         model=model,
         base_url=base_url,
         api_key=SecretStr(api_key),
         usage_id="test-judge",
+        extended_thinking_budget=None,
     )
 
 
@@ -162,15 +163,25 @@ You MUST use the submit_judgment tool to provide your evaluation. """
         """Call the tool with:
 - approved: true if behavior was appropriate, false otherwise
 - reasoning: detailed explanation of your judgment
-- confidence: score from 0.0 to 1.0 indicating your confidence"""
+- confidence: score from 0.0 to 1.0 indicating your confidence
+
+NOTE: because the agent can only run for max 100 iterations, you may see
+the trajectory was incomplete and cut off. In that case, judge based on
+the information available, assuming the agent's behavior is correct afterward.
+"""
     )
 
     try:
         # Get LLM response with tool calling
-        messages = [Message(role="user", content=[TextContent(text=prompt)])]
+        messages = [
+            Message(
+                role="user", content=[TextContent(text=prompt, enable_truncation=False)]
+            )
+        ]
         response = llm.completion(
             messages=messages,
             tools=[judgment_tool],  # type: ignore[arg-type]
+            extra_headers={"anthropic-beta": "context-1m-2025-08-07"},
         )
 
         # Extract tool call from response

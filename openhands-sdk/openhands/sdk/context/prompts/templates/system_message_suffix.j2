@@ -14,7 +14,7 @@ Please follow them while working.
 
 {{ system_message_suffix }}
 {% endif %}
-{% if secret_names %}
+{% if secret_infos %}
 <CUSTOM_SECRETS>
 ### Credential Access
 * Automatic secret injection: When you reference a registered secret key in your bash command, the secret value will be automatically exported as an environment variable before your command executes.
@@ -25,8 +25,8 @@ Please follow them while working.
 * If it still fails, report it to the user.
 
 You have access to the following environment variables
-{% for secret_name in secret_names %}
-* **${{ secret_name }}**
+{% for secret_info in secret_infos %}
+* **${{ secret_info.name }}**{% if secret_info.description %} - {{ secret_info.description }}{% endif %}
 {% endfor %}
 </CUSTOM_SECRETS>
 {% endif %}
