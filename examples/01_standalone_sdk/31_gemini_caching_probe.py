@@ -10,7 +10,7 @@ Usage:
   uv run python examples/01_standalone_sdk/31_gemini_caching_probe.py --mode explicit
 
 Notes:
-- For implicit (Vertex): set LITELLM_API_KEY in env. We'll call gemini-3-flash-preview.
+- For implicit (Vertex): set LITELLM_API_KEY in env. We'll call gemini-3-pro-preview.
 - For explicit (AI Studio): set GEMINI_API_KEY in env. We'll create a short-lived
   cache and reference it.
 """
@@ -39,8 +39,8 @@ def run_implicit_via_proxy() -> None:
             "LITELLM_API_KEY is required for implicit mode (Vertex via proxy)"
         )
 
-    # Use Gemini 3 Flash or Pro preview names; proxy exposes Vertex models
-    model = "gemini-3-flash"
+    # Use Gemini 3 Pro preview; see /v1/models on the proxy for exact names
+    model = "gemini-3-pro-preview"
     base_url = "https://llm-proxy.eval.all-hands.dev"
 
     long_prefix = "\n".join(
@@ -60,6 +60,7 @@ def run_implicit_via_proxy() -> None:
         model=model,
         api_key=SecretStr(api_key),
         base_url=base_url,
+        custom_llm_provider="openai",
         log_completions=True,
         log_completions_folder=LOG_DIR,
         usage_id="gemini-caching-probe-implicit",

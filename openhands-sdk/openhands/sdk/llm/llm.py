@@ -803,6 +803,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     api_key=api_key_value,
                     api_base=self.base_url,
                     api_version=self.api_version,
+                    custom_llm_provider=self.custom_llm_provider,
                     timeout=self.timeout,
                     drop_params=self.drop_params,
                     seed=self.seed,
