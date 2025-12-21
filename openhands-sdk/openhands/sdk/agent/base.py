@@ -327,7 +327,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     )
                 )
                 new_condenser = persisted.condenser.model_copy(
-                    update={"llm": new_condenser_llm}
+                    update={"summarizing_llm": new_condenser_llm}
                 )
                 updates["condenser"] = new_condenser
 
