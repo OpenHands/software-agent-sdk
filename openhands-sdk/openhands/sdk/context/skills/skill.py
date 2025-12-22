@@ -40,6 +40,9 @@ class Skill(BaseModel):
     - None: Always active, for repository-specific guidelines
     - KeywordTrigger: Activated when keywords appear in user messages
     - TaskTrigger: Activated for specific tasks, may require user input
+
+    This model supports both OpenHands-specific fields and AgentSkills standard
+    fields (https://agentskills.io/specification) for cross-platform compatibility.
     """
 
     name: str
@@ -72,6 +75,43 @@ class Skill(BaseModel):
     inputs: list[InputMetadata] = Field(
         default_factory=list,
         description="Input metadata for the skill (task skills only)",
+    )
+
+    # AgentSkills standard fields (https://agentskills.io/specification)
+    description: str | None = Field(
+        default=None,
+        description=(
+            "A brief description of what the skill does and when to use it. "
+            "AgentSkills standard field (max 1024 characters)."
+        ),
+    )
+    license: str | None = Field(
+        default=None,
+        description=(
+            "The license under which the skill is distributed. "
+            "AgentSkills standard field (e.g., 'Apache-2.0', 'MIT')."
+        ),
+    )
+    compatibility: str | None = Field(
+        default=None,
+        description=(
+            "Environment requirements or compatibility notes for the skill. "
+            "AgentSkills standard field (e.g., 'Requires git and docker')."
+        ),
+    )
+    metadata: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Arbitrary key-value metadata for the skill. "
+            "AgentSkills standard field for extensibility."
+        ),
+    )
+    allowed_tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "List of pre-approved tools for this skill. "
+            "AgentSkills standard field (parsed from space-delimited string)."
+        ),
     )
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
@@ -120,6 +160,73 @@ class Skill(BaseModel):
         return None
 
     @classmethod
+    def _parse_agentskills_fields(cls, metadata_dict: dict) -> dict:
+        """Parse AgentSkills standard fields from frontmatter metadata.
+
+        Args:
+            metadata_dict: The frontmatter metadata dictionary.
+
+        Returns:
+            Dictionary with AgentSkills fields (description, license,
+            compatibility, metadata, allowed_tools).
+        """
+        agentskills_fields: dict = {}
+
+        # Parse description (string, max 1024 chars per spec)
+        if "description" in metadata_dict:
+            desc = metadata_dict["description"]
+            if isinstance(desc, str):
+                agentskills_fields["description"] = desc
+            else:
+                raise SkillValidationError("description must be a string")
+
+        # Parse license (string)
+        if "license" in metadata_dict:
+            lic = metadata_dict["license"]
+            if isinstance(lic, str):
+                agentskills_fields["license"] = lic
+            else:
+                raise SkillValidationError("license must be a string")
+
+        # Parse compatibility (string)
+        if "compatibility" in metadata_dict:
+            compat = metadata_dict["compatibility"]
+            if isinstance(compat, str):
+                agentskills_fields["compatibility"] = compat
+            else:
+                raise SkillValidationError("compatibility must be a string")
+
+        # Parse metadata (dict[str, str])
+        if "metadata" in metadata_dict:
+            meta = metadata_dict["metadata"]
+            if isinstance(meta, dict):
+                # Convert all values to strings for consistency
+                agentskills_fields["metadata"] = {
+                    str(k): str(v) for k, v in meta.items()
+                }
+            else:
+                raise SkillValidationError("metadata must be a dictionary")
+
+        # Parse allowed-tools (space-delimited string or list)
+        # AgentSkills spec uses "allowed-tools" with hyphen
+        allowed_tools_key = (
+            "allowed-tools"
+            if "allowed-tools" in metadata_dict
+            else ("allowed_tools" if "allowed_tools" in metadata_dict else None)
+        )
+        if allowed_tools_key:
+            tools = metadata_dict[allowed_tools_key]
+            if isinstance(tools, str):
+                # Parse space-delimited string
+                agentskills_fields["allowed_tools"] = tools.split()
+            elif isinstance(tools, list):
+                agentskills_fields["allowed_tools"] = [str(t) for t in tools]
+            else:
+                raise SkillValidationError("allowed-tools must be a string or list")
+
+        return agentskills_fields
+
+    @classmethod
     def load(
         cls,
         path: str | Path,
@@ -129,6 +236,9 @@ class Skill(BaseModel):
         """Load a skill from a markdown file with frontmatter.
 
         The agent's name is derived from its path relative to the skill_dir.
+
+        Supports both OpenHands-specific frontmatter fields and AgentSkills
+        standard fields (https://agentskills.io/specification).
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -162,6 +272,9 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use derived name
         agent_name = str(metadata_dict.get("name", skill_name))
 
+        # Parse AgentSkills standard fields
+        agentskills_fields = cls._parse_agentskills_fields(metadata_dict)
+
         # Get trigger keywords from metadata
         keywords = metadata_dict.get("triggers", [])
         if not isinstance(keywords, list):
@@ -188,6 +301,7 @@ class Skill(BaseModel):
                 source=str(path),
                 trigger=TaskTrigger(triggers=keywords),
                 inputs=inputs,
+                **agentskills_fields,
             )
 
         elif metadata_dict.get("triggers", None):
@@ -196,6 +310,7 @@ class Skill(BaseModel):
                 content=content,
                 source=str(path),
                 trigger=KeywordTrigger(keywords=keywords),
+                **agentskills_fields,
             )
         else:
             # No triggers, default to None (always active)
@@ -208,6 +323,7 @@ class Skill(BaseModel):
                 source=str(path),
                 trigger=None,
                 mcp_tools=mcp_tools,
+                **agentskills_fields,
             )
 
     # Field-level validation for mcp_tools
