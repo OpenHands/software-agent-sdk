@@ -31,7 +31,7 @@ class HookResult(BaseModel):
         """Whether the operation should continue after this hook."""
         if self.blocked:
             return False
-        if self.decision in (HookDecision.DENY, HookDecision.BLOCK):
+        if self.decision == HookDecision.DENY:
             return False
         return True
 
@@ -93,9 +93,9 @@ class HookExecutor:
                         # Parse decision
                         if "decision" in output_data:
                             decision_str = output_data["decision"].lower()
-                            if decision_str in ("allow", "approve"):
+                            if decision_str == "allow":
                                 hook_result.decision = HookDecision.ALLOW
-                            elif decision_str in ("deny", "block"):
+                            elif decision_str == "deny":
                                 hook_result.decision = HookDecision.DENY
                                 hook_result.blocked = True
 

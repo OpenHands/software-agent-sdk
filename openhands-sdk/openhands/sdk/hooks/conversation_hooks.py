@@ -28,7 +28,6 @@ class HookEventProcessor:
     ):
         self.hook_manager = hook_manager
         self.original_callback = original_callback
-        self._pending_actions: dict[str, ActionEvent] = {}
         self._conversation_state: ConversationState | None = None
 
     def set_conversation_state(self, state: "ConversationState") -> None:
@@ -89,16 +88,19 @@ class HookEventProcessor:
                     "after creating the Conversation."
                 )
 
-        # Store pending action for PostToolUse
-        self._pending_actions[event.id] = event
-
     def _handle_post_tool_use(self, event: ObservationEvent) -> None:
         """Handle PostToolUse hooks after an action completes."""
         if not self.hook_manager.has_hooks(HookEventType.POST_TOOL_USE):
             return
 
-        # Find the corresponding action
-        action_event = self._pending_actions.pop(event.action_id, None)
+        # Reverse look up corrosponding action from state events
+        action_event = None
+        if self._conversation_state is not None:
+            for e in reversed(self._conversation_state.events):
+                if isinstance(e, ActionEvent) and e.id == event.action_id:
+                    action_event = e
+                    break
+
         if action_event is None:
             return
 

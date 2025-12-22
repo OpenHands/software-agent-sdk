@@ -169,6 +169,135 @@ class TestHookEventProcessorBlocking:
         assert not processor.is_action_blocked("any-action-id")
 
 
+class TestPostToolUseActionLookup:
+    """Tests for PostToolUse looking up actions from conversation state events."""
+
+    @pytest.fixture
+    def logging_config(self, tmp_path):
+        """Create a config with a PostToolUse hook that logs tool_input."""
+        log_file = tmp_path / "hook_output.log"
+        script = tmp_path / "log_input.sh"
+        script.write_text(f"#!/bin/bash\ncat > {log_file}\nexit 0")
+        script.chmod(0o755)
+
+        return HookConfig.from_dict(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [{"type": "command", "command": str(script)}],
+                        }
+                    ]
+                }
+            }
+        ), log_file
+
+    @pytest.fixture
+    def mock_conversation_state(self, tmp_path):
+        """Create a mock conversation state using the factory method."""
+        import uuid
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.workspace import LocalWorkspace
+
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+        workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        # Use create() factory to properly initialize _events
+        return ConversationState.create(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=None,
+        )
+
+    def test_post_tool_use_finds_action_from_events(
+        self, tmp_path, logging_config, mock_conversation_state
+    ):
+        """Test that PostToolUse hooks find action from conversation.state.events."""
+        import json
+
+        from openhands.sdk.event import ObservationEvent
+        from openhands.sdk.llm import MessageToolCall
+        from openhands.sdk.tool.builtins import ThinkAction, ThinkObservation
+
+        config, log_file = logging_config
+        manager = HookManager(
+            config=config,
+            working_dir=str(tmp_path),
+        )
+        processor = HookEventProcessor(hook_manager=manager)
+        processor.set_conversation_state(mock_conversation_state)
+
+        # Create an action event
+        action_event = ActionEvent(
+            source="agent",
+            tool_name="Think",
+            tool_call_id="test-call-id",
+            tool_call=MessageToolCall(
+                id="test-call-id", name="Think", arguments="{}", origin="completion"
+            ),
+            llm_response_id="test-response-id",
+            action=ThinkAction(thought="test thought"),
+            thought=[],
+        )
+
+        # Add action to state events (simulating what Conversation does)
+        mock_conversation_state.events.append(action_event)
+
+        # Create a corresponding observation event
+        observation_event = ObservationEvent(
+            source="agent",
+            action_id=action_event.id,  # Links to the action
+            tool_name="Think",
+            tool_call_id="test-call-id",
+            observation=ThinkObservation(),
+        )
+
+        # Process the observation (this should trigger PostToolUse and find the action)
+        processor.on_event(observation_event)
+
+        # Verify the hook received the action's tool_input
+        assert log_file.exists(), "Hook should have been called and written to log file"
+        hook_input = json.loads(log_file.read_text())
+        assert hook_input["tool_name"] == "Think"
+        assert "tool_input" in hook_input
+        # The tool_input should contain the action's model_dump
+        assert "thought" in hook_input["tool_input"]
+
+    def test_post_tool_use_without_state_does_not_crash(self, tmp_path, logging_config):
+        """Test that PostToolUse gracefully handles missing conversation state."""
+        from openhands.sdk.event import ObservationEvent
+        from openhands.sdk.tool.builtins import ThinkObservation
+
+        config, log_file = logging_config
+        manager = HookManager(
+            config=config,
+            working_dir=str(tmp_path),
+        )
+        processor = HookEventProcessor(hook_manager=manager)
+        # Note: NOT calling set_conversation_state
+
+        observation_event = ObservationEvent(
+            source="agent",
+            action_id="nonexistent-action",
+            tool_name="Think",
+            tool_call_id="test-call-id",
+            observation=ThinkObservation(),
+        )
+
+        # Should not crash, just return early
+        processor.on_event(observation_event)
+
+        # Hook should NOT have been called (action not found)
+        assert not log_file.exists()
+
+
 class TestCreateHookCallback:
     """Tests for create_hook_callback function."""
 

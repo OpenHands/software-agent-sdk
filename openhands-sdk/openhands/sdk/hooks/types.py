@@ -38,5 +38,4 @@ class HookDecision(str, Enum):
 
     ALLOW = "allow"
     DENY = "deny"
-    BLOCK = "block"  # Alias for deny
-    APPROVE = "approve"  # Alias for allow
+    # ASK = "ask"  # Future: prompt user for confirmation before proceeding
