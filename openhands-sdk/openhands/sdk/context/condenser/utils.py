@@ -16,8 +16,7 @@ def get_total_token_count(
 
     Args:
         events: List of LLM convertible events to count tokens for
-        llm: The LLM instance to use for token counting (uses the litellm's token
-        counting utilities)
+        llm: The LLM instance to use for token counting (uses the litellm's token counting utilities)
 
     Returns:
         Total token count for all events converted to messages

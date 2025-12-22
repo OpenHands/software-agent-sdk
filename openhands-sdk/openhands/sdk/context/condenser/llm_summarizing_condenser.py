@@ -34,7 +34,7 @@ class LLMSummarizingCondenser(RollingCondenser):
     assume it is the same as the one defined in this condenser.
     """
 
-    summarizing_llm: LLM
+    llm: LLM
     max_size: int = Field(default=120, gt=0)
     max_tokens: int | None = None
     keep_first: int = Field(default=4, ge=0)
@@ -132,7 +132,7 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Do not pass extra_body explicitly. The LLM handles forwarding
         # litellm_extra_body only when it is non-empty.
-        llm_response = self.summarizing_llm.completion(
+        llm_response = self.llm.completion(
             messages=messages,
         )
         # Extract summary from the LLMResponse message

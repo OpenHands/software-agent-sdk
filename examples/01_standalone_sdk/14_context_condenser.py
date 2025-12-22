@@ -54,9 +54,7 @@ tools = [
 # the conversation history, and always keeps the first two events (system prompts,
 # initial user messages) to preserve important context.
 condenser = LLMSummarizingCondenser(
-    summarizing_llm=llm.model_copy(update={"usage_id": "condenser"}),
-    max_size=10,
-    keep_first=2,
+    llm=llm.model_copy(update={"usage_id": "condenser"}), max_size=10, keep_first=2
 )
 
 # Agent with condenser

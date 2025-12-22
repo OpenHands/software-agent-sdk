@@ -135,7 +135,7 @@ def get_planning_condenser(llm: LLM) -> LLMSummarizingCondenser:
     """
     # Planning agents may need more context for thorough analysis
     condenser = LLMSummarizingCondenser(
-        summarizing_llm=llm,
+        llm=llm,
         max_size=100,  # Larger context window for planning
         keep_first=6,  # Keep more initial context
     )
