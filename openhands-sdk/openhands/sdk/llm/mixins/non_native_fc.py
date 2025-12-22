@@ -43,7 +43,9 @@ class NonNativeToolCallingMixin:
         """Convert to non-fncall prompting when native tool-calling is off."""
         # Skip in-context learning examples for models that understand the format
         # or have limited context windows
-        add_iclex = not any(s in self.model for s in ("openhands-lm", "devstral", "nemotron"))
+        add_iclex = not any(
+            s in self.model for s in ("openhands-lm", "devstral", "nemotron")
+        )
         messages = convert_fncall_messages_to_non_fncall_messages(
             messages, tools, add_in_context_learning_example=add_iclex
         )

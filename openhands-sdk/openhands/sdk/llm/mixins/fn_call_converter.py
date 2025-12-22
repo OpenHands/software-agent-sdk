@@ -945,19 +945,19 @@ def _extract_and_validate_params(
 
 def _preprocess_model_output(content: str) -> str:
     """Clean up model-specific formatting before parsing function calls.
-    
+
     Removes wrapper tags that some models (like Nemotron) emit around function calls:
     - </think> before the function call
     - <tool_call>...</tool_call> around the function call
-    
+
     Only strips tags at boundaries, not inside parameter values.
     """
     # Strip </think> when it appears before <function= (Nemotron reasoning end)
-    content = re.sub(r'</think>\s*(?=<function=)', '', content)
+    content = re.sub(r"</think>\s*(?=<function=)", "", content)
     # Strip <tool_call> when it appears right before <function=
-    content = re.sub(r'<tool_call>\s*(?=<function=)', '', content)
+    content = re.sub(r"<tool_call>\s*(?=<function=)", "", content)
     # Strip </tool_call> when it appears right after </function>
-    content = re.sub(r'(?<=</function>)\s*</tool_call>', '', content)
+    content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
     return content
 
 
@@ -1151,16 +1151,22 @@ def convert_non_fncall_messages_to_fncall_messages(
             if fn_match:
                 fn_name = fn_match.group(1)
                 fn_body = _normalize_parameter_tags(fn_match.group(2))
-                
-                def _find_tool(name: str) -> ChatCompletionToolParamFunctionChunk | None:
+
+                def _find_tool(
+                    name: str,
+                ) -> ChatCompletionToolParamFunctionChunk | None:
                     return next(
-                        (tool["function"] for tool in tools
-                         if tool["type"] == "function" and tool["function"]["name"] == name),
+                        (
+                            tool["function"]
+                            for tool in tools
+                            if tool["type"] == "function"
+                            and tool["function"]["name"] == name
+                        ),
                         None,
                     )
-                
+
                 matching_tool = _find_tool(fn_name)
-                # If tool not found, try common aliases (some models use different names)
+                # Try aliases if tool not found (some models use legacy names)
                 if not matching_tool:
                     TOOL_NAME_ALIASES = {
                         "str_replace_editor": "file_editor",
