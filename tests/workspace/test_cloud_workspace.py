@@ -283,3 +283,59 @@ def test_cloud_api_url_trailing_slash_removed():
         # Clean up
         workspace._sandbox_id = None
         workspace.cleanup()
+
+
+def test_del_does_not_cleanup_when_in_context():
+    """Test that __del__ doesn't call cleanup when in a context manager."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
+        workspace = OpenHandsCloudWorkspace(
+            cloud_api_url="https://cloud.example.com",
+            cloud_api_key="api-key",
+        )
+
+        workspace._sandbox_id = "sandbox-123"
+        workspace._session_api_key = "session-key"
+        workspace._exposed_urls = []
+
+        # Simulate entering context manager
+        workspace.__enter__()
+        assert workspace._in_context is True
+
+        # __del__ should not call cleanup when in context
+        # We verify this by checking that _sandbox_id is not cleared
+        with patch.object(OpenHandsCloudWorkspace, "_send_api_request"):
+            workspace.__del__()
+            # _sandbox_id should still be set because cleanup was not called
+            assert workspace._sandbox_id == "sandbox-123"
+
+        # After exiting context, cleanup should be called
+        with patch.object(OpenHandsCloudWorkspace, "_send_api_request"):
+            workspace.__exit__(None, None, None)
+        assert workspace._in_context is False
+        assert workspace._sandbox_id is None
+
+
+def test_del_calls_cleanup_when_not_in_context():
+    """Test that __del__ calls cleanup when not in a context manager."""
+    from openhands.workspace import OpenHandsCloudWorkspace
+
+    with patch.object(OpenHandsCloudWorkspace, "_start_sandbox"):
+        workspace = OpenHandsCloudWorkspace(
+            cloud_api_url="https://cloud.example.com",
+            cloud_api_key="api-key",
+        )
+
+        workspace._sandbox_id = "sandbox-123"
+        workspace._session_api_key = "session-key"
+        workspace._exposed_urls = []
+
+        # Not in context manager
+        assert workspace._in_context is False
+
+        # __del__ should call cleanup when not in context
+        # We verify this by checking that _sandbox_id is cleared
+        with patch.object(OpenHandsCloudWorkspace, "_send_api_request"):
+            workspace.__del__()
+            assert workspace._sandbox_id is None

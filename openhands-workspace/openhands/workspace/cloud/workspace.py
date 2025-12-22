@@ -75,6 +75,7 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
     _sandbox_id: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
     _exposed_urls: list[dict[str, Any]] | None = PrivateAttr(default=None)
+    _in_context: bool = PrivateAttr(default=False)
 
     @property
     def client(self) -> httpx.Client:
@@ -305,10 +306,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
                 pass
 
     def __del__(self) -> None:
-        self.cleanup()
+        # Only cleanup in __del__ if not in a context manager
+        # This prevents premature cleanup from garbage collection
+        if not self._in_context:
+            self.cleanup()
 
     def __enter__(self) -> "OpenHandsCloudWorkspace":
+        self._in_context = True
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        self._in_context = False
         self.cleanup()
