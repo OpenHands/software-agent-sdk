@@ -33,6 +33,7 @@ def create_example_hooks(tmpdir: Path) -> tuple[HookConfig, Path]:
     2. A PostToolUse hook that logs all tool usage
     """
     # Create a blocking hook that prevents dangerous commands
+    # Uses jq for JSON parsing (needed for nested fields like tool_input.command)
     block_script = tmpdir / "block_dangerous.sh"
     block_script.write_text("""#!/bin/bash
 # Read JSON input from stdin
@@ -50,12 +51,12 @@ exit 0  # Exit code 0 = allow the operation
     block_script.chmod(0o755)
 
     # Create a logging hook that records tool usage
+    # Uses OPENHANDS_TOOL_NAME env var (no jq/python needed!)
     log_file = tmpdir / "tool_usage.log"
     log_script = tmpdir / "log_tools.sh"
     log_script.write_text(f"""#!/bin/bash
-input=$(cat)
-tool_name=$(echo "$input" | jq -r '.tool_name // "unknown"')
-echo "[$(date)] Tool used: $tool_name" >> {log_file}
+# OPENHANDS_TOOL_NAME is set by the hooks system
+echo "[$(date)] Tool used: $OPENHANDS_TOOL_NAME" >> {log_file}
 exit 0
 """)
     log_script.chmod(0o755)
@@ -157,9 +158,10 @@ def main():
         print("- PostToolUse hooks run AFTER tool execution for logging/auditing")
         print("- Exit code 2 from a hook blocks the operation")
         print("- Hooks receive JSON on stdin with event details")
+        print("- Environment variables like $OPENHANDS_TOOL_NAME simplify simple hooks")
         print(
             "- Hook config can be in .openhands/hooks.json or passed programmatically"
-        )  # noqa: E501
+        )
 
 
 if __name__ == "__main__":

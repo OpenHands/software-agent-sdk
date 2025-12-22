@@ -3,6 +3,7 @@
 import json
 import logging
 import re
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -14,10 +15,17 @@ from openhands.sdk.hooks.types import HookEventType
 logger = logging.getLogger(__name__)
 
 
-class HookDefinition(BaseModel):
-    """A single hook definition (command to execute)."""
+class HookType(str, Enum):
+    """Types of hooks that can be executed."""
 
-    type: str = "command"
+    COMMAND = "command"  # Shell command executed via subprocess
+    PROMPT = "prompt"  # LLM-based evaluation (future)
+
+
+class HookDefinition(BaseModel):
+    """A single hook definition."""
+
+    type: HookType = HookType.COMMAND
     command: str
     timeout: int = 60
 
@@ -74,12 +82,21 @@ class HookConfig(BaseModel):
     hooks: dict[str, list[HookMatcher]] = Field(default_factory=dict)
 
     @classmethod
-    def load(cls, path: str | Path | None = None) -> "HookConfig":
-        """Load config from path or search .openhands/hooks.json locations."""
+    def load(
+        cls, path: str | Path | None = None, working_dir: str | Path | None = None
+    ) -> "HookConfig":
+        """Load config from path or search .openhands/hooks.json locations.
+
+        Args:
+            path: Explicit path to hooks.json file. If provided, working_dir is ignored.
+            working_dir: Project directory for discovering .openhands/hooks.json.
+                Falls back to cwd if not provided.
+        """
         if path is None:
             # Search for hooks.json in standard locations
+            base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
-                Path.cwd() / ".openhands" / "hooks.json",
+                base_dir / ".openhands" / "hooks.json",
                 Path.home() / ".openhands" / "hooks.json",
             ]
             for search_path in search_paths:

@@ -93,13 +93,16 @@ class HookEventProcessor:
         if not self.hook_manager.has_hooks(HookEventType.POST_TOOL_USE):
             return
 
-        # Reverse look up corrosponding action from state events
+        # O(1) lookup of corresponding action from state events
         action_event = None
         if self._conversation_state is not None:
-            for e in reversed(self._conversation_state.events):
-                if isinstance(e, ActionEvent) and e.id == event.action_id:
-                    action_event = e
-                    break
+            try:
+                idx = self._conversation_state.events.get_index(event.action_id)
+                event_at_idx = self._conversation_state.events[idx]
+                if isinstance(event_at_idx, ActionEvent):
+                    action_event = event_at_idx
+            except KeyError:
+                pass  # action not found
 
         if action_event is None:
             return
@@ -164,6 +167,20 @@ class HookEventProcessor:
         if self._conversation_state is None:
             return False
         return action_id in self._conversation_state.blocked_actions
+
+    def run_session_start(self) -> None:
+        """Run SessionStart hooks. Call after conversation is created."""
+        results = self.hook_manager.run_session_start()
+        for r in results:
+            if r.error:
+                logger.warning(f"SessionStart hook error: {r.error}")
+
+    def run_session_end(self) -> None:
+        """Run SessionEnd hooks. Call before conversation is closed."""
+        results = self.hook_manager.run_session_end()
+        for r in results:
+            if r.error:
+                logger.warning(f"SessionEnd hook error: {r.error}")
 
 
 def create_hook_callback(

@@ -93,6 +93,29 @@ class TestHookConfig:
         config = HookConfig.load("/nonexistent/path/hooks.json")
         assert config.hooks == {}
 
+    def test_load_discovers_config_in_working_dir(self):
+        """Test that load() discovers .openhands/hooks.json in working_dir."""
+        hook = {"type": "command", "command": "test-hook.sh"}
+        data = {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Create .openhands/hooks.json in the working directory
+            import os
+
+            hooks_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(hooks_dir)
+            hooks_file = os.path.join(hooks_dir, "hooks.json")
+            with open(hooks_file, "w") as f:
+                json.dump(data, f)
+
+            # Load using working_dir (NOT cwd)
+            config = HookConfig.load(working_dir=tmpdir)
+
+            assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+            hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
+            assert len(hooks) == 1
+            assert hooks[0].command == "test-hook.sh"
+
     def test_get_hooks_filters_by_tool_name(self):
         """Test that hooks are filtered by tool name."""
         data = {

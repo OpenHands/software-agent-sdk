@@ -16,7 +16,7 @@ class HookManager:
         working_dir: str | None = None,
         session_id: str | None = None,
     ):
-        self.config = config or HookConfig.load()
+        self.config = config or HookConfig.load(working_dir=working_dir)
         self.executor = HookExecutor(working_dir=working_dir)
         self.session_id = session_id
         self.working_dir = working_dir

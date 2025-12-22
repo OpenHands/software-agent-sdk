@@ -15,7 +15,6 @@ class HookEventType(str, Enum):
     SESSION_START = "SessionStart"
     SESSION_END = "SessionEnd"
     STOP = "Stop"
-    NOTIFICATION = "Notification"
 
 
 class HookEvent(BaseModel):
