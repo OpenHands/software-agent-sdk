@@ -165,7 +165,7 @@ def prepare_llm_messages(
     # produce a list of events, exactly as expected, or a
     # new condensation that needs to be processed
     if condenser is not None:
-        condensation_result = condenser.condense(view, agent_llm=llm)
+        condensation_result = condenser.condense(view, llm=llm)
 
         match condensation_result:
             case View():

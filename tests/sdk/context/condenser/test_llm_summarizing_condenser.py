@@ -248,7 +248,7 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Call condense with the agent's LLM
-    result = condenser.condense(view, agent_llm=agent_llm)
+    result = condenser.condense(view, llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # Verify the condenser still uses its own LLM for summarization
@@ -293,13 +293,13 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify that TOKENS is the condensation reason
-    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
     assert Reason.TOKENS in reasons
     assert Reason.EVENTS not in reasons  # Should not trigger on event count
     assert Reason.REQUEST not in reasons
 
     # Condense the view
-    result = condenser.condense(view, agent_llm=agent_llm)
+    result = condenser.condense(view, llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # Verify the condenser used its own LLM for summarization
@@ -329,7 +329,7 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify both reasons are present
-    reasons = condenser.get_condensation_reasons(view, agent_llm=None)
+    reasons = condenser.get_condensation_reasons(view, llm=None)
     assert Reason.REQUEST in reasons
     assert Reason.EVENTS in reasons
     assert Reason.TOKENS not in reasons
@@ -390,13 +390,13 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify both reasons are present
-    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
     assert Reason.REQUEST in reasons
     assert Reason.TOKENS in reasons
     assert Reason.EVENTS not in reasons
 
     # Get the condensation
-    result = condenser.condense(view, agent_llm=agent_llm)
+    result = condenser.condense(view, llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # The most aggressive condensation should be chosen (minimum suffix)
@@ -435,13 +435,13 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify both reasons are present
-    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
     assert Reason.EVENTS in reasons
     assert Reason.TOKENS in reasons
     assert Reason.REQUEST not in reasons
 
     # Get the condensation
-    result = condenser.condense(view, agent_llm=agent_llm)
+    result = condenser.condense(view, llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # The most aggressive condensation should be chosen (minimum suffix)
@@ -483,13 +483,13 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify all three reasons are present
-    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
     assert Reason.REQUEST in reasons
     assert Reason.EVENTS in reasons
     assert Reason.TOKENS in reasons
 
     # Get the condensation
-    result = condenser.condense(view, agent_llm=agent_llm)
+    result = condenser.condense(view, llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # The most aggressive condensation should be chosen (minimum suffix)

@@ -35,7 +35,7 @@ class RaisingLLM(LLM):
 
 class HandlesRequestsCondenser(CondenserBase):
     def condense(
-        self, view: View, agent_llm: "LLM | None" = None
+        self, view: View, llm: "LLM | None" = None
     ) -> "View | Condensation":  # pragma: no cover - trivial passthrough
         return view
 
@@ -99,7 +99,7 @@ class NoHandlesRequestsCondenser(CondenserBase):
     """A condenser that doesn't handle condensation requests."""
 
     def condense(
-        self, view: View, agent_llm: "LLM | None" = None
+        self, view: View, llm: "LLM | None" = None
     ) -> "View | Condensation":  # pragma: no cover - trivial passthrough
         return view
 

@@ -47,7 +47,7 @@ class PipelineCondenser(CondenserBase):
         for condenser in self.condensers:
             if isinstance(result, Condensation):
                 break
-            result = condenser.condense(result, agent_llm=llm)
+            result = condenser.condense(result, llm=llm)
         return result
 
     def handles_condensation_requests(self) -> bool:
