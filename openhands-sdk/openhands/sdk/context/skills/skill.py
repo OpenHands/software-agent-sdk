@@ -2,7 +2,6 @@ import io
 import re
 import shutil
 import subprocess
-from itertools import chain
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
 
@@ -26,6 +25,267 @@ logger = get_logger(__name__)
 # These files are always active, so we want to keep them reasonably sized
 THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 
+# Regex pattern for valid AgentSkills names
+# - 1-64 characters
+# - Lowercase alphanumeric + hyphens only (a-z, 0-9, -)
+# - Must not start or end with hyphen
+# - Must not contain consecutive hyphens (--)
+SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
+
+# Standard resource directory names per AgentSkills spec
+RESOURCE_DIRECTORIES = ("scripts", "references", "assets")
+
+
+class SkillResources(BaseModel):
+    """Resource directories for a skill (AgentSkills standard).
+
+    Per the AgentSkills specification, skills can include:
+    - scripts/: Executable scripts the agent can run
+    - references/: Reference documentation and examples
+    - assets/: Static assets (images, data files, etc.)
+    """
+
+    skill_root: str = Field(description="Root directory of the skill (absolute path)")
+    scripts: list[str] = Field(
+        default_factory=list,
+        description="List of script files in scripts/ directory (relative paths)",
+    )
+    references: list[str] = Field(
+        default_factory=list,
+        description="List of reference files in references/ directory (relative paths)",
+    )
+    assets: list[str] = Field(
+        default_factory=list,
+        description="List of asset files in assets/ directory (relative paths)",
+    )
+
+    def has_resources(self) -> bool:
+        """Check if any resources are available."""
+        return bool(self.scripts or self.references or self.assets)
+
+    def get_scripts_dir(self) -> Path | None:
+        """Get the scripts directory path if it exists."""
+        scripts_dir = Path(self.skill_root) / "scripts"
+        return scripts_dir if scripts_dir.is_dir() else None
+
+    def get_references_dir(self) -> Path | None:
+        """Get the references directory path if it exists."""
+        refs_dir = Path(self.skill_root) / "references"
+        return refs_dir if refs_dir.is_dir() else None
+
+    def get_assets_dir(self) -> Path | None:
+        """Get the assets directory path if it exists."""
+        assets_dir = Path(self.skill_root) / "assets"
+        return assets_dir if assets_dir.is_dir() else None
+
+
+def find_skill_md(skill_dir: Path) -> Path | None:
+    """Find SKILL.md file in a directory (case-insensitive).
+
+    Args:
+        skill_dir: Path to the skill directory to search.
+
+    Returns:
+        Path to SKILL.md if found, None otherwise.
+    """
+    if not skill_dir.is_dir():
+        return None
+    for item in skill_dir.iterdir():
+        if item.is_file() and item.name.lower() == "skill.md":
+            return item
+    return None
+
+
+def discover_skill_resources(skill_dir: Path) -> SkillResources:
+    """Discover resource directories in a skill directory.
+
+    Scans for standard AgentSkills resource directories:
+    - scripts/: Executable scripts
+    - references/: Reference documentation
+    - assets/: Static assets
+
+    Args:
+        skill_dir: Path to the skill directory.
+
+    Returns:
+        SkillResources with lists of files in each resource directory.
+    """
+    resources = SkillResources(skill_root=str(skill_dir.resolve()))
+
+    for resource_type in RESOURCE_DIRECTORIES:
+        resource_dir = skill_dir / resource_type
+        if resource_dir.is_dir():
+            files = _list_resource_files(resource_dir, resource_type)
+            setattr(resources, resource_type, files)
+
+    return resources
+
+
+def _list_resource_files(
+    resource_dir: Path,
+    resource_type: str,
+) -> list[str]:
+    """List files in a resource directory.
+
+    Args:
+        resource_dir: Path to the resource directory.
+        resource_type: Type of resource (scripts, references, assets).
+
+    Returns:
+        List of relative file paths within the resource directory.
+    """
+    files: list[str] = []
+    try:
+        for item in resource_dir.rglob("*"):
+            if item.is_file():
+                # Store relative path from resource directory
+                rel_path = item.relative_to(resource_dir)
+                files.append(str(rel_path))
+    except OSError as e:
+        logger.warning(f"Error listing {resource_type} directory: {e}")
+    return sorted(files)
+
+
+def validate_skill_name(name: str, directory_name: str | None = None) -> list[str]:
+    """Validate skill name according to AgentSkills spec.
+
+    Args:
+        name: The skill name to validate.
+        directory_name: Optional directory name to check for match.
+
+    Returns:
+        List of validation error messages (empty if valid).
+    """
+    errors = []
+
+    if not name:
+        errors.append("Name cannot be empty")
+        return errors
+
+    if len(name) > 64:
+        errors.append(f"Name exceeds 64 characters: {len(name)}")
+
+    if not SKILL_NAME_PATTERN.match(name):
+        errors.append(
+            "Name must be lowercase alphanumeric with single hyphens "
+            "(e.g., 'my-skill', 'pdf-tools')"
+        )
+
+    if directory_name and name != directory_name:
+        errors.append(f"Name '{name}' does not match directory '{directory_name}'")
+
+    return errors
+
+
+def find_mcp_config(skill_dir: Path) -> Path | None:
+    """Find .mcp.json file in a skill directory.
+
+    Args:
+        skill_dir: Path to the skill directory to search.
+
+    Returns:
+        Path to .mcp.json if found, None otherwise.
+    """
+    if not skill_dir.is_dir():
+        return None
+    mcp_json = skill_dir / ".mcp.json"
+    if mcp_json.exists() and mcp_json.is_file():
+        return mcp_json
+    return None
+
+
+def expand_mcp_variables(
+    config: dict,
+    variables: dict[str, str],
+) -> dict:
+    """Expand variables in MCP configuration.
+
+    Supports variable expansion similar to Claude Code:
+    - ${VAR} - Environment variables or provided variables
+    - ${VAR:-default} - With default value
+
+    Args:
+        config: MCP configuration dictionary.
+        variables: Dictionary of variable names to values.
+
+    Returns:
+        Configuration with variables expanded.
+    """
+    import json
+    import os
+
+    # Convert to JSON string for easy replacement
+    config_str = json.dumps(config)
+
+    # Pattern for ${VAR} or ${VAR:-default}
+    var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+
+    def replace_var(match: re.Match) -> str:
+        var_name = match.group(1)
+        default_value = match.group(2)
+
+        # Check provided variables first, then environment
+        if var_name in variables:
+            return variables[var_name]
+        if var_name in os.environ:
+            return os.environ[var_name]
+        if default_value is not None:
+            return default_value
+        # Return original if not found
+        return match.group(0)
+
+    config_str = var_pattern.sub(replace_var, config_str)
+    return json.loads(config_str)
+
+
+def load_mcp_config(
+    mcp_json_path: Path,
+    skill_root: Path | None = None,
+) -> dict:
+    """Load and parse .mcp.json with variable expansion.
+
+    Args:
+        mcp_json_path: Path to the .mcp.json file.
+        skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
+
+    Returns:
+        Parsed MCP configuration dictionary.
+
+    Raises:
+        SkillValidationError: If the file cannot be parsed or is invalid.
+    """
+    import json
+
+    try:
+        with open(mcp_json_path) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
+    except OSError as e:
+        raise SkillValidationError(f"Cannot read {mcp_json_path}: {e}") from e
+
+    if not isinstance(config, dict):
+        raise SkillValidationError(
+            f"Invalid .mcp.json format: expected object, got {type(config).__name__}"
+        )
+
+    # Prepare variables for expansion
+    variables: dict[str, str] = {}
+    if skill_root:
+        variables["SKILL_ROOT"] = str(skill_root)
+
+    # Expand variables
+    config = expand_mcp_variables(config, variables)
+
+    # Validate using MCPConfig
+    try:
+        MCPConfig.model_validate(config)
+    except Exception as e:
+        raise SkillValidationError(f"Invalid MCP configuration: {e}") from e
+
+    return config
+
+
 # Union type for all trigger types
 TriggerType = Annotated[
     KeywordTrigger | TaskTrigger,
@@ -40,6 +300,9 @@ class Skill(BaseModel):
     - None: Always active, for repository-specific guidelines
     - KeywordTrigger: Activated when keywords appear in user messages
     - TaskTrigger: Activated for specific tasks, may require user input
+
+    This model supports both OpenHands-specific fields and AgentSkills standard
+    fields (https://agentskills.io/specification) for cross-platform compatibility.
     """
 
     name: str
@@ -72,6 +335,57 @@ class Skill(BaseModel):
     inputs: list[InputMetadata] = Field(
         default_factory=list,
         description="Input metadata for the skill (task skills only)",
+    )
+
+    # AgentSkills standard fields (https://agentskills.io/specification)
+    description: str | None = Field(
+        default=None,
+        description=(
+            "A brief description of what the skill does and when to use it. "
+            "AgentSkills standard field (max 1024 characters)."
+        ),
+    )
+    license: str | None = Field(
+        default=None,
+        description=(
+            "The license under which the skill is distributed. "
+            "AgentSkills standard field (e.g., 'Apache-2.0', 'MIT')."
+        ),
+    )
+    compatibility: str | None = Field(
+        default=None,
+        description=(
+            "Environment requirements or compatibility notes for the skill. "
+            "AgentSkills standard field (e.g., 'Requires git and docker')."
+        ),
+    )
+    metadata: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "Arbitrary key-value metadata for the skill. "
+            "AgentSkills standard field for extensibility."
+        ),
+    )
+    allowed_tools: list[str] | None = Field(
+        default=None,
+        description=(
+            "List of pre-approved tools for this skill. "
+            "AgentSkills standard field (parsed from space-delimited string)."
+        ),
+    )
+    mcp_config_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to .mcp.json file if MCP config was loaded from file. "
+            "Used to track the source of MCP configuration."
+        ),
+    )
+    resources: SkillResources | None = Field(
+        default=None,
+        description=(
+            "Resource directories for the skill (scripts/, references/, assets/). "
+            "AgentSkills standard field. Only populated for SKILL.md directory format."
+        ),
     )
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
@@ -120,21 +434,107 @@ class Skill(BaseModel):
         return None
 
     @classmethod
+    def _parse_agentskills_fields(cls, metadata_dict: dict) -> dict:
+        """Parse AgentSkills standard fields from frontmatter metadata.
+
+        Args:
+            metadata_dict: The frontmatter metadata dictionary.
+
+        Returns:
+            Dictionary with AgentSkills fields (description, license,
+            compatibility, metadata, allowed_tools).
+        """
+        agentskills_fields: dict = {}
+
+        # Parse description (string, max 1024 chars per spec)
+        if "description" in metadata_dict:
+            desc = metadata_dict["description"]
+            if isinstance(desc, str):
+                agentskills_fields["description"] = desc
+            else:
+                raise SkillValidationError("description must be a string")
+
+        # Parse license (string)
+        if "license" in metadata_dict:
+            lic = metadata_dict["license"]
+            if isinstance(lic, str):
+                agentskills_fields["license"] = lic
+            else:
+                raise SkillValidationError("license must be a string")
+
+        # Parse compatibility (string)
+        if "compatibility" in metadata_dict:
+            compat = metadata_dict["compatibility"]
+            if isinstance(compat, str):
+                agentskills_fields["compatibility"] = compat
+            else:
+                raise SkillValidationError("compatibility must be a string")
+
+        # Parse metadata (dict[str, str])
+        if "metadata" in metadata_dict:
+            meta = metadata_dict["metadata"]
+            if isinstance(meta, dict):
+                # Convert all values to strings for consistency
+                agentskills_fields["metadata"] = {
+                    str(k): str(v) for k, v in meta.items()
+                }
+            else:
+                raise SkillValidationError("metadata must be a dictionary")
+
+        # Parse allowed-tools (space-delimited string or list)
+        # AgentSkills spec uses "allowed-tools" with hyphen
+        allowed_tools_key = (
+            "allowed-tools"
+            if "allowed-tools" in metadata_dict
+            else ("allowed_tools" if "allowed_tools" in metadata_dict else None)
+        )
+        if allowed_tools_key:
+            tools = metadata_dict[allowed_tools_key]
+            if isinstance(tools, str):
+                # Parse space-delimited string
+                agentskills_fields["allowed_tools"] = tools.split()
+            elif isinstance(tools, list):
+                agentskills_fields["allowed_tools"] = [str(t) for t in tools]
+            else:
+                raise SkillValidationError("allowed-tools must be a string or list")
+
+        return agentskills_fields
+
+    @classmethod
     def load(
         cls,
         path: str | Path,
         skill_dir: Path | None = None,
         file_content: str | None = None,
+        directory_name: str | None = None,
+        validate_name: bool = False,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
-        The agent's name is derived from its path relative to the skill_dir.
+        The agent's name is derived from its path relative to the skill_dir,
+        or from the directory name for AgentSkills-style SKILL.md files.
+
+        Supports both OpenHands-specific frontmatter fields and AgentSkills
+        standard fields (https://agentskills.io/specification).
+
+        Args:
+            path: Path to the skill file.
+            skill_dir: Base directory for skills (used to derive relative names).
+            file_content: Optional file content (if not provided, reads from path).
+            directory_name: For SKILL.md files, the parent directory name.
+                Used to derive skill name and validate name matches directory.
+            validate_name: If True, validate the skill name according to
+                AgentSkills spec and raise SkillValidationError if invalid.
         """
         path = Path(path) if isinstance(path, str) else path
 
         # Calculate derived name from relative path if skill_dir is provided
-        skill_name = None
-        if skill_dir is not None:
+        skill_name: str | None = None
+
+        # For SKILL.md files, use directory name as the skill name
+        if directory_name is not None:
+            skill_name = directory_name
+        elif skill_dir is not None:
             # Special handling for files which are not in skill_dir
             skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(
                 path.name.lower()
@@ -162,6 +562,49 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use derived name
         agent_name = str(metadata_dict.get("name", skill_name))
 
+        # Validate skill name if requested
+        if validate_name:
+            name_errors = validate_skill_name(agent_name, directory_name)
+            if name_errors:
+                raise SkillValidationError(
+                    f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
+                )
+
+        # Parse AgentSkills standard fields
+        agentskills_fields = cls._parse_agentskills_fields(metadata_dict)
+
+        # Load MCP configuration and resources (for SKILL.md directories)
+        mcp_tools: dict | None = None
+        mcp_config_path: str | None = None
+        resources: SkillResources | None = None
+
+        # Check for .mcp.json and resources in skill directory (SKILL.md format only)
+        if directory_name is not None:
+            skill_root = path.parent
+            mcp_json_path = find_mcp_config(skill_root)
+            if mcp_json_path:
+                mcp_tools = load_mcp_config(mcp_json_path, skill_root)
+                mcp_config_path = str(mcp_json_path)
+                # Log warning if both .mcp.json and mcp_tools frontmatter exist
+                if metadata_dict.get("mcp_tools"):
+                    logger.warning(
+                        f"Skill '{agent_name}' has both .mcp.json and mcp_tools "
+                        "frontmatter. Using .mcp.json configuration."
+                    )
+
+            # Discover resource directories
+            resources = discover_skill_resources(skill_root)
+            # Only include resources if any exist
+            if not resources.has_resources():
+                resources = None
+
+        # Fall back to mcp_tools from frontmatter if no .mcp.json
+        if mcp_tools is None:
+            frontmatter_mcp = metadata_dict.get("mcp_tools")
+            if frontmatter_mcp is not None and not isinstance(frontmatter_mcp, dict):
+                raise SkillValidationError("mcp_tools must be a dictionary or None")
+            mcp_tools = frontmatter_mcp
+
         # Get trigger keywords from metadata
         keywords = metadata_dict.get("triggers", [])
         if not isinstance(keywords, list):
@@ -188,6 +631,10 @@ class Skill(BaseModel):
                 source=str(path),
                 trigger=TaskTrigger(triggers=keywords),
                 inputs=inputs,
+                mcp_tools=mcp_tools,
+                mcp_config_path=mcp_config_path,
+                resources=resources,
+                **agentskills_fields,
             )
 
         elif metadata_dict.get("triggers", None):
@@ -196,18 +643,22 @@ class Skill(BaseModel):
                 content=content,
                 source=str(path),
                 trigger=KeywordTrigger(keywords=keywords),
+                mcp_tools=mcp_tools,
+                mcp_config_path=mcp_config_path,
+                resources=resources,
+                **agentskills_fields,
             )
         else:
             # No triggers, default to None (always active)
-            mcp_tools = metadata_dict.get("mcp_tools")
-            if not isinstance(mcp_tools, dict | None):
-                raise SkillValidationError("mcp_tools must be a dictionary or None")
             return Skill(
                 name=agent_name,
                 content=content,
                 source=str(path),
                 trigger=None,
                 mcp_tools=mcp_tools,
+                mcp_config_path=mcp_config_path,
+                resources=resources,
+                **agentskills_fields,
             )
 
     # Field-level validation for mcp_tools
@@ -285,13 +736,20 @@ class Skill(BaseModel):
 
 def load_skills_from_dir(
     skill_dir: str | Path,
+    validate_names: bool = False,
 ) -> tuple[dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
+
+    Supports both formats:
+    - OpenHands format: skills/*.md files
+    - AgentSkills format: skills/skill-name/SKILL.md directories
 
     Note, legacy repo instructions will not be loaded here.
 
     Args:
         skill_dir: Path to the skills directory (e.g. .openhands/skills)
+        validate_names: If True, validate skill names according to AgentSkills
+            spec and raise SkillValidationError for invalid names.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills) dictionaries.
@@ -301,14 +759,14 @@ def load_skills_from_dir(
     if isinstance(skill_dir, str):
         skill_dir = Path(skill_dir)
 
-    repo_skills = {}
-    knowledge_skills = {}
+    repo_skills: dict[str, Skill] = {}
+    knowledge_skills: dict[str, Skill] = {}
 
     # Load all agents from skills directory
     logger.debug(f"Loading agents from {skill_dir}")
 
     # Always check for .cursorrules and AGENTS.md files in repo root
-    special_files = []
+    special_files: list[Path] = []
     repo_root = skill_dir.parent.parent
 
     # Check for third party rules: .cursorrules, AGENTS.md, etc
@@ -318,26 +776,79 @@ def load_skills_from_dir(
                 special_files.append(repo_root / variant)
                 break  # Only add the first one found to avoid duplicates
 
-    # Collect .md files from skills directory if it exists
-    md_files = []
-    if skill_dir.exists():
-        md_files = [f for f in skill_dir.rglob("*.md") if f.name != "README.md"]
+    # Track directories with SKILL.md to avoid double-loading
+    skill_md_dirs: set[Path] = set()
 
-    # Process all files in one loop
-    for file in chain(special_files, md_files):
+    # Collect AgentSkills-style directories (skill-name/SKILL.md)
+    skill_md_files: list[tuple[Path, str]] = []  # (path, directory_name)
+    if skill_dir.exists():
+        for subdir in skill_dir.iterdir():
+            if subdir.is_dir():
+                skill_md = find_skill_md(subdir)
+                if skill_md:
+                    skill_md_files.append((skill_md, subdir.name))
+                    skill_md_dirs.add(subdir)
+
+    # Collect .md files from skills directory (excluding SKILL.md files)
+    md_files: list[Path] = []
+    if skill_dir.exists():
+        for f in skill_dir.rglob("*.md"):
+            # Skip README.md
+            if f.name == "README.md":
+                continue
+            # Skip SKILL.md files (already collected above)
+            if f.name.lower() == "skill.md":
+                continue
+            # Skip files in directories that have SKILL.md
+            if any(f.is_relative_to(d) for d in skill_md_dirs):
+                continue
+            md_files.append(f)
+
+    def add_skill(skill: Skill) -> None:
+        """Add skill to appropriate dictionary."""
+        if skill.trigger is None:
+            repo_skills[skill.name] = skill
+        else:
+            knowledge_skills[skill.name] = skill
+
+    # Process special files (third-party rules)
+    for file in special_files:
         try:
             skill = Skill.load(file, skill_dir)
-            if skill.trigger is None:
-                repo_skills[skill.name] = skill
-            else:
-                # KeywordTrigger and TaskTrigger skills
-                knowledge_skills[skill.name] = skill
+            add_skill(skill)
         except SkillValidationError as e:
-            # For validation errors, include the original exception
             error_msg = f"Error loading skill from {file}: {str(e)}"
             raise SkillValidationError(error_msg) from e
         except Exception as e:
-            # For other errors, wrap in a ValueError with detailed message
+            error_msg = f"Error loading skill from {file}: {str(e)}"
+            raise ValueError(error_msg) from e
+
+    # Process AgentSkills-style SKILL.md directories
+    for skill_md_path, dir_name in skill_md_files:
+        try:
+            skill = Skill.load(
+                skill_md_path,
+                skill_dir,
+                directory_name=dir_name,
+                validate_name=validate_names,
+            )
+            add_skill(skill)
+        except SkillValidationError as e:
+            error_msg = f"Error loading skill from {skill_md_path}: {str(e)}"
+            raise SkillValidationError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Error loading skill from {skill_md_path}: {str(e)}"
+            raise ValueError(error_msg) from e
+
+    # Process regular .md files
+    for file in md_files:
+        try:
+            skill = Skill.load(file, skill_dir, validate_name=validate_names)
+            add_skill(skill)
+        except SkillValidationError as e:
+            error_msg = f"Error loading skill from {file}: {str(e)}"
+            raise SkillValidationError(error_msg) from e
+        except Exception as e:
             error_msg = f"Error loading skill from {file}: {str(e)}"
             raise ValueError(error_msg) from e
 
