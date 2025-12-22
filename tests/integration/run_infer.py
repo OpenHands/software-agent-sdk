@@ -18,7 +18,7 @@ from pydantic import BaseModel, ConfigDict
 
 from openhands.sdk.logger import get_logger
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
-from tests.integration.schemas import ModelTestResults
+from tests.integration.schemas import ModelTestResults, TokenUsageData
 from tests.integration.utils.format_costs import format_cost
 
 
@@ -41,16 +41,6 @@ class TestInstance(BaseModel):
         return self.test_type == "integration"
 
 
-class EvalTokenUsage(BaseModel):
-    """Token usage data for evaluation output."""
-
-    prompt_tokens: int = 0
-    completion_tokens: int = 0
-    cache_read_tokens: int = 0
-    cache_write_tokens: int = 0
-    reasoning_tokens: int = 0
-
-
 class EvalOutput(BaseModel):
     """Output from running a single test instance."""
 
@@ -59,7 +49,7 @@ class EvalOutput(BaseModel):
     llm_model: str
     test_type: Literal["integration", "behavior"]
     cost: float = 0.0
-    token_usage: EvalTokenUsage | None = None
+    token_usage: TokenUsageData | None = None
     error_message: str | None = None
     log_file_path: str | None = None
 
@@ -165,10 +155,10 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
         llm_cost = test_instance.llm.metrics.accumulated_cost
         token_usage = test_instance.llm.metrics.accumulated_token_usage
 
-        # Create EvalTokenUsage from the metrics token usage
+        # Create TokenUsageData from the metrics token usage
         eval_token_usage = None
         if token_usage:
-            eval_token_usage = EvalTokenUsage(
+            eval_token_usage = TokenUsageData(
                 prompt_tokens=token_usage.prompt_tokens,
                 completion_tokens=token_usage.completion_tokens,
                 cache_read_tokens=token_usage.cache_read_tokens,
