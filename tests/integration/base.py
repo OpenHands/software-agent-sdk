@@ -23,6 +23,7 @@ from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
+from openhands.sdk.context.condenser import Condenser
 from openhands.sdk.tool import Tool
 
 
@@ -89,7 +90,7 @@ class BaseIntegrationTest(ABC):
         }
 
         self.llm: LLM = LLM(**llm_kwargs, usage_id="test-llm")
-        self.agent: Agent = Agent(llm=self.llm, tools=self.tools)
+        self.agent: Agent = Agent(llm=self.llm, tools=self.tools, condenser=self.condenser)
         self.collected_events: list[Event] = []
         self.llm_messages: list[dict[str, Any]] = []
 
@@ -176,6 +177,15 @@ class BaseIntegrationTest(ABC):
     def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
         pass
+
+    @property
+    def condenser(self) -> Condenser | None:
+        """Optional condenser for the agent. Override to provide a custom condenser.
+
+        Returns:
+            Condenser instance or None (default)
+        """
+        return None
 
     @abstractmethod
     def setup(self) -> None:
