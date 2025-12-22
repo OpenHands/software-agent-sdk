@@ -81,6 +81,115 @@ def validate_skill_name(name: str, directory_name: str | None = None) -> list[st
     return errors
 
 
+def find_mcp_config(skill_dir: Path) -> Path | None:
+    """Find .mcp.json file in a skill directory.
+
+    Args:
+        skill_dir: Path to the skill directory to search.
+
+    Returns:
+        Path to .mcp.json if found, None otherwise.
+    """
+    if not skill_dir.is_dir():
+        return None
+    mcp_json = skill_dir / ".mcp.json"
+    if mcp_json.exists() and mcp_json.is_file():
+        return mcp_json
+    return None
+
+
+def expand_mcp_variables(
+    config: dict,
+    variables: dict[str, str],
+) -> dict:
+    """Expand variables in MCP configuration.
+
+    Supports variable expansion similar to Claude Code:
+    - ${VAR} - Environment variables or provided variables
+    - ${VAR:-default} - With default value
+
+    Args:
+        config: MCP configuration dictionary.
+        variables: Dictionary of variable names to values.
+
+    Returns:
+        Configuration with variables expanded.
+    """
+    import json
+    import os
+
+    # Convert to JSON string for easy replacement
+    config_str = json.dumps(config)
+
+    # Pattern for ${VAR} or ${VAR:-default}
+    var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+
+    def replace_var(match: re.Match) -> str:
+        var_name = match.group(1)
+        default_value = match.group(2)
+
+        # Check provided variables first, then environment
+        if var_name in variables:
+            return variables[var_name]
+        if var_name in os.environ:
+            return os.environ[var_name]
+        if default_value is not None:
+            return default_value
+        # Return original if not found
+        return match.group(0)
+
+    config_str = var_pattern.sub(replace_var, config_str)
+    return json.loads(config_str)
+
+
+def load_mcp_config(
+    mcp_json_path: Path,
+    skill_root: Path | None = None,
+) -> dict:
+    """Load and parse .mcp.json with variable expansion.
+
+    Args:
+        mcp_json_path: Path to the .mcp.json file.
+        skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
+
+    Returns:
+        Parsed MCP configuration dictionary.
+
+    Raises:
+        SkillValidationError: If the file cannot be parsed or is invalid.
+    """
+    import json
+
+    try:
+        with open(mcp_json_path) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
+    except OSError as e:
+        raise SkillValidationError(f"Cannot read {mcp_json_path}: {e}") from e
+
+    if not isinstance(config, dict):
+        raise SkillValidationError(
+            f"Invalid .mcp.json format: expected object, got {type(config).__name__}"
+        )
+
+    # Prepare variables for expansion
+    variables: dict[str, str] = {}
+    if skill_root:
+        variables["SKILL_ROOT"] = str(skill_root)
+
+    # Expand variables
+    config = expand_mcp_variables(config, variables)
+
+    # Validate using MCPConfig
+    try:
+        MCPConfig.model_validate(config)
+    except Exception as e:
+        raise SkillValidationError(f"Invalid MCP configuration: {e}") from e
+
+    return config
+
+
 # Union type for all trigger types
 TriggerType = Annotated[
     KeywordTrigger | TaskTrigger,
@@ -166,6 +275,13 @@ class Skill(BaseModel):
         description=(
             "List of pre-approved tools for this skill. "
             "AgentSkills standard field (parsed from space-delimited string)."
+        ),
+    )
+    mcp_config_path: str | None = Field(
+        default=None,
+        description=(
+            "Path to .mcp.json file if MCP config was loaded from file. "
+            "Used to track the source of MCP configuration."
         ),
     )
 
@@ -354,6 +470,31 @@ class Skill(BaseModel):
         # Parse AgentSkills standard fields
         agentskills_fields = cls._parse_agentskills_fields(metadata_dict)
 
+        # Load MCP configuration from .mcp.json if available (for SKILL.md directories)
+        mcp_tools: dict | None = None
+        mcp_config_path: str | None = None
+
+        # Check for .mcp.json in skill directory (only for SKILL.md format)
+        if directory_name is not None:
+            skill_root = path.parent
+            mcp_json_path = find_mcp_config(skill_root)
+            if mcp_json_path:
+                mcp_tools = load_mcp_config(mcp_json_path, skill_root)
+                mcp_config_path = str(mcp_json_path)
+                # Log warning if both .mcp.json and mcp_tools frontmatter exist
+                if metadata_dict.get("mcp_tools"):
+                    logger.warning(
+                        f"Skill '{agent_name}' has both .mcp.json and mcp_tools "
+                        "frontmatter. Using .mcp.json configuration."
+                    )
+
+        # Fall back to mcp_tools from frontmatter if no .mcp.json
+        if mcp_tools is None:
+            frontmatter_mcp = metadata_dict.get("mcp_tools")
+            if frontmatter_mcp is not None and not isinstance(frontmatter_mcp, dict):
+                raise SkillValidationError("mcp_tools must be a dictionary or None")
+            mcp_tools = frontmatter_mcp
+
         # Get trigger keywords from metadata
         keywords = metadata_dict.get("triggers", [])
         if not isinstance(keywords, list):
@@ -380,6 +521,8 @@ class Skill(BaseModel):
                 source=str(path),
                 trigger=TaskTrigger(triggers=keywords),
                 inputs=inputs,
+                mcp_tools=mcp_tools,
+                mcp_config_path=mcp_config_path,
                 **agentskills_fields,
             )
 
@@ -389,19 +532,19 @@ class Skill(BaseModel):
                 content=content,
                 source=str(path),
                 trigger=KeywordTrigger(keywords=keywords),
+                mcp_tools=mcp_tools,
+                mcp_config_path=mcp_config_path,
                 **agentskills_fields,
             )
         else:
             # No triggers, default to None (always active)
-            mcp_tools = metadata_dict.get("mcp_tools")
-            if not isinstance(mcp_tools, dict | None):
-                raise SkillValidationError("mcp_tools must be a dictionary or None")
             return Skill(
                 name=agent_name,
                 content=content,
                 source=str(path),
                 trigger=None,
                 mcp_tools=mcp_tools,
+                mcp_config_path=mcp_config_path,
                 **agentskills_fields,
             )
 
