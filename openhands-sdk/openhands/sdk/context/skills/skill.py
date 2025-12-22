@@ -521,6 +521,28 @@ class Skill(BaseModel):
         ),
     )
 
+    @field_validator("allowed_tools", mode="before")
+    @classmethod
+    def _parse_allowed_tools(cls, v: str | list | None) -> list[str] | None:
+        """Parse allowed_tools from space-delimited string or list."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            return v.split()
+        if isinstance(v, list):
+            return [str(t) for t in v]
+        raise SkillValidationError("allowed-tools must be a string or list")
+
+    @field_validator("metadata", mode="before")
+    @classmethod
+    def _convert_metadata_values(cls, v: dict | None) -> dict[str, str] | None:
+        """Convert metadata values to strings."""
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return {str(k): str(val) for k, val in v.items()}
+        raise SkillValidationError("metadata must be a dictionary")
+
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",
         "agents.md": "agents",
@@ -565,73 +587,6 @@ class Skill(BaseModel):
             )
 
         return None
-
-    @classmethod
-    def _parse_agentskills_fields(cls, metadata_dict: dict) -> dict:
-        """Parse AgentSkills standard fields from frontmatter metadata.
-
-        Args:
-            metadata_dict: The frontmatter metadata dictionary.
-
-        Returns:
-            Dictionary with AgentSkills fields (description, license,
-            compatibility, metadata, allowed_tools).
-        """
-        agentskills_fields: dict = {}
-
-        # Parse description (string, max 1024 chars per spec)
-        if "description" in metadata_dict:
-            desc = metadata_dict["description"]
-            if isinstance(desc, str):
-                agentskills_fields["description"] = desc
-            else:
-                raise SkillValidationError("description must be a string")
-
-        # Parse license (string)
-        if "license" in metadata_dict:
-            lic = metadata_dict["license"]
-            if isinstance(lic, str):
-                agentskills_fields["license"] = lic
-            else:
-                raise SkillValidationError("license must be a string")
-
-        # Parse compatibility (string)
-        if "compatibility" in metadata_dict:
-            compat = metadata_dict["compatibility"]
-            if isinstance(compat, str):
-                agentskills_fields["compatibility"] = compat
-            else:
-                raise SkillValidationError("compatibility must be a string")
-
-        # Parse metadata (dict[str, str])
-        if "metadata" in metadata_dict:
-            meta = metadata_dict["metadata"]
-            if isinstance(meta, dict):
-                # Convert all values to strings for consistency
-                agentskills_fields["metadata"] = {
-                    str(k): str(v) for k, v in meta.items()
-                }
-            else:
-                raise SkillValidationError("metadata must be a dictionary")
-
-        # Parse allowed-tools (space-delimited string or list)
-        # AgentSkills spec uses "allowed-tools" with hyphen
-        allowed_tools_key = (
-            "allowed-tools"
-            if "allowed-tools" in metadata_dict
-            else ("allowed_tools" if "allowed_tools" in metadata_dict else None)
-        )
-        if allowed_tools_key:
-            tools = metadata_dict[allowed_tools_key]
-            if isinstance(tools, str):
-                # Parse space-delimited string
-                agentskills_fields["allowed_tools"] = tools.split()
-            elif isinstance(tools, list):
-                agentskills_fields["allowed_tools"] = [str(t) for t in tools]
-            else:
-                raise SkillValidationError("allowed-tools must be a string or list")
-
-        return agentskills_fields
 
     @classmethod
     def load(
@@ -703,8 +658,22 @@ class Skill(BaseModel):
                     f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
                 )
 
-        # Parse AgentSkills standard fields
-        agentskills_fields = cls._parse_agentskills_fields(metadata_dict)
+        # Extract AgentSkills standard fields (Pydantic validators handle
+        # transformation). Handle "allowed-tools" to "allowed_tools" key mapping.
+        allowed_tools_value = metadata_dict.get(
+            "allowed-tools", metadata_dict.get("allowed_tools")
+        )
+        agentskills_fields = {
+            "description": metadata_dict.get("description"),
+            "license": metadata_dict.get("license"),
+            "compatibility": metadata_dict.get("compatibility"),
+            "metadata": metadata_dict.get("metadata"),
+            "allowed_tools": allowed_tools_value,
+        }
+        # Remove None values to avoid passing unnecessary kwargs
+        agentskills_fields = {
+            k: v for k, v in agentskills_fields.items() if v is not None
+        }
 
         # Load MCP configuration and resources (for SKILL.md directories)
         mcp_tools: dict | None = None

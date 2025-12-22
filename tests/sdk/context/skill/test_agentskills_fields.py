@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from openhands.sdk.context.skills import Skill, SkillValidationError
 
@@ -56,18 +57,18 @@ def test_skill_allowed_tools_formats() -> None:
 
 
 def test_skill_invalid_field_types() -> None:
-    """Skill should reject invalid field types."""
-    # Invalid description
-    with pytest.raises(SkillValidationError, match="description must be a string"):
+    """Skill should reject invalid field types via Pydantic validation."""
+    # Invalid description - Pydantic validates string type
+    with pytest.raises(ValidationError, match="description"):
         Skill.load(
             Path("s.md"), file_content="---\nname: s\ndescription:\n  - list\n---\n#"
         )
 
-    # Invalid metadata
+    # Invalid metadata - custom validator raises SkillValidationError
     with pytest.raises(SkillValidationError, match="metadata must be a dictionary"):
         Skill.load(Path("s.md"), file_content="---\nname: s\nmetadata: string\n---\n#")
 
-    # Invalid allowed-tools
+    # Invalid allowed-tools - custom validator raises SkillValidationError
     with pytest.raises(SkillValidationError, match="allowed-tools must be"):
         Skill.load(
             Path("s.md"), file_content="---\nname: s\nallowed-tools: 123\n---\n#"
