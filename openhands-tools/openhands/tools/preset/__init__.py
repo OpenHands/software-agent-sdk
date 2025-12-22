@@ -19,7 +19,13 @@ Notes:
 """
 
 from .default import get_default_agent
+from .gemini import get_gemini_agent, get_gemini_tools
 from .planning import get_planning_agent
 
 
-__all__ = ["get_default_agent", "get_planning_agent"]
+__all__ = [
+    "get_default_agent",
+    "get_gemini_agent",
+    "get_gemini_tools",
+    "get_planning_agent",
+]
