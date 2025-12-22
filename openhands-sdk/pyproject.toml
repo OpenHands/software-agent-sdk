@@ -19,9 +19,6 @@ dependencies = [
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
-agentskills = [
-    "skills-ref @ git+https://github.com/agentskills/agentskills.git#subdirectory=skills-ref"
-]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
