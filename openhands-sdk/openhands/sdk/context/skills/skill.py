@@ -286,6 +286,139 @@ def load_mcp_config(
     return config
 
 
+def validate_skill(skill_dir: str | Path) -> list[str]:
+    """Validate a skill directory according to AgentSkills spec.
+
+    Performs basic validation of skill structure and metadata:
+    - Checks for SKILL.md file
+    - Validates skill name format
+    - Validates frontmatter structure
+
+    Args:
+        skill_dir: Path to the skill directory containing SKILL.md
+
+    Returns:
+        List of validation error messages (empty if valid)
+    """
+    skill_path = Path(skill_dir)
+    errors: list[str] = []
+
+    # Check directory exists
+    if not skill_path.is_dir():
+        errors.append(f"Skill directory does not exist: {skill_path}")
+        return errors
+
+    # Check for SKILL.md
+    skill_md = find_skill_md(skill_path)
+    if not skill_md:
+        errors.append("Missing SKILL.md file")
+        return errors
+
+    # Validate skill name (directory name)
+    dir_name = skill_path.name
+    name_errors = validate_skill_name(dir_name, dir_name)
+    errors.extend(name_errors)
+
+    # Parse and validate frontmatter
+    try:
+        content = skill_md.read_text(encoding="utf-8")
+        parsed = frontmatter.loads(content)
+        metadata = dict(parsed.metadata)
+
+        # Check for recommended fields
+        if not parsed.content.strip():
+            errors.append("SKILL.md has no content (body is empty)")
+
+        # Validate description length if present
+        description = metadata.get("description")
+        if isinstance(description, str) and len(description) > 1024:
+            errors.append(
+                f"Description exceeds 1024 characters ({len(description)} chars)"
+            )
+
+        # Validate mcp_tools if present
+        mcp_tools = metadata.get("mcp_tools")
+        if mcp_tools is not None and not isinstance(mcp_tools, dict):
+            errors.append("mcp_tools must be a dictionary")
+
+        # Validate triggers if present
+        triggers = metadata.get("triggers")
+        if triggers is not None and not isinstance(triggers, list):
+            errors.append("triggers must be a list")
+
+        # Validate inputs if present
+        inputs = metadata.get("inputs")
+        if inputs is not None and not isinstance(inputs, list):
+            errors.append("inputs must be a list")
+
+    except Exception as e:
+        errors.append(f"Failed to parse SKILL.md: {e}")
+
+    # Check for .mcp.json validity if present
+    mcp_json = find_mcp_config(skill_path)
+    if mcp_json:
+        try:
+            load_mcp_config(mcp_json, skill_path)
+        except SkillValidationError as e:
+            errors.append(f"Invalid .mcp.json: {e}")
+
+    return errors
+
+
+def to_prompt(skills: list["Skill"]) -> str:
+    """Generate XML prompt block for available skills.
+
+    Creates an `<available_skills>` XML block suitable for inclusion
+    in system prompts, following the AgentSkills format.
+
+    Args:
+        skills: List of skills to include in the prompt
+
+    Returns:
+        XML string in AgentSkills format
+
+    Example:
+        >>> skills = [Skill(name="pdf-tools", content="...", description="...")]
+        >>> print(to_prompt(skills))
+        <available_skills>
+          <skill name="pdf-tools">Extract text from PDF files.</skill>
+        </available_skills>
+    """  # noqa: E501
+    if not skills:
+        return "<available_skills>\n</available_skills>"
+
+    lines = ["<available_skills>"]
+    for skill in skills:
+        # Use description if available, otherwise use first line of content
+        description = skill.description
+        if not description:
+            # Extract first non-empty line from content as fallback
+            for line in skill.content.split("\n"):
+                line = line.strip()
+                # Skip markdown headers and empty lines
+                if line and not line.startswith("#"):
+                    description = line[:200]  # Limit to 200 chars
+                    break
+        description = description or ""
+        # Escape XML special characters
+        description = _escape_xml(description)
+        name = _escape_xml(skill.name)
+        lines.append(f'  <skill name="{name}">{description}</skill>')
+    lines.append("</available_skills>")
+    return "\n".join(lines)
+
+
+def _escape_xml(text: str) -> str:
+    """Escape XML special characters."""
+    return (
+        text.replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&apos;")
+    )
+
+
 # Union type for all trigger types
 TriggerType = Annotated[
     KeywordTrigger | TaskTrigger,

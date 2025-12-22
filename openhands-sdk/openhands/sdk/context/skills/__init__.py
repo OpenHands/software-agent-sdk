@@ -12,6 +12,8 @@ from openhands.sdk.context.skills.skill import (
     load_public_skills,
     load_skills_from_dir,
     load_user_skills,
+    to_prompt,
+    validate_skill,
     validate_skill_name,
 )
 from openhands.sdk.context.skills.trigger import (
@@ -36,9 +38,11 @@ __all__ = [
     "SkillValidationError",
     "find_skill_md",
     "validate_skill_name",
+    "validate_skill",
     "find_mcp_config",
     "load_mcp_config",
     "expand_mcp_variables",
     "discover_skill_resources",
     "RESOURCE_DIRECTORIES",
+    "to_prompt",
 ]
