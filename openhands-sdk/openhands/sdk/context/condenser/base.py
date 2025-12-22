@@ -84,7 +84,9 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
         """Determine if a view should be condensed."""
 
     @abstractmethod
-    def get_condensation(self, view: View, agent_llm: LLM | None = None) -> Condensation:
+    def get_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
         """Get the condensation from a view."""
 
     def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:

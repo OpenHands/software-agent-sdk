@@ -42,9 +42,7 @@ class PipelineCondenser(CondenserBase):
     condensers: list[CondenserBase]
     """The list of condensers to apply in order."""
 
-    def condense(
-        self, view: View, agent_llm: LLM | None = None
-    ) -> View | Condensation:
+    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
         result: View | Condensation = view
         for condenser in self.condensers:
             if isinstance(result, Condensation):

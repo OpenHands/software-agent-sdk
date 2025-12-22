@@ -10,7 +10,5 @@ class NoOpCondenser(CondenserBase):
     Primarily intended for testing purposes.
     """
 
-    def condense(
-        self, view: View, agent_llm: LLM | None = None
-    ) -> View | Condensation:  # noqa: ARG002
+    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:  # noqa: ARG002
         return view
