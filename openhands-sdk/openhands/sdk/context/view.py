@@ -89,90 +89,54 @@ class View(BaseModel):
             raise ValueError(f"Invalid key type: {type(key)}")
 
     @staticmethod
-    def _build_action_batches(
+    def _enforce_batch_atomicity(
         events: Sequence[Event],
-    ) -> tuple[dict[str, list[str]], dict[str, str], dict[str, ToolCallID | None]]:
-        """Build a map of llm_response_id -> list of ActionEvent IDs.
+        forgotten_event_ids: set[EventID],
+    ) -> set[EventID]:
+        """Ensure that if any event in a batch is forgotten, all events in that
+        batch are forgotten.
 
-        Returns:
-            A tuple of:
-            - batches: dict mapping llm_response_id to list of ActionEvent IDs
-            - action_id_to_response_id: dict mapping ActionEvent ID to llm_response_id
-            - action_id_to_tool_call_id: dict mapping ActionEvent ID to tool_call_id
+        This prevents partial batches from being sent to the LLM, which can cause
+        API errors when thinking blocks are separated from their tool calls.
         """
-        batches: dict[str, list[str]] = {}
-        action_id_to_response_id: dict[str, str] = {}
-        action_id_to_tool_call_id: dict[str, ToolCallID | None] = {}
-
+        batches: dict[EventID, list[EventID]] = {}
         for event in events:
             if isinstance(event, ActionEvent):
                 llm_response_id = event.llm_response_id
                 if llm_response_id not in batches:
                     batches[llm_response_id] = []
                 batches[llm_response_id].append(event.id)
-                action_id_to_response_id[event.id] = llm_response_id
-                action_id_to_tool_call_id[event.id] = event.tool_call_id
 
-        return batches, action_id_to_response_id, action_id_to_tool_call_id
-
-    @staticmethod
-    def _enforce_batch_atomicity(
-        events: Sequence[Event],
-        removed_event_ids: set[EventID],
-        warn_on_violation: bool = False,
-    ) -> set[EventID]:
-        """Ensure that if any ActionEvent in a batch is removed, all ActionEvents
-        in that batch are removed.
-
-        This prevents partial batches from being sent to the LLM, which can cause
-        API errors when thinking blocks are separated from their tool calls.
-
-        Args:
-            events: The original list of events
-            removed_event_ids: Set of event IDs that are being removed
-            warn_on_violation: If True, log a warning when batch atomicity is violated
-
-        Returns:
-            Updated set of event IDs that should be removed (including all
-            ActionEvents in batches where any ActionEvent was removed)
-        """
-        batches, _, _ = View._build_action_batches(events)
-
-        if not batches:
-            return removed_event_ids
-
-        updated_removed_ids = set(removed_event_ids)
+        updated_forgotten_ids = set(forgotten_event_ids)
 
         for llm_response_id, batch_event_ids in batches.items():
-            # Check if any ActionEvent in this batch is being removed
-            if any(event_id in removed_event_ids for event_id in batch_event_ids):
-                # Check if this is a partial batch (not all events removed)
-                if warn_on_violation:
-                    removed_in_batch = [
-                        eid for eid in batch_event_ids if eid in removed_event_ids
-                    ]
-                    if len(removed_in_batch) < len(batch_event_ids):
-                        # Partial batch violation - warn about it
-                        added_count = len(batch_event_ids) - len(removed_in_batch)
-                        logger.warning(
-                            f"Batch atomicity violation detected: condenser forgot "
-                            f"{len(removed_in_batch)}/{len(batch_event_ids)} events "
-                            f"in batch with llm_response_id={llm_response_id}. "
-                            f"Adding {added_count} events to maintain atomicity. "
-                            f"Consider using View.get_manipulation_indices() in "
-                            f"condenser implementation to avoid partial batch "
-                            f"forgetting."
-                        )
+            # Check if any event in this batch is being forgotten
+            if any(event_id in forgotten_event_ids for event_id in batch_event_ids):
+                # Check if this is a partial batch (not all events forgotten)
+                forgotten_in_batch = [
+                    eid for eid in batch_event_ids if eid in forgotten_event_ids
+                ]
+                if len(forgotten_in_batch) < len(batch_event_ids):
+                    # Partial batch violation - warn about it
+                    added_count = len(batch_event_ids) - len(forgotten_in_batch)
+                    logger.warning(
+                        f"Batch atomicity violation detected: condenser forgot "
+                        f"{len(forgotten_in_batch)}/{len(batch_event_ids)} events "
+                        f"in batch with llm_response_id={llm_response_id}. "
+                        f"Adding {added_count} events to maintain atomicity. "
+                        f"Consider using View.get_manipulation_indices() in "
+                        f"condenser implementation to avoid partial batch forgetting."
+                    )
 
-                # Remove all ActionEvents in this batch
-                updated_removed_ids.update(batch_event_ids)
+                # Forget all events in this batch
+                updated_forgotten_ids.update(batch_event_ids)
                 logger.debug(
-                    f"Enforcing batch atomicity: removing entire batch "
+                    f"Enforcing batch atomicity: forgetting entire batch "
                     f"with llm_response_id={llm_response_id} "
                     f"({len(batch_event_ids)} events)"
                 )
 
-        return updated_removed_ids
+        return updated_forgotten_ids
 
     @staticmethod
     def filter_unmatched_tool_calls(
@@ -181,34 +145,25 @@ class View(BaseModel):
         """Filter out unmatched tool call events.
 
         Removes ActionEvents and ObservationEvents that have tool_call_ids
-        but don't have matching pairs. Also enforces batch atomicity - if any
-        ActionEvent in a batch is filtered out, all ActionEvents in that batch
-        are also filtered out.
+        but don't have matching pairs.
         """
         action_tool_call_ids = View._get_action_tool_call_ids(events)
         observation_tool_call_ids = View._get_observation_tool_call_ids(events)
-
-        # Build batch info for batch atomicity enforcement
-        _, _, action_id_to_tool_call_id = View._build_action_batches(events)
-
-        # First pass: identify which events would NOT be kept based on matching
-        removed_event_ids: set[EventID] = set()
-        for event in events:
-            if not View._should_keep_event(
-                event, action_tool_call_ids, observation_tool_call_ids
-            ):
-                removed_event_ids.add(event.id)
 
         # Check for unmatched events and warn if found
         unmatched_actions = [
             event
             for event in events
-            if isinstance(event, ActionEvent) and event.id in removed_event_ids
+            if isinstance(event, ActionEvent)
+            and event.tool_call_id is not None
+            and event.tool_call_id not in observation_tool_call_ids
         ]
         unmatched_observations = [
             event
             for event in events
-            if isinstance(event, ObservationBaseEvent) and event.id in removed_event_ids
+            if isinstance(event, ObservationBaseEvent)
+            and event.tool_call_id is not None
+            and event.tool_call_id not in action_tool_call_ids
         ]
 
         if unmatched_actions or unmatched_observations:
@@ -219,31 +174,13 @@ class View(BaseModel):
                 f"issues in condensation or incomplete action/observation pairs."
             )
 
-        # Second pass: enforce batch atomicity for ActionEvents
-        # If any ActionEvent in a batch is removed, all ActionEvents in that
-        # batch should also be removed
-        removed_event_ids = View._enforce_batch_atomicity(events, removed_event_ids)
-
-        # Third pass: also remove ObservationEvents whose ActionEvents were removed
-        # due to batch atomicity
-        tool_call_ids_to_remove: set[ToolCallID] = set()
-        for action_id in removed_event_ids:
-            if action_id in action_id_to_tool_call_id:
-                tool_call_id = action_id_to_tool_call_id[action_id]
-                if tool_call_id is not None:
-                    tool_call_ids_to_remove.add(tool_call_id)
-
-        # Filter out removed events
-        result = []
-        for event in events:
-            if event.id in removed_event_ids:
-                continue
-            if isinstance(event, ObservationBaseEvent):
-                if event.tool_call_id in tool_call_ids_to_remove:
-                    continue
-            result.append(event)
-
-        return result
+        return [
+            event
+            for event in events
+            if View._should_keep_event(
+                event, action_tool_call_ids, observation_tool_call_ids
+            )
+        ]
 
     @staticmethod
     def _get_action_tool_call_ids(events: list[LLMConvertibleEvent]) -> set[ToolCallID]:
@@ -394,9 +331,7 @@ class View(BaseModel):
         # Enforce batch atomicity: if any event in a multi-action batch is forgotten,
         # forget all events in that batch to prevent partial batches with thinking
         # blocks separated from their tool calls
-        forgotten_event_ids = View._enforce_batch_atomicity(
-            events, forgotten_event_ids, warn_on_violation=True
-        )
+        forgotten_event_ids = View._enforce_batch_atomicity(events, forgotten_event_ids)
 
         kept_events = [
             event

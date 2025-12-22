@@ -11,11 +11,7 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.llm_convertible import (
-    ActionEvent,
-    MessageEvent,
-    ObservationEvent,
-)
+from openhands.sdk.event.llm_convertible import ActionEvent, MessageEvent, ObservationEvent
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
@@ -605,7 +601,9 @@ def test_thinking_blocks_survive_condensation(mock_llm: LLM) -> None:
             signature="sig1",
         )
     ]
-    events.append(create_action_with_thinking("response_1", "tc1", thinking_batch_1))
+    events.append(
+        create_action_with_thinking("response_1", "tc1", thinking_batch_1)
+    )
     events.append(create_action_with_thinking("response_1", "tc2"))
     events.append(create_action_with_thinking("response_1", "tc3"))
     events.append(create_observation("tc1"))
@@ -634,7 +632,9 @@ def test_thinking_blocks_survive_condensation(mock_llm: LLM) -> None:
             signature="sig2",
         )
     ]
-    events.append(create_action_with_thinking("response_3", "tc6", thinking_batch_3))
+    events.append(
+        create_action_with_thinking("response_3", "tc6", thinking_batch_3)
+    )
     events.append(create_action_with_thinking("response_3", "tc7"))
     events.append(create_observation("tc6"))
     events.append(create_observation("tc7"))
@@ -666,7 +666,9 @@ def test_thinking_blocks_survive_condensation(mock_llm: LLM) -> None:
     # Critical check: Verify batch atomicity for thinking blocks
     # Find all actions with thinking blocks in the new view
     actions_with_thinking = [
-        e for e in new_view.events if isinstance(e, ActionEvent) and e.thinking_blocks
+        e
+        for e in new_view.events
+        if isinstance(e, ActionEvent) and e.thinking_blocks
     ]
 
     for action in actions_with_thinking:
@@ -685,13 +687,14 @@ def test_thinking_blocks_survive_condensation(mock_llm: LLM) -> None:
         batch_observations = [
             e
             for e in new_view.events
-            if isinstance(e, ObservationEvent) and e.tool_call_id in batch_tool_call_ids
+            if isinstance(e, ObservationEvent)
+            and e.tool_call_id in batch_tool_call_ids
         ]
 
         # Verify the batch is complete
-        assert len(batch_actions) == len(batch_observations), (
-            f"Thinking block batch {llm_response_id} is incomplete"
-        )
+        assert len(batch_actions) == len(
+            batch_observations
+        ), f"Thinking block batch {llm_response_id} is incomplete"
 
     # Verify manipulation indices are still valid
     indices = View.get_manipulation_indices(new_view.events)
@@ -708,7 +711,8 @@ def test_thinking_blocks_survive_condensation(mock_llm: LLM) -> None:
         if isinstance(event, ActionEvent) and event.thinking_blocks:
             # Find the corresponding observation
             obs_found = any(
-                isinstance(e, ObservationEvent) and e.tool_call_id == event.tool_call_id
+                isinstance(e, ObservationEvent)
+                and e.tool_call_id == event.tool_call_id
                 for e in new_view.events
             )
             assert obs_found, (
