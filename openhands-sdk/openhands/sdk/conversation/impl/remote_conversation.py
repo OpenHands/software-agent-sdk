@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from typing import SupportsIndex, overload
@@ -644,7 +645,25 @@ class RemoteConversation(BaseConversation):
         )
 
     @observe(name="conversation.run")
-    def run(self) -> None:
+    def run(
+        self,
+        blocking: bool = True,
+        poll_interval: float = 1.0,
+        timeout: float = 3600.0,
+    ) -> None:
+        """Trigger a run on the server.
+
+        Args:
+            blocking: If True (default), wait for the run to complete by polling
+                the server. If False, return immediately after triggering the run.
+            poll_interval: Time in seconds between status polls (only used when
+                blocking=True). Default is 1.0 second.
+            timeout: Maximum time in seconds to wait for the run to complete
+                (only used when blocking=True). Default is 3600 seconds.
+
+        Raises:
+            ConversationRunError: If the run fails or times out.
+        """
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
         try:
@@ -653,15 +672,73 @@ class RemoteConversation(BaseConversation):
                 "POST",
                 f"/api/conversations/{self._id}/run",
                 acceptable_status_codes={200, 201, 204, 409},
-                timeout=1800,
+                timeout=30,  # Short timeout for trigger request
             )
         except Exception as e:  # httpx errors already logged by _send_request
             # Surface conversation id to help resuming
             raise ConversationRunError(self._id, e) from e
+
         if resp.status_code == 409:
             logger.info("Conversation is already running; skipping run trigger")
+            if blocking:
+                # Still wait for the existing run to complete
+                self._wait_for_run_completion(poll_interval, timeout)
             return
+
         logger.info(f"run() triggered successfully: {resp}")
+
+        if blocking:
+            self._wait_for_run_completion(poll_interval, timeout)
+
+    def _wait_for_run_completion(
+        self,
+        poll_interval: float = 1.0,
+        timeout: float = 1800.0,
+    ) -> None:
+        """Poll the server until the conversation is no longer running.
+
+        Args:
+            poll_interval: Time in seconds between status polls.
+            timeout: Maximum time in seconds to wait.
+
+        Raises:
+            ConversationRunError: If the wait times out.
+        """
+        start_time = time.monotonic()
+
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed > timeout:
+                raise ConversationRunError(
+                    self._id,
+                    TimeoutError(
+                        f"Run timed out after {timeout} seconds. "
+                        "The conversation may still be running on the server."
+                    ),
+                )
+
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._id}",
+                    timeout=30,
+                )
+                info = resp.json()
+                status = info.get("execution_status")
+
+                if status != ConversationExecutionStatus.RUNNING.value:
+                    logger.info(
+                        f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
+                    )
+                    return
+
+            except Exception as e:
+                # Log but continue polling - transient network errors shouldn't
+                # stop us from waiting for the run to complete
+                logger.warning(f"Error polling status (will retry): {e}")
+
+            time.sleep(poll_interval)
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
