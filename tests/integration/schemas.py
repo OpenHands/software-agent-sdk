@@ -210,7 +210,9 @@ class ConsolidatedResults(BaseModel):
     # Overall statistics
     overall_success_rate: float
     total_cost_all_models: float
-    total_token_usage_all_models: TokenUsageData | None = None
+    # Note: We intentionally don't aggregate token usage across models because
+    # different models use different tokenizers, making cross-model token sums
+    # meaningless. Per-model token usage is available in model_results.
 
     @classmethod
     def from_model_results(
@@ -233,18 +235,9 @@ class ConsolidatedResults(BaseModel):
         )
         total_cost_all_models = sum(r.total_cost for r in model_results)
 
-        # Calculate total token usage across all models
-        total_token_usage_all_models = TokenUsageData()
-        for r in model_results:
-            if r.total_token_usage is not None:
-                total_token_usage_all_models = (
-                    total_token_usage_all_models + r.total_token_usage
-                )
-
         return cls(
             total_models=total_models,
             model_results=model_results,
             overall_success_rate=overall_success_rate,
             total_cost_all_models=total_cost_all_models,
-            total_token_usage_all_models=total_token_usage_all_models,
         )

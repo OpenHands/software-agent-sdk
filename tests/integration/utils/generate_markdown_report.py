@@ -208,10 +208,6 @@ def generate_markdown_report(consolidated: ConsolidatedResults) -> str:
         "",
         f"**Overall Success Rate**: {consolidated.overall_success_rate:.1%}",
         f"**Total Cost**: {format_cost(consolidated.total_cost_all_models)}",
-        (
-            f"**Total Token Usage**: "
-            f"{format_token_usage(consolidated.total_token_usage_all_models)}"
-        ),
         f"**Models Tested**: {consolidated.total_models}",
         f"**Timestamp**: {consolidated.timestamp.strftime('%Y-%m-%d %H:%M:%S UTC')}",
         "",
