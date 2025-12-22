@@ -140,6 +140,20 @@ def consolidate_results(model_results: list[ModelTestResults]) -> ConsolidatedRe
     print(f"Overall success rate: {consolidated.overall_success_rate:.2%}")
     print(f"Total cost across all models: ${consolidated.total_cost_all_models:.4f}")
 
+    # Print token usage summary
+    token_usage = consolidated.total_token_usage_all_models
+    if token_usage:
+        total_tokens = token_usage.prompt_tokens + token_usage.completion_tokens
+        print(f"Total tokens across all models: {total_tokens:,}")
+        print(f"  - Prompt tokens: {token_usage.prompt_tokens:,}")
+        print(f"  - Completion tokens: {token_usage.completion_tokens:,}")
+        if token_usage.cache_read_tokens > 0:
+            print(f"  - Cache read tokens: {token_usage.cache_read_tokens:,}")
+        if token_usage.cache_write_tokens > 0:
+            print(f"  - Cache write tokens: {token_usage.cache_write_tokens:,}")
+        if token_usage.reasoning_tokens > 0:
+            print(f"  - Reasoning tokens: {token_usage.reasoning_tokens:,}")
+
     return consolidated
 
 

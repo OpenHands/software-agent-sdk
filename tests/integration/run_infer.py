@@ -41,6 +41,16 @@ class TestInstance(BaseModel):
         return self.test_type == "integration"
 
 
+class EvalTokenUsage(BaseModel):
+    """Token usage data for evaluation output."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_write_tokens: int = 0
+    reasoning_tokens: int = 0
+
+
 class EvalOutput(BaseModel):
     """Output from running a single test instance."""
 
@@ -49,6 +59,7 @@ class EvalOutput(BaseModel):
     llm_model: str
     test_type: Literal["integration", "behavior"]
     cost: float = 0.0
+    token_usage: EvalTokenUsage | None = None
     error_message: str | None = None
     log_file_path: str | None = None
 
@@ -152,13 +163,40 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
 
         # Access accumulated_cost from the metrics object where it's properly validated
         llm_cost = test_instance.llm.metrics.accumulated_cost
+        token_usage = test_instance.llm.metrics.accumulated_token_usage
+
+        # Create EvalTokenUsage from the metrics token usage
+        eval_token_usage = None
+        if token_usage:
+            eval_token_usage = EvalTokenUsage(
+                prompt_tokens=token_usage.prompt_tokens,
+                completion_tokens=token_usage.completion_tokens,
+                cache_read_tokens=token_usage.cache_read_tokens,
+                cache_write_tokens=token_usage.cache_write_tokens,
+                reasoning_tokens=token_usage.reasoning_tokens,
+            )
+
+        token_usage_str = ""
+        if token_usage:
+            token_usage_str = (
+                f" (Tokens: prompt={token_usage.prompt_tokens}, "
+                f"completion={token_usage.completion_tokens}"
+            )
+            if token_usage.cache_read_tokens > 0:
+                token_usage_str += f", cache_read={token_usage.cache_read_tokens}"
+            if token_usage.cache_write_tokens > 0:
+                token_usage_str += f", cache_write={token_usage.cache_write_tokens}"
+            if token_usage.reasoning_tokens > 0:
+                token_usage_str += f", reasoning={token_usage.reasoning_tokens}"
+            token_usage_str += ")"
 
         logger.info(
-            "Test %s completed in %.2fs: %s (Cost: %s)",
+            "Test %s completed in %.2fs: %s (Cost: %s)%s",
             instance.instance_id,
             end_time - start_time,
             "PASS" if test_result.success else "FAIL",
             format_cost(llm_cost),
+            token_usage_str,
         )
 
         # Copy log file to a location that will be preserved
@@ -194,6 +232,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             llm_model=llm_config.get("model", "unknown"),
             test_type=instance.test_type,
             cost=llm_cost,
+            token_usage=eval_token_usage,
             log_file_path=log_file_path,
         )
 
