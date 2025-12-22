@@ -32,6 +32,52 @@ THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 # - Must not contain consecutive hyphens (--)
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
+# Standard resource directory names per AgentSkills spec
+RESOURCE_DIRECTORIES = ("scripts", "references", "assets")
+
+
+class SkillResources(BaseModel):
+    """Resource directories for a skill (AgentSkills standard).
+
+    Per the AgentSkills specification, skills can include:
+    - scripts/: Executable scripts the agent can run
+    - references/: Reference documentation and examples
+    - assets/: Static assets (images, data files, etc.)
+    """
+
+    skill_root: str = Field(description="Root directory of the skill (absolute path)")
+    scripts: list[str] = Field(
+        default_factory=list,
+        description="List of script files in scripts/ directory (relative paths)",
+    )
+    references: list[str] = Field(
+        default_factory=list,
+        description="List of reference files in references/ directory (relative paths)",
+    )
+    assets: list[str] = Field(
+        default_factory=list,
+        description="List of asset files in assets/ directory (relative paths)",
+    )
+
+    def has_resources(self) -> bool:
+        """Check if any resources are available."""
+        return bool(self.scripts or self.references or self.assets)
+
+    def get_scripts_dir(self) -> Path | None:
+        """Get the scripts directory path if it exists."""
+        scripts_dir = Path(self.skill_root) / "scripts"
+        return scripts_dir if scripts_dir.is_dir() else None
+
+    def get_references_dir(self) -> Path | None:
+        """Get the references directory path if it exists."""
+        refs_dir = Path(self.skill_root) / "references"
+        return refs_dir if refs_dir.is_dir() else None
+
+    def get_assets_dir(self) -> Path | None:
+        """Get the assets directory path if it exists."""
+        assets_dir = Path(self.skill_root) / "assets"
+        return assets_dir if assets_dir.is_dir() else None
+
 
 def find_skill_md(skill_dir: Path) -> Path | None:
     """Find SKILL.md file in a directory (case-insensitive).
@@ -48,6 +94,56 @@ def find_skill_md(skill_dir: Path) -> Path | None:
         if item.is_file() and item.name.lower() == "skill.md":
             return item
     return None
+
+
+def discover_skill_resources(skill_dir: Path) -> SkillResources:
+    """Discover resource directories in a skill directory.
+
+    Scans for standard AgentSkills resource directories:
+    - scripts/: Executable scripts
+    - references/: Reference documentation
+    - assets/: Static assets
+
+    Args:
+        skill_dir: Path to the skill directory.
+
+    Returns:
+        SkillResources with lists of files in each resource directory.
+    """
+    resources = SkillResources(skill_root=str(skill_dir.resolve()))
+
+    for resource_type in RESOURCE_DIRECTORIES:
+        resource_dir = skill_dir / resource_type
+        if resource_dir.is_dir():
+            files = _list_resource_files(resource_dir, resource_type)
+            setattr(resources, resource_type, files)
+
+    return resources
+
+
+def _list_resource_files(
+    resource_dir: Path,
+    resource_type: str,
+) -> list[str]:
+    """List files in a resource directory.
+
+    Args:
+        resource_dir: Path to the resource directory.
+        resource_type: Type of resource (scripts, references, assets).
+
+    Returns:
+        List of relative file paths within the resource directory.
+    """
+    files: list[str] = []
+    try:
+        for item in resource_dir.rglob("*"):
+            if item.is_file():
+                # Store relative path from resource directory
+                rel_path = item.relative_to(resource_dir)
+                files.append(str(rel_path))
+    except OSError as e:
+        logger.warning(f"Error listing {resource_type} directory: {e}")
+    return sorted(files)
 
 
 def validate_skill_name(name: str, directory_name: str | None = None) -> list[str]:
@@ -284,6 +380,13 @@ class Skill(BaseModel):
             "Used to track the source of MCP configuration."
         ),
     )
+    resources: SkillResources | None = Field(
+        default=None,
+        description=(
+            "Resource directories for the skill (scripts/, references/, assets/). "
+            "AgentSkills standard field. Only populated for SKILL.md directory format."
+        ),
+    )
 
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",
@@ -470,11 +573,12 @@ class Skill(BaseModel):
         # Parse AgentSkills standard fields
         agentskills_fields = cls._parse_agentskills_fields(metadata_dict)
 
-        # Load MCP configuration from .mcp.json if available (for SKILL.md directories)
+        # Load MCP configuration and resources (for SKILL.md directories)
         mcp_tools: dict | None = None
         mcp_config_path: str | None = None
+        resources: SkillResources | None = None
 
-        # Check for .mcp.json in skill directory (only for SKILL.md format)
+        # Check for .mcp.json and resources in skill directory (SKILL.md format only)
         if directory_name is not None:
             skill_root = path.parent
             mcp_json_path = find_mcp_config(skill_root)
@@ -487,6 +591,12 @@ class Skill(BaseModel):
                         f"Skill '{agent_name}' has both .mcp.json and mcp_tools "
                         "frontmatter. Using .mcp.json configuration."
                     )
+
+            # Discover resource directories
+            resources = discover_skill_resources(skill_root)
+            # Only include resources if any exist
+            if not resources.has_resources():
+                resources = None
 
         # Fall back to mcp_tools from frontmatter if no .mcp.json
         if mcp_tools is None:
@@ -523,6 +633,7 @@ class Skill(BaseModel):
                 inputs=inputs,
                 mcp_tools=mcp_tools,
                 mcp_config_path=mcp_config_path,
+                resources=resources,
                 **agentskills_fields,
             )
 
@@ -534,6 +645,7 @@ class Skill(BaseModel):
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
                 mcp_config_path=mcp_config_path,
+                resources=resources,
                 **agentskills_fields,
             )
         else:
@@ -545,6 +657,7 @@ class Skill(BaseModel):
                 trigger=None,
                 mcp_tools=mcp_tools,
                 mcp_config_path=mcp_config_path,
+                resources=resources,
                 **agentskills_fields,
             )
 
