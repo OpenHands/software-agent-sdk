@@ -190,6 +190,7 @@ class TerminalSession(TerminalSessionBase):
             command=command,
             text=command_output,
             metadata=metadata,
+            exit_code=metadata.exit_code,
         )
 
     def _handle_nochange_timeout_command(
@@ -224,6 +225,7 @@ class TerminalSession(TerminalSessionBase):
             command=command,
             text=command_output,
             metadata=metadata,
+            exit_code=metadata.exit_code,
         )
 
     def _handle_hard_timeout_command(
@@ -257,6 +259,7 @@ class TerminalSession(TerminalSessionBase):
         )
         return TerminalObservation.from_text(
             command=command,
+            exit_code=metadata.exit_code,
             text=command_output,
             metadata=metadata,
         )
@@ -392,6 +395,7 @@ class TerminalSession(TerminalSessionBase):
                 command=command,
                 text=command_output,
                 metadata=metadata,
+                exit_code=metadata.exit_code,
                 is_error=True,
             )
             logger.debug(f"RETURNING OBSERVATION (previous-command): {obs}")
