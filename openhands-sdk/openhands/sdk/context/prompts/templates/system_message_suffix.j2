@@ -1,10 +1,23 @@
+{% if available_skills %}
+<SKILLS>
+The following skills are available. Each skill provides specialized knowledge or functionality.
+To use a skill, read its SKILL.md file using the location path provided.
+
+{{ available_skills }}
+
+When you need to use a skill:
+1. Read the SKILL.md file at the location path to get full instructions
+2. If the skill has resources (scripts, references, assets), access them from the indicated directories
+3. Follow the instructions in the SKILL.md file to complete the task
+</SKILLS>
+{% endif %}
 {% if repo_skills %}
 <REPO_CONTEXT>
 The following information has been included based on several files defined in user's repository.
 Please follow them while working.
 
 {% for agent_info in repo_skills %}
-[BEGIN context from [{{ agent_info.name }}]]
+[BEGIN context from [{{ agent_info.name }}]{% if agent_info.source %} ({{ agent_info.source }}){% endif %}]
 {{ agent_info.content }}
 [END Context]
 {% endfor %}
