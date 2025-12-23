@@ -79,7 +79,8 @@ jobs:
                   if-no-files-found: warn
 
     tools-tests:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        # Use larger runner for browser e2e tests which are resource-intensive
+        runs-on: blacksmith-4vcpu-ubuntu-2404
         steps:
             - name: Checkout
               uses: actions/checkout@v5
