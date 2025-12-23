@@ -104,7 +104,7 @@ class BaseIntegrationTest(ABC):
             workspace=self.workspace,
             callbacks=[self.conversation_callback],
             visualizer=DefaultConversationVisualizer(),  # Use default visualizer
-            max_iteration_per_run=100,
+            max_iteration_per_run=self.max_iteration_per_run,
         )
 
     def conversation_callback(self, event: Event):
@@ -186,6 +186,15 @@ class BaseIntegrationTest(ABC):
             Condenser instance or None (default)
         """
         return None
+
+    @property
+    def max_iteration_per_run(self) -> int:
+        """Maximum iterations per conversation run. Override to set a custom limit.
+
+        Returns:
+            Maximum iterations (default: 100)
+        """
+        return 100
 
     @abstractmethod
     def setup(self) -> None:
