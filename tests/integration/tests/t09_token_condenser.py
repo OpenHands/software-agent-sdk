@@ -51,7 +51,7 @@ class TokenCondenserTest(BaseIntegrationTest):
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=1000,  # Set high so it doesn't trigger on event count
-            max_tokens=500,  # Low token limit to ensure condensation triggers
+            max_tokens=1500,  # Low token limit to ensure condensation triggers
             keep_first=2,
         )
 
