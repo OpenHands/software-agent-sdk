@@ -163,6 +163,10 @@ def main():
             "- Hook config can be in .openhands/hooks.json or passed programmatically"
         )
 
+        # Report cost
+        cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+        print(f"EXAMPLE_COST: {cost}")
+
 
 if __name__ == "__main__":
     main()
