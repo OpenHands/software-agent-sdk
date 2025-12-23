@@ -71,12 +71,12 @@ MODELS = {
     "gpt-5.2-high-reasoning": {
         "id": "gpt-5.2-high-reasoning",
         "display_name": "GPT-5.2 High Reasoning",
-        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-pro"},
+        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-pro-2025-12-11"},
     },
     "gpt-5.2": {
         "id": "gpt-5.2",
         "display_name": "GPT-5.2",
-        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2"},
+        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
     },
     "minimax-m2": {
         "id": "minimax-m2",

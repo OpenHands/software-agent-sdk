@@ -71,9 +71,10 @@ def test_find_models_by_id_preserves_full_config():
 
 
 # Tests for expected models from issue #1495
+# Note: claude-4.5-sonnet is implemented as claude-sonnet-4-5-20250929 (pinned version)
 EXPECTED_MODELS = [
     "claude-4.5-opus",
-    "claude-4.5-sonnet",
+    "claude-sonnet-4-5-20250929",
     "gemini-3-pro",
     "gemini-3-flash",
     "gpt-5.2-high-reasoning",
