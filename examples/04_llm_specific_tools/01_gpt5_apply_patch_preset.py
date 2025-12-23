@@ -10,7 +10,7 @@ Usage:
     #   "openai/gpt-5.2-mini"  # or fallback: "openai/gpt-5.1-mini" or "openai/gpt-5.1"
     # )
 
-    uv run python examples/01_standalone_sdk/33_gpt5_apply_patch_preset.py
+    uv run python examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py
 """
 
 import os
