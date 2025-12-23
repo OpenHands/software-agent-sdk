@@ -10,7 +10,7 @@ Usage:
     #   "openai/gpt-5.2-mini"  # or fallback: "openai/gpt-5.1-mini" or "openai/gpt-5.1"
     # )
 
-    uv run python examples/01_standalone_sdk/35_gpt5_apply_patch_preset.py
+    uv run python examples/01_standalone_sdk/34_gpt5_apply_patch_preset.py
 """
 
 import os
@@ -41,4 +41,7 @@ conversation.send_message(
     "two short lines describing this repository."
 )
 conversation.run()
-print("All done!")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
