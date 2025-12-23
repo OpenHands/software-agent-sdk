@@ -29,9 +29,10 @@ class Reason(Enum):
 class LLMSummarizingCondenser(RollingCondenser):
     """LLM-based condenser that summarizes forgotten events.
 
-    Uses an independent LLM for generating summaries of forgotten events. The optional
-    LLM parameter passed to condense() is the LLM used by the agent, and you should not
-    assume it is the same as the one defined in this condenser.
+    Uses an independent LLM (stored in the `llm` attribute) for generating summaries
+    of forgotten events. The optional `agent_llm` parameter passed to condense() is
+    the LLM used by the agent for token counting purposes, and you should not assume
+    it is the same as the one defined in this condenser.
     """
 
     llm: LLM
@@ -53,13 +54,13 @@ class LLMSummarizingCondenser(RollingCondenser):
         return True
 
     def get_condensation_reasons(
-        self, view: View, llm: LLM | None = None
+        self, view: View, agent_llm: LLM | None = None
     ) -> set[Reason]:
         """Determine the reasons why the view should be condensed.
 
         Args:
             view: The current view to evaluate.
-            llm: The LLM used by the agent. Required if token counting is needed.
+            agent_llm: The LLM used by the agent. Required if token counting is needed.
 
         Returns:
             A set of Reason enums indicating why condensation is needed.
@@ -72,8 +73,8 @@ class LLMSummarizingCondenser(RollingCondenser):
             reasons.add(Reason.REQUEST)
 
         # Reason 2: Token limit is provided and exceeded.
-        if self.max_tokens and llm:
-            total_tokens = get_total_token_count(view.events, llm)
+        if self.max_tokens and agent_llm:
+            total_tokens = get_total_token_count(view.events, agent_llm)
             if total_tokens > self.max_tokens:
                 reasons.add(Reason.TOKENS)
 
@@ -83,8 +84,8 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         return reasons
 
-    def should_condense(self, view: View, llm: LLM | None = None) -> bool:
-        reasons = self.get_condensation_reasons(view, llm)
+    def should_condense(self, view: View, agent_llm: LLM | None = None) -> bool:
+        reasons = self.get_condensation_reasons(view, agent_llm)
         return reasons != set()
 
     def _get_summary_event_content(self, view: View) -> str:
@@ -107,7 +108,6 @@ class LLMSummarizingCondenser(RollingCondenser):
         self,
         summary_event_content: str,
         forgotten_events: Sequence[LLMConvertibleEvent],
-        summary_offset: int,
     ) -> Condensation:
         """Generate a condensation by using the condenser's LLM to summarize forgotten
         events.
@@ -115,7 +115,6 @@ class LLMSummarizingCondenser(RollingCondenser):
         Args:
             summary_event_content: The content of the previous summary event.
             forgotten_events: The list of events to be summarized.
-            summary_offset: The index where the summary event should be inserted.
 
         Returns:
             Condensation: The generated condensation object.
@@ -152,22 +151,21 @@ class LLMSummarizingCondenser(RollingCondenser):
         )
 
     def _get_forgotten_events(
-        self, view: View, llm: LLM | None = None
-    ) -> tuple[Sequence[LLMConvertibleEvent], int]:
-        """Identify events to be forgotten and the summary offset.
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Sequence[LLMConvertibleEvent]:
+        """Identify events to be forgotten.
 
         Relies on the condensation reasons to determine how many events we need to drop
-        in order to maintain our resource constraints. Uses manipulation indices to
-        ensure forgetting ranges respect atomic unit boundaries.
+        in order to maintain our resource constraints.
 
         Args:
             view: The current view from which to identify forgotten events.
-            llm: The LLM used by the agent, required for token-based calculations.
+            agent_llm: The LLM used by the agent, required for token-based calculations.
 
         Returns:
-            A tuple of (events to forget, summary_offset).
+            A sequence of events to be forgotten.
         """
-        reasons = self.get_condensation_reasons(view, llm=llm)
+        reasons = self.get_condensation_reasons(view, agent_llm=agent_llm)
         assert reasons != set(), "No condensation reasons found."
 
         suffix_events_to_keep: set[int] = set()
@@ -185,61 +183,38 @@ class LLMSummarizingCondenser(RollingCondenser):
             # max_tokens value. We know max_tokens and the agent LLM are not None here
             # because we can't have Reason.TOKENS without them.
             assert self.max_tokens is not None
-            assert llm is not None
+            assert agent_llm is not None
 
-            total_tokens = get_total_token_count(view.events, llm)
+            total_tokens = get_total_token_count(view.events, agent_llm)
             tokens_to_reduce = total_tokens - (self.max_tokens // 2)
 
-            suffix_events_to_keep.add(
-                get_suffix_length_for_token_reduction(
-                    events=view.events[self.keep_first :],
-                    llm=llm,
-                    token_reduction=tokens_to_reduce,
-                )
+            suffix_length = get_suffix_length_for_token_reduction(
+                events=view.events[self.keep_first :],
+                llm=agent_llm,
+                token_reduction=tokens_to_reduce,
             )
+
+            suffix_events_to_keep.add(suffix_length)
 
         # We might have multiple reasons to condense, so pick the strictest condensation
         # to ensure all resource constraints are met.
         events_from_tail = min(suffix_events_to_keep)
 
-        # Calculate naive forgetting range (without considering atomic boundaries)
-        naive_start = self.keep_first
-        naive_end = len(view) - events_from_tail
+        # Identify events to be forgotten (those not in head or tail)
+        if events_from_tail == 0:
+            return view[self.keep_first :]
+        return view[self.keep_first : -events_from_tail]
 
-        # Get manipulation indices for boundary-aware calculation
-        manipulation_indices = View.get_manipulation_indices(view.events)
-
-        # Find actual forgetting_start: smallest manipulation index > keep_first
-        forgetting_start = naive_start
-        for idx in manipulation_indices:
-            if idx > self.keep_first:
-                forgetting_start = idx
-                break
-
-        # Find actual forgetting_end: smallest manipulation index >= naive_end
-        forgetting_end = naive_end
-        for idx in manipulation_indices:
-            if idx >= naive_end:
-                forgetting_end = idx
-                break
-
-        # Extract events to forget using boundary-aware indices
-        forgotten_events = view[forgetting_start:forgetting_end]
-
-        # Summary offset is the same as forgetting_start
-        summary_offset = forgetting_start
-
-        return forgotten_events, summary_offset
-
-    @observe(ignore_inputs=["view", "llm"])
-    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
+    @observe(ignore_inputs=["view", "agent_llm"])
+    def get_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
         # summary.
         summary_event_content = self._get_summary_event_content(view)
-        forgotten_events, summary_offset = self._get_forgotten_events(view, llm=llm)
+        forgotten_events = self._get_forgotten_events(view, agent_llm=agent_llm)
 
         return self._generate_condensation(
             summary_event_content=summary_event_content,
             forgotten_events=forgotten_events,
-            summary_offset=summary_offset,
         )

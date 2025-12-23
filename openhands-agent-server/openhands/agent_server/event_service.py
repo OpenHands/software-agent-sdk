@@ -44,6 +44,7 @@ class EventService:
     _conversation: LocalConversation | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(default_factory=lambda: PubSub[Event](), init=False)
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     @property
     def conversation_dir(self):
@@ -74,7 +75,8 @@ class EventService:
             raise ValueError("inactive_service")
         return self._conversation
 
-    async def get_event(self, event_id: str) -> Event | None:
+    def _get_event_sync(self, event_id: str) -> Event | None:
+        """Private sync function to get event with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
         with self._conversation._state as state:
@@ -82,7 +84,13 @@ class EventService:
             event = state.events[index]
             return event
 
-    async def search_events(
+    async def get_event(self, event_id: str) -> Event | None:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_event_sync, event_id)
+
+    def _search_events_sync(
         self,
         page_id: str | None = None,
         limit: int = 100,
@@ -93,6 +101,7 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> EventPage:
+        """Private sync function to search events with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -161,7 +170,34 @@ class EventService:
 
         return EventPage(items=items, next_page_id=next_page_id)
 
-    async def count_events(
+    async def search_events(
+        self,
+        page_id: str | None = None,
+        limit: int = 100,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
+    ) -> EventPage:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._search_events_sync,
+            page_id,
+            limit,
+            kind,
+            source,
+            body,
+            sort_order,
+            timestamp__gte,
+            timestamp__lt,
+        )
+
+    def _count_events_sync(
         self,
         kind: str | None = None,
         source: str | None = None,
@@ -169,7 +205,7 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
-        """Count events matching the given filters."""
+        """Private sync function to count events with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -209,6 +245,28 @@ class EventService:
                 count += 1
 
         return count
+
+    async def count_events(
+        self,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
+    ) -> int:
+        """Count events matching the given filters."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._count_events_sync,
+            kind,
+            source,
+            body,
+            timestamp__gte,
+            timestamp__lt,
+        )
 
     def _event_matches_body(self, event: Event, body: str) -> bool:
         """Check if event's message content matches body filter (case-insensitive)."""
@@ -350,7 +408,9 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(self.stored.agent.model_dump())
+        agent = Agent.model_validate(
+            self.stored.agent.model_dump(context={"expose_secrets": True}),
+        )
 
         conversation = LocalConversation(
             agent=agent,
@@ -383,17 +443,60 @@ class EventService:
         await self._publish_state_update()
 
     async def run(self):
-        """Run the conversation asynchronously."""
+        """Run the conversation asynchronously in the background.
+
+        This method starts the conversation run in a background task and returns
+        immediately. The conversation status can be monitored via the
+        GET /api/conversations/{id} endpoint or WebSocket events.
+
+        Raises:
+            ValueError: If the service is inactive or conversation is already running.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.run)
-        # Publish state update after run completes to ensure stats are updated
-        await self._publish_state_update()
+
+        # Use lock to make check-and-set atomic, preventing race conditions
+        async with self._run_lock:
+            # Check if already running
+            with self._conversation._state as state:
+                if state.execution_status == ConversationExecutionStatus.RUNNING:
+                    raise ValueError("conversation_already_running")
+
+            # Check if there's already a running task
+            if self._run_task is not None and not self._run_task.done():
+                raise ValueError("conversation_already_running")
+
+            # Capture conversation reference for the closure
+            conversation = self._conversation
+
+            # Start run in background
+            loop = asyncio.get_running_loop()
+
+            async def _run_and_publish():
+                try:
+                    await loop.run_in_executor(None, conversation.run)
+                except Exception as e:
+                    logger.error(f"Error during conversation run: {e}")
+                finally:
+                    # Clear task reference and publish state update
+                    self._run_task = None
+                    await self._publish_state_update()
+
+            # Create task but don't await it - runs in background
+            self._run_task = asyncio.create_task(_run_and_publish())
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
-            await self.run()
+            try:
+                await self.run()
+            except ValueError as e:
+                # Treat "already running" as a no-op success
+                if str(e) == "conversation_already_running":
+                    logger.debug(
+                        "Confirmation accepted but conversation already running"
+                    )
+                else:
+                    raise
         else:
             await self.reject_pending_actions(request.reason)
 

@@ -31,7 +31,7 @@ def test_noop_condenser() -> None:
 
 
 def test_noop_condenser_with_llm() -> None:
-    """Test that NoOpCondenser works with optional llm parameter."""
+    """Test that NoOpCondenser works with optional agent_llm parameter."""
     events: list[Event] = [
         message_event("Event 1"),
         message_event("Event 2"),
@@ -44,7 +44,7 @@ def test_noop_condenser_with_llm() -> None:
     # Create a mock LLM
     mock_llm = MagicMock(spec=LLM)
 
-    # Condense with llm parameter
-    condensation_result = condenser.condense(view, llm=mock_llm)
+    # Condense with agent_llm parameter
+    condensation_result = condenser.condense(view, agent_llm=mock_llm)
     assert isinstance(condensation_result, View)
     assert condensation_result.events == events

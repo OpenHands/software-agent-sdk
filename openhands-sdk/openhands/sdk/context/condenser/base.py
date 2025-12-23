@@ -29,7 +29,7 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
     """
 
     @abstractmethod
-    def condense(self, view: View, llm: LLM | None = None) -> View | Condensation:
+    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
         """Condense a sequence of events into a potentially smaller list.
 
         New condenser strategies should override this method to implement their own
@@ -38,8 +38,8 @@ class CondenserBase(DiscriminatedUnionMixin, ABC):
 
         Args:
             view: A view of the history containing all events that should be condensed.
-            llm: LLM instance used by the agent. Condensers use this for token counting
-                purposes. Defaults to None.
+            agent_llm: LLM instance used by the agent. Condensers use this for token
+                counting purposes. Defaults to None.
 
         Returns:
             View | Condensation: A condensed view of the events or an event indicating
@@ -80,18 +80,20 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
     """
 
     @abstractmethod
-    def should_condense(self, view: View, llm: LLM | None = None) -> bool:
+    def should_condense(self, view: View, agent_llm: LLM | None = None) -> bool:
         """Determine if a view should be condensed."""
 
     @abstractmethod
-    def get_condensation(self, view: View, llm: LLM | None = None) -> Condensation:
+    def get_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
         """Get the condensation from a view."""
 
-    def condense(self, view: View, llm: LLM | None = None) -> View | Condensation:
+    def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
         # If we trigger the condenser-specific condensation threshold, compute and
         # return the condensation.
-        if self.should_condense(view, llm=llm):
-            return self.get_condensation(view, llm=llm)
+        if self.should_condense(view, agent_llm=agent_llm):
+            return self.get_condensation(view, agent_llm=agent_llm)
 
         # Otherwise we're safe to just return the view.
         else:

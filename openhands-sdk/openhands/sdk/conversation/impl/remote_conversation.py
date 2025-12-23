@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from typing import SupportsIndex, overload
@@ -17,7 +18,11 @@ from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    StuckDetectionThresholds,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -434,6 +439,9 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -449,6 +457,11 @@ class RemoteConversation(BaseConversation):
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
+            stuck_detection_thresholds: Optional configuration for stuck detection
+                      thresholds. Can be a StuckDetectionThresholds instance or
+                      a dict with keys: 'action_observation', 'action_error',
+                      'monologue', 'alternating_pattern'. Values are integers
+                      representing the number of repetitions before triggering.
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -476,6 +489,15 @@ class RemoteConversation(BaseConversation):
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
             }
+            if stuck_detection_thresholds is not None:
+                # Convert to StuckDetectionThresholds if dict, then serialize
+                if isinstance(stuck_detection_thresholds, Mapping):
+                    threshold_config = StuckDetectionThresholds(
+                        **stuck_detection_thresholds
+                    )
+                else:
+                    threshold_config = stuck_detection_thresholds
+                payload["stuck_detection_thresholds"] = threshold_config.model_dump()
             resp = _send_request(
                 self._client, "POST", "/api/conversations", json=payload
             )
@@ -623,7 +645,25 @@ class RemoteConversation(BaseConversation):
         )
 
     @observe(name="conversation.run")
-    def run(self) -> None:
+    def run(
+        self,
+        blocking: bool = True,
+        poll_interval: float = 1.0,
+        timeout: float = 3600.0,
+    ) -> None:
+        """Trigger a run on the server.
+
+        Args:
+            blocking: If True (default), wait for the run to complete by polling
+                the server. If False, return immediately after triggering the run.
+            poll_interval: Time in seconds between status polls (only used when
+                blocking=True). Default is 1.0 second.
+            timeout: Maximum time in seconds to wait for the run to complete
+                (only used when blocking=True). Default is 3600 seconds.
+
+        Raises:
+            ConversationRunError: If the run fails or times out.
+        """
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
         try:
@@ -632,15 +672,73 @@ class RemoteConversation(BaseConversation):
                 "POST",
                 f"/api/conversations/{self._id}/run",
                 acceptable_status_codes={200, 201, 204, 409},
-                timeout=1800,
+                timeout=30,  # Short timeout for trigger request
             )
         except Exception as e:  # httpx errors already logged by _send_request
             # Surface conversation id to help resuming
             raise ConversationRunError(self._id, e) from e
+
         if resp.status_code == 409:
             logger.info("Conversation is already running; skipping run trigger")
+            if blocking:
+                # Still wait for the existing run to complete
+                self._wait_for_run_completion(poll_interval, timeout)
             return
+
         logger.info(f"run() triggered successfully: {resp}")
+
+        if blocking:
+            self._wait_for_run_completion(poll_interval, timeout)
+
+    def _wait_for_run_completion(
+        self,
+        poll_interval: float = 1.0,
+        timeout: float = 1800.0,
+    ) -> None:
+        """Poll the server until the conversation is no longer running.
+
+        Args:
+            poll_interval: Time in seconds between status polls.
+            timeout: Maximum time in seconds to wait.
+
+        Raises:
+            ConversationRunError: If the wait times out.
+        """
+        start_time = time.monotonic()
+
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed > timeout:
+                raise ConversationRunError(
+                    self._id,
+                    TimeoutError(
+                        f"Run timed out after {timeout} seconds. "
+                        "The conversation may still be running on the server."
+                    ),
+                )
+
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._id}",
+                    timeout=30,
+                )
+                info = resp.json()
+                status = info.get("execution_status")
+
+                if status != ConversationExecutionStatus.RUNNING.value:
+                    logger.info(
+                        f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
+                    )
+                    return
+
+            except Exception as e:
+                # Log but continue polling - transient network errors shouldn't
+                # stop us from waiting for the run to complete
+                logger.warning(f"Error polling status (will retry): {e}")
+
+            time.sleep(poll_interval)
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}

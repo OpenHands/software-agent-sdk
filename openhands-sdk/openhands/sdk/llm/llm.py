@@ -247,10 +247,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "like HuggingFace and Groq."
         ),
     )
-    reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
         default="high",
         description="The effort to put into reasoning. "
-        "This is a string that can be one of 'low', 'medium', 'high', or 'none'. "
+        "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
+        "or 'none'. "
         "Can apply to all reasoning models.",
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(

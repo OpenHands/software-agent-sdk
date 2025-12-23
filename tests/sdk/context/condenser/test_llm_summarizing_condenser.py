@@ -11,7 +11,7 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
-from openhands.sdk.event.llm_convertible import ActionEvent, MessageEvent, ObservationEvent
+from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import (
     LLM,
     LLMResponse,
@@ -248,7 +248,7 @@ def test_condense_with_agent_llm(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Call condense with the agent's LLM
-    result = condenser.condense(view, llm=agent_llm)
+    result = condenser.condense(view, agent_llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # Verify the condenser still uses its own LLM for summarization
@@ -293,13 +293,13 @@ def test_condense_with_token_limit_exceeded(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify that TOKENS is the condensation reason
-    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
     assert Reason.TOKENS in reasons
     assert Reason.EVENTS not in reasons  # Should not trigger on event count
     assert Reason.REQUEST not in reasons
 
     # Condense the view
-    result = condenser.condense(view, llm=agent_llm)
+    result = condenser.condense(view, agent_llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # Verify the condenser used its own LLM for summarization
@@ -329,7 +329,7 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify both reasons are present
-    reasons = condenser.get_condensation_reasons(view, llm=None)
+    reasons = condenser.get_condensation_reasons(view, agent_llm=None)
     assert Reason.REQUEST in reasons
     assert Reason.EVENTS in reasons
     assert Reason.TOKENS not in reasons
@@ -347,12 +347,8 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
 
     # Forgotten events should be from index keep_first to -(7)
     # Total events in view = 25 (CondensationRequest is not in view.events)
-    # With manipulation indices, the forgetting start is the smallest index > keep_first
-    # For MessageEvents, manipulation indices are [0,1,2,3,...], so:
-    # start = keep_first + 1 = 3
-    # The forgetting end is the smallest index >= (25 - 7) = 18, which is 18
-    # Forgotten: events[3:18] = 15 events (one less due to boundary adjustment)
-    expected_forgotten_count = 25 - (keep_first + 1) - 7
+    # Forgotten: events[2:18] = 16 events
+    expected_forgotten_count = 25 - keep_first - 7
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
@@ -390,13 +386,13 @@ def test_condense_with_request_and_tokens_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify both reasons are present
-    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
     assert Reason.REQUEST in reasons
     assert Reason.TOKENS in reasons
     assert Reason.EVENTS not in reasons
 
     # Get the condensation
-    result = condenser.condense(view, llm=agent_llm)
+    result = condenser.condense(view, agent_llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # The most aggressive condensation should be chosen (minimum suffix)
@@ -435,13 +431,13 @@ def test_condense_with_events_and_tokens_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify both reasons are present
-    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
     assert Reason.EVENTS in reasons
     assert Reason.TOKENS in reasons
     assert Reason.REQUEST not in reasons
 
     # Get the condensation
-    result = condenser.condense(view, llm=agent_llm)
+    result = condenser.condense(view, agent_llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # The most aggressive condensation should be chosen (minimum suffix)
@@ -483,13 +479,13 @@ def test_condense_with_all_three_reasons(mock_llm: LLM) -> None:
     view = View.from_events(events)
 
     # Verify all three reasons are present
-    reasons = condenser.get_condensation_reasons(view, llm=agent_llm)
+    reasons = condenser.get_condensation_reasons(view, agent_llm=agent_llm)
     assert Reason.REQUEST in reasons
     assert Reason.EVENTS in reasons
     assert Reason.TOKENS in reasons
 
     # Get the condensation
-    result = condenser.condense(view, llm=agent_llm)
+    result = condenser.condense(view, agent_llm=agent_llm)
     assert isinstance(result, Condensation)
 
     # The most aggressive condensation should be chosen (minimum suffix)
@@ -530,192 +526,5 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     assert isinstance(result, Condensation)
 
     # Forgotten events: events[keep_first : -12] = events[2:28] = 26 events
-    # With manipulation indices, start = keep_first + 1 = 3 (smallest index > 2)
-    # End = 28 (smallest index >= 28)
-    # Forgotten: events[3:28] = 25 events (one less due to boundary adjustment)
-    expected_forgotten_count = 40 - (keep_first + 1) - 12
+    expected_forgotten_count = 40 - keep_first - 12
     assert len(result.forgotten_event_ids) == expected_forgotten_count
-
-
-def test_thinking_blocks_survive_condensation(mock_llm: LLM) -> None:
-    """Test that thinking blocks are preserved during condensation.
-
-    This integration test validates that:
-    1. Thinking blocks either remain intact with their action batches, OR
-    2. Entire batches (including thinking blocks) are forgotten together
-    3. No thinking blocks become orphaned or split from their tool calls
-    4. The resulting event list maintains valid manipulation indices
-    """
-    max_size = 15
-    keep_first = 2
-    condenser = LLMSummarizingCondenser(
-        llm=mock_llm, max_size=max_size, keep_first=keep_first
-    )
-
-    def create_action_with_thinking(
-        llm_response_id: str,
-        tool_call_id: str,
-        thinking_blocks: list[ThinkingBlock] | None = None,
-    ) -> ActionEvent:
-        """Helper to create an ActionEvent with thinking blocks."""
-        action = MCPToolAction(data={})
-        tool_call = MessageToolCall(
-            id=tool_call_id, name="test_tool", arguments="{}", origin="completion"
-        )
-        return ActionEvent(
-            thought=[TextContent(text="Test thought")],
-            thinking_blocks=thinking_blocks or [],  # type: ignore
-            action=action,
-            tool_name="test_tool",
-            tool_call_id=tool_call_id,
-            tool_call=tool_call,
-            llm_response_id=llm_response_id,
-            source="agent",
-        )
-
-    def create_observation(tool_call_id: str) -> ObservationEvent:
-        """Helper to create an ObservationEvent."""
-        observation = MCPToolObservation.from_text(
-            text="Success", tool_name="test_tool"
-        )
-        return ObservationEvent(
-            observation=observation,
-            tool_name="test_tool",
-            tool_call_id=tool_call_id,
-            action_id="action_event_id",
-            source="environment",
-        )
-
-    # Create a conversation with multiple batches, some with thinking blocks
-    events: list[Event] = []
-
-    # Initial message events
-    events.append(message_event("User message 1"))
-    events.append(message_event("User message 2"))
-
-    # Batch 1: Has thinking blocks (3 actions + 3 observations)
-    thinking_batch_1 = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="I need to analyze this request carefully...",
-            signature="sig1",
-        )
-    ]
-    events.append(
-        create_action_with_thinking("response_1", "tc1", thinking_batch_1)
-    )
-    events.append(create_action_with_thinking("response_1", "tc2"))
-    events.append(create_action_with_thinking("response_1", "tc3"))
-    events.append(create_observation("tc1"))
-    events.append(create_observation("tc2"))
-    events.append(create_observation("tc3"))
-
-    # Some message events in between
-    events.append(message_event("User message 3"))
-    events.append(message_event("User message 4"))
-
-    # Batch 2: No thinking blocks (2 actions + 2 observations)
-    events.append(create_action_with_thinking("response_2", "tc4"))
-    events.append(create_action_with_thinking("response_2", "tc5"))
-    events.append(create_observation("tc4"))
-    events.append(create_observation("tc5"))
-
-    # More messages
-    events.append(message_event("User message 5"))
-    events.append(message_event("User message 6"))
-
-    # Batch 3: Has thinking blocks (2 actions + 2 observations)
-    thinking_batch_3 = [
-        ThinkingBlock(
-            type="thinking",
-            thinking="Let me think about this approach...",
-            signature="sig2",
-        )
-    ]
-    events.append(
-        create_action_with_thinking("response_3", "tc6", thinking_batch_3)
-    )
-    events.append(create_action_with_thinking("response_3", "tc7"))
-    events.append(create_observation("tc6"))
-    events.append(create_observation("tc7"))
-
-    # Final messages
-    events.append(message_event("User message 7"))
-
-    # Total: 21 events (exceeds max_size of 15)
-    assert len(events) == 21
-
-    # Create view and condense
-    view = View.from_events(events)
-    result = condenser.condense(view)
-    assert isinstance(result, Condensation)
-
-    # Verify condensation occurred
-    assert len(result.forgotten_event_ids) > 0
-
-    # Reconstruct the new list of events after condensation
-    # Add all events that weren't forgotten, plus the condensation itself
-    forgotten_ids = set(result.forgotten_event_ids)
-    remaining_events = [e for e in events if e.id not in forgotten_ids]
-    remaining_events.append(result)
-
-    # Create the resulting view
-    new_view = View.from_events(remaining_events)
-    assert len(new_view.events) < len(view.events)
-
-    # Critical check: Verify batch atomicity for thinking blocks
-    # Find all actions with thinking blocks in the new view
-    actions_with_thinking = [
-        e
-        for e in new_view.events
-        if isinstance(e, ActionEvent) and e.thinking_blocks
-    ]
-
-    for action in actions_with_thinking:
-        # If an action with thinking blocks is kept, verify its entire batch is kept
-        llm_response_id = action.llm_response_id
-
-        # Find all actions in this batch
-        batch_actions = [
-            e
-            for e in new_view.events
-            if isinstance(e, ActionEvent) and e.llm_response_id == llm_response_id
-        ]
-
-        # Find all observations for this batch
-        batch_tool_call_ids = {a.tool_call_id for a in batch_actions}
-        batch_observations = [
-            e
-            for e in new_view.events
-            if isinstance(e, ObservationEvent)
-            and e.tool_call_id in batch_tool_call_ids
-        ]
-
-        # Verify the batch is complete
-        assert len(batch_actions) == len(
-            batch_observations
-        ), f"Thinking block batch {llm_response_id} is incomplete"
-
-    # Verify manipulation indices are still valid
-    indices = View.get_manipulation_indices(new_view.events)
-    assert len(indices) >= 2  # At least start and end
-    assert indices[0] == 0
-    assert indices[-1] == len(new_view.events)
-
-    # Verify indices are sorted and unique
-    assert indices == sorted(set(indices))
-
-    # Verify no thinking blocks were orphaned
-    # Check that no action with thinking blocks has missing observations
-    for event in new_view.events:
-        if isinstance(event, ActionEvent) and event.thinking_blocks:
-            # Find the corresponding observation
-            obs_found = any(
-                isinstance(e, ObservationEvent)
-                and e.tool_call_id == event.tool_call_id
-                for e in new_view.events
-            )
-            assert obs_found, (
-                f"Action {event.tool_call_id} with thinking blocks "
-                f"is missing its observation"
-            )

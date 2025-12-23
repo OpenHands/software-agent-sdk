@@ -16,7 +16,8 @@ def get_total_token_count(
 
     Args:
         events: List of LLM convertible events to count tokens for
-        llm: The LLM instance to use for token counting (uses the model's tokenizer)
+        llm: The LLM instance to use for token counting (uses the litellm's token
+            counting utilities)
 
     Returns:
         Total token count for all events converted to messages
@@ -116,8 +117,6 @@ def get_suffix_length_for_token_reduction(
 
     Returns:
         The number of events from the end that can be kept (suffix length).
-        Returns 0 if removing all events doesn't achieve the target reduction.
-        Returns len(events) if no reduction is needed (token_reduction <= 0).
 
     Example:
         >>> from openhands.sdk.llm import LLM

@@ -18,6 +18,7 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    StuckDetectionThresholds,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
@@ -66,6 +67,9 @@ class LocalConversation(BaseConversation):
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -92,6 +96,11 @@ class LocalConversation(BaseConversation):
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
             stuck_detection: Whether to enable stuck detection
+            stuck_detection_thresholds: Optional configuration for stuck detection
+                      thresholds. Can be a StuckDetectionThresholds instance or
+                      a dict with keys: 'action_observation', 'action_error',
+                      'monologue', 'alternating_pattern'. Values are integers
+                      representing the number of repetitions before triggering.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -159,7 +168,20 @@ class LocalConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
 
         # Initialize stuck detector
-        self._stuck_detector = StuckDetector(self._state) if stuck_detection else None
+        if stuck_detection:
+            # Convert dict to StuckDetectionThresholds if needed
+            if isinstance(stuck_detection_thresholds, Mapping):
+                threshold_config = StuckDetectionThresholds(
+                    **stuck_detection_thresholds
+                )
+            else:
+                threshold_config = stuck_detection_thresholds
+            self._stuck_detector = StuckDetector(
+                self._state,
+                thresholds=threshold_config,
+            )
+        else:
+            self._stuck_detector = None
 
         with self._state:
             self.agent.init_state(self._state, on_event=self._on_event)
@@ -349,10 +371,10 @@ class LocalConversation(BaseConversation):
                 )
             )
 
-            # Re-raise with conversation id for better UX; include original traceback
-            raise ConversationRunError(self._state.id, e) from e
-        finally:
-            self._end_observability_span()
+            # Re-raise with conversation id and persistence dir for better UX
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""

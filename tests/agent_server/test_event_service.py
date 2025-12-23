@@ -1005,3 +1005,124 @@ class TestEventServiceBodyFiltering:
         # Test counting by non-matching text
         result = await event_service.count_events(body="nonexistent")
         assert result == 0
+
+
+class TestEventServiceRun:
+    """Test cases for EventService.run method."""
+
+    @pytest.mark.asyncio
+    async def test_run_inactive_service(self, event_service):
+        """Test that run raises ValueError when conversation is not active."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_by_status(self, event_service):
+        """Test that run raises ValueError when conversation is already running."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        with pytest.raises(ValueError, match="conversation_already_running"):
+            await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_by_task(self, event_service):
+        """Test that run raises ValueError when there's an active run task."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        # Create a mock task that is not done
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        event_service._run_task = mock_task
+
+        with pytest.raises(ValueError, match="conversation_already_running"):
+            await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_starts_background_task(self, event_service):
+        """Test that run starts a background task and returns immediately."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock()
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        # Call run - should return immediately
+        await event_service.run()
+
+        # Verify a task was created
+        assert event_service._run_task is not None
+
+        # Wait for the background task to complete
+        await event_service._run_task
+
+        # Verify conversation.run was called
+        conversation.run.assert_called_once()
+
+        # Verify state update was published after run completed
+        event_service._publish_state_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_run_publishes_state_update_on_completion(self, event_service):
+        """Test that run publishes state update after completion."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock()
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.run()
+        await event_service._run_task  # Wait for completion
+
+        # State update should be published after run completes
+        event_service._publish_state_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_run_publishes_state_update_on_error(self, event_service):
+        """Test that run publishes state update even if run raises an error."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock(side_effect=RuntimeError("Test error"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.run()
+
+        # Wait for the background task to complete (it will raise but be caught)
+        try:
+            await event_service._run_task
+        except RuntimeError:
+            pass  # Expected
+
+        # State update should still be published (in finally block)
+        event_service._publish_state_update.assert_called()
