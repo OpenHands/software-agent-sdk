@@ -16,12 +16,9 @@ from openhands.sdk.llm import (
     LLM,
     LLMResponse,
     Message,
-    MessageToolCall,
     MetricsSnapshot,
     TextContent,
-    ThinkingBlock,
 )
-from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 
 
 def message_event(content: str) -> MessageEvent:
@@ -345,10 +342,14 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     #          suffix_to_keep = 10 - keep_first - 1 = 10 - 2 - 1 = 7
     # Most aggressive: min(9, 7) = 7
 
-    # Forgotten events should be from index keep_first to -(7)
-    # Total events in view = 25 (CondensationRequest is not in view.events)
-    # Forgotten: events[2:18] = 16 events
-    expected_forgotten_count = 25 - keep_first - 7
+    # With manipulation indices for MessageEvents:
+    # naive_start = keep_first = 2
+    # naive_end = 25 - 7 = 18
+    # manipulation_indices = [0, 1, 2, 3, ..., 25]
+    # forgetting_start = smallest index > keep_first = 3
+    # forgetting_end = smallest index >= naive_end = 18
+    # Forgotten: events[3:18] = 15 events
+    expected_forgotten_count = 15
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
@@ -525,6 +526,12 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     result = condenser.condense(view)
     assert isinstance(result, Condensation)
 
-    # Forgotten events: events[keep_first : -12] = events[2:28] = 26 events
-    expected_forgotten_count = 40 - keep_first - 12
+    # With manipulation indices for MessageEvents:
+    # naive_start = keep_first = 2
+    # naive_end = 40 - 12 = 28
+    # manipulation_indices = [0, 1, 2, 3, ..., 40]
+    # forgetting_start = smallest index > keep_first = 3
+    # forgetting_end = smallest index >= naive_end = 28
+    # Forgotten events: events[3:28] = 25 events
+    expected_forgotten_count = 25
     assert len(result.forgotten_event_ids) == expected_forgotten_count
