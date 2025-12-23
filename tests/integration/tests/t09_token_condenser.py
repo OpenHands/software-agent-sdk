@@ -16,9 +16,12 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 
 # Instruction designed to generate multiple agent messages
 INSTRUCTION = """
-Count from 1 to 50. For each number, use the echo command to print it along with
+Count from 1 to 1000. For each number, use the echo command to print it along with
 a short, unique property of that number (e.g., "1 is the first natural number",
 "2 is the only even prime number", etc.). Be creative with your descriptions.
+
+DO NOT write a script to do this. Instead, interactively call the echo command
+1000 times, once for each number from 1 to 1000.
 """
 
 logger = get_logger(__name__)
@@ -57,7 +60,7 @@ class TokenCondenserTest(BaseIntegrationTest):
 
     @property
     def max_iteration_per_run(self) -> int:
-        return 20
+        return 50
 
     def conversation_callback(self, event):
         """Override callback to detect condensation events."""
