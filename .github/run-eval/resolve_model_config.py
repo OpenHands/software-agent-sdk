@@ -58,14 +58,6 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "claude-4.5-sonnet": {
-        "id": "claude-4.5-sonnet",
-        "display_name": "Claude 4.5 Sonnet",
-        "llm_config": {
-            "model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
-            "temperature": 0.0,
-        },
-    },
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
