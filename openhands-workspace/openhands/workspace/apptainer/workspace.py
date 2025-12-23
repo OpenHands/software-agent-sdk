@@ -284,27 +284,28 @@ class ApptainerWorkspace(RemoteWorkspace):
             "--writable-tmpfs",
             "--cleanenv",  # Prevent host environment leakage
             "--no-home",  # Don't mount host home directory
+            "--no-mount",
+            "tmp",  # Don't bind host /tmp (avoids tmux socket conflicts)
         ]
 
         # Add fakeroot for consistent file ownership (user appears as root)
         if self.use_fakeroot:
             container_opts.append("--fakeroot")
 
-        # Run the agent server directly using exec (no instance needed)
-        # This is more compatible with environments without systemd/FUSE
-        # Explicitly set PATH to ensure container's python is found
+        # Run the agent server using apptainer run to respect the image's entrypoint
+        # This works with both 'source' and 'binary' build targets
+        # Uses the pre-configured entrypoints from agent-server Dockerfile
         server_cmd = [
             "apptainer",
-            "exec",
+            "run",
             *container_opts,
             *env_args,
             *bind_args,
             self._sif_path,
-            "/bin/bash",
-            "-c",
-            "export PATH=/usr/local/bin:/usr/bin:/bin:$PATH && "
-            f"cd /workspace && openhands-agent-server "
-            f"--host 0.0.0.0 --port {self.host_port}",
+            "--host",
+            "0.0.0.0",
+            "--port",
+            str(self.host_port),
         ]
 
         # Start the server process in the background
