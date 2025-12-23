@@ -17,7 +17,7 @@ from openhands.sdk import (
     Message,
     TextContent,
 )
-from openhands.sdk.context.condenser import Condenser
+from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event.base import Event
@@ -181,11 +181,11 @@ class BaseIntegrationTest(ABC):
         pass
 
     @property
-    def condenser(self) -> Condenser | None:
+    def condenser(self) -> CondenserBase | None:
         """Optional condenser for the agent. Override to provide a custom condenser.
 
         Returns:
-            Condenser instance or None (default)
+            CondenserBase instance or None (default)
         """
         return None
 
