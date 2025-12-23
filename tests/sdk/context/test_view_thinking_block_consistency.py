@@ -88,8 +88,9 @@ def test_thinking_block_consistency_last_batch_without_thinking() -> None:
     3. After condensation, the LAST ActionEvent batch doesn't have thinking blocks
     4. But the API expects the last assistant message to start with a thinking block
 
-    The fix ensures that cut points are only allowed after batches WITH thinking.
-    This way, any valid cut leaves a final batch with thinking blocks.
+    The fix should ensure that if any ActionEvent has thinking blocks, the last
+    ActionEvent batch with thinking blocks and all subsequent batches are treated
+    as a single atomic unit.
     """
     thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [
         ThinkingBlock(
@@ -124,17 +125,24 @@ def test_thinking_block_consistency_last_batch_without_thinking() -> None:
     view = View.from_events(events)
     indices = view.manipulation_indices
 
-    # Valid cut points:
-    # - 0: remove everything (valid - no batches)
-    # - 1: keep only message (valid - no batches)
-    # - 3: keep batch 1 (valid - batch 1 has thinking)
+    # The key insight: if we have thinking blocks in batch 1, and we want to
+    # forget batch 1, we should also forget batches 2 and 3 to maintain
+    # consistency (no thinking blocks at all).
     #
-    # Invalid cut points (would leave non-thinking batch as final):
-    # - 5: keep batches 1, 2 (invalid - batch 2 is final, no thinking)
-    # - 7: keep batches 1, 2, 3 (invalid - batch 3 is final, no thinking)
-    assert indices == [0, 1, 3], (
-        f"Expected [0, 1, 3] but got {indices}. "
-        "Cut points should only be allowed after batches with thinking blocks."
+    # Conversely, if we keep batch 1 (with thinking), we should be able to
+    # keep batches 2 and 3 as well.
+    #
+    # The manipulation_indices should reflect this by treating batch 1 and
+    # all subsequent batches as a single atomic unit when thinking blocks
+    # are involved.
+
+    # Expected indices:
+    # [0 msg 1 (batch1+batch2+batch3) 7]
+    # Because batch1 has thinking blocks, all subsequent batches should be
+    # grouped with it to maintain consistency.
+    assert indices == [0, 1, 7], (
+        f"Expected [0, 1, 7] but got {indices}. "
+        "Batches after the last thinking block batch should be grouped together."
     )
 
 
@@ -221,8 +229,8 @@ def test_thinking_block_consistency_no_thinking_blocks() -> None:
 
 
 def test_thinking_block_consistency_middle_batch_has_thinking() -> None:
-    """Test that when a middle batch has thinking blocks, cut points are
-    only allowed after batches with thinking.
+    """Test that when a middle batch has thinking blocks, subsequent batches
+    are grouped with it.
     """
     thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [
         ThinkingBlock(
@@ -257,23 +265,18 @@ def test_thinking_block_consistency_middle_batch_has_thinking() -> None:
     view = View.from_events(events)
     indices = view.manipulation_indices
 
-    # Valid cut points:
-    # - 0: remove everything (valid - no batches)
-    # - 1: keep only message (valid - no batches)
-    # - 5: keep batches 1, 2 (valid - batch 2 has thinking)
-    #
-    # Invalid cut points:
-    # - 3: keep batch 1 (invalid - batch 1 is final, no thinking)
-    # - 7: keep batches 1, 2, 3 (invalid - batch 3 is final, no thinking)
-    assert indices == [0, 1, 5], (
-        f"Expected [0, 1, 5] but got {indices}. "
-        "Cut points should only be allowed after batches with thinking blocks."
+    # Batch 1 can be manipulated independently (no thinking blocks before it)
+    # Batch 2 and 3 should be grouped together (batch 2 has thinking, batch 3 doesn't)
+    # [0 msg 1 batch1 3 (batch2+batch3) 7]
+    assert indices == [0, 1, 3, 7], (
+        f"Expected [0, 1, 3, 7] but got {indices}. "
+        "Batches after the last thinking block batch should be grouped together."
     )
 
 
 def test_thinking_block_consistency_last_batch_has_thinking() -> None:
-    """Test that when only the last batch has thinking blocks, cut points
-    are only allowed after the last batch (which has thinking).
+    """Test that when only the last batch has thinking blocks, all batches
+    can be manipulated independently.
     """
     thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] = [
         ThinkingBlock(
@@ -308,17 +311,13 @@ def test_thinking_block_consistency_last_batch_has_thinking() -> None:
     view = View.from_events(events)
     indices = view.manipulation_indices
 
-    # Valid cut points:
-    # - 0: remove everything (valid - no batches)
-    # - 1: keep only message (valid - no batches)
-    # - 7: keep all batches (valid - batch 3 is final, has thinking)
-    #
-    # Invalid cut points:
-    # - 3: keep batch 1 (invalid - batch 1 is final, no thinking)
-    # - 5: keep batches 1, 2 (invalid - batch 2 is final, no thinking)
-    assert indices == [0, 1, 7], (
-        f"Expected [0, 1, 7] but got {indices}. "
-        "Cut points should only be allowed after batches with thinking blocks."
+    # When only the last batch has thinking blocks, all batches can be
+    # manipulated independently (removing any earlier batch is fine,
+    # and removing the last batch removes all thinking blocks)
+    # [0 msg 1 batch1 3 batch2 5 batch3 7]
+    assert indices == [0, 1, 3, 5, 7], (
+        f"Expected [0, 1, 3, 5, 7] but got {indices}. "
+        "When only the last batch has thinking blocks, all batches are independent."
     )
 
 
@@ -408,14 +407,10 @@ def test_thinking_block_consistency_multi_action_batch() -> None:
     view = View.from_events(events)
     indices = view.manipulation_indices
 
-    # Valid cut points:
-    # - 0: remove everything (valid - no batches)
-    # - 1: keep only message (valid - no batches)
-    # - 5: keep batch 1 (valid - batch 1 has thinking)
-    #
-    # Invalid cut points:
-    # - 7: keep batches 1, 2 (invalid - batch 2 is final, no thinking)
-    assert indices == [0, 1, 5], (
-        f"Expected [0, 1, 5] but got {indices}. "
-        "Cut points should only be allowed after batches with thinking blocks."
+    # Batch 1 has thinking blocks, batch 2 doesn't
+    # They should be grouped together
+    # [0 msg 1 (batch1+batch2) 7]
+    assert indices == [0, 1, 7], (
+        f"Expected [0, 1, 7] but got {indices}. "
+        "Multi-action batch with thinking should group with subsequent batches."
     )
