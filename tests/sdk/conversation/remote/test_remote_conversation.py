@@ -49,10 +49,13 @@ class TestRemoteConversation:
             elif method == "GET" and "/api/conversations/" in url and "/events" in url:
                 return mock_events_response
             elif method == "GET" and url.startswith("/api/conversations/"):
-                # Return conversation info response
+                # Return conversation info response with finished status
+                # (needed for run() polling to complete)
                 response = Mock()
                 response.raise_for_status.return_value = None
-                response.json.return_value = mock_conv_response.json.return_value
+                conv_info = mock_conv_response.json.return_value.copy()
+                conv_info["execution_status"] = "finished"
+                response.json.return_value = conv_info
                 return response
             elif method == "POST" and "/events" in url:
                 # POST to events endpoint (send_message)
@@ -362,6 +365,7 @@ class TestRemoteConversation:
 
         # Create conversation and run
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        # With blocking=True (default), it will poll until finished
         conversation.run()  # Should not raise an exception
 
         # Verify run API call was made
@@ -372,6 +376,129 @@ class TestRemoteConversation:
             and f"/api/conversations/{conversation_id}/run" in call[0][1]
         ]
         assert len(request_calls) >= 1, "Should have made a POST call to run endpoint"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_non_blocking(self, mock_ws_client):
+        """Test running the conversation with blocking=False returns immediately."""
+        # Setup mocks
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create conversation and run with blocking=False
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.run(blocking=False)
+
+        # Verify run API call was made
+        request_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "POST"
+            and f"/api/conversations/{conversation_id}/run" in call[0][1]
+        ]
+        assert len(request_calls) == 1, "Should have made exactly one POST call"
+
+        # Verify NO polling GET calls were made (only the initial events fetch)
+        get_conversation_calls = [
+            call
+            for call in mock_client_instance.request.call_args_list
+            if call[0][0] == "GET"
+            and call[0][1] == f"/api/conversations/{conversation_id}"
+        ]
+        # Should be 0 because blocking=False skips polling
+        assert len(get_conversation_calls) == 0, (
+            "Should not poll for status when blocking=False"
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_blocking_polls_until_finished(
+        self, mock_ws_client
+    ):
+        """Test that blocking=True polls until status is not running."""
+        # Setup mocks
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        # Track poll count and return "running" for first 2 polls, then "finished"
+        poll_count = [0]
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                poll_count[0] += 1
+                response = Mock()
+                response.raise_for_status.return_value = None
+                if poll_count[0] <= 2:
+                    response.json.return_value = {
+                        "id": conversation_id,
+                        "execution_status": "running",
+                    }
+                else:
+                    response.json.return_value = {
+                        "id": conversation_id,
+                        "execution_status": "finished",
+                    }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create conversation and run with blocking=True
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        conversation.run(blocking=True, poll_interval=0.01)  # Fast polling for test
+
+        # Verify polling happened multiple times
+        assert poll_count[0] == 3, (
+            f"Should have polled 3 times (2 running + 1 finished), got {poll_count[0]}"
+        )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_timeout(self, mock_ws_client):
+        """Test that run() raises ConversationRunError on timeout."""
+        from openhands.sdk.conversation.exceptions import ConversationRunError
+
+        # Setup mocks
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        # Always return "running" status to trigger timeout
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response = Mock()
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": "running",
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create conversation and run with very short timeout
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        with pytest.raises(ConversationRunError) as exc_info:
+            conversation.run(blocking=True, poll_interval=0.01, timeout=0.05)
+
+        # Verify the error contains timeout information
+        assert "timed out" in str(exc_info.value).lower()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
