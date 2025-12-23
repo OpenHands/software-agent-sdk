@@ -22,6 +22,9 @@ a short, unique property of that number (e.g., "1 is the first natural number",
 
 DO NOT write a script to do this. Instead, interactively call the echo command
 1000 times, once for each number from 1 to 1000.
+
+This won't be efficient -- that is okay, we're using the output as a test for our
+context management system.
 """
 
 logger = get_logger(__name__)
