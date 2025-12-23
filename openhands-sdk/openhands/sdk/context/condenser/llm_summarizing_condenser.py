@@ -203,26 +203,17 @@ class LLMSummarizingCondenser(RollingCondenser):
         # to ensure all resource constraints are met.
         events_from_tail = min(suffix_events_to_keep)
 
-        # Calculate naive forgetting range (without considering atomic boundaries)
-        naive_start = self.keep_first
+        # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 
-        # Get manipulation indices for boundary-aware calculation
-        manipulation_indices = View.get_manipulation_indices(view.events)
-
         # Find actual forgetting_start: smallest manipulation index > keep_first
-        forgetting_start = naive_start
-        for idx in manipulation_indices:
-            if idx > self.keep_first:
-                forgetting_start = idx
-                break
+        # Uses view's cached manipulation_indices property internally
+        forgetting_start = view.find_next_manipulation_index(
+            self.keep_first, strict=True
+        )
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
-        forgetting_end = naive_end
-        for idx in manipulation_indices:
-            if idx >= naive_end:
-                forgetting_end = idx
-                break
+        forgetting_end = view.find_next_manipulation_index(naive_end, strict=False)
 
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]

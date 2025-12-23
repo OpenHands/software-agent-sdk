@@ -1,8 +1,9 @@
 from collections.abc import Sequence
+from functools import cached_property
 from logging import getLogger
 from typing import overload
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from openhands.sdk.event import (
     Condensation,
@@ -65,6 +66,20 @@ class View(BaseModel):
             if isinstance(event, CondensationSummaryEvent):
                 return event
         return None
+
+    @computed_field  # type: ignore[prop-decorator]
+    @cached_property
+    def manipulation_indices(self) -> list[int]:
+        """Return cached manipulation indices for this view's events.
+
+        These indices represent boundaries between atomic units where events can be
+        safely manipulated (inserted or forgotten). This is a computed field that is
+        cached to avoid recomputing the indices multiple times during condensation.
+
+        Returns:
+            Sorted list of indices representing atomic unit boundaries.
+        """
+        return self.get_manipulation_indices(self.events)
 
     # To preserve list-like indexing, we ideally support slicing and position-based
     # indexing. The only challenge with that is switching the return type based on the
@@ -334,6 +349,29 @@ class View(BaseModel):
                 manipulation_indices.add(idx + 1)
 
         return sorted(manipulation_indices)
+
+    def find_next_manipulation_index(self, threshold: int, strict: bool = False) -> int:
+        """Find the smallest manipulation index greater than (or equal to) a threshold.
+
+        This is a helper method for condensation logic that needs to find safe
+        boundaries for forgetting events. Uses the cached manipulation_indices property.
+
+        Args:
+            threshold: The threshold value to compare against
+            strict: If True, finds index > threshold. If False, finds index >= threshold
+
+        Returns:
+            The smallest manipulation index that satisfies the condition, or the
+            threshold itself if no such index exists
+        """
+        for idx in self.manipulation_indices:
+            if strict:
+                if idx > threshold:
+                    return idx
+            else:
+                if idx >= threshold:
+                    return idx
+        return threshold
 
     @staticmethod
     def from_events(events: Sequence[Event]) -> "View":
