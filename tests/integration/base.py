@@ -17,13 +17,13 @@ from openhands.sdk import (
     Message,
     TextContent,
 )
+from openhands.sdk.context.condenser import Condenser
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
-from openhands.sdk.context.condenser import Condenser
 from openhands.sdk.tool import Tool
 
 
@@ -90,7 +90,9 @@ class BaseIntegrationTest(ABC):
         }
 
         self.llm: LLM = LLM(**llm_kwargs, usage_id="test-llm")
-        self.agent: Agent = Agent(llm=self.llm, tools=self.tools, condenser=self.condenser)
+        self.agent: Agent = Agent(
+            llm=self.llm, tools=self.tools, condenser=self.condenser
+        )
         self.collected_events: list[Event] = []
         self.llm_messages: list[dict[str, Any]] = []
 
