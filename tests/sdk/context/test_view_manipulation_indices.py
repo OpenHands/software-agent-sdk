@@ -316,18 +316,23 @@ def test_observations_extend_batch_range() -> None:
     assert indices == [0, 5]
 
 
-def test_no_observations_for_actions() -> None:
-    """Test batch boundaries when actions have no matching observations."""
+def test_batch_with_all_observations() -> None:
+    """Test batch boundaries when all actions have matching observations.
+
+    Note: In practice, from_events() filters out unmatched actions, so this
+    tests the realistic scenario where all actions in a batch have observations.
+    """
     action1 = create_action_event("response_1", "call_1")
     action2 = create_action_event("response_1", "call_2")
+    obs1 = create_observation_event("call_1")
+    obs2 = create_observation_event("call_2")
 
-    events = [action1, action2]
-    # Create view directly since from_events() may filter unmatched actions
-    view = View(events=events)
+    events = [action1, action2, obs1, obs2]
+    view = View.from_events(events)
     indices = view.manipulation_indices
 
-    # Batch range is just the actions
-    assert indices == [0, 2]
+    # The batch is one atomic unit containing both action-observation pairs
+    assert indices == [0, 4]
 
 
 def test_interleaved_batches_and_messages() -> None:
