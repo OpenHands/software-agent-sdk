@@ -36,7 +36,6 @@ def test_filter_unmatched_tool_calls_with_user_reject_observation() -> None:
     action_event.tool_call_id = "call_1"
     action_event.id = "action_1"
     action_event.llm_response_id = "response_1"
-    action_event.thinking_blocks = []
 
     # Create a UserRejectObservation that responds to the action
     user_reject_obs = UserRejectObservation(
@@ -79,7 +78,6 @@ def test_filter_unmatched_tool_calls_with_agent_error_event() -> None:
     action_event.tool_call_id = "call_1"
     action_event.id = "action_1"
     action_event.llm_response_id = "response_1"
-    action_event.thinking_blocks = []
 
     # Create an AgentErrorEvent that responds to the action
     # After the fix, AgentErrorEvent should have tool_name and tool_call_id fields
@@ -123,19 +121,16 @@ def test_filter_unmatched_tool_calls_mixed_observation_types() -> None:
     action_event_1.tool_call_id = "call_1"
     action_event_1.id = "action_1"
     action_event_1.llm_response_id = "response_1"
-    action_event_1.thinking_blocks = []
 
     action_event_2 = create_autospec(ActionEvent, instance=True)
     action_event_2.tool_call_id = "call_2"
     action_event_2.id = "action_2"
     action_event_2.llm_response_id = "response_2"
-    action_event_2.thinking_blocks = []
 
     action_event_3 = create_autospec(ActionEvent, instance=True)
     action_event_3.tool_call_id = "call_3"
     action_event_3.id = "action_3"
     action_event_3.llm_response_id = "response_3"
-    action_event_3.thinking_blocks = []
 
     # Create different types of observations
     # Normal observation - should work
