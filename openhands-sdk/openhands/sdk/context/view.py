@@ -123,19 +123,18 @@ class View(BaseModel):
           corresponding ObservationBaseEvents
         - A single event that is neither an ActionEvent nor an ObservationBaseEvent
 
-        Additionally, thinking block consistency is enforced:
-        - If any ActionEvent has thinking blocks, all batches from the last batch
-          with thinking blocks to the end are grouped as a single atomic unit.
-        - This ensures that if we remove a batch with thinking blocks, we also
-          remove all subsequent batches without thinking blocks, maintaining
-          consistency for APIs that require thinking blocks in the final message.
-
         The returned indices can be used for:
         - Inserting new events: any returned index is safe
         - Forgetting events: select a range between two consecutive indices
 
         Consecutive indices define atomic units that must stay together:
         - events[indices[i]:indices[i+1]] is an atomic unit
+
+        Additionally, thinking block consistency is enforced:
+        - When thinking is enabled, the Claude API requires the final assistant
+          message to start with a thinking block
+        - Cut points are only allowed after batches WITH thinking blocks
+        - This ensures any valid cut leaves a final batch with thinking blocks
 
         Returns:
             Sorted list of indices representing atomic unit boundaries. Always
@@ -163,10 +162,9 @@ class View(BaseModel):
                 observation_indices[event.tool_call_id] = idx
 
         # For each batch, find the range of indices that includes all actions
-        # and their corresponding observations, and track if batch has thinking blocks
-        batch_ranges: list[
-            tuple[int, int, bool]
-        ] = []  # (min_idx, max_idx, has_thinking)
+        # and their corresponding observations, and track thinking blocks
+        # (min_idx, max_idx, has_thinking)
+        batch_ranges: list[tuple[int, int, bool]] = []
         for llm_response_id, action_indices in batches.items():
             min_idx = min(action_indices)
             max_idx = max(action_indices)
@@ -186,29 +184,11 @@ class View(BaseModel):
 
             batch_ranges.append((min_idx, max_idx, has_thinking))
 
-        # Sort batch_ranges by min_idx to process in order
+        # Sort by min_idx to process in order
         batch_ranges.sort(key=lambda x: x[0])
 
-        # Find the last batch with thinking blocks
-        last_thinking_batch_idx: int | None = None
-        for i, (_, _, has_thinking) in enumerate(batch_ranges):
-            if has_thinking:
-                last_thinking_batch_idx = i
-
-        # Check if there are batches without thinking after the last thinking batch
-        # If so, we need to merge them into a single atomic unit
-        thinking_consistency_start: int | None = None
-        if last_thinking_batch_idx is not None:
-            # Check if any batch after the last thinking batch doesn't have thinking
-            has_non_thinking_after = False
-            for i in range(last_thinking_batch_idx + 1, len(batch_ranges)):
-                if not batch_ranges[i][2]:  # has_thinking is False
-                    has_non_thinking_after = True
-                    break
-
-            if has_non_thinking_after:
-                # Merge all batches from last_thinking_batch_idx to end
-                thinking_consistency_start = batch_ranges[last_thinking_batch_idx][0]
+        # Check if any batch has thinking blocks
+        any_has_thinking = any(has_thinking for _, _, has_thinking in batch_ranges)
 
         # Start with all possible indices (subtractive approach)
         result_indices = set(range(len(self.events) + 1))
@@ -219,11 +199,14 @@ class View(BaseModel):
             for idx in range(min_idx + 1, max_idx + 1):
                 result_indices.discard(idx)
 
-        # If thinking consistency requires merging, remove indices between
-        # the last thinking batch and the end
-        if thinking_consistency_start is not None:
-            for idx in range(thinking_consistency_start + 1, len(self.events)):
-                result_indices.discard(idx)
+        # If any batch has thinking blocks, only allow cuts after batches WITH thinking
+        # This ensures the final batch always has thinking blocks
+        if any_has_thinking:
+            for min_idx, max_idx, has_thinking in batch_ranges:
+                if not has_thinking:
+                    # Remove the cut point after this batch (max_idx + 1)
+                    # We can't cut here because it would leave a non-thinking batch
+                    result_indices.discard(max_idx + 1)
 
         return sorted(result_indices)
 
@@ -301,18 +284,21 @@ class View(BaseModel):
         """Ensure thinking block consistency when removing ActionEvents.
 
         When thinking is enabled, the Claude API requires that the final assistant
-        message starts with a thinking block. This method ensures that if a batch
-        with thinking blocks is removed, all subsequent batches without thinking
-        blocks are also removed to maintain consistency.
+        message starts with a thinking block. This method ensures that after
+        removing events, the final remaining batch has thinking blocks.
+
+        The approach is simple: if any batch originally had thinking blocks, the
+        final remaining batch must also have thinking blocks. If the final batch
+        doesn't have thinking blocks, remove it and repeat until the final batch
+        has thinking blocks (or all batches are removed).
 
         Args:
             events: The original list of events
             removed_event_ids: Set of event IDs that are being removed
 
         Returns:
-            Updated set of event IDs that should be removed (including all
-            ActionEvents in batches after a removed thinking batch that don't
-            have thinking blocks)
+            Updated set of event IDs that should be removed (ensuring the final
+            remaining batch has thinking blocks if any batch had them)
         """
         # Build batch info with thinking block status
         # batch_info: list of (llm_response_id, event_ids, has_thinking, min_event_idx)
@@ -339,48 +325,45 @@ class View(BaseModel):
         if not batch_info:
             return removed_event_ids
 
-        # Find the last batch with thinking blocks that is NOT being removed
-        last_kept_thinking_batch_idx: int | None = None
-        for i, (_, event_ids, has_thinking, _) in enumerate(batch_info):
-            if has_thinking and not all(eid in removed_event_ids for eid in event_ids):
-                last_kept_thinking_batch_idx = i
-
-        # Find the last batch with thinking blocks that IS being removed
-        last_removed_thinking_batch_idx: int | None = None
-        for i, (_, event_ids, has_thinking, _) in enumerate(batch_info):
-            if has_thinking and any(eid in removed_event_ids for eid in event_ids):
-                last_removed_thinking_batch_idx = i
-
-        # If no thinking batch is being removed, no additional action needed
-        if last_removed_thinking_batch_idx is None:
-            return removed_event_ids
-
-        # Determine the starting point for removing subsequent batches
-        # We need to remove all batches after the last removed thinking batch
-        # that don't have thinking blocks (or have thinking but are after a
-        # non-thinking batch)
-        start_idx = last_removed_thinking_batch_idx + 1
-
-        # If there's a kept thinking batch after the removed one, we can stop there
-        if (
-            last_kept_thinking_batch_idx is not None
-            and last_kept_thinking_batch_idx > last_removed_thinking_batch_idx
-        ):
-            # No need to remove batches after a kept thinking batch
+        # Check if any batch originally had thinking blocks
+        any_batch_has_thinking = any(
+            has_thinking for _, _, has_thinking, _ in batch_info
+        )
+        if not any_batch_has_thinking:
+            # No thinking blocks anywhere, no consistency needed
             return removed_event_ids
 
         updated_removed_ids = set(removed_event_ids)
 
-        # Remove all batches after the last removed thinking batch
-        for i in range(start_idx, len(batch_info)):
-            llm_response_id, event_ids, has_thinking, _ = batch_info[i]
+        # Find remaining batches (not fully removed) and ensure final one has thinking
+        # Keep removing final batches without thinking until we find one with thinking
+        changed = True
+        while changed:
+            changed = False
+
+            # Find remaining batches (those not fully removed)
+            remaining_batches = [
+                (llm_response_id, event_ids, has_thinking, min_idx)
+                for llm_response_id, event_ids, has_thinking, min_idx in batch_info
+                if not all(eid in updated_removed_ids for eid in event_ids)
+            ]
+
+            if not remaining_batches:
+                # All batches removed, nothing more to do
+                break
+
+            # Check if the final remaining batch has thinking blocks
+            final_batch = remaining_batches[-1]
+            llm_response_id, event_ids, has_thinking, _ = final_batch
+
             if not has_thinking:
+                # Final batch doesn't have thinking, remove it
                 updated_removed_ids.update(event_ids)
+                changed = True
                 logger.debug(
                     f"Enforcing thinking block consistency: removing batch "
                     f"with llm_response_id={llm_response_id} "
-                    f"({len(event_ids)} events) - no thinking blocks after "
-                    f"removed thinking batch"
+                    f"({len(event_ids)} events) - final batch must have thinking"
                 )
 
         return updated_removed_ids
