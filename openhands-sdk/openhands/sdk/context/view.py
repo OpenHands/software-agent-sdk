@@ -22,6 +22,46 @@ from openhands.sdk.event.types import ToolCallID
 logger = getLogger(__name__)
 
 
+class ActionBatch(BaseModel):
+    """Represents a batch of ActionEvents grouped by llm_response_id."""
+
+    batches: dict[EventID, list[EventID]]
+    action_id_to_response_id: dict[EventID, EventID]
+    action_id_to_tool_call_id: dict[EventID, ToolCallID]
+
+    @staticmethod
+    def from_events(
+        events: Sequence[Event],
+    ) -> "ActionBatch":
+        """Build a map of llm_response_id -> list of ActionEvent IDs.
+
+        Returns:
+            ActionBatch containing:
+            - batches: dict mapping llm_response_id to list of ActionEvent IDs
+            - action_id_to_response_id: dict mapping ActionEvent ID to llm_response_id
+            - action_id_to_tool_call_id: dict mapping ActionEvent ID to tool_call_id
+        """
+        batches: dict[EventID, list[EventID]] = {}
+        action_id_to_response_id: dict[EventID, EventID] = {}
+        action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
+
+        for event in events:
+            if isinstance(event, ActionEvent):
+                llm_response_id = event.llm_response_id
+                if llm_response_id not in batches:
+                    batches[llm_response_id] = []
+                batches[llm_response_id].append(event.id)
+                action_id_to_response_id[event.id] = llm_response_id
+                if event.tool_call_id is not None:
+                    action_id_to_tool_call_id[event.id] = event.tool_call_id
+
+        return ActionBatch(
+            batches=batches,
+            action_id_to_response_id=action_id_to_response_id,
+            action_id_to_tool_call_id=action_id_to_tool_call_id,
+        )
+
+
 class View(BaseModel):
     """Linearly ordered view of events.
 
@@ -179,35 +219,6 @@ class View(BaseModel):
             raise ValueError(f"Invalid key type: {type(key)}")
 
     @staticmethod
-    def _build_action_batches(
-        events: Sequence[Event],
-    ) -> tuple[
-        dict[EventID, list[EventID]], dict[EventID, EventID], dict[EventID, ToolCallID]
-    ]:
-        """Build a map of llm_response_id -> list of ActionEvent IDs.
-
-        Returns:
-            A tuple of:
-            - batches: dict mapping llm_response_id to list of ActionEvent IDs
-            - action_id_to_response_id: dict mapping ActionEvent ID to llm_response_id
-            - action_id_to_tool_call_id: dict mapping ActionEvent ID to tool_call_id
-        """
-        batches: dict[EventID, list[EventID]] = {}
-        action_id_to_response_id: dict[EventID, EventID] = {}
-        action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
-
-        for event in events:
-            if isinstance(event, ActionEvent):
-                llm_response_id = event.llm_response_id
-                if llm_response_id not in batches:
-                    batches[llm_response_id] = []
-                batches[llm_response_id].append(event.id)
-                action_id_to_response_id[event.id] = llm_response_id
-                action_id_to_tool_call_id[event.id] = event.tool_call_id
-
-        return batches, action_id_to_response_id, action_id_to_tool_call_id
-
-    @staticmethod
     def _enforce_batch_atomicity(
         events: Sequence[Event],
         removed_event_ids: set[EventID],
@@ -226,14 +237,14 @@ class View(BaseModel):
             Updated set of event IDs that should be removed (including all
             ActionEvents in batches where any ActionEvent was removed)
         """
-        batches, action_id_to_response_id, _ = View._build_action_batches(events)
+        action_batch = ActionBatch.from_events(events)
 
-        if not batches:
+        if not action_batch.batches:
             return removed_event_ids
 
         updated_removed_ids = set(removed_event_ids)
 
-        for llm_response_id, batch_event_ids in batches.items():
+        for llm_response_id, batch_event_ids in action_batch.batches.items():
             # Check if any ActionEvent in this batch is being removed
             if any(event_id in removed_event_ids for event_id in batch_event_ids):
                 # If so, remove all ActionEvents in this batch
@@ -261,7 +272,7 @@ class View(BaseModel):
         observation_tool_call_ids = View._get_observation_tool_call_ids(events)
 
         # Build batch info for batch atomicity enforcement
-        _, _, action_id_to_tool_call_id = View._build_action_batches(events)
+        action_batch = ActionBatch.from_events(events)
 
         # First pass: identify which events would NOT be kept based on matching
         removed_event_ids: set[EventID] = set()
@@ -280,8 +291,10 @@ class View(BaseModel):
         # due to batch atomicity
         tool_call_ids_to_remove: set[ToolCallID] = set()
         for action_id in removed_event_ids:
-            if action_id in action_id_to_tool_call_id:
-                tool_call_ids_to_remove.add(action_id_to_tool_call_id[action_id])
+            if action_id in action_batch.action_id_to_tool_call_id:
+                tool_call_ids_to_remove.add(
+                    action_batch.action_id_to_tool_call_id[action_id]
+                )
 
         # Filter out removed events
         result = []
