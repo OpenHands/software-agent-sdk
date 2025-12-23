@@ -632,6 +632,7 @@ def test_filter_unmatched_tool_calls_matched_pairs() -> None:
     action_event_1.tool_call_id = "call_1"
     action_event_1.id = "action_1"
     action_event_1.llm_response_id = "response_1"
+    action_event_1.thinking_blocks = []
 
     observation_event_1 = create_autospec(ObservationEvent, instance=True)
     observation_event_1.tool_call_id = "call_1"
@@ -642,6 +643,7 @@ def test_filter_unmatched_tool_calls_matched_pairs() -> None:
     action_event_2.tool_call_id = "call_2"
     action_event_2.id = "action_2"
     action_event_2.llm_response_id = "response_2"
+    action_event_2.thinking_blocks = []
 
     observation_event_2 = create_autospec(ObservationEvent, instance=True)
     observation_event_2.tool_call_id = "call_2"
@@ -677,6 +679,7 @@ def test_filter_unmatched_tool_calls_unmatched_action() -> None:
     action_event_matched.tool_call_id = "call_1"
     action_event_matched.id = "action_1"
     action_event_matched.llm_response_id = "response_1"
+    action_event_matched.thinking_blocks = []
 
     observation_event_matched = create_autospec(ObservationEvent, instance=True)
     observation_event_matched.tool_call_id = "call_1"
@@ -687,6 +690,7 @@ def test_filter_unmatched_tool_calls_unmatched_action() -> None:
     action_event_unmatched.tool_call_id = "call_2"
     action_event_unmatched.id = "action_2"
     action_event_unmatched.llm_response_id = "response_2"
+    action_event_unmatched.thinking_blocks = []
 
     events = [
         message_event,
@@ -717,6 +721,7 @@ def test_filter_unmatched_tool_calls_unmatched_observation() -> None:
     action_event_matched.tool_call_id = "call_1"
     action_event_matched.id = "action_1"
     action_event_matched.llm_response_id = "response_1"
+    action_event_matched.thinking_blocks = []
 
     observation_event_matched = create_autospec(ObservationEvent, instance=True)
     observation_event_matched.tool_call_id = "call_1"
@@ -758,6 +763,7 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
     action_event_1.tool_call_id = "call_1"
     action_event_1.id = "action_1"
     action_event_1.llm_response_id = "response_1"
+    action_event_1.thinking_blocks = []
 
     observation_event_1 = create_autospec(ObservationEvent, instance=True)
     observation_event_1.tool_call_id = "call_1"
@@ -768,6 +774,7 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
     action_event_unmatched.tool_call_id = "call_2"
     action_event_unmatched.id = "action_unmatched"
     action_event_unmatched.llm_response_id = "response_2"
+    action_event_unmatched.thinking_blocks = []
 
     # Unmatched ObservationEvent
     observation_event_unmatched = create_autospec(ObservationEvent, instance=True)
@@ -779,6 +786,7 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
     action_event_2.tool_call_id = "call_4"
     action_event_2.id = "action_2"
     action_event_2.llm_response_id = "response_3"
+    action_event_2.thinking_blocks = []
 
     observation_event_2 = create_autospec(ObservationEvent, instance=True)
     observation_event_2.tool_call_id = "call_4"
@@ -817,6 +825,7 @@ def test_filter_unmatched_tool_calls_none_tool_call_id() -> None:
     action_event_none.tool_call_id = None
     action_event_none.id = "action_none"
     action_event_none.llm_response_id = "response_1"
+    action_event_none.thinking_blocks = []
 
     observation_event_none = create_autospec(ObservationEvent, instance=True)
     observation_event_none.tool_call_id = None
@@ -827,6 +836,7 @@ def test_filter_unmatched_tool_calls_none_tool_call_id() -> None:
     action_event_valid.tool_call_id = "call_1"
     action_event_valid.id = "action_valid"
     action_event_valid.llm_response_id = "response_2"
+    action_event_valid.thinking_blocks = []
 
     observation_event_valid = create_autospec(ObservationEvent, instance=True)
     observation_event_valid.tool_call_id = "call_1"
