@@ -56,6 +56,16 @@ on:
                 description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
                 required: false
                 default: ''
+            num_infer_workers:
+                description: Number of inference workers (optional, overrides benchmark default)
+                required: false
+                default: ''
+                type: string
+            num_eval_workers:
+                description: Number of evaluation workers (optional, overrides benchmark default)
+                required: false
+                default: ''
+                type: string
 
 
 env:
@@ -200,6 +210,8 @@ jobs:
                   TRIGGER_REASON: ${{ github.event.inputs.reason }}
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
                   INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
+                  NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
+                  NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -212,7 +224,9 @@ jobs:
                     --arg benchmarks "$BENCHMARKS_BRANCH" \
                     --arg benchmark "$BENCHMARK" \
                     --arg instance_ids "$INSTANCE_IDS" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids}}')
+                    --arg num_infer_workers "$NUM_INFER_WORKERS" \
+                    --arg num_eval_workers "$NUM_EVAL_WORKERS" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
