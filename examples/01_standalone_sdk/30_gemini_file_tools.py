@@ -49,4 +49,7 @@ conversation.run()
 
 conversation.send_message("Now delete the FACTS.txt file you just created.")
 conversation.run()
-print("All done!")
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
