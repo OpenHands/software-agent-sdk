@@ -199,14 +199,27 @@ class View(BaseModel):
             for idx in range(min_idx + 1, max_idx + 1):
                 result_indices.discard(idx)
 
-        # If any batch has thinking blocks, only allow cuts after batches WITH thinking
-        # This ensures the final batch always has thinking blocks
-        if any_has_thinking:
+        # If any batch has thinking blocks, only allow cuts that would leave
+        # a final batch WITH thinking blocks (or no batches at all)
+        if any_has_thinking and batch_ranges:
+            first_batch_start = batch_ranges[0][0]
+
+            # Build a set of valid cut points:
+            # 1. Cut points before the first batch (no batches kept)
+            # 2. Cut points immediately after batches WITH thinking
+            valid_cuts: set[int] = set()
+
+            # All indices before the first batch are valid (no batches kept)
+            for idx in range(first_batch_start + 1):
+                valid_cuts.add(idx)
+
+            # Cut points after batches with thinking are valid
             for min_idx, max_idx, has_thinking in batch_ranges:
-                if not has_thinking:
-                    # Remove the cut point after this batch (max_idx + 1)
-                    # We can't cut here because it would leave a non-thinking batch
-                    result_indices.discard(max_idx + 1)
+                if has_thinking:
+                    valid_cuts.add(max_idx + 1)
+
+            # Remove any cut point that's not in valid_cuts
+            result_indices = result_indices & valid_cuts
 
         return sorted(result_indices)
 
