@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from collections import defaultdict
 from collections.abc import Sequence
 from functools import cached_property
 from logging import getLogger
@@ -23,33 +26,35 @@ logger = getLogger(__name__)
 
 
 class ActionBatch(BaseModel):
-    """Represents a batch of ActionEvents grouped by llm_response_id."""
+    """Represents a batch of ActionEvents grouped by llm_response_id.
+    
+    This is a utility class used to help detect and manage batches of ActionEvents
+    that share the same llm_response_id, which indicates they were generated together
+    by the LLM. This is important for ensuring atomicity when manipulating events
+    in a View, such as during condensation.
+    """
 
     batches: dict[EventID, list[EventID]]
+    """dict mapping llm_response_id to list of ActionEvent IDs"""
+
     action_id_to_response_id: dict[EventID, EventID]
+    """dict mapping ActionEvent ID to llm_response_id"""
+
     action_id_to_tool_call_id: dict[EventID, ToolCallID]
+    """dict mapping ActionEvent ID to tool_call_id"""
 
     @staticmethod
     def from_events(
         events: Sequence[Event],
-    ) -> "ActionBatch":
-        """Build a map of llm_response_id -> list of ActionEvent IDs.
-
-        Returns:
-            ActionBatch containing:
-            - batches: dict mapping llm_response_id to list of ActionEvent IDs
-            - action_id_to_response_id: dict mapping ActionEvent ID to llm_response_id
-            - action_id_to_tool_call_id: dict mapping ActionEvent ID to tool_call_id
-        """
-        batches: dict[EventID, list[EventID]] = {}
+    ) -> ActionBatch:
+        """Build a map of llm_response_id -> list of ActionEvent IDs."""
+        batches: dict[EventID, list[EventID]] = defaultdict(list)
         action_id_to_response_id: dict[EventID, EventID] = {}
         action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
 
         for event in events:
             if isinstance(event, ActionEvent):
                 llm_response_id = event.llm_response_id
-                if llm_response_id not in batches:
-                    batches[llm_response_id] = []
                 batches[llm_response_id].append(event.id)
                 action_id_to_response_id[event.id] = llm_response_id
                 if event.tool_call_id is not None:
@@ -369,7 +374,7 @@ class View(BaseModel):
         return threshold
 
     @staticmethod
-    def from_events(events: Sequence[Event]) -> "View":
+    def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
