@@ -27,7 +27,7 @@ logger = getLogger(__name__)
 
 class ActionBatch(BaseModel):
     """Represents a batch of ActionEvents grouped by llm_response_id.
-    
+
     This is a utility class used to help detect and manage batches of ActionEvents
     that share the same llm_response_id, which indicates they were generated together
     by the LLM. This is important for ensuring atomicity when manipulating events
