@@ -20,8 +20,8 @@ from openhands.tools.gemini import GEMINI_FILE_TOOLS
 from openhands.tools.terminal import TerminalTool
 
 
-# Route logs based on whether we're using a proxy (Vertex route) or direct Gemini
-_log_dir = "logs/vertex" if os.getenv("LLM_BASE_URL") else "logs/gemini"
+# Route logs in their own directory for easy tracing
+_log_dir = "logs/gemini"
 os.makedirs(_log_dir, exist_ok=True)
 
 llm = LLM(
