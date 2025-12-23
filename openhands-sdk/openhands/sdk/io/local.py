@@ -20,14 +20,14 @@ class LocalFileStore(FileStore):
         self,
         root: str,
         cache_limit_size: int = 500,
-        cache_memory_size: int = 5 * 1024 * 1024,
+        cache_memory_size: int = 20 * 1024 * 1024,
     ) -> None:
         """Initialize a LocalFileStore with caching.
 
         Args:
             root: Root directory for file storage.
             cache_limit_size: Maximum number of cached entries (default: 500).
-            cache_memory_size: Maximum cache memory in bytes (default: 5MB).
+            cache_memory_size: Maximum cache memory in bytes (default: 20MB).
 
         Note:
             The cache assumes exclusive access to files. External modifications

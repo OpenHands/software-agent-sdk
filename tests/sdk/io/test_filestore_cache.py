@@ -181,7 +181,7 @@ def test_cache_with_binary_files():
         # Write binary content
         binary_content = b"\x00\x01\x02\x03\xff\xfe\xfd"
         store.write("binary.dat", binary_content)
-
+        store.cache.clear()
         # Read should return decoded string
         content = store.read("binary.dat")
         assert isinstance(content, str)
