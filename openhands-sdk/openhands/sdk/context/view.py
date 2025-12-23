@@ -181,23 +181,14 @@ class View(BaseModel):
         for min_idx, max_idx in batch_ranges:
             handled_indices.update(range(min_idx, max_idx + 1))
 
-        # Track all atomic unit boundaries
-        result_indices = {0, len(self.events)}
+        # Start with all possible indices (subtractive approach)
+        result_indices = set(range(len(self.events) + 1))
 
-        # Add boundaries after each batch
+        # Remove indices inside batch ranges (keep only boundaries)
         for min_idx, max_idx in batch_ranges:
-            # The boundary is after the last event in the batch
-            result_indices.add(max_idx + 1)
-            # And before the first event in the batch
-            result_indices.add(min_idx)
-
-        # For non-batch, non-observation events (like MessageEvent), each is its own
-        # atomic unit
-        for idx, event in enumerate(self.events):
-            if idx not in handled_indices:
-                # Single events can have boundaries before and after
-                result_indices.add(idx)
-                result_indices.add(idx + 1)
+            # Remove interior indices, keeping min_idx and max_idx+1 as boundaries
+            for idx in range(min_idx + 1, max_idx + 1):
+                result_indices.discard(idx)
 
         return sorted(result_indices)
 
