@@ -117,8 +117,6 @@ def get_suffix_length_for_token_reduction(
 
     Returns:
         The number of events from the end that can be kept (suffix length).
-        Returns 0 if removing all events doesn't achieve the target reduction.
-        Returns len(events) if no reduction is needed (token_reduction <= 0).
 
     Example:
         >>> from openhands.sdk.llm import LLM

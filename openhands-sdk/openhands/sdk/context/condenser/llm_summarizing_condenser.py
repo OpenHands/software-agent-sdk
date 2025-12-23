@@ -188,19 +188,21 @@ class LLMSummarizingCondenser(RollingCondenser):
             total_tokens = get_total_token_count(view.events, agent_llm)
             tokens_to_reduce = total_tokens - (self.max_tokens // 2)
 
-            suffix_events_to_keep.add(
-                get_suffix_length_for_token_reduction(
-                    events=view.events[self.keep_first :],
-                    llm=agent_llm,
-                    token_reduction=tokens_to_reduce,
-                )
+            suffix_length = get_suffix_length_for_token_reduction(
+                events=view.events[self.keep_first :],
+                llm=agent_llm,
+                token_reduction=tokens_to_reduce,
             )
+
+            suffix_events_to_keep.add(suffix_length)
 
         # We might have multiple reasons to condense, so pick the strictest condensation
         # to ensure all resource constraints are met.
         events_from_tail = min(suffix_events_to_keep)
 
         # Identify events to be forgotten (those not in head or tail)
+        if events_from_tail == 0:
+            return view[self.keep_first :]
         return view[self.keep_first : -events_from_tail]
 
     @observe(ignore_inputs=["view", "agent_llm"])
