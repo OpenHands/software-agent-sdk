@@ -207,7 +207,6 @@ class LLMSummarizingCondenser(RollingCondenser):
         naive_end = len(view) - events_from_tail
 
         # Find actual forgetting_start: smallest manipulation index > keep_first
-        # Uses view's cached manipulation_indices property internally
         forgetting_start = view.find_next_manipulation_index(
             self.keep_first, strict=True
         )
@@ -219,9 +218,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         forgotten_events = view[forgetting_start:forgetting_end]
 
         # Summary offset is the same as forgetting_start
-        summary_offset = forgetting_start
-
-        return forgotten_events, summary_offset
+        return forgotten_events, forgetting_start
 
     @observe(ignore_inputs=["view", "agent_llm"])
     def get_condensation(

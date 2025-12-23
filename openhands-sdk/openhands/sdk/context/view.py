@@ -70,11 +70,13 @@ class View(BaseModel):
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
     def manipulation_indices(self) -> list[int]:
-        """Return cached manipulation indices for this view's events.
+        """Return manipulation indices for this view's events.
 
         These indices represent boundaries between atomic units where events can be
-        safely manipulated (inserted or forgotten). This is a computed field that is
-        cached to avoid recomputing the indices multiple times during condensation.
+        safely manipulated (inserted or forgotten).
+        
+        This is a computed field that is cached to avoid recomputing the indices
+        multiple times during condensation.
 
         Returns:
             Sorted list of indices representing atomic unit boundaries.
