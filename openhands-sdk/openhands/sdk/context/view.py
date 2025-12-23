@@ -332,7 +332,6 @@ class View(BaseModel):
         else:
             return True
 
-
     def find_next_manipulation_index(self, threshold: int, strict: bool = False) -> int:
         """Find the smallest manipulation index greater than (or equal to) a threshold.
 
