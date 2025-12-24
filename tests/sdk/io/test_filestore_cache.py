@@ -173,24 +173,6 @@ def test_cache_directory_deletion():
         assert full_path2 not in store.cache
 
 
-def test_cache_with_binary_files():
-    """Test that cache handles binary files correctly."""
-    with tempfile.TemporaryDirectory() as temp_dir:
-        store = LocalFileStore(temp_dir, cache_limit_size=10)
-
-        # Write binary content
-        binary_content = b"\x00\x01\x02\x03\xff\xfe\xfd"
-        store.write("binary.dat", binary_content)
-        store.cache.clear()
-        # Read should return decoded string
-        content = store.read("binary.dat")
-        assert isinstance(content, str)
-
-        # Should be in cache
-        full_path = store.get_full_path("binary.dat")
-        assert full_path in store.cache
-
-
 def test_large_number_of_events_no_oom():
     """Test that store can handle many events without OOM.
 

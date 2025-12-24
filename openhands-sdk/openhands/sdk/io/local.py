@@ -1,4 +1,3 @@
-import base64
 import os
 import shutil
 
@@ -62,13 +61,12 @@ class LocalFileStore(FileStore):
         if isinstance(contents, str):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(contents)
-            cache_content = contents
+            self.cache[full_path] = contents
         else:
             with open(full_path, "wb") as f:
                 f.write(contents)
-            cache_content = base64.b64encode(contents).decode("utf-8")
-
-        self.cache[full_path] = cache_content
+            # Don't cache binary content - LocalFileStore is meant for JSON data
+            # If binary data is written and then read, it will error on read
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
@@ -78,13 +76,9 @@ class LocalFileStore(FileStore):
 
         if not os.path.exists(full_path):
             raise FileNotFoundError(path)
-        try:
-            with open(full_path, encoding="utf-8") as f:
-                result = f.read()
-        except UnicodeDecodeError:
-            logger.debug(f"File {full_path} is binary, reading as bytes")
-            with open(full_path, "rb") as f:
-                result = base64.b64encode(f.read()).decode("utf-8")
+
+        with open(full_path, encoding="utf-8") as f:
+            result = f.read()
 
         self.cache[full_path] = result
         return result
