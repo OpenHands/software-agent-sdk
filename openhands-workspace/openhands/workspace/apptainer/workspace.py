@@ -16,40 +16,13 @@ from openhands.agent_server.docker.build import PlatformType, TargetType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
 from openhands.sdk.workspace import RemoteWorkspace
+from openhands.workspace.docker.workspace import (
+    check_port_available,
+    find_available_tcp_port,
+)
 
 
 logger = get_logger(__name__)
-
-
-def check_port_available(port: int) -> bool:
-    """Check if a port is available for binding."""
-    import socket
-
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        sock.bind(("0.0.0.0", port))
-        return True
-    except OSError:
-        time.sleep(0.1)
-        return False
-    finally:
-        sock.close()
-
-
-def find_available_tcp_port(
-    min_port: int = 30000, max_port: int = 39999, max_attempts: int = 50
-) -> int:
-    """Find an available TCP port in a specified range."""
-    import random
-
-    rng = random.SystemRandom()
-    ports = list(range(min_port, max_port + 1))
-    rng.shuffle(ports)
-
-    for port in ports[:max_attempts]:
-        if check_port_available(port):
-            return port
-    return -1
 
 
 class ApptainerWorkspace(RemoteWorkspace):
