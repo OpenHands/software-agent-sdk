@@ -7,7 +7,6 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 
 
 if TYPE_CHECKING:
@@ -114,8 +113,8 @@ class HookEventProcessor:
             return
 
         tool_name = event.tool_name
-        tool_input = {}
-        tool_output = ""
+        tool_input: dict[str, Any] = {}
+        tool_response: dict[str, Any] = {}
 
         # Extract tool input from action
         if action_event.action is not None:
@@ -124,20 +123,17 @@ class HookEventProcessor:
             except Exception as e:
                 logger.debug(f"Could not extract tool input: {e}")
 
-        # Extract tool output from observation (truncated to avoid huge payloads)
+        # Extract structured tool response from observation
         if event.observation is not None:
             try:
-                tool_output = maybe_truncate(
-                    event.observation.text,
-                    truncate_after=DEFAULT_TEXT_CONTENT_LIMIT,
-                )
+                tool_response = event.observation.model_dump()
             except Exception as e:
-                logger.debug(f"Could not extract tool output: {e}")
+                logger.debug(f"Could not extract tool response: {e}")
 
         results = self.hook_manager.run_post_tool_use(
             tool_name=tool_name,
             tool_input=tool_input,
-            tool_output=tool_output,
+            tool_response=tool_response,
         )
 
         # Log any hook errors

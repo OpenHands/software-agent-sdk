@@ -73,7 +73,7 @@ class TestHookManager:
         results = manager.run_post_tool_use(
             tool_name="BashTool",
             tool_input={"command": "ls"},
-            tool_output="file1.txt\nfile2.txt",
+            tool_response={"output": "file1.txt\nfile2.txt"},
         )
 
         assert len(results) == 1

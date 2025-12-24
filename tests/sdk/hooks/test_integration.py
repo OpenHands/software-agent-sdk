@@ -366,13 +366,17 @@ class TestPostToolUseActionLookup:
         # Process the observation (this should trigger PostToolUse and find the action)
         processor.on_event(observation_event)
 
-        # Verify the hook received the action's tool_input
+        # Verify the hook received the action's tool_input and tool_response
         assert log_file.exists(), "Hook should have been called and written to log file"
         hook_input = json.loads(log_file.read_text())
         assert hook_input["tool_name"] == "Think"
         assert "tool_input" in hook_input
         # The tool_input should contain the action's model_dump
         assert "thought" in hook_input["tool_input"]
+        # The tool_response should contain the observation's model_dump (structured dict)
+        assert "tool_response" in hook_input
+        assert isinstance(hook_input["tool_response"], dict)
+        assert "content" in hook_input["tool_response"]  # From Observation base class
 
     def test_post_tool_use_without_state_does_not_crash(self, tmp_path, logging_config):
         """Test that PostToolUse gracefully handles missing conversation state."""

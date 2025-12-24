@@ -23,7 +23,7 @@ class HookEvent(BaseModel):
     event_type: HookEventType
     tool_name: str | None = None
     tool_input: dict[str, Any] | None = None
-    tool_output: str | None = None
+    tool_response: dict[str, Any] | None = None
     message: str | None = None
     session_id: str | None = None
     working_dir: str | None = None

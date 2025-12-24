@@ -26,7 +26,7 @@ class HookManager:
         event_type: HookEventType,
         tool_name: str | None = None,
         tool_input: dict[str, Any] | None = None,
-        tool_output: str | None = None,
+        tool_response: dict[str, Any] | None = None,
         message: str | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> HookEvent:
@@ -35,7 +35,7 @@ class HookManager:
             event_type=event_type,
             tool_name=tool_name,
             tool_input=tool_input,
-            tool_output=tool_output,
+            tool_response=tool_response,
             message=message,
             session_id=self.session_id,
             working_dir=self.working_dir,
@@ -69,7 +69,7 @@ class HookManager:
         self,
         tool_name: str,
         tool_input: dict[str, Any],
-        tool_output: str,
+        tool_response: dict[str, Any],
     ) -> list[HookResult]:
         """Run PostToolUse hooks after a tool completes."""
         hooks = self.config.get_hooks_for_event(HookEventType.POST_TOOL_USE, tool_name)
@@ -80,7 +80,7 @@ class HookManager:
             HookEventType.POST_TOOL_USE,
             tool_name=tool_name,
             tool_input=tool_input,
-            tool_output=tool_output,
+            tool_response=tool_response,
         )
 
         # PostToolUse hooks don't block - they just run
