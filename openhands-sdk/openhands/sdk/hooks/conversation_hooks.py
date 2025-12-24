@@ -7,6 +7,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookEventType
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 
 
 if TYPE_CHECKING:
@@ -19,6 +20,11 @@ class HookEventProcessor:
     """Processes events and runs hooks at appropriate points.
 
     Call set_conversation_state() after creating Conversation for blocking to work.
+
+    Note on persistence: HookEvent/HookResult are ephemeral (for hook script I/O).
+    If hook execution traces need to be persisted (e.g., for observability), create
+    a HookExecutionObservation inheriting from Observation and emit it through the
+    event stream, rather than modifying these hook classes.
     """
 
     def __init__(
@@ -118,10 +124,13 @@ class HookEventProcessor:
             except Exception as e:
                 logger.debug(f"Could not extract tool input: {e}")
 
-        # Extract tool output from observation
+        # Extract tool output from observation (truncated to avoid huge payloads)
         if event.observation is not None:
             try:
-                tool_output = str(event.observation)
+                tool_output = maybe_truncate(
+                    event.observation.text,
+                    truncate_after=DEFAULT_TEXT_CONTENT_LIMIT,
+                )
             except Exception as e:
                 logger.debug(f"Could not extract tool output: {e}")
 
