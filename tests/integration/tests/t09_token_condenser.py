@@ -58,7 +58,7 @@ class TokenCondenserTest(BaseIntegrationTest):
             llm=condenser_llm,
             max_size=1000,  # Set high so it doesn't trigger on event count
             max_tokens=5000,  # Low token limit to ensure condensation triggers
-            keep_first=2,
+            keep_first=1,  # Keep only initial user message (not tool loop start)
         )
 
     @property
