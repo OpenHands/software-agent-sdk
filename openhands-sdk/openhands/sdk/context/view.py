@@ -1,8 +1,12 @@
+from __future__ import annotations
+
+from collections import defaultdict
 from collections.abc import Sequence
+from functools import cached_property
 from logging import getLogger
 from typing import overload
 
-from pydantic import BaseModel
+from pydantic import BaseModel, computed_field
 
 from openhands.sdk.event import (
     Condensation,
@@ -19,6 +23,48 @@ from openhands.sdk.event.types import ToolCallID
 
 
 logger = getLogger(__name__)
+
+
+class ActionBatch(BaseModel):
+    """Represents a batch of ActionEvents grouped by llm_response_id.
+
+    This is a utility class used to help detect and manage batches of ActionEvents
+    that share the same llm_response_id, which indicates they were generated together
+    by the LLM. This is important for ensuring atomicity when manipulating events
+    in a View, such as during condensation.
+    """
+
+    batches: dict[EventID, list[EventID]]
+    """dict mapping llm_response_id to list of ActionEvent IDs"""
+
+    action_id_to_response_id: dict[EventID, EventID]
+    """dict mapping ActionEvent ID to llm_response_id"""
+
+    action_id_to_tool_call_id: dict[EventID, ToolCallID]
+    """dict mapping ActionEvent ID to tool_call_id"""
+
+    @staticmethod
+    def from_events(
+        events: Sequence[Event],
+    ) -> ActionBatch:
+        """Build a map of llm_response_id -> list of ActionEvent IDs."""
+        batches: dict[EventID, list[EventID]] = defaultdict(list)
+        action_id_to_response_id: dict[EventID, EventID] = {}
+        action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
+
+        for event in events:
+            if isinstance(event, ActionEvent):
+                llm_response_id = event.llm_response_id
+                batches[llm_response_id].append(event.id)
+                action_id_to_response_id[event.id] = llm_response_id
+                if event.tool_call_id is not None:
+                    action_id_to_tool_call_id[event.id] = event.tool_call_id
+
+        return ActionBatch(
+            batches=batches,
+            action_id_to_response_id=action_id_to_response_id,
+            action_id_to_tool_call_id=action_id_to_tool_call_id,
+        )
 
 
 class View(BaseModel):
@@ -66,6 +112,86 @@ class View(BaseModel):
                 return event
         return None
 
+    @computed_field  # type: ignore[prop-decorator]
+    @cached_property
+    def manipulation_indices(self) -> list[int]:
+        """Return cached manipulation indices for this view's events.
+
+        These indices represent boundaries between atomic units where events can be
+        safely manipulated (inserted or forgotten). An atomic unit is either:
+        - A batch of ActionEvents with the same llm_response_id and their
+          corresponding ObservationBaseEvents
+        - A single event that is neither an ActionEvent nor an ObservationBaseEvent
+
+        The returned indices can be used for:
+        - Inserting new events: any returned index is safe
+        - Forgetting events: select a range between two consecutive indices
+
+        Consecutive indices define atomic units that must stay together:
+        - events[indices[i]:indices[i+1]] is an atomic unit
+
+        Returns:
+            Sorted list of indices representing atomic unit boundaries. Always
+            includes 0 and len(events) as boundaries.
+        """
+        if not self.events:
+            return [0]
+
+        # Build mapping of llm_response_id -> list of event indices
+        batches: dict[EventID, list[int]] = {}
+        for idx, event in enumerate(self.events):
+            if isinstance(event, ActionEvent):
+                llm_response_id = event.llm_response_id
+                if llm_response_id not in batches:
+                    batches[llm_response_id] = []
+                batches[llm_response_id].append(idx)
+
+        # Build mapping of tool_call_id -> observation indices
+        observation_indices: dict[ToolCallID, int] = {}
+        for idx, event in enumerate(self.events):
+            if (
+                isinstance(event, ObservationBaseEvent)
+                and event.tool_call_id is not None
+            ):
+                observation_indices[event.tool_call_id] = idx
+
+        # For each batch, find the range of indices that includes all actions
+        # and their corresponding observations
+        batch_ranges: list[tuple[int, int]] = []
+        for llm_response_id, action_indices in batches.items():
+            min_idx = min(action_indices)
+            max_idx = max(action_indices)
+
+            # Extend the range to include all corresponding observations
+            for action_idx in action_indices:
+                action_event = self.events[action_idx]
+                if (
+                    isinstance(action_event, ActionEvent)
+                    and action_event.tool_call_id is not None
+                ):
+                    if action_event.tool_call_id in observation_indices:
+                        obs_idx = observation_indices[action_event.tool_call_id]
+                        max_idx = max(max_idx, obs_idx)
+
+            batch_ranges.append((min_idx, max_idx))
+
+        # Also need to handle observations that might not be in batches
+        # (in case there are observations without matching actions in the view)
+        handled_indices = set()
+        for min_idx, max_idx in batch_ranges:
+            handled_indices.update(range(min_idx, max_idx + 1))
+
+        # Start with all possible indices (subtractive approach)
+        result_indices = set(range(len(self.events) + 1))
+
+        # Remove indices inside batch ranges (keep only boundaries)
+        for min_idx, max_idx in batch_ranges:
+            # Remove interior indices, keeping min_idx and max_idx+1 as boundaries
+            for idx in range(min_idx + 1, max_idx + 1):
+                result_indices.discard(idx)
+
+        return sorted(result_indices)
+
     # To preserve list-like indexing, we ideally support slicing and position-based
     # indexing. The only challenge with that is switching the return type based on the
     # input type -- we can mark the different signatures for MyPy with `@overload`
@@ -89,35 +215,6 @@ class View(BaseModel):
             raise ValueError(f"Invalid key type: {type(key)}")
 
     @staticmethod
-    def _build_action_batches(
-        events: Sequence[Event],
-    ) -> tuple[
-        dict[EventID, list[EventID]], dict[EventID, EventID], dict[EventID, ToolCallID]
-    ]:
-        """Build a map of llm_response_id -> list of ActionEvent IDs.
-
-        Returns:
-            A tuple of:
-            - batches: dict mapping llm_response_id to list of ActionEvent IDs
-            - action_id_to_response_id: dict mapping ActionEvent ID to llm_response_id
-            - action_id_to_tool_call_id: dict mapping ActionEvent ID to tool_call_id
-        """
-        batches: dict[EventID, list[EventID]] = {}
-        action_id_to_response_id: dict[EventID, EventID] = {}
-        action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
-
-        for event in events:
-            if isinstance(event, ActionEvent):
-                llm_response_id = event.llm_response_id
-                if llm_response_id not in batches:
-                    batches[llm_response_id] = []
-                batches[llm_response_id].append(event.id)
-                action_id_to_response_id[event.id] = llm_response_id
-                action_id_to_tool_call_id[event.id] = event.tool_call_id
-
-        return batches, action_id_to_response_id, action_id_to_tool_call_id
-
-    @staticmethod
     def _enforce_batch_atomicity(
         events: Sequence[Event],
         removed_event_ids: set[EventID],
@@ -136,14 +233,14 @@ class View(BaseModel):
             Updated set of event IDs that should be removed (including all
             ActionEvents in batches where any ActionEvent was removed)
         """
-        batches, action_id_to_response_id, _ = View._build_action_batches(events)
+        action_batch = ActionBatch.from_events(events)
 
-        if not batches:
+        if not action_batch.batches:
             return removed_event_ids
 
         updated_removed_ids = set(removed_event_ids)
 
-        for llm_response_id, batch_event_ids in batches.items():
+        for llm_response_id, batch_event_ids in action_batch.batches.items():
             # Check if any ActionEvent in this batch is being removed
             if any(event_id in removed_event_ids for event_id in batch_event_ids):
                 # If so, remove all ActionEvents in this batch
@@ -171,7 +268,7 @@ class View(BaseModel):
         observation_tool_call_ids = View._get_observation_tool_call_ids(events)
 
         # Build batch info for batch atomicity enforcement
-        _, _, action_id_to_tool_call_id = View._build_action_batches(events)
+        action_batch = ActionBatch.from_events(events)
 
         # First pass: identify which events would NOT be kept based on matching
         removed_event_ids: set[EventID] = set()
@@ -190,8 +287,10 @@ class View(BaseModel):
         # due to batch atomicity
         tool_call_ids_to_remove: set[ToolCallID] = set()
         for action_id in removed_event_ids:
-            if action_id in action_id_to_tool_call_id:
-                tool_call_ids_to_remove.add(action_id_to_tool_call_id[action_id])
+            if action_id in action_batch.action_id_to_tool_call_id:
+                tool_call_ids_to_remove.add(
+                    action_batch.action_id_to_tool_call_id[action_id]
+                )
 
         # Filter out removed events
         result = []
@@ -242,8 +341,31 @@ class View(BaseModel):
         else:
             return True
 
+    def find_next_manipulation_index(self, threshold: int, strict: bool = False) -> int:
+        """Find the smallest manipulation index greater than (or equal to) a threshold.
+
+        This is a helper method for condensation logic that needs to find safe
+        boundaries for forgetting events. Uses the cached manipulation_indices property.
+
+        Args:
+            threshold: The threshold value to compare against
+            strict: If True, finds index > threshold. If False, finds index >= threshold
+
+        Returns:
+            The smallest manipulation index that satisfies the condition, or the
+            threshold itself if no such index exists
+        """
+        for idx in self.manipulation_indices:
+            if strict:
+                if idx > threshold:
+                    return idx
+            else:
+                if idx >= threshold:
+                    return idx
+        return threshold
+
     @staticmethod
-    def from_events(events: Sequence[Event]) -> "View":
+    def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
