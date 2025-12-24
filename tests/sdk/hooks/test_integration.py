@@ -83,7 +83,7 @@ class TestUserPromptSubmitBlocking:
     def test_blocking_user_prompt_hook_adds_to_state(
         self, tmp_path, mock_conversation_state
     ):
-        """Test that blocking UserPromptSubmit hooks add message ID to state.blocked_messages."""
+        """Test blocking UserPromptSubmit hooks add message ID to blocked_messages."""
         # Create a blocking hook script
         script = tmp_path / "block_prompt.sh"
         script.write_text('#!/bin/bash\necho "Blocked by policy" >&2\nexit 2')
@@ -114,7 +114,10 @@ class TestUserPromptSubmitBlocking:
         processor.on_event(message_event)
 
         assert processor.is_message_blocked(message_event.id)
-        assert "Blocked by policy" in mock_conversation_state.blocked_messages[message_event.id]
+        assert (
+            "Blocked by policy"
+            in mock_conversation_state.blocked_messages[message_event.id]
+        )
 
     def test_non_blocking_user_prompt_hook_does_not_block(
         self, tmp_path, mock_conversation_state
@@ -373,7 +376,7 @@ class TestPostToolUseActionLookup:
         assert "tool_input" in hook_input
         # The tool_input should contain the action's model_dump
         assert "thought" in hook_input["tool_input"]
-        # The tool_response should contain the observation's model_dump (structured dict)
+        # The tool_response should contain the observation's model_dump
         assert "tool_response" in hook_input
         assert isinstance(hook_input["tool_response"], dict)
         assert "content" in hook_input["tool_response"]  # From Observation base class
