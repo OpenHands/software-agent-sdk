@@ -100,6 +100,12 @@ class ConversationState(OpenHandsModel):
         description="Actions blocked by PreToolUse hooks, keyed by action ID",
     )
 
+    # Hook-blocked messages: message_id -> blocking reason
+    blocked_messages: dict[str, str] = Field(
+        default_factory=dict,
+        description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
+    )
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,

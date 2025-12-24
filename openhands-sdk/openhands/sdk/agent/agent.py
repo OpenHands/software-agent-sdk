@@ -145,6 +145,17 @@ class Agent(AgentBase):
             self._execute_actions(conversation, pending_actions, on_event)
             return
 
+        # Check if the last user message was blocked by a UserPromptSubmit hook
+        # If so, skip processing and mark conversation as finished
+        for event in reversed(list(state.events)):
+            if isinstance(event, MessageEvent) and event.source == "user":
+                if event.id in state.blocked_messages:
+                    reason = state.blocked_messages.pop(event.id)
+                    logger.info(f"User message blocked by hook: {reason}")
+                    state.execution_status = ConversationExecutionStatus.FINISHED
+                    return
+                break  # Only check the most recent user message
+
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
             state.events, condenser=self.condenser

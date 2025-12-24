@@ -3,13 +3,14 @@
 import pytest
 
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.event import ActionEvent
+from openhands.sdk.event import ActionEvent, MessageEvent
 from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.conversation_hooks import (
     HookEventProcessor,
     create_hook_callback,
 )
 from openhands.sdk.hooks.manager import HookManager
+from openhands.sdk.llm import Message, TextContent
 
 
 class TestBlockedActionsState:
@@ -45,6 +46,109 @@ class TestBlockedActionsState:
             )
 
             assert state.blocked_actions == {}
+
+
+class TestUserPromptSubmitBlocking:
+    """Tests for UserPromptSubmit hook blocking."""
+
+    @pytest.fixture
+    def mock_conversation_state(self, tmp_path):
+        """Create a mock conversation state."""
+        import uuid
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.workspace import LocalWorkspace
+
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+        workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        return ConversationState(
+            id=uuid.uuid4(),
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=None,
+        )
+
+    def test_is_message_blocked_without_state(self, tmp_path):
+        """Test that is_message_blocked returns False without state set."""
+        manager = HookManager(config=HookConfig(), working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+        # No state set
+        assert not processor.is_message_blocked("any-message-id")
+
+    def test_blocking_user_prompt_hook_adds_to_state(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that blocking UserPromptSubmit hooks add message ID to state.blocked_messages."""
+        # Create a blocking hook script
+        script = tmp_path / "block_prompt.sh"
+        script.write_text('#!/bin/bash\necho "Blocked by policy" >&2\nexit 2')
+        script.chmod(0o755)
+
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": str(script)}]}
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+        processor.set_conversation_state(mock_conversation_state)
+
+        message_event = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Hello, this should be blocked")],
+            ),
+        )
+
+        processor.on_event(message_event)
+
+        assert processor.is_message_blocked(message_event.id)
+        assert "Blocked by policy" in mock_conversation_state.blocked_messages[message_event.id]
+
+    def test_non_blocking_user_prompt_hook_does_not_block(
+        self, tmp_path, mock_conversation_state
+    ):
+        """Test that non-blocking hooks don't add to blocked_messages."""
+        script = tmp_path / "allow_prompt.sh"
+        script.write_text("#!/bin/bash\nexit 0")
+        script.chmod(0o755)
+
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": str(script)}]}
+                    ]
+                }
+            }
+        )
+
+        manager = HookManager(config=config, working_dir=str(tmp_path))
+        processor = HookEventProcessor(hook_manager=manager)
+        processor.set_conversation_state(mock_conversation_state)
+
+        message_event = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Hello, this should pass")],
+            ),
+        )
+
+        processor.on_event(message_event)
+
+        assert not processor.is_message_blocked(message_event.id)
 
 
 class TestHookEventProcessorBlocking:

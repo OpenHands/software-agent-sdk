@@ -167,6 +167,18 @@ class HookEventProcessor:
             reason = self.hook_manager.get_blocking_reason(results)
             logger.warning(f"Hook blocked user message: {reason}")
 
+            # Mark this message as blocked in the conversation state
+            # The Agent will check this and skip processing the message
+            if self._conversation_state is not None:
+                block_reason = reason or "Blocked by hook"
+                self._conversation_state.blocked_messages[event.id] = block_reason
+            else:
+                logger.warning(
+                    "Cannot block message: conversation state not set. "
+                    "Call processor.set_conversation_state(conversation.state) "
+                    "after creating the Conversation."
+                )
+
         # TODO: Inject additional_context into the message
         if additional_context:
             logger.info(f"Hook injected context: {additional_context[:100]}...")
@@ -176,6 +188,12 @@ class HookEventProcessor:
         if self._conversation_state is None:
             return False
         return action_id in self._conversation_state.blocked_actions
+
+    def is_message_blocked(self, message_id: str) -> bool:
+        """Check if a message was blocked by a hook."""
+        if self._conversation_state is None:
+            return False
+        return message_id in self._conversation_state.blocked_messages
 
     def run_session_start(self) -> None:
         """Run SessionStart hooks. Call after conversation is created."""
