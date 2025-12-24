@@ -1,5 +1,6 @@
 """API-based remote workspace implementation using runtime API."""
 
+import threading
 import uuid
 from typing import Any, Literal
 from urllib.request import urlopen
@@ -70,6 +71,13 @@ class APIRemoteWorkspace(RemoteWorkspace):
     pause_on_close: bool = Field(
         default=False, description="Pause instead of stop on cleanup"
     )
+    heartbeat_interval: float = Field(
+        default=60.0,
+        ge=0,
+        description=(
+            "Interval in seconds to ping the runtime API and avoid idle shutdown."
+        ),
+    )
     target_type: Literal["binary", "source"] = Field(
         default="binary",
         description="Type of agent server target (binary or source)",
@@ -78,6 +86,8 @@ class APIRemoteWorkspace(RemoteWorkspace):
     _runtime_id: str | None = PrivateAttr(default=None)
     _runtime_url: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
+    _heartbeat_stop: threading.Event = PrivateAttr(default_factory=threading.Event)
+    _heartbeat_thread: threading.Thread | None = PrivateAttr(default=None)
 
     @property
     def client(self) -> httpx.Client:
@@ -143,6 +153,37 @@ class APIRemoteWorkspace(RemoteWorkspace):
         # Verify client is properly initialized
         assert self.client is not None
         assert self.client.base_url == self.host
+        self._start_heartbeat()
+
+    def _start_heartbeat(self) -> None:
+        if self.heartbeat_interval <= 0:
+            return
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            return
+        self._heartbeat_stop.clear()
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop, name="runtime-heartbeat", daemon=True
+        )
+        self._heartbeat_thread.start()
+
+    def _stop_heartbeat(self) -> None:
+        if not self._heartbeat_thread:
+            return
+        self._heartbeat_stop.set()
+        self._heartbeat_thread.join(timeout=5)
+        self._heartbeat_thread = None
+
+    def _heartbeat_loop(self) -> None:
+        interval = max(self.heartbeat_interval, 5.0)
+        url = f"{self.runtime_api_url}/sessions/{self.session_id}"
+        timeout = min(self.api_timeout, 30.0)
+        with httpx.Client(timeout=timeout) as client:
+            while not self._heartbeat_stop.wait(interval):
+                try:
+                    resp = client.get(url, headers=self._api_headers)
+                    resp.raise_for_status()
+                except Exception as e:
+                    logger.debug("Runtime heartbeat failed: %s", e)
 
     def _check_existing_runtime(self) -> bool:
         """Check if there's an existing runtime for this session."""
@@ -319,6 +360,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     def cleanup(self) -> None:
         """Clean up the remote runtime."""
+        self._stop_heartbeat()
         if not self._runtime_id:
             return
 
