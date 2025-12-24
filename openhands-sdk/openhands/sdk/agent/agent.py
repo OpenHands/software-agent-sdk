@@ -149,8 +149,8 @@ class Agent(AgentBase):
         # If so, skip processing and mark conversation as finished
         for event in reversed(list(state.events)):
             if isinstance(event, MessageEvent) and event.source == "user":
-                if event.id in state.blocked_messages:
-                    reason = state.blocked_messages.pop(event.id)
+                reason = state.pop_blocked_message(event.id)
+                if reason is not None:
                     logger.info(f"User message blocked by hook: {reason}")
                     state.execution_status = ConversationExecutionStatus.FINISHED
                     return
@@ -482,8 +482,8 @@ class Agent(AgentBase):
         state = conversation.state
 
         # Check if this action was blocked by a PreToolUse hook
-        if action_event.id in state.blocked_actions:
-            reason = state.blocked_actions.pop(action_event.id)
+        reason = state.pop_blocked_action(action_event.id)
+        if reason is not None:
             logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
             rejection = UserRejectObservation(
                 action_id=action_event.id,

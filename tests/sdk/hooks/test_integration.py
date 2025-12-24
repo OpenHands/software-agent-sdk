@@ -48,6 +48,57 @@ class TestBlockedActionsState:
             assert state.blocked_actions == {}
 
 
+class TestBlockedStatePersistence:
+    """Tests for blocked state persistence across resume."""
+
+    def _create_persistent_state(self, tmp_path, conversation_id):
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.llm import LLM
+        from openhands.sdk.workspace import LocalWorkspace
+
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+        workspace = LocalWorkspace(working_dir=str(tmp_path))
+        persistence_dir = tmp_path / "conversations"
+        return ConversationState.create(
+            id=conversation_id,
+            agent=agent,
+            workspace=workspace,
+            persistence_dir=str(persistence_dir),
+        )
+
+    def test_blocked_entries_persist_across_resume(self, tmp_path):
+        import uuid
+
+        conversation_id = uuid.uuid4()
+        state = self._create_persistent_state(tmp_path, conversation_id)
+        state.block_action("action-1", "Blocked")
+        state.block_message("message-1", "Nope")
+
+        resumed = self._create_persistent_state(tmp_path, conversation_id)
+
+        assert resumed.blocked_actions["action-1"] == "Blocked"
+        assert resumed.blocked_messages["message-1"] == "Nope"
+
+    def test_blocked_entries_removal_persists(self, tmp_path):
+        import uuid
+
+        conversation_id = uuid.uuid4()
+        state = self._create_persistent_state(tmp_path, conversation_id)
+        state.block_action("action-1", "Blocked")
+        state.block_message("message-1", "Nope")
+
+        assert state.pop_blocked_action("action-1") == "Blocked"
+        assert state.pop_blocked_message("message-1") == "Nope"
+
+        resumed = self._create_persistent_state(tmp_path, conversation_id)
+
+        assert "action-1" not in resumed.blocked_actions
+        assert "message-1" not in resumed.blocked_messages
+
+
 class TestUserPromptSubmitBlocking:
     """Tests for UserPromptSubmit hook blocking."""
 

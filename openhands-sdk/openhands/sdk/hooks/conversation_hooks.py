@@ -85,7 +85,7 @@ class HookEventProcessor:
             # The Agent will check this and emit a rejection instead of executing
             if self._conversation_state is not None:
                 block_reason = reason or "Blocked by hook"
-                self._conversation_state.blocked_actions[event.id] = block_reason
+                self._conversation_state.block_action(event.id, block_reason)
             else:
                 logger.warning(
                     "Cannot block action: conversation state not set. "
@@ -167,7 +167,7 @@ class HookEventProcessor:
             # The Agent will check this and skip processing the message
             if self._conversation_state is not None:
                 block_reason = reason or "Blocked by hook"
-                self._conversation_state.blocked_messages[event.id] = block_reason
+                self._conversation_state.block_message(event.id, block_reason)
             else:
                 logger.warning(
                     "Cannot block message: conversation state not set. "
