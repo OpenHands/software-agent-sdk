@@ -25,9 +25,11 @@ class SecretSource(DiscriminatedUnionMixin, ABC):
 class StaticSecret(SecretSource):
     """A secret stored locally"""
 
-    value: SecretStr
+    value: SecretStr | None = None
 
     def get_value(self):
+        if self.value is None:
+            return None
         return self.value.get_secret_value()
 
     @field_validator("value")
