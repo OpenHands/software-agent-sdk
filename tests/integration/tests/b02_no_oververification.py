@@ -103,7 +103,7 @@ class NoOververificationTest(SoftwareAgentSDKBehaviorTest):
         return TerminalTestAwarePruner(
             max_test_commands=5,  # More targeted test runs allowed
             broad_test_patterns=[
-                "pytest tests/ ",  # Running entire tests dir (trailing space)
+                "pytest tests/",  # Running entire tests dir
                 "pytest .",  # Running all tests
                 "python -m pytest .",  # Running all tests
                 "pytest -x tests/",  # Broad with stop-on-first

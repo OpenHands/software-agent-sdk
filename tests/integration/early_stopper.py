@@ -296,7 +296,8 @@ class LLMJudgePruner(EarlyStopperBase):
             # Use a focused, cost-effective prompt for early stopping
             from openhands.sdk import Message, TextContent
 
-            prompt = f"""You are evaluating if an AI agent's behavior indicates DEFINITE FAILURE.
+            prompt = f"""You are evaluating if an AI agent's behavior \
+indicates DEFINITE FAILURE.
 
 USER INSTRUCTION:
 {self.user_instruction}

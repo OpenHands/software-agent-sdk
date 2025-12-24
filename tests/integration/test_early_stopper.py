@@ -1,101 +1,52 @@
 """Unit tests for early stopping utilities."""
 
-import pytest
-
+from openhands.sdk.event.llm_convertible.action import ActionEvent
+from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.tools.file_editor.definition import FileEditorAction
+from openhands.tools.terminal.definition import TerminalAction
 from tests.integration.early_stopper import (
     BashCommandPruner,
     CompositeEarlyStopper,
     EarlyStopResult,
     FileEditPruner,
-    TestExecutionPruner,
 )
 
 
-class MockEvent:
-    """Mock event for testing."""
-
-    def __init__(self, tool_name: str = "", action=None):
-        self.tool_name = tool_name
-        self.action = action
-
-
-class MockFileEditorAction:
-    """Mock file editor action."""
-
-    def __init__(self, command: str, path: str):
-        self.command = command
-        self.path = path
-
-
-class MockTerminalAction:
-    """Mock terminal action."""
-
-    def __init__(self, command: str):
-        self.command = command
-
-
-class MockActionEvent(MockEvent):
-    """Mock action event for testing."""
-
-    pass
-
-
-# Patch the isinstance checks to work with our mocks
-@pytest.fixture(autouse=True)
-def patch_imports(monkeypatch):
-    """Patch imports to use mocks."""
-    import tests.integration.early_stopper as early_stopper_module
-
-    # Use the real ActionEvent check but treat our mocks as valid
-    original_check = early_stopper_module.FileEditPruner.check
-
-    def patched_file_edit_check(self, events):
-        # Custom check that works with our mock events
-        for event in events:
-            if (
-                hasattr(event, "tool_name")
-                and event.tool_name == "file_editor"
-                and hasattr(event, "action")
-                and event.action is not None
-            ):
-                if hasattr(event.action, "command"):
-                    if event.action.command in self.forbidden_commands:
-                        return EarlyStopResult(
-                            should_stop=True,
-                            reason=(
-                                f"Detected forbidden file operation: "
-                                f"{event.action.command} on {event.action.path}"
-                            ),
-                        )
-        return EarlyStopResult(should_stop=False)
-
-    monkeypatch.setattr(
-        early_stopper_module.FileEditPruner, "check", patched_file_edit_check
+def create_file_editor_event(command: str, path: str) -> ActionEvent:
+    """Create a real ActionEvent with a FileEditorAction."""
+    action = FileEditorAction(command=command, path=path)
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text=f"Performing {command} on {path}")],
+        action=action,
+        tool_name="file_editor",
+        tool_call_id=f"call_{command}_{path.replace('/', '_')}",
+        tool_call=MessageToolCall(
+            id=f"call_{command}_{path.replace('/', '_')}",
+            name="file_editor",
+            arguments=f'{{"command": "{command}", "path": "{path}"}}',
+            origin="completion",
+        ),
+        llm_response_id="test_response_id",
     )
 
-    def patched_bash_check(self, events):
-        for event in events:
-            if (
-                hasattr(event, "tool_name")
-                and event.tool_name == "terminal"
-                and hasattr(event, "action")
-                and event.action is not None
-            ):
-                if hasattr(event.action, "command"):
-                    command = event.action.command
-                    for pattern in self.forbidden_patterns:
-                        if pattern in command:
-                            return EarlyStopResult(
-                                should_stop=True,
-                                reason=(
-                                    f"Detected forbidden command pattern "
-                                    f"'{pattern}' in: {command[:100]}"
-                                ),
-                            )
-        return EarlyStopResult(should_stop=False)
 
-    monkeypatch.setattr(
-        early_stopper_module.BashCommandPruner, "check", patched_bash_check
+def create_terminal_event(command: str) -> ActionEvent:
+    """Create a real ActionEvent with a TerminalAction."""
+    action = TerminalAction(command=command)
+    return ActionEvent(
+        source="agent",
+        thought=[TextContent(text=f"Running command: {command}")],
+        action=action,
+        tool_name="terminal",
+        tool_call_id=f"call_terminal_{hash(command)}",
+        tool_call=MessageToolCall(
+            id=f"call_terminal_{hash(command)}",
+            name="terminal",
+            arguments=f'{{"command": "{command}"}}',
+            origin="completion",
+        ),
+        llm_response_id="test_response_id",
     )
 
 
@@ -112,16 +63,14 @@ class TestFileEditPruner:
     def test_view_command_not_blocked(self):
         """View command should not trigger stop."""
         pruner = FileEditPruner()
-        action = MockFileEditorAction(command="view", path="/test.py")
-        event = MockActionEvent(tool_name="file_editor", action=action)
+        event = create_file_editor_event(command="view", path="/test.py")
         result = pruner.check([event])
         assert result.should_stop is False
 
     def test_create_command_triggers_stop(self):
         """Create command should trigger stop."""
         pruner = FileEditPruner()
-        action = MockFileEditorAction(command="create", path="/new_file.py")
-        event = MockActionEvent(tool_name="file_editor", action=action)
+        event = create_file_editor_event(command="create", path="/new_file.py")
         result = pruner.check([event])
         assert result.should_stop is True
         assert "create" in result.reason
@@ -130,24 +79,24 @@ class TestFileEditPruner:
     def test_str_replace_triggers_stop(self):
         """str_replace command should trigger stop."""
         pruner = FileEditPruner()
-        action = MockFileEditorAction(command="str_replace", path="/test.py")
-        event = MockActionEvent(tool_name="file_editor", action=action)
+        event = create_file_editor_event(command="str_replace", path="/test.py")
         result = pruner.check([event])
         assert result.should_stop is True
         assert "str_replace" in result.reason
 
     def test_custom_forbidden_commands(self):
         """Custom forbidden commands should be respected."""
-        pruner = FileEditPruner(forbidden_commands=["delete"])
-        action = MockFileEditorAction(command="delete", path="/test.py")
-        event = MockActionEvent(tool_name="file_editor", action=action)
+        # Note: 'undo_edit' is a valid FileEditorAction command
+        pruner = FileEditPruner(forbidden_commands=["undo_edit"])
+        event = create_file_editor_event(command="undo_edit", path="/test.py")
         result = pruner.check([event])
         assert result.should_stop is True
 
     def test_non_matching_event_not_stopped(self):
         """Non-file-editor events should not trigger stop."""
         pruner = FileEditPruner()
-        event = MockEvent(tool_name="terminal")
+        # Terminal events should not trigger file edit pruner
+        event = create_terminal_event(command="ls -la")
         result = pruner.check([event])
         assert result.should_stop is False
 
@@ -164,8 +113,7 @@ class TestBashCommandPruner:
     def test_forbidden_pattern_triggers_stop(self):
         """Forbidden command pattern should trigger stop."""
         pruner = BashCommandPruner(forbidden_patterns=["rm -rf"])
-        action = MockTerminalAction(command="rm -rf /important")
-        event = MockActionEvent(tool_name="terminal", action=action)
+        event = create_terminal_event(command="rm -rf /important")
         result = pruner.check([event])
         assert result.should_stop is True
         assert "rm -rf" in result.reason
@@ -173,8 +121,7 @@ class TestBashCommandPruner:
     def test_safe_command_not_stopped(self):
         """Safe commands should not trigger stop."""
         pruner = BashCommandPruner(forbidden_patterns=["rm -rf"])
-        action = MockTerminalAction(command="ls -la")
-        event = MockActionEvent(tool_name="terminal", action=action)
+        event = create_terminal_event(command="ls -la")
         result = pruner.check([event])
         assert result.should_stop is False
 
@@ -197,8 +144,7 @@ class TestCompositeEarlyStopper:
         composite = CompositeEarlyStopper(stoppers=[file_pruner, bash_pruner])
 
         # Test with file edit
-        action = MockFileEditorAction(command="create", path="/test.py")
-        event = MockActionEvent(tool_name="file_editor", action=action)
+        event = create_file_editor_event(command="create", path="/test.py")
         result = composite.check([event])
         assert result.should_stop is True
 
@@ -207,7 +153,8 @@ class TestCompositeEarlyStopper:
         file_pruner = FileEditPruner()
         composite = CompositeEarlyStopper(stoppers=[file_pruner])
 
-        event = MockEvent(tool_name="other_tool")
+        # Terminal event should not trigger file edit pruner
+        event = create_terminal_event(command="ls -la")
         result = composite.check([event])
         assert result.should_stop is False
 
@@ -241,7 +188,7 @@ class TestLLMJudgePruner:
             check_every_n_events=10,
         )
         # Create a list of less than check_every_n_events events
-        events = [MockEvent() for _ in range(5)]
+        events = [create_terminal_event(f"echo {i}") for i in range(5)]
         result = pruner.check(events)
         # Should not stop because not enough events
         assert result.should_stop is False
@@ -258,7 +205,7 @@ class TestLLMJudgePruner:
             check_every_n_events=10,
         )
         # First check - not enough events
-        events = [MockEvent() for _ in range(3)]
+        events = [create_terminal_event(f"echo {i}") for i in range(3)]
         result1 = pruner.check(events)
         assert result1.should_stop is False
 
