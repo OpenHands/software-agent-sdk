@@ -6,7 +6,7 @@ Hooks are shell scripts that run at key lifecycle events, enabling:
 - Logging tool usage after execution (PostToolUse)
 - Processing user messages before they reach the agent (UserPromptSubmit)
 
-Hooks are configured in .openhands/hooks.json or passed programmatically.
+Hooks are configured in .openhands/hooks.json or passed programmatically via hook_config.
 """
 
 import os
@@ -17,7 +17,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation
-from openhands.sdk.hooks import HookConfig, create_hook_callback
+from openhands.sdk.hooks import HookConfig
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -115,23 +115,14 @@ def main():
         hook_config, log_file = create_example_hooks(tmpdir)
         print(f"Created hook scripts in {tmpdir}")
 
-        # Create hook callback
-        processor, hook_callback = create_hook_callback(
-            hook_config=hook_config,
-            working_dir=str(tmpdir),
-            session_id="hooks-example",
-        )
-
         # Create agent and conversation with hooks
+        # Just pass hook_config - it auto-wires everything!
         agent = get_default_agent(llm=llm)
         conversation = Conversation(
             agent=agent,
             workspace=os.getcwd(),
-            callbacks=[hook_callback],
+            hook_config=hook_config,
         )
-
-        # Connect hooks to conversation state (required for blocking to work)
-        processor.set_conversation_state(conversation.state)
 
         print("\n" + "=" * 60)
         print("Example 1: Safe command (should work)")
@@ -160,7 +151,7 @@ def main():
         print("- Hooks receive JSON on stdin with event details")
         print("- Environment variables like $OPENHANDS_TOOL_NAME simplify simple hooks")
         print(
-            "- Hook config can be in .openhands/hooks.json or passed programmatically"
+            "- Hook config can be in .openhands/hooks.json or passed via hook_config"
         )
 
         # Report cost
