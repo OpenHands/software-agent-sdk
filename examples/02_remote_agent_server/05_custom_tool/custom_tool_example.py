@@ -1,10 +1,10 @@
 """Example: Using custom tools with remote agent server.
 
 This example demonstrates how to use custom tools with a remote agent server
-by building a custom Docker image that includes the tool implementation.
+by building a custom base image that includes the tool implementation.
 
 Prerequisites:
-    1. Build the custom image first:
+    1. Build the custom base image first:
        cd examples/02_remote_agent_server/05_custom_tool
        ./build_custom_image.sh
 
@@ -12,12 +12,12 @@ Prerequisites:
 
 The workflow is:
 1. Define a custom tool (in this case, ReportBugTool for structured bug reporting)
-2. Create a Dockerfile that includes the tool in the agent server image
-3. Build the custom image (extends base agent server image)
-4. Use DockerWorkspace with the custom image
-5. The server dynamically registers tools when the client creates a conversation
-6. The agent can use the custom tool during execution
-7. The client can access structured data collected by the tool
+2. Create a simple Dockerfile that copies the tool into the base image
+3. Build the custom base image
+4. Use DockerDevWorkspace with base_image pointing to the custom image
+5. DockerDevWorkspace builds the agent server on top of the custom base image
+6. The server dynamically registers tools when the client creates a conversation
+7. The agent can use the custom tool during execution
 
 This pattern is useful for:
 - Collecting structured data during agent runs (bugs, metrics, etc.)
@@ -41,7 +41,7 @@ from openhands.sdk import (
     Tool,
     get_logger,
 )
-from openhands.workspace import DockerWorkspace
+from openhands.workspace import DockerDevWorkspace
 
 
 logger = get_logger(__name__)
@@ -69,41 +69,43 @@ def detect_platform():
 # Get the directory containing this script
 example_dir = Path(__file__).parent.absolute()
 
-# Custom image tag
-CUSTOM_IMAGE_TAG = "custom-agent-server:latest"
+# Custom base image tag (contains custom tools, agent server built on top)
+CUSTOM_BASE_IMAGE_TAG = "custom-base-image:latest"
 
-# 2) Check if custom image exists, build if not
-logger.info(f"🔍 Checking for custom image: {CUSTOM_IMAGE_TAG}")
+# 2) Check if custom base image exists, build if not
+logger.info(f"🔍 Checking for custom base image: {CUSTOM_BASE_IMAGE_TAG}")
 result = subprocess.run(
-    ["docker", "images", "-q", CUSTOM_IMAGE_TAG],
+    ["docker", "images", "-q", CUSTOM_BASE_IMAGE_TAG],
     capture_output=True,
     text=True,
     check=False,
 )
 
 if not result.stdout.strip():
-    logger.info("⚠️  Custom image not found. Building...")
-    logger.info("📦 This may take a few minutes on first run...")
+    logger.info("⚠️  Custom base image not found. Building...")
+    logger.info("📦 Building custom base image with custom tools...")
     build_script = example_dir / "build_custom_image.sh"
     try:
         subprocess.run(
-            [str(build_script), CUSTOM_IMAGE_TAG],
+            [str(build_script), CUSTOM_BASE_IMAGE_TAG],
             cwd=str(example_dir),
             check=True,
         )
-        logger.info("✅ Custom image built successfully!")
+        logger.info("✅ Custom base image built successfully!")
     except subprocess.CalledProcessError as e:
-        logger.error(f"❌ Failed to build custom image: {e}")
+        logger.error(f"❌ Failed to build custom base image: {e}")
         logger.error("Please run ./build_custom_image.sh manually and fix any errors.")
         sys.exit(1)
 else:
-    logger.info(f"✅ Custom image found: {CUSTOM_IMAGE_TAG}")
+    logger.info(f"✅ Custom base image found: {CUSTOM_BASE_IMAGE_TAG}")
 
-# 3) Create a DockerWorkspace with the custom agent server image
-logger.info("🚀 Starting custom agent server...")
+# 3) Create a DockerDevWorkspace with the custom base image
+#    DockerDevWorkspace will build the agent server on top of this base image
+logger.info("🚀 Building and starting agent server with custom tools...")
+logger.info("📦 This may take a few minutes on first run...")
 
-with DockerWorkspace(
-    server_image=CUSTOM_IMAGE_TAG,
+with DockerDevWorkspace(
+    base_image=CUSTOM_BASE_IMAGE_TAG,
     host_port=8011,
     platform=detect_platform(),
 ) as workspace:
@@ -225,7 +227,7 @@ with DockerWorkspace(
 logger.info("\n✅ Example completed successfully!")
 logger.info("\nThis example demonstrated how to:")
 logger.info("1. Create a custom tool for structured data collection")
-logger.info("2. Build a custom agent server image with the tool")
-logger.info("3. Use DockerDevWorkspace for automatic image building")
+logger.info("2. Build a simple base image with the custom tool")
+logger.info("3. Use DockerDevWorkspace with base_image to build agent server on top")
 logger.info("4. Enable dynamic tool registration on the server")
 logger.info("5. Use the custom tool during agent execution")

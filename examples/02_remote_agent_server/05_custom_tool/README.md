@@ -1,15 +1,15 @@
 # Custom Tools with Remote Agent Server
 
-This example demonstrates how to use custom tools with a remote agent server by building a custom Docker image that includes your tool implementations.
+This example demonstrates how to use custom tools with a remote agent server by building a custom base image that includes your tool implementations.
 
 ## Overview
 
 When using a remote agent server, custom tools must be available in the server's Python environment. This example shows the complete workflow for:
 
 1. **Defining custom tools** with structured data collection
-2. **Building a custom agent server image** that includes your tools
-3. **Using dynamic tool registration** to make tools available at runtime
-4. **Collecting structured data** from agent execution
+2. **Building a custom base image** that includes your tools
+3. **Using `DockerDevWorkspace`** to build the agent server on top of the custom base image
+4. **Using dynamic tool registration** to make tools available at runtime
 
 ## Use Cases
 
@@ -25,7 +25,7 @@ This pattern is useful for:
 ```
 ┌─────────────────┐         ┌──────────────────────────┐
 │   SDK Client    │         │   Remote Agent Server    │
-│                 │         │   (Custom Docker Image)  │
+│                 │         │   (Built on custom base) │
 │  - Define tools │◄────────┤                          │
 │  - Send tasks   │   API   │  - Custom tools in       │
 │  - Get results  │         │    Python path           │
@@ -37,7 +37,8 @@ This pattern is useful for:
 ## Files in This Example
 
 - **`custom_tools/report_bug.py`**: Example custom tool for reporting bugs with structured data
-- **`Dockerfile`**: Builds a custom agent server image with the custom tools
+- **`Dockerfile`**: Simple Dockerfile that copies custom tools into the base image
+- **`build_custom_image.sh`**: Script to build the custom base image
 - **`custom_tool_example.py`**: SDK script demonstrating the full workflow
 - **`README.md`**: This documentation
 
@@ -79,12 +80,18 @@ The tool defines:
 
 ### 2. Dockerfile
 
-The Dockerfile:
-- Starts from a base Python image
-- Installs the OpenHands SDK packages
-- Copies custom tools to `/app/custom_tools`
-- Adds `/app` to `PYTHONPATH` so tools can be imported
-- Starts the agent server
+The Dockerfile is very simple:
+```dockerfile
+FROM nikolaik/python-nodejs:python3.12-nodejs22
+
+# Copy custom tools into the Python path
+COPY custom_tools /app/custom_tools
+
+# Add /app to PYTHONPATH so custom_tools can be imported
+ENV PYTHONPATH="/app:${PYTHONPATH}"
+```
+
+This creates a base image with your custom tools. The agent server is built on top of this image automatically by `DockerDevWorkspace`.
 
 ### 3. Dynamic Tool Registration
 
@@ -97,7 +104,8 @@ When creating a conversation, the SDK:
 ### 4. SDK Script (`custom_tool_example.py`)
 
 The script:
-- Uses `DockerDevWorkspace` to build the custom image automatically
+- Builds the custom base image (if not already built)
+- Uses `DockerDevWorkspace` with `base_image` to build the agent server on top
 - Creates an agent with the custom tool specified
 - Sends a task that uses the custom tool
 - Agent executes on the remote server with access to the custom tool
@@ -123,7 +131,8 @@ The script:
    ```
 
 The script will:
-- Build a custom Docker image (first run may take a few minutes)
+- Build the custom base image (first run only)
+- Build the agent server on top of the base image (first run may take a few minutes)
 - Start the agent server with custom tools
 - Execute the task using the custom tool
 - Show the results
@@ -131,8 +140,10 @@ The script will:
 ### Expected Output
 
 ```
-🐳 Building custom agent server image with custom tools...
-✅ Custom agent server image built successfully!
+🔍 Checking for custom base image: custom-base-image:latest
+🐳 Building custom base image with custom tools...
+✅ Custom base image built successfully!
+🚀 Building and starting agent server with custom tools...
 📋 Conversation ID: <id>
 📝 Sending task to find and report bugs...
 🚀 Running conversation...
@@ -191,39 +202,43 @@ No changes needed! The Dockerfile already copies all of `custom_tools/`.
 In your SDK script:
 
 ```python
-agent = get_default_agent(
-    llm=llm,
-    cli_mode=True,
-    extra_tools=[
-        Tool(name="MyTool"),  # Your custom tool
-    ],
-)
+from openhands.workspace import DockerDevWorkspace
+
+# Use DockerDevWorkspace with your custom base image
+with DockerDevWorkspace(
+    base_image="custom-base-image:latest",
+    host_port=8010,
+) as workspace:
+    # Create agent with your custom tool
+    tools = get_default_tools(enable_browser=False)
+    tools.append(Tool(name="MyTool"))
+    
+    agent = Agent(llm=llm, tools=tools, ...)
+    # ... rest of your code
 ```
 
 ## Production Considerations
 
 ### Building and Distributing Images
 
-For production:
+For production, you can pre-build the full agent server image:
 
-1. **Build the image once**:
+1. **Build the base image with tools**:
    ```bash
-   docker build -t my-custom-agent-server:latest \
-     -f Dockerfile \
-     --build-context sdk=/path/to/sdk \
-     .
+   cd examples/02_remote_agent_server/05_custom_tool
+   docker build -t my-custom-base:latest .
    ```
 
 2. **Push to a registry**:
    ```bash
-   docker tag my-custom-agent-server:latest my-registry/agent-server:latest
-   docker push my-registry/agent-server:latest
+   docker tag my-custom-base:latest my-registry/custom-base:latest
+   docker push my-registry/custom-base:latest
    ```
 
-3. **Use the pre-built image**:
+3. **Use with DockerDevWorkspace**:
    ```python
-   with DockerWorkspace(
-       server_image="my-registry/agent-server:latest",
+   with DockerDevWorkspace(
+       base_image="my-registry/custom-base:latest",
        host_port=8010,
    ) as workspace:
        # Use the workspace
@@ -247,6 +262,7 @@ my_custom_tools/
 
 Then install in the Dockerfile:
 ```dockerfile
+FROM nikolaik/python-nodejs:python3.12-nodejs22
 COPY my_custom_tools /app/my_custom_tools
 RUN pip install /app/my_custom_tools
 ```
@@ -279,7 +295,6 @@ If imports fail on the server:
 ### Build Failures
 
 If Docker build fails:
-- Check that the build context includes the SDK packages
 - Verify file paths in `COPY` commands
 - Ensure base image has Python 3.12+
 

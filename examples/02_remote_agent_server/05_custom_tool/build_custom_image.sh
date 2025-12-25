@@ -1,55 +1,45 @@
 #!/bin/bash
-# Build script for custom agent server image with custom tools
+# Build script for custom base image with custom tools
 #
-# This script builds a custom Docker image that extends the base agent server
-# image to include your custom tools.
+# This script builds a custom base image that includes your custom tools.
+# When used with DockerDevWorkspace(base_image=...), the agent server
+# will be built on top of this image automatically.
 #
 # Usage:
 #   ./build_custom_image.sh [TAG]
 #
 # Arguments:
-#   TAG: Optional custom tag for the image (default: custom-agent-server:latest)
+#   TAG: Optional custom tag for the image (default: custom-base-image:latest)
 
 set -e
 
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Get the repository root (3 levels up from the example directory)
-REPO_ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
-
 # Default tag
-TAG="${1:-custom-agent-server:latest}"
+TAG="${1:-custom-base-image:latest}"
 
-# Base image to extend
-BASE_IMAGE="${BASE_IMAGE:-ghcr.io/openhands/agent-server:latest-python}"
-
-echo "🐳 Building custom agent server image..."
-echo "📦 Base image: $BASE_IMAGE"
+echo "🐳 Building custom base image with custom tools..."
 echo "🏷️  Tag: $TAG"
-echo "📂 Build context: $REPO_ROOT"
+echo "📂 Build context: $SCRIPT_DIR"
 echo ""
 
-# Build the image from the repository root
-# The Dockerfile expects to be built from the repo root because it copies SDK packages
+# Build the image from the example directory
+# The Dockerfile just copies custom_tools into the base image
 docker build \
   -t "$TAG" \
-  -f "$SCRIPT_DIR/Dockerfile" \
-  --build-arg BASE_IMAGE="$BASE_IMAGE" \
-  "$REPO_ROOT"
+  "$SCRIPT_DIR"
 
 echo ""
-echo "✅ Custom agent server image built successfully!"
+echo "✅ Custom base image built successfully!"
 echo "🏷️  Image tag: $TAG"
 echo ""
 echo "To use this image:"
-echo "  1. Run it directly:"
-echo "     docker run -p 8000:8000 $TAG"
-echo ""
-echo "  2. Use in SDK with DockerWorkspace:"
-echo "     with DockerWorkspace(server_image='$TAG', host_port=8010) as workspace:"
+echo "  1. Use in SDK with DockerDevWorkspace:"
+echo "     with DockerDevWorkspace(base_image='$TAG', host_port=8010) as workspace:"
+echo "         # DockerDevWorkspace will build the agent server on top of this base image"
 echo "         # your code"
 echo ""
-echo "  3. Push to registry (optional):"
+echo "  2. Push to registry (optional):"
 echo "     docker tag $TAG your-registry/$TAG"
 echo "     docker push your-registry/$TAG"
