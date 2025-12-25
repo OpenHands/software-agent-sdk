@@ -53,6 +53,9 @@ def test_enum_values():
     )
     assert ConversationExecutionStatus.FINISHED == "finished"
     assert ConversationExecutionStatus.ERROR == "error"
+    assert (
+        ConversationExecutionStatus.MAX_ITERATIONS_REACHED == "max_iterations_reached"
+    )
 
 
 def test_enum_serialization():

@@ -338,6 +338,7 @@ class LocalConversation(BaseConversation):
                         ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
+                        ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
                     ]:
                         break
 
@@ -377,8 +378,16 @@ class LocalConversation(BaseConversation):
                     if (
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                        or iteration >= self.max_iteration_per_run
                     ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        logger.warning(
+                            f"Max iterations ({self.max_iteration_per_run}) reached."
+                        )
+                        self._state.execution_status = (
+                            ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+                        )
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR

@@ -466,3 +466,83 @@ def test_run_exits_immediately_when_stuck(mock_completion):
     assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
     # LLM should not be called
     assert mock_completion.call_count == 0
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_execution_status_max_iterations_reached(mock_completion):
+    """Test that status is set to MAX_ITERATIONS_REACHED when iteration limit is hit."""
+    status_during_execution: list[ConversationExecutionStatus] = []
+
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+        return StatusTransitionTestTool.create(
+            executor=StatusCheckingExecutor(status_during_execution)
+        )
+
+    register_tool("test_tool", _make_tool)
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    # Set max_iteration_per_run to 2 to quickly hit the limit
+    conversation = Conversation(agent=agent, max_iteration_per_run=2)
+
+    # Mock LLM to always return tool calls (never finish)
+    tool_call = ChatCompletionMessageToolCall(
+        id="call_1",
+        type="function",
+        function=Function(
+            name="test_tool",
+            arguments='{"command": "test_command"}',
+        ),
+    )
+
+    mock_completion.return_value = ModelResponse(
+        id="response_action",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=[tool_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+
+    # Send message and run
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    # Status should be MAX_ITERATIONS_REACHED
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_run_exits_immediately_when_max_iterations_reached(mock_completion):
+    """Test that run() exits immediately when status is MAX_ITERATIONS_REACHED."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Manually set status to MAX_ITERATIONS_REACHED
+    conversation._state.execution_status = (
+        ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+
+    # Call run - should exit immediately
+    conversation.run()
+
+    # Status should still be MAX_ITERATIONS_REACHED
+    assert (
+        conversation.state.execution_status
+        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+    # LLM should not be called
+    assert mock_completion.call_count == 0
