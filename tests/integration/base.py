@@ -17,6 +17,7 @@ from openhands.sdk import (
     Message,
     TextContent,
 )
+from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
 from openhands.sdk.event.base import Event
@@ -89,7 +90,9 @@ class BaseIntegrationTest(ABC):
         }
 
         self.llm: LLM = LLM(**llm_kwargs, usage_id="test-llm")
-        self.agent: Agent = Agent(llm=self.llm, tools=self.tools)
+        self.agent: Agent = Agent(
+            llm=self.llm, tools=self.tools, condenser=self.condenser
+        )
         self.collected_events: list[Event] = []
         self.llm_messages: list[dict[str, Any]] = []
 
@@ -103,7 +106,7 @@ class BaseIntegrationTest(ABC):
             workspace=self.workspace,
             callbacks=[self.conversation_callback],
             visualizer=DefaultConversationVisualizer(),  # Use default visualizer
-            max_iteration_per_run=100,
+            max_iteration_per_run=self.max_iteration_per_run,
         )
 
     def conversation_callback(self, event: Event):
@@ -176,6 +179,24 @@ class BaseIntegrationTest(ABC):
     def tools(self) -> list[Tool]:
         """List of tools available to the agent."""
         pass
+
+    @property
+    def condenser(self) -> CondenserBase | None:
+        """Optional condenser for the agent. Override to provide a custom condenser.
+
+        Returns:
+            CondenserBase instance or None (default)
+        """
+        return None
+
+    @property
+    def max_iteration_per_run(self) -> int:
+        """Maximum iterations per conversation run. Override to set a custom limit.
+
+        Returns:
+            Maximum iterations (default: 100)
+        """
+        return 100
 
     @abstractmethod
     def setup(self) -> None:
