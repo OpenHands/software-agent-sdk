@@ -479,18 +479,25 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if self._cleanup_initiated:
+        # Use getattr for safety - object may be partially constructed
+        if getattr(self, "_cleanup_initiated", False):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
-        if self._hook_processor is not None:
-            self._hook_processor.run_session_end()
+        hook_processor = getattr(self, "_hook_processor", None)
+        if hook_processor is not None:
+            hook_processor.run_session_end()
         try:
             self._end_observability_span()
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        for tool in self.agent.tools_map.values():
+        try:
+            tools_map = self.agent.tools_map
+        except (AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed
+            return
+        for tool in tools_map.values():
             try:
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
