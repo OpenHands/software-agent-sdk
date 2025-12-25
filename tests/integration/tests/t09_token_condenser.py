@@ -25,6 +25,9 @@ DO NOT write a script to do this. Instead, interactively call the echo command
 
 This won't be efficient -- that is okay, we're using the output as a test for our
 context management system.
+
+Make sure you should generate some "extended thinking" for each tool call you make
+to help us test the system.
 """
 
 logger = get_logger(__name__)
@@ -37,7 +40,7 @@ class TokenCondenserTest(BaseIntegrationTest):
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking variables."""
-        self.condensation_triggered = False
+        self.condensation_count = 0
         super().__init__(*args, **kwargs)
 
     @property
@@ -70,16 +73,19 @@ class TokenCondenserTest(BaseIntegrationTest):
         super().conversation_callback(event)
 
         if isinstance(event, Condensation):
-            self.condensation_triggered = True
-            logger.info("Condensation detected! Stopping test early.")
-            self.conversation.pause()
+            if self.condensation_count >= 1:
+                logger.info("2nd condensation detected! Stopping test early.")
+                self.conversation.pause()
+            # We allow the first condensation request to test if
+            # thinking block + condensation will work together
+            self.condensation_count += 1
 
     def setup(self) -> None:
         logger.info(f"Token condenser test: max_tokens={self.condenser.max_tokens}")
 
     def verify_result(self) -> TestResult:
         """Verify that condensation was triggered based on token count."""
-        if not self.condensation_triggered:
+        if self.condensation_count == 0:
             return TestResult(
                 success=False,
                 reason="Condensation not triggered. Token counting may not work.",
