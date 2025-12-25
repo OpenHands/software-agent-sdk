@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.workspace import PlatformType, TargetType
 
+from .cloud import OpenHandsCloudWorkspace
 from .docker import DockerWorkspace
 from .remote_api import APIRemoteWorkspace
 
@@ -15,6 +16,7 @@ __all__ = [
     "APIRemoteWorkspace",
     "DockerDevWorkspace",
     "DockerWorkspace",
+    "OpenHandsCloudWorkspace",
     "PlatformType",
     "TargetType",
 ]

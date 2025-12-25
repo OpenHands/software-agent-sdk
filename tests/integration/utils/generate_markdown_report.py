@@ -10,8 +10,44 @@ import sys
 from tests.integration.schemas import (
     ConsolidatedResults,
     ModelTestResults,
+    TokenUsageData,
 )
 from tests.integration.utils.format_costs import format_cost
+
+
+def format_token_usage(token_usage: TokenUsageData | None) -> str:
+    """Format token usage for display."""
+    if token_usage is None:
+        return "N/A"
+
+    parts = []
+    if token_usage.prompt_tokens > 0:
+        parts.append(f"prompt: {token_usage.prompt_tokens:,}")
+    if token_usage.completion_tokens > 0:
+        parts.append(f"completion: {token_usage.completion_tokens:,}")
+    if token_usage.cache_read_tokens > 0:
+        parts.append(f"cache_read: {token_usage.cache_read_tokens:,}")
+    if token_usage.cache_write_tokens > 0:
+        parts.append(f"cache_write: {token_usage.cache_write_tokens:,}")
+    if token_usage.reasoning_tokens > 0:
+        parts.append(f"reasoning: {token_usage.reasoning_tokens:,}")
+
+    if not parts:
+        return "0"
+
+    return ", ".join(parts)
+
+
+def format_token_usage_short(token_usage: TokenUsageData | None) -> str:
+    """Format token usage in a short format for tables."""
+    if token_usage is None:
+        return "N/A"
+
+    total = token_usage.prompt_tokens + token_usage.completion_tokens
+    if total == 0:
+        return "0"
+
+    return f"{total:,}"
 
 
 def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
@@ -20,11 +56,11 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
     table_lines = [
         (
             "| Model | Overall | Integration (Required) | Behavior (Optional) "
-            "| Tests Passed | Skipped | Total | Cost |"
+            "| Tests Passed | Skipped | Total | Cost | Tokens |"
         ),
         (
             "|-------|---------|------------------------|---------------------|"
-            "--------------|---------|-------|------|"
+            "--------------|---------|-------|------|--------|"
         ),
     ]
 
@@ -44,13 +80,14 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
         tests_passed = f"{result.successful_tests}/{non_skipped}"
         skipped = f"{result.skipped_tests}"
         cost = format_cost(result.total_cost)
+        tokens = format_token_usage_short(result.total_token_usage)
 
         model_name = result.model_name
         total_tests = result.total_tests
         row = (
             f"| {model_name} | {overall_success} | {integration_success} | "
             f"{behavior_success} | {tests_passed} | {skipped} | "
-            f"{total_tests} | {cost} |"
+            f"{total_tests} | {cost} | {tokens} |"
         )
         table_lines.append(row)
 
@@ -92,6 +129,7 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
         section_lines.extend(
             [
                 f"- **Total Cost**: {format_cost(result.total_cost)}",
+                f"- **Token Usage**: {format_token_usage(result.total_token_usage)}",
                 f"- **Run Suffix**: `{result.run_suffix}`",
             ]
         )

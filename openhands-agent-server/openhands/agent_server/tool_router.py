@@ -3,12 +3,15 @@
 from fastapi import APIRouter
 
 from openhands.sdk.tool.registry import list_registered_tools
+from openhands.tools.preset.default import register_default_tools
+from openhands.tools.preset.gemini import register_gemini_tools
+from openhands.tools.preset.planning import register_planning_tools
 
 
 tool_router = APIRouter(prefix="/tools", tags=["Tools"])
-# All tools are now dynamically registered when creating a RemoteConversation
-# The client sends tool_module_qualnames which the server imports to trigger
-# tool auto-registration
+register_default_tools(enable_browser=True)
+register_gemini_tools(enable_browser=True)
+register_planning_tools()
 
 
 # Tool listing
