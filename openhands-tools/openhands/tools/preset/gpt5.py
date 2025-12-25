@@ -62,10 +62,7 @@ def get_gpt5_condenser(llm: LLM) -> CondenserBase:
 
 
 def get_gpt5_agent(llm: LLM, cli_mode: bool = False) -> Agent:
-    """Get an Agent configured with ApplyPatchTool-based file editing.
-
-    This does not change defaults globally; users can opt into it explicitly.
-    """
+    """Get an agent with ApplyPatchTool for unified-diff style file editing."""
     tools = get_gpt5_tools(enable_browser=not cli_mode)
     agent = Agent(
         llm=llm,
