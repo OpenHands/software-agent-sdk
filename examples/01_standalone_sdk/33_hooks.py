@@ -6,7 +6,7 @@ Hooks are shell scripts that run at key lifecycle events, enabling:
 - Logging tool usage after execution (PostToolUse)
 - Processing user messages before they reach the agent (UserPromptSubmit)
 
-Hooks are configured in .openhands/hooks.json or passed programmatically via hook_config.
+Hooks are configured in .openhands/hooks.json or passed programmatically.
 """
 
 import os
@@ -150,9 +150,7 @@ def main():
         print("- Exit code 2 from a hook blocks the operation")
         print("- Hooks receive JSON on stdin with event details")
         print("- Environment variables like $OPENHANDS_TOOL_NAME simplify simple hooks")
-        print(
-            "- Hook config can be in .openhands/hooks.json or passed via hook_config"
-        )
+        print("- Hook config can be in .openhands/hooks.json or passed via hook_config")
 
         # Report cost
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
