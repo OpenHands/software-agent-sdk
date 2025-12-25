@@ -29,6 +29,7 @@ Returns: A sequence of ToolDefinition instances. Most of the time this will be a
 
 _LOCK = RLock()
 _REG: dict[str, Resolver] = {}
+_MODULE_QUALNAMES: dict[str, str] = {}  # Maps tool name to module qualname
 
 
 def _resolver_from_instance(name: str, tool: ToolDefinition) -> Resolver:
@@ -137,11 +138,22 @@ def register_tool(
             "(3) a callable factory returning a Sequence[ToolDefinition]"
         )
 
+    # Track the module qualname for this tool
+    module_qualname = None
+    if isinstance(factory, type):
+        module_qualname = factory.__module__
+    elif callable(factory):
+        module_qualname = getattr(factory, "__module__", None)
+    elif isinstance(factory, ToolDefinition):
+        module_qualname = factory.__class__.__module__
+
     with _LOCK:
         # TODO: throw exception when registering duplicate name tools
         if name in _REG:
             logger.warning(f"Duplicate tool name registerd {name}")
         _REG[name] = resolver
+        if module_qualname:
+            _MODULE_QUALNAMES[name] = module_qualname
 
 
 def resolve_tool(
@@ -159,3 +171,14 @@ def resolve_tool(
 def list_registered_tools() -> list[str]:
     with _LOCK:
         return list(_REG.keys())
+
+
+def get_tool_module_qualnames() -> dict[str, str]:
+    """Get a mapping of tool names to their module qualnames.
+
+    Returns:
+        A dictionary mapping tool names to module qualnames (e.g.,
+        {"glob": "openhands.tools.glob.definition"}).
+    """
+    with _LOCK:
+        return dict(_MODULE_QUALNAMES)

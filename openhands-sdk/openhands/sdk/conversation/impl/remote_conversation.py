@@ -489,6 +489,11 @@ class RemoteConversation(BaseConversation):
         self._cleanup_initiated = False
 
         if conversation_id is None:
+            # Import here to avoid circular imports
+            from openhands.sdk.tool.registry import get_tool_module_qualnames
+
+            tool_qualnames = get_tool_module_qualnames()
+            logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -500,6 +505,8 @@ class RemoteConversation(BaseConversation):
                 "workspace": LocalWorkspace(
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
+                # Include tool module qualnames for dynamic registration on server
+                "tool_module_qualnames": tool_qualnames,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
