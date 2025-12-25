@@ -436,6 +436,7 @@ class RemoteConversation(BaseConversation):
     workspace: RemoteWorkspace
     _client: httpx.Client
     _hook_processor: HookEventProcessor | None
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -484,6 +485,7 @@ class RemoteConversation(BaseConversation):
         self.workspace = workspace
         self._client = workspace.client
         self._hook_processor = None
+        self._cleanup_initiated = False
 
         if conversation_id is None:
             payload = {
@@ -593,7 +595,7 @@ class RemoteConversation(BaseConversation):
                 )
             hook_manager = HookManager(
                 config=hook_config,
-                working_dir=self.workspace.working_dir,
+                working_dir=os.getcwd(),
                 session_id=str(self._id),
             )
             self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
@@ -818,6 +820,9 @@ class RemoteConversation(BaseConversation):
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
         """
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
         if self._hook_processor is not None:
             self._hook_processor.run_session_end()
         try:
