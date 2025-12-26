@@ -25,6 +25,7 @@ from openhands.sdk.event import (
     ObservationEvent,
     SystemPromptEvent,
     TokenEvent,
+    UserRejectObservation,
 )
 from openhands.sdk.event.condenser import Condensation, CondensationRequest
 from openhands.sdk.llm import (
@@ -143,6 +144,17 @@ class Agent(AgentBase):
             )
             self._execute_actions(conversation, pending_actions, on_event)
             return
+
+        # Check if the last user message was blocked by a UserPromptSubmit hook
+        # If so, skip processing and mark conversation as finished
+        for event in reversed(list(state.events)):
+            if isinstance(event, MessageEvent) and event.source == "user":
+                reason = state.pop_blocked_message(event.id)
+                if reason is not None:
+                    logger.info(f"User message blocked by hook: {reason}")
+                    state.execution_status = ConversationExecutionStatus.FINISHED
+                    return
+                break  # Only check the most recent user message
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(
@@ -462,8 +474,26 @@ class Agent(AgentBase):
 
         It will call the tool's executor and update the state & call callback fn
         with the observation.
+
+        If the action was blocked by a PreToolUse hook (recorded in
+        state.blocked_actions), a UserRejectObservation is emitted instead
+        of executing the action.
         """
         state = conversation.state
+
+        # Check if this action was blocked by a PreToolUse hook
+        reason = state.pop_blocked_action(action_event.id)
+        if reason is not None:
+            logger.info(f"Action '{action_event.tool_name}' blocked by hook: {reason}")
+            rejection = UserRejectObservation(
+                action_id=action_event.id,
+                tool_name=action_event.tool_name,
+                tool_call_id=action_event.tool_call_id,
+                rejection_reason=reason,
+            )
+            on_event(rejection)
+            return rejection
+
         tool = self.tools_map.get(action_event.tool_name, None)
         if tool is None:
             raise RuntimeError(
