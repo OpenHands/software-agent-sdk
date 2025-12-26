@@ -36,10 +36,14 @@ sys.path.insert(0, str(script_dir))
 
 from prompt import PROMPT  # noqa: E402
 
-from openhands.sdk import LLM, Conversation, get_logger  # noqa: E402
+from openhands.sdk import LLM, Agent, Conversation, get_logger  # noqa: E402
+from openhands.sdk.context import AgentContext, load_project_skills  # noqa: E402
 from openhands.sdk.conversation import get_agent_final_response  # noqa: E402
 from openhands.sdk.utils.github import sanitize_openhands_mentions  # noqa: E402
-from openhands.tools.preset.default import get_default_agent  # noqa: E402
+from openhands.tools.preset.default import (  # noqa: E402
+    get_default_condenser,
+    get_default_tools,
+)
 
 
 logger = get_logger(__name__)
@@ -143,10 +147,25 @@ def main():
         # Get the current working directory as workspace
         cwd = os.getcwd()
 
-        # Create agent with default tools
-        agent = get_default_agent(
+        # Load skills from the repository's .openhands directory
+        # This allows the agent to use microagents like /codereview
+        skills = load_project_skills(cwd)
+        if skills:
+            logger.info(f"Loaded {len(skills)} skills: {[s.name for s in skills]}")
+
+        # Create agent context with loaded skills
+        agent_context = AgentContext(skills=skills) if skills else None
+
+        # Create agent with default tools and loaded skills
+        tools = get_default_tools(enable_browser=False)
+        agent = Agent(
             llm=llm,
-            cli_mode=True,
+            tools=tools,
+            agent_context=agent_context,
+            system_prompt_kwargs={"cli_mode": True},
+            condenser=get_default_condenser(
+                llm=llm.model_copy(update={"usage_id": "condenser"})
+            ),
         )
 
         # Create conversation
