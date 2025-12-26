@@ -119,9 +119,15 @@ class View(BaseModel):
 
         These indices represent boundaries between atomic units where events can be
         safely manipulated (inserted or forgotten). An atomic unit is either:
+        - A tool loop: a sequence of batches starting with thinking blocks and
+          continuing through all subsequent batches until a non-batch event
         - A batch of ActionEvents with the same llm_response_id and their
-          corresponding ObservationBaseEvents
+          corresponding ObservationBaseEvents (when not part of a tool loop)
         - A single event that is neither an ActionEvent nor an ObservationBaseEvent
+
+        Tool loops are identified by thinking blocks and must remain atomic to
+        preserve Claude API requirements that the final assistant message must
+        have thinking blocks when thinking is enabled.
 
         The returned indices can be used for:
         - Inserting new events: any returned index is safe
@@ -156,11 +162,18 @@ class View(BaseModel):
                 observation_indices[event.tool_call_id] = idx
 
         # For each batch, find the range of indices that includes all actions
-        # and their corresponding observations
-        batch_ranges: list[tuple[int, int]] = []
+        # and their corresponding observations, and track if batch has thinking blocks
+        batch_ranges: list[tuple[int, int, bool]] = []
         for llm_response_id, action_indices in batches.items():
             min_idx = min(action_indices)
             max_idx = max(action_indices)
+
+            # Check if this batch has thinking blocks (only first action has them)
+            first_action = self.events[min_idx]
+            has_thinking = (
+                isinstance(first_action, ActionEvent)
+                and len(first_action.thinking_blocks) > 0
+            )
 
             # Extend the range to include all corresponding observations
             for action_idx in action_indices:
@@ -173,19 +186,81 @@ class View(BaseModel):
                         obs_idx = observation_indices[action_event.tool_call_id]
                         max_idx = max(max_idx, obs_idx)
 
-            batch_ranges.append((min_idx, max_idx))
+            batch_ranges.append((min_idx, max_idx, has_thinking))
 
-        # Also need to handle observations that might not be in batches
-        # (in case there are observations without matching actions in the view)
-        handled_indices = set()
-        for min_idx, max_idx in batch_ranges:
-            handled_indices.update(range(min_idx, max_idx + 1))
+        # Sort batch ranges by start index for tool loop detection
+        batch_ranges.sort(key=lambda x: x[0])
+
+        # Identify tool loops: A tool loop starts with a batch that has thinking
+        # blocks and continues through all subsequent batches until we hit a
+        # non-ActionEvent/ObservationEvent (like a user MessageEvent).
+        tool_loop_ranges: list[tuple[int, int]] = []
+        if batch_ranges:
+            i = 0
+            while i < len(batch_ranges):
+                min_idx, max_idx, has_thinking = batch_ranges[i]
+
+                # If this batch has thinking blocks, start a tool loop
+                if has_thinking:
+                    loop_start = min_idx
+                    loop_end = max_idx
+
+                    # Continue through ALL subsequent batches until we hit
+                    # a non-batch event
+                    j = i + 1
+                    while j < len(batch_ranges):
+                        next_min, next_max, _ = batch_ranges[j]
+
+                        # Check if there's a non-batch event between current
+                        # and next batch
+                        has_non_batch_between = False
+                        for k in range(loop_end + 1, next_min):
+                            event = self.events[k]
+                            if not isinstance(
+                                event, (ActionEvent, ObservationBaseEvent)
+                            ):
+                                has_non_batch_between = True
+                                break
+
+                        if has_non_batch_between:
+                            # Tool loop ends before this non-batch event
+                            break
+
+                        # Include this batch in the tool loop
+                        loop_end = max(loop_end, next_max)
+                        j += 1
+
+                    tool_loop_ranges.append((loop_start, loop_end))
+                    i = j
+                else:
+                    i += 1
+
+        # Merge batch ranges that are part of tool loops
+        # Create a mapping of batch index ranges to whether they're in a tool loop
+        merged_ranges: list[tuple[int, int]] = []
+
+        if tool_loop_ranges:
+            # Add tool loop ranges as atomic units
+            merged_ranges.extend(tool_loop_ranges)
+
+            # Add non-tool-loop batch ranges
+            tool_loop_indices = set()
+            for loop_start, loop_end in tool_loop_ranges:
+                tool_loop_indices.update(range(loop_start, loop_end + 1))
+
+            for min_idx, max_idx, has_thinking in batch_ranges:
+                # Only add if not already covered by a tool loop
+                if min_idx not in tool_loop_indices:
+                    merged_ranges.append((min_idx, max_idx))
+        else:
+            # No tool loops, just use regular batch ranges
+            merged_ranges = [(min_idx, max_idx) for min_idx, max_idx, _ in batch_ranges]
 
         # Start with all possible indices (subtractive approach)
         result_indices = set(range(len(self.events) + 1))
 
-        # Remove indices inside batch ranges (keep only boundaries)
-        for min_idx, max_idx in batch_ranges:
+        # Remove indices inside merged ranges (keep only boundaries)
+        for min_idx, max_idx in merged_ranges:
             # Remove interior indices, keeping min_idx and max_idx+1 as boundaries
             for idx in range(min_idx + 1, max_idx + 1):
                 result_indices.discard(idx)
