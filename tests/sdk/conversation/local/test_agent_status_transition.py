@@ -546,3 +546,23 @@ def test_run_exits_immediately_when_max_iterations_reached(mock_completion):
     )
     # LLM should not be called
     assert mock_completion.call_count == 0
+
+
+def test_send_message_resets_max_iterations_reached_to_idle():
+    """Test that send_message() resets MAX_ITERATIONS_REACHED status to IDLE."""
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[])
+    conversation = Conversation(agent=agent)
+
+    # Manually set status to MAX_ITERATIONS_REACHED
+    conversation._state.execution_status = (
+        ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+    )
+
+    # Send a new message - should reset status to IDLE
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Continue please")])
+    )
+
+    # Status should be IDLE (ready to process the new message)
+    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE

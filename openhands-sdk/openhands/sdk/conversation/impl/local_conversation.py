@@ -267,7 +267,10 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
-            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
+            if self._state.execution_status in [
+                ConversationExecutionStatus.FINISHED,
+                ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
+            ]:
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
                 )  # now we have a new message
