@@ -1,0 +1,17 @@
+{
+  "default_profile": null,
+  "profiles": [
+    {
+      "name": "claude-sonnet-4-5-20250929",
+      "file": "claude-sonnet-4-5-20250929.json",
+      "description": "claude_agent",
+      "usage_id": "claude_agent"
+    },
+    {
+      "name": "gpt4",
+      "file": "gpt4.json",
+      "description": "gpt_agent",
+      "usage_id": "gpt_agent"
+    }
+  ]
+}
