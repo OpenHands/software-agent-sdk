@@ -26,6 +26,17 @@ uv run pytest tests/sdk/                 # SDK tests only
 uv run pytest tests/tools/               # Tools tests only
 ```
 
+## Evaluation Jobs
+
+The `run-eval` workflow dispatches an evaluation run in `OpenHands/evaluation`.
+To cancel the Kubernetes job(s) for a run, use the helper script and the
+evaluation run URL or ID:
+
+```bash
+python3 scripts/kill_eval_job.py --run-url https://github.com/OpenHands/evaluation/actions/runs/20436147722
+python3 scripts/kill_eval_job.py --run-id 20436147722 --namespace evaluation-jobs
+```
+
 ## Project Structure
 
 ```
