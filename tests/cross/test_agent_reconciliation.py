@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from openhands.sdk import Agent
 from openhands.sdk.agent import AgentBase
+from openhands.sdk.context import AgentContext, Skill
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
 )
@@ -339,3 +340,88 @@ def test_conversation_persistence_lifecycle(mock_completion):
         # We expect: original_event_count + 1 (system prompt from init) + 2
         # (user message + agent response)
         assert len(new_conversation.state.events) >= original_event_count + 2
+
+
+def test_conversation_restart_with_different_agent_context():
+    """
+    Test conversation restart when agent_context differs.
+
+    This simulates resuming an ACP conversation in regular CLI mode.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Simulate ACP mode: Create agent with user_provided_resources skill
+        acp_skill = Skill(
+            name="user_provided_resources",
+            content=(
+                "You may encounter sections labeled as user-provided additional "
+                "context or resources."
+            ),
+            trigger=None,
+        )
+        acp_context = AgentContext(
+            skills=[acp_skill],
+            system_message_suffix=(
+                "You current working directory is: /Users/jpshack/code/all-hands"
+            ),
+        )
+
+        tools = [
+            Tool(name="TerminalTool"),
+            Tool(name="FileEditorTool"),
+        ]
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        acp_agent = Agent(llm=llm, tools=tools, agent_context=acp_context)
+
+        # Create conversation with ACP agent
+        conversation = LocalConversation(
+            agent=acp_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+
+        # Send a message to create state
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="test message")])
+        )
+
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Simulate regular CLI mode: Create agent without user_provided_resources skill
+        # and different working directory
+        cli_skill = Skill(
+            name="project_info",
+            content="Information about the current project",
+            trigger=None,
+        )
+        cli_context = AgentContext(
+            skills=[cli_skill],
+            system_message_suffix="You current working directory is: /Users/jpshack",
+        )
+
+        cli_agent = Agent(llm=llm, tools=tools, agent_context=cli_context)
+
+        # This should succeed - agent_context differences should be reconciled
+        new_conversation = LocalConversation(
+            agent=cli_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Verify state was loaded and agent_context was updated
+        assert new_conversation.id == conversation_id
+        assert len(new_conversation.state.events) > 0
+        # The new conversation should use the CLI agent's context
+        assert new_conversation.agent.agent_context is not None
+        assert len(new_conversation.agent.agent_context.skills) == 1
+        assert new_conversation.agent.agent_context.skills[0].name == "project_info"
+        assert new_conversation.agent.agent_context.system_message_suffix is not None
+        assert (
+            "You current working directory is: /Users/jpshack"
+            in new_conversation.agent.agent_context.system_message_suffix
+        )

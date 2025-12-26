@@ -1,13 +1,13 @@
 from browser_use.dom.markdown_extractor import extract_clean_markdown
-from browser_use.mcp.server import BrowserUseServer
 
 from openhands.sdk import get_logger
+from openhands.tools.browser_use.logging_fix import LogSafeBrowserUseServer
 
 
 logger = get_logger(__name__)
 
 
-class CustomBrowserUseServer(BrowserUseServer):
+class CustomBrowserUseServer(LogSafeBrowserUseServer):
     """
     Custom BrowserUseServer with a new tool for extracting web
     page's content in markdown.

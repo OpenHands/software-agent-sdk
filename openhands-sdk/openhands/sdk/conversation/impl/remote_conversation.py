@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 import uuid
 from collections.abc import Mapping
 from typing import SupportsIndex, overload
@@ -17,7 +18,11 @@ from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
-from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationID,
+    StuckDetectionThresholds,
+)
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
@@ -28,6 +33,12 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookEventType,
+    HookManager,
+)
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -425,6 +436,8 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
+    _hook_processor: HookEventProcessor | None
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -434,6 +447,10 @@ class RemoteConversation(BaseConversation):
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
+        hook_config: HookConfig | None = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -449,6 +466,12 @@ class RemoteConversation(BaseConversation):
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
             stuck_detection: Whether to enable stuck detection on server
+            stuck_detection_thresholds: Optional configuration for stuck detection
+                      thresholds. Can be a StuckDetectionThresholds instance or
+                      a dict with keys: 'action_observation', 'action_error',
+                      'monologue', 'alternating_pattern'. Values are integers
+                      representing the number of repetitions before triggering.
+            hook_config: Optional hook configuration for session hooks
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -462,6 +485,8 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
+        self._hook_processor = None
+        self._cleanup_initiated = False
 
         if conversation_id is None:
             payload = {
@@ -476,6 +501,15 @@ class RemoteConversation(BaseConversation):
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
             }
+            if stuck_detection_thresholds is not None:
+                # Convert to StuckDetectionThresholds if dict, then serialize
+                if isinstance(stuck_detection_thresholds, Mapping):
+                    threshold_config = StuckDetectionThresholds(
+                        **stuck_detection_thresholds
+                    )
+                else:
+                    threshold_config = stuck_detection_thresholds
+                payload["stuck_detection_thresholds"] = threshold_config.model_dump()
             resp = _send_request(
                 self._client, "POST", "/api/conversations", json=payload
             )
@@ -548,6 +582,25 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
+        if hook_config is not None:
+            unsupported = (
+                HookEventType.PRE_TOOL_USE,
+                HookEventType.POST_TOOL_USE,
+                HookEventType.USER_PROMPT_SUBMIT,
+                HookEventType.STOP,
+            )
+            if any(hook_config.has_hooks_for_event(t) for t in unsupported):
+                logger.warning(
+                    "RemoteConversation only supports SessionStart/SessionEnd hooks; "
+                    "other hook types will not be enforced."
+                )
+            hook_manager = HookManager(
+                config=hook_config,
+                working_dir=os.getcwd(),
+                session_id=str(self._id),
+            )
+            self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
+            self._hook_processor.run_session_start()
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -623,7 +676,25 @@ class RemoteConversation(BaseConversation):
         )
 
     @observe(name="conversation.run")
-    def run(self) -> None:
+    def run(
+        self,
+        blocking: bool = True,
+        poll_interval: float = 1.0,
+        timeout: float = 3600.0,
+    ) -> None:
+        """Trigger a run on the server.
+
+        Args:
+            blocking: If True (default), wait for the run to complete by polling
+                the server. If False, return immediately after triggering the run.
+            poll_interval: Time in seconds between status polls (only used when
+                blocking=True). Default is 1.0 second.
+            timeout: Maximum time in seconds to wait for the run to complete
+                (only used when blocking=True). Default is 3600 seconds.
+
+        Raises:
+            ConversationRunError: If the run fails or times out.
+        """
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
         try:
@@ -632,15 +703,73 @@ class RemoteConversation(BaseConversation):
                 "POST",
                 f"/api/conversations/{self._id}/run",
                 acceptable_status_codes={200, 201, 204, 409},
-                timeout=1800,
+                timeout=30,  # Short timeout for trigger request
             )
         except Exception as e:  # httpx errors already logged by _send_request
             # Surface conversation id to help resuming
             raise ConversationRunError(self._id, e) from e
+
         if resp.status_code == 409:
             logger.info("Conversation is already running; skipping run trigger")
+            if blocking:
+                # Still wait for the existing run to complete
+                self._wait_for_run_completion(poll_interval, timeout)
             return
+
         logger.info(f"run() triggered successfully: {resp}")
+
+        if blocking:
+            self._wait_for_run_completion(poll_interval, timeout)
+
+    def _wait_for_run_completion(
+        self,
+        poll_interval: float = 1.0,
+        timeout: float = 1800.0,
+    ) -> None:
+        """Poll the server until the conversation is no longer running.
+
+        Args:
+            poll_interval: Time in seconds between status polls.
+            timeout: Maximum time in seconds to wait.
+
+        Raises:
+            ConversationRunError: If the wait times out.
+        """
+        start_time = time.monotonic()
+
+        while True:
+            elapsed = time.monotonic() - start_time
+            if elapsed > timeout:
+                raise ConversationRunError(
+                    self._id,
+                    TimeoutError(
+                        f"Run timed out after {timeout} seconds. "
+                        "The conversation may still be running on the server."
+                    ),
+                )
+
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._id}",
+                    timeout=30,
+                )
+                info = resp.json()
+                status = info.get("execution_status")
+
+                if status != ConversationExecutionStatus.RUNNING.value:
+                    logger.info(
+                        f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
+                    )
+                    return
+
+            except Exception as e:
+                # Log but continue polling - transient network errors shouldn't
+                # stop us from waiting for the run to complete
+                logger.warning(f"Error polling status (will retry): {e}")
+
+            time.sleep(poll_interval)
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
@@ -746,6 +875,21 @@ class RemoteConversation(BaseConversation):
         data = resp.json()
         return data["title"]
 
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method sends a condensation request to the remote agent server.
+        The server will use the existing condensation request pattern to trigger
+        condensation if a condenser is configured and handles condensation requests.
+
+        The condensation will be applied on the server side and will modify the
+        conversation state by adding a condensation event to the history.
+
+        Raises:
+            HTTPError: If the server returns an error (e.g., no condenser configured).
+        """
+        _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
+
     def close(self) -> None:
         """Close the conversation and clean up resources.
 
@@ -753,6 +897,11 @@ class RemoteConversation(BaseConversation):
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
         """
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
+        if self._hook_processor is not None:
+            self._hook_processor.run_session_end()
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
