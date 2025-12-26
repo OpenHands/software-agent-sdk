@@ -53,6 +53,7 @@ The server can be configured using environment variables or a JSON configuration
 |----------|-------------|---------|
 | `OPENHANDS_AGENT_SERVER_CONFIG_PATH` | Path to JSON configuration file | `workspace/openhands_agent_server_config.json` |
 | `SESSION_API_KEY` | API key for authentication (optional) | None |
+| `OH_SECRET_KEY` | Secret key for encrypting sensitive data (LLM API keys, secrets) in stored conversations. **Required for persistence across restarts.** | None |
 
 ### Configuration File
 
@@ -85,6 +86,41 @@ Create a JSON configuration file (default: `workspace/openhands_agent_server_con
 - **`webhooks`**: Array of webhook configurations for event notifications
 
 **Note**: Directory configuration (`working_dir`) will be handled at the conversation level rather than globally. These directories are specified when starting a conversation through the API.
+
+### Secret Encryption
+
+The server encrypts sensitive data (such as LLM API keys and conversation secrets) when storing conversations to disk. To enable this encryption and ensure secrets persist across server restarts, you **must** set the `OH_SECRET_KEY` environment variable.
+
+#### Setting OH_SECRET_KEY
+
+```bash
+# Generate a secure random key (recommended)
+export OH_SECRET_KEY=$(openssl rand -hex 32)
+
+# Or set a custom key
+export OH_SECRET_KEY="your-secret-key-here"
+```
+
+**Important Security Notes:**
+- Use a strong, randomly generated key with at least 256 bits of entropy
+- Store this key securely (e.g., in a secrets manager or environment variable)
+- **If you change this key, previously encrypted secrets cannot be decrypted**
+- Without `OH_SECRET_KEY`, secrets will be redacted (not encrypted) and will be lost on restart
+
+#### What Gets Encrypted
+
+The following fields are encrypted when `OH_SECRET_KEY` is set:
+- LLM API keys (`agent.llm.api_key`)
+- AWS credentials (`agent.llm.aws_access_key_id`, `agent.llm.aws_secret_access_key`)
+- Conversation secrets (from the `secrets` field in conversation requests)
+
+#### Behavior Without OH_SECRET_KEY
+
+If `OH_SECRET_KEY` is not set:
+- The server will log a warning: `⚠️ OH_SECRET_KEY was not defined. Secrets will not be persisted between restarts.`
+- Secrets will be redacted (masked) in stored conversations
+- When the server restarts, encrypted secrets cannot be decrypted and will be `None`
+- Conversations will need to be recreated with fresh API keys
 
 ### Webhook Configuration
 
@@ -167,6 +203,7 @@ uv run pytest tests/agent_server/ --cov=openhands.agent_server
 ## Security Considerations
 
 - **Authentication**: Use `session_api_key` in production environments
+- **Secret Encryption**: Always set `OH_SECRET_KEY` in production to encrypt sensitive data
 - **CORS**: Configure `allow_cors_origins` appropriately for your use case
 - **Network**: The server binds to `0.0.0.0` by default - restrict access as needed
 - **File System**: The server has full access to the configured workspace directory
@@ -179,6 +216,7 @@ uv run pytest tests/agent_server/ --cov=openhands.agent_server
 2. **Permission denied**: Ensure the user has write access to the workspace directory
 3. **Configuration not found**: Check the `OPENHANDS_AGENT_SERVER_CONFIG_PATH` environment variable
 4. **CORS errors**: Add your frontend domain to `allow_cors_origins`
+5. **LLM API keys are None after restart**: This happens when `OH_SECRET_KEY` is not set or has changed. Set `OH_SECRET_KEY` before starting the server to encrypt and persist secrets. Note: If you change the key, previously encrypted secrets cannot be decrypted.
 
 ### Logs
 
