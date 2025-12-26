@@ -1,7 +1,9 @@
 """Execute bash tool implementation."""
 
 import os
+import platform
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
@@ -200,35 +202,15 @@ class TerminalObservation(Observation):
         return text
 
 
-TOOL_DESCRIPTION = """Execute a bash command in the terminal within a persistent shell session.
+def _load_template(template_name: str) -> str:
+    """Load a template file from the templates directory."""
+    template_dir = Path(__file__).parent / "templates"
+    template_path = template_dir / template_name
+    return template_path.read_text(encoding="utf-8")
 
 
-### Command Execution
-* One command at a time: You can only execute one bash command at a time. If you need to run multiple commands sequentially, use `&&` or `;` to chain them together.
-* Persistent session: Commands execute in a persistent shell session where environment variables, virtual environments, and working directory persist between commands.
-* Soft timeout: Commands have a soft timeout of 10 seconds, once that's reached, you have the option to continue or interrupt the command (see section below for details)
-* Shell options: Do NOT use `set -e`, `set -eu`, or `set -euo pipefail` in shell scripts or commands in this environment. The runtime may not support them and can cause unusable shell sessions. If you want to run multi-line bash commands, write the commands to a file and then run it, instead.
-
-### Long-running Commands
-* For commands that may run indefinitely, run them in the background and redirect output to a file, e.g. `python3 app.py > server.log 2>&1 &`.
-* For commands that may run for a long time (e.g. installation or testing commands), or commands that run for a fixed amount of time (e.g. sleep), you should set the "timeout" parameter of your function call to an appropriate value.
-* If a bash command returns exit code `-1`, this means the process hit the soft timeout and is not yet finished. By setting `is_input` to `true`, you can:
-  - Send empty `command` to retrieve additional logs
-  - Send text (set `command` to the text) to STDIN of the running process
-  - Send control commands like `C-c` (Ctrl+C), `C-d` (Ctrl+D), or `C-z` (Ctrl+Z) to interrupt the process
-  - If you do C-c, you can re-start the process with a longer "timeout" parameter to let it run to completion
-
-### Best Practices
-* Directory verification: Before creating new directories or files, first verify the parent directory exists and is the correct location.
-* Directory management: Try to maintain working directory by using absolute paths and avoiding excessive use of `cd`.
-
-### Output Handling
-* Output truncation: If the output exceeds a maximum length, it will be truncated before being returned.
-
-### Terminal Reset
-* Terminal reset: If the terminal becomes unresponsive, you can set the "reset" parameter to `true` to create a new terminal session. This will terminate the current session and start fresh.
-* Warning: Resetting the terminal will lose all previously set environment variables, working directory changes, and any running processes. Use this only when the terminal stops responding to commands.
-"""  # noqa
+TOOL_DESCRIPTION_FOR_UNIX = _load_template("unix_description.j2")
+TOOL_DESCRIPTION_FOR_WINDOWS = _load_template("windows_description.j2")
 
 
 class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
@@ -278,12 +260,17 @@ class TerminalTool(ToolDefinition[TerminalAction, TerminalObservation]):
                 full_output_save_dir=conv_state.env_observation_persistence_dir,
             )
 
+        if platform.system() == "Windows":
+            tool_description = TOOL_DESCRIPTION_FOR_WINDOWS
+        else:
+            tool_description = TOOL_DESCRIPTION_FOR_UNIX
+
         # Initialize the parent ToolDefinition with the executor
         return [
             cls(
                 action_type=TerminalAction,
                 observation_type=TerminalObservation,
-                description=TOOL_DESCRIPTION,
+                description=tool_description,
                 annotations=ToolAnnotations(
                     title="terminal",
                     readOnlyHint=False,
