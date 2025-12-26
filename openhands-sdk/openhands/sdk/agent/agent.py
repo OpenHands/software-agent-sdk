@@ -2,7 +2,6 @@ import json
 
 from pydantic import ValidationError, model_validator
 
-import openhands.sdk.security.analyzer as analyzer
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.agent.utils import (
@@ -48,15 +47,15 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
-from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
+from openhands.sdk.security.security_service import (
+    DefaultSecurityService,
+)
 from openhands.sdk.tool import (
     Action,
     Observation,
 )
 from openhands.sdk.tool.builtins import (
-    FinishAction,
     FinishTool,
-    ThinkAction,
 )
 
 
@@ -99,6 +98,9 @@ class Agent(AgentBase):
         on_event: ConversationCallbackType,
     ) -> None:
         super().init_state(state, on_event=on_event)
+        # Build the security service based on the security analyzer and
+        # confirmation policy from conversationState.
+        self._security_service = DefaultSecurityService(state)
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
@@ -236,7 +238,6 @@ class Agent(AgentBase):
                     tool_call,
                     llm_response_id=llm_response.id,
                     on_event=on_event,
-                    security_analyzer=state.security_analyzer,
                     thought=thought_content
                     if i == 0
                     else [],  # Only first gets thought
@@ -252,8 +253,11 @@ class Agent(AgentBase):
                     continue
                 action_events.append(action_event)
 
-            # Handle confirmation mode - exit early if actions need confirmation
-            if self._requires_user_confirmation(state, action_events):
+            # Handle confirmation mode - exit early if actions need access_confirm
+            if self._security_service.access_confirm(action_events).access_confirm:  # type: ignore
+                state.execution_status = (
+                    ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                )
                 return
 
             if action_events:
@@ -284,87 +288,11 @@ class Agent(AgentBase):
             state.execution_status = ConversationExecutionStatus.FINISHED
             return
 
-    def _requires_user_confirmation(
-        self, state: ConversationState, action_events: list[ActionEvent]
-    ) -> bool:
-        """
-        Decide whether user confirmation is needed to proceed.
-
-        Rules:
-            1. Confirmation mode is enabled
-            2. Every action requires confirmation
-            3. A single `FinishAction` never requires confirmation
-            4. A single `ThinkAction` never requires confirmation
-        """
-        # A single `FinishAction` or `ThinkAction` never requires confirmation
-        if len(action_events) == 1 and isinstance(
-            action_events[0].action, (FinishAction, ThinkAction)
-        ):
-            return False
-
-        # If there are no actions there is nothing to confirm
-        if len(action_events) == 0:
-            return False
-
-        # If a security analyzer is registered, use it to grab the risks of the actions
-        # involved. If not, we'll set the risks to UNKNOWN.
-        if state.security_analyzer is not None:
-            risks = [
-                risk
-                for _, risk in state.security_analyzer.analyze_pending_actions(
-                    action_events
-                )
-            ]
-        else:
-            risks = [risk.SecurityRisk.UNKNOWN] * len(action_events)
-
-        # Grab the confirmation policy from the state and pass in the risks.
-        if any(state.confirmation_policy.should_confirm(risk) for risk in risks):
-            state.execution_status = (
-                ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-            )
-            return True
-
-        return False
-
-    def _extract_security_risk(
-        self,
-        arguments: dict,
-        tool_name: str,
-        read_only_tool: bool,
-        security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
-    ) -> risk.SecurityRisk:
-        requires_sr = isinstance(security_analyzer, LLMSecurityAnalyzer)
-        raw = arguments.pop("security_risk", None)
-
-        # Default risk value for action event
-        # Tool is marked as read-only so security risk can be ignored
-        if read_only_tool:
-            return risk.SecurityRisk.UNKNOWN
-
-        # Raises exception if failed to pass risk field when expected
-        # Exception will be sent back to agent as error event
-        # Strong models like GPT-5 can correct itself by retrying
-        if requires_sr and raw is None:
-            raise ValueError(
-                f"Failed to provide security_risk field in tool '{tool_name}'"
-            )
-
-        # When using weaker models without security analyzer
-        # safely ignore missing security risk fields
-        if not requires_sr and raw is None:
-            return risk.SecurityRisk.UNKNOWN
-
-        # Raises exception if invalid risk enum passed by LLM
-        security_risk = risk.SecurityRisk(raw)
-        return security_risk
-
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
         llm_response_id: str,
         on_event: ConversationCallbackType,
-        security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
         thought: list[TextContent] | None = None,
         reasoning_content: str | None = None,
         thinking_blocks: list[ThinkingBlock | RedactedThinkingBlock] | None = None,
@@ -410,11 +338,10 @@ class Agent(AgentBase):
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
-            security_risk = self._extract_security_risk(
+            security_risk = self._security_service.extract_security_risk(  # type: ignore
                 arguments,
                 tool.name,
                 tool.annotations.readOnlyHint if tool.annotations else False,
-                security_analyzer,
             )
             assert "security_risk" not in arguments, (
                 "Unexpected 'security_risk' key found in tool arguments"
