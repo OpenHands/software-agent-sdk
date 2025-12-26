@@ -1,0 +1,141 @@
+---
+# To set this up:
+#  1. Copy this file to .github/workflows/weekly-changelog.yml in your repository
+#  2. Add your LLM_API_KEY to the repository secrets
+#  3. Optionally uncomment the schedule trigger for automatic weekly runs
+#  4. Commit this file to your repository
+name: Weekly Changelog Generation
+
+on:
+    # Manual trigger with optional date range override
+    workflow_dispatch:
+        inputs:
+            start_date:
+                description: Start date (YYYY-MM-DD, leave empty for 7 days ago)
+                required: false
+                type: string
+            end_date:
+                description: End date (YYYY-MM-DD, leave empty for today)
+                required: false
+                type: string
+            create_pr:
+                description: Create pull request with changes
+                required: false
+                type: boolean
+                default: true
+
+    # Uncomment to enable scheduled weekly runs (every Monday at 9 AM UTC)
+    # schedule:
+    #     - cron: '0 9 * * 1'
+
+permissions:
+    contents: write  # Needed to create branches and PRs
+    pull-requests: write  # Needed to create PRs
+
+jobs:
+    generate-changelog:
+        runs-on: ubuntu-latest
+        env:
+            # Configuration (modify these values as needed)
+            LLM_MODEL: <YOUR_LLM_MODEL>
+            LLM_BASE_URL: <YOUR_LLM_BASE_URL>
+
+            # Date range for changelog
+            START_DATE: ${{ inputs.start_date || '' }}
+            END_DATE: ${{ inputs.end_date || '' }}
+            CREATE_PR: ${{ inputs.create_pr || 'true' }}
+            REPO_NAME: ${{ github.repository }}
+
+        steps:
+            - name: Checkout agent-sdk repository
+              uses: actions/checkout@v4
+              with:
+                  repository: All-Hands-AI/agent-sdk
+                  path: agent-sdk
+
+            - name: Checkout target repository
+              uses: actions/checkout@v4
+              with:
+                  # Fetch full history for complete git log
+                  fetch-depth: 0
+                  path: target-repo
+                  token: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.12'
+            - name: Install uv
+              uses: astral-sh/setup-uv@v6
+              with:
+                  enable-cache: true
+
+            - name: Install GitHub CLI
+              run: |
+                  # Install GitHub CLI for PR creation
+                  sudo apt-get update
+                  sudo apt-get install -y gh
+
+            - name: Install OpenHands dependencies
+              run: |
+                  # Install OpenHands SDK and tools from git repository
+                  uv pip install --system "openhands-sdk @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/sdk"
+                  uv pip install --system "openhands-tools @ git+https://github.com/All-Hands-AI/agent-sdk.git@main#subdirectory=openhands/tools"
+
+            - name: Check required configuration
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+              run: |
+                  if [ -z "$LLM_API_KEY" ]; then
+                    echo "Error: LLM_API_KEY secret is not set."
+                    exit 1
+                  fi
+
+                  echo "Repository: $REPO_NAME"
+                  echo "LLM model: $LLM_MODEL"
+                  if [ -n "$LLM_BASE_URL" ]; then
+                    echo "LLM base URL: $LLM_BASE_URL"
+                  fi
+
+                  if [ -n "$START_DATE" ]; then
+                    echo "Start date: $START_DATE"
+                  else
+                    echo "Start date: 7 days ago (default)"
+                  fi
+
+                  if [ -n "$END_DATE" ]; then
+                    echo "End date: $END_DATE"
+                  else
+                    echo "End date: today (default)"
+                  fi
+
+                  echo "Create PR: $CREATE_PR"
+
+            - name: Generate changelog
+              env:
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+              run: |
+                  # Change to the target repository directory
+                  cd target-repo
+
+                  # Run the changelog generation script
+                  uv run python ../agent-sdk/examples/03_github_workflows/03_weekly_changelog/agent_script.py
+
+            - name: Upload changelog as artifact
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: changelog
+                  path: target-repo/CHANGELOG.md
+                  retention-days: 30
+
+            - name: Upload logs as artifact
+              uses: actions/upload-artifact@v4
+              if: always()
+              with:
+                  name: openhands-changelog-logs
+                  path: |
+                      *.log
+                      output/
+                  retention-days: 7
