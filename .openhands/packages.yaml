@@ -1,0 +1,16 @@
+---
+# OpenHands Skill Packages Configuration
+#
+# List skill packages to load. Package names should match the entry point
+# names defined in the packages' pyproject.toml files.
+#
+# Example packages:
+#   - simple-code-review  # From openhands-simple-code-review package
+#   - awesome-skills      # From openhands-awesome-skills package
+#
+# Install packages with: pip install openhands-simple-code-review
+# List available packages with: ohp list (requires package-poc tools)
+
+packages: []
+  # Add your packages here, e.g.:
+  # - simple-code-review

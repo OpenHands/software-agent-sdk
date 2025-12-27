@@ -1,4 +1,12 @@
 from openhands.sdk.context.skills.exceptions import SkillValidationError
+from openhands.sdk.context.skills.package_loader import (
+    get_skill_package,
+    list_skill_packages,
+    load_configured_package_skills,
+    load_packages_config,
+    load_skills_from_package,
+    load_skills_from_packages,
+)
 from openhands.sdk.context.skills.skill import (
     Skill,
     load_project_skills,
@@ -25,4 +33,11 @@ __all__ = [
     "load_project_skills",
     "load_public_skills",
     "SkillValidationError",
+    # Package loading functions
+    "list_skill_packages",
+    "get_skill_package",
+    "load_skills_from_package",
+    "load_skills_from_packages",
+    "load_packages_config",
+    "load_configured_package_skills",
 ]
