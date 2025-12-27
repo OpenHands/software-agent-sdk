@@ -8,6 +8,7 @@ on:
         paths:
             - examples/**/*.py
             - '!examples/03_github_workflows/**'
+            - '!examples/04_llm_specific_tools/**'
             - .github/workflows/check-documented-examples.yml
             - .github/scripts/check_documented_examples.py
     workflow_dispatch:
