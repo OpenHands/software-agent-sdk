@@ -8,6 +8,13 @@ from pydantic import BaseModel, ConfigDict, Field, SecretStr
 from openhands.agent_server.env_parser import from_env
 from openhands.sdk.utils.cipher import Cipher
 
+# Forward reference for GitHubWebhookConfig to avoid circular imports
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from openhands.agent_server.github_autospawn_models import GitHubWebhookConfig
+
+
 
 # Environment variable constants
 SESSION_API_KEY_ENV = "SESSION_API_KEY"
@@ -126,9 +133,9 @@ class Config(BaseModel):
         default=False,
         description="Whether to enable VNC desktop functionality",
     )
-    preload_tools: bool = Field(
-        default=True,
-        description="Whether to preload tools",
+    github_autospawn: "GitHubWebhookConfig | None" = Field(
+        default=None,
+        description="Configuration for GitHub autospawn webhooks",
     )
     secret_key: SecretStr | None = Field(
         default_factory=_default_secret_key,
