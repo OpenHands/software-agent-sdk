@@ -13,6 +13,7 @@ from openhands.sdk.context.skills import (
     load_user_skills,
 )
 from openhands.sdk.llm import Message, TextContent
+from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretSource, SecretValue
 
@@ -154,7 +155,11 @@ class AgentContext(BaseModel):
             secret_infos.append({"name": name, "description": description})
         return secret_infos
 
-    def get_system_message_suffix(self) -> str | None:
+    def get_system_message_suffix(
+        self,
+        llm_model: str | None = None,
+        llm_model_canonical: str | None = None,
+    ) -> str | None:
         """Get the system message with repo skill content and custom suffix.
 
         Custom suffix can typically includes:
@@ -164,11 +169,30 @@ class AgentContext(BaseModel):
         - Repository-specific instructions (collected from repo skills)
         """
         repo_skills = [s for s in self.skills if s.trigger is None]
+
+        # Gate vendor-specific repo skills based on model family.
+        if llm_model or llm_model_canonical:
+            spec = get_model_prompt_spec(llm_model or "", llm_model_canonical)
+            family = (spec.family or "").lower()
+            if family:
+                filtered: list[Skill] = []
+                for s in repo_skills:
+                    n = (s.name or "").lower()
+                    if n == "claude" and not (
+                        "anthropic" in family or "claude" in family
+                    ):
+                        continue
+                    if n == "gemini" and not (
+                        "gemini" in family or "google_gemini" in family
+                    ):
+                        continue
+                    filtered.append(s)
+                repo_skills = filtered
+
         logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
         # Build the workspace context information
         secret_infos = self.get_secret_infos()
         if repo_skills or self.system_message_suffix or secret_infos:
-            # TODO(test): add a test for this rendering to make sure they work
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",

@@ -411,7 +411,10 @@ def load_skills_from_dir(
     # Process all files in one loop
     for file in chain(special_files, md_files):
         try:
-            skill = Skill.load(file, skill_dir)
+            skill = Skill.load(
+                file,
+                skill_dir,
+            )
             if skill.trigger is None:
                 repo_skills[skill.name] = skill
             else:
@@ -700,6 +703,8 @@ def load_public_skills(
                     path=skill_file,
                     skill_dir=repo_path,
                 )
+                if skill is None:
+                    continue
                 all_skills.append(skill)
                 logger.debug(f"Loaded public skill: {skill.name}")
             except Exception as e:
