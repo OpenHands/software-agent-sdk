@@ -532,4 +532,4 @@ def test_execution_status_error_on_max_iterations(mock_completion):
     assert len(error_events) == 1
     assert error_events[0].code == "MaxIterationsReached"
     assert "maximum iterations limit" in error_events[0].detail
-    assert "2" in error_events[0].detail  # max_iteration_per_run value
+    assert "(2)" in error_events[0].detail  # max_iteration_per_run value

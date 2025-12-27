@@ -391,8 +391,7 @@ class LocalConversation(BaseConversation):
                                 code="MaxIterationsReached",
                                 detail=(
                                     f"Agent reached maximum iterations limit "
-                                    f"({self.max_iteration_per_run}). The conversation "
-                                    f"was stopped to prevent infinite loops."
+                                    f"({self.max_iteration_per_run})."
                                 ),
                             )
                         )
