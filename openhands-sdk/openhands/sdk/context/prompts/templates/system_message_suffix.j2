@@ -1,10 +1,29 @@
+{% if available_skills %}
+<SKILLS>
+These skills are discovered at startup. Each entry includes a name, description, and file path so you can open the source for full instructions.
+
+{{ available_skills }}
+
+Skill usage rules:
+- Trigger rules: If the user names a skill OR the task clearly matches a skill's description, you must use that skill for that turn. Multiple mentions mean use them all. Do not carry skills across turns unless re-mentioned.
+- Missing/blocked: If a named skill isn't in the list or the path can't be read, say so briefly and continue with the best fallback.
+- How to use a skill (progressive disclosure):
+  1. After deciding to use a skill, read its SKILL.md file. Read only enough to follow the workflow.
+  2. If SKILL.md points to extra folders such as references/, load only the specific files needed for the request; don't bulk-load everything.
+  3. If scripts/ exist, prefer running or patching them instead of retyping large code blocks.
+  4. If assets/ or templates exist, reuse them instead of recreating from scratch.
+- Description as trigger: The description is the primary trigger signal; rely on it to decide applicability. If unsure, ask a brief clarification before proceeding.
+- Coordination: If multiple skills apply, choose the minimal set that covers the request and state the order you'll use them. Announce which skill(s) you're using and why (one short line).
+- Context hygiene: Keep context small; summarize long sections instead of pasting them; only load extra files when needed.
+</SKILLS>
+{% endif %}
 {% if repo_skills %}
 <REPO_CONTEXT>
 The following information has been included based on several files defined in user's repository.
 Please follow them while working.
 
 {% for agent_info in repo_skills %}
-[BEGIN context from [{{ agent_info.name }}]]
+[BEGIN context from [{{ agent_info.name }}]{% if agent_info.source %} ({{ agent_info.source }}){% endif %}]
 {{ agent_info.content }}
 [END Context]
 {% endfor %}

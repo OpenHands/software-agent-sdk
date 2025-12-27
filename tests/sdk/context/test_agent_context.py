@@ -50,16 +50,25 @@ class TestAgentContext:
             AgentContext(skills=[repo_skill1, repo_skill2])
 
     def test_get_system_message_suffix_no_repo_skills(self):
-        """Test system message suffix with no repo skills."""
+        """Test system message suffix with only triggered skills."""
         knowledge_skill = Skill(
             name="test_knowledge",
             content="Some knowledge content",
             source="test.md",
+            description="A test skill for knowledge",
             trigger=KeywordTrigger(keywords=["test"]),
         )
         context = AgentContext(skills=[knowledge_skill])
         result = context.get_system_message_suffix()
-        assert result is None
+        # With progressive disclosure, triggered skills are listed in <available_skills>
+        assert result is not None
+        assert "<SKILLS>" in result
+        assert "<available_skills>" in result
+        assert "<name>test_knowledge</name>" in result
+        assert "<description>A test skill for knowledge</description>" in result
+        assert "<location>test.md</location>" in result
+        # Full content should NOT be in system message (progressive disclosure)
+        assert "Some knowledge content" not in result
 
     def test_get_system_message_suffix_with_repo_skills(self):
         """Test system message suffix rendering with repo skills."""
@@ -79,25 +88,18 @@ class TestAgentContext:
         context = AgentContext(skills=[repo_agent1, repo_agent2])
         result = context.get_system_message_suffix()
 
-        expected_output = (
-            "<REPO_CONTEXT>\n"
-            "The following information has been included based on several files \
-defined in user's repository.\n"
-            "Please follow them while working.\n"
-            "\n"
-            "\n"
-            "[BEGIN context from [coding_standards]]\n"
-            "Follow PEP 8 style guidelines for Python code.\n"
-            "[END Context]\n"
-            "\n"
-            "[BEGIN context from [testing_guidelines]]\n"
-            "Write comprehensive unit tests for all new features.\n"
-            "[END Context]\n"
-            "\n"
-            "</REPO_CONTEXT>"
+        # Repo skills (trigger=None) have full content included
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "[BEGIN context from [coding_standards] (coding_standards.md)]" in result
+        assert "Follow PEP 8 style guidelines for Python code." in result
+        assert (
+            "[BEGIN context from [testing_guidelines] (testing_guidelines.md)]"
+            in result
         )
-
-        assert result == expected_output
+        assert "Write comprehensive unit tests for all new features." in result
+        # No <SKILLS> section since there are no triggered skills
+        assert "<SKILLS>" not in result
 
     def test_get_system_message_suffix_with_custom_suffix(self):
         """Test system message suffix with repo skills and custom suffix."""
@@ -114,25 +116,11 @@ defined in user's repository.\n"
         )
         result = context.get_system_message_suffix()
 
-        expected_output = (
-            "<REPO_CONTEXT>\n"
-            "The following information has been included based on several files \
-defined in user's repository.\n"
-            "Please follow them while working.\n"
-            "\n"
-            "\n"
-            "[BEGIN context from [security_rules]]\n"
-            "Always validate user input and sanitize data.\n"
-            "[END Context]\n"
-            "\n"
-            "</REPO_CONTEXT>\n"
-            "\n"
-            "\n"
-            "\n"
-            "Additional custom instructions for the system."
-        )
-
-        assert result == expected_output
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "[BEGIN context from [security_rules] (security-rules.md)]" in result
+        assert "Always validate user input and sanitize data." in result
+        assert "Additional custom instructions for the system." in result
 
     def test_get_user_message_suffix_empty_query(self):
         """Test user message suffix with empty query."""
@@ -306,7 +294,7 @@ attacks.",
         assert triggered_names == ["database_tips"]
 
     def test_mixed_skill_types(self):
-        """Test AgentContext with mixed skill types."""
+        """Test AgentContext with mixed skill types (progressive disclosure)."""
         repo_agent = Skill(
             name="repo_standards",
             content="Use semantic versioning for releases.",
@@ -316,30 +304,34 @@ attacks.",
         knowledge_agent = Skill(
             name="git_tips",
             content="Use conventional commits for better history.",
+            description="Tips for git workflow",
             source="git-tips.md",
             trigger=KeywordTrigger(keywords=["git", "commit"]),
         )
 
         context = AgentContext(skills=[repo_agent, knowledge_agent])
 
-        # Test system message suffix (should only include repo skills)
+        # Test system message suffix
         system_result = context.get_system_message_suffix()
-        expected_system_output = (
-            "<REPO_CONTEXT>\n"
-            "The following information has been included based on several files \
-defined in user's repository.\n"
-            "Please follow them while working.\n"
-            "\n"
-            "\n"
-            "[BEGIN context from [repo_standards]]\n"
-            "Use semantic versioning for releases.\n"
-            "[END Context]\n"
-            "\n"
-            "</REPO_CONTEXT>"
-        )
-        assert system_result == expected_system_output
+        assert system_result is not None
 
-        # Test user message suffix (should only include knowledge skills)
+        # Repo skills have full content included
+        assert "<REPO_CONTEXT>" in system_result
+        assert (
+            "[BEGIN context from [repo_standards] (repo-standards.md)]" in system_result
+        )
+        assert "Use semantic versioning for releases." in system_result
+
+        # Triggered skills are listed in <available_skills> (progressive disclosure)
+        assert "<SKILLS>" in system_result
+        assert "<available_skills>" in system_result
+        assert "<name>git_tips</name>" in system_result
+        assert "<description>Tips for git workflow</description>" in system_result
+        assert "<location>git-tips.md</location>" in system_result
+        # Full content of triggered skill should NOT be in system message
+        assert "Use conventional commits for better history." not in system_result
+
+        # Test user message suffix (triggered skills still work on activation)
         user_message = Message(
             role="user",
             content=[TextContent(text="How should I format my git commits?")],
@@ -349,17 +341,8 @@ defined in user's repository.\n"
         assert user_result is not None
         text_content, triggered_names = user_result
 
-        expected_user_output = (
-            "<EXTRA_INFO>\n"
-            'The following information has been included based on a keyword match \
-for "git".\n'
-            "It may or may not be relevant to the user's request.\n"
-            "\n"
-            "Use conventional commits for better history.\n"
-            "</EXTRA_INFO>"
-        )
-
-        assert text_content.text == expected_user_output
+        # When triggered, full content is included
+        assert "Use conventional commits for better history." in text_content.text
         assert triggered_names == ["git_tips"]
 
     def test_case_insensitive_trigger_matching(self):
@@ -398,8 +381,7 @@ for "docker".\n'
         """Test template rendering with special characters in content."""
         repo_agent = Skill(
             name="special_chars",
-            content="Use {{ curly braces }} and <angle brackets> carefully in \
-templates.",
+            content="Use {{ curly braces }} and <angle brackets> carefully.",
             source="special-chars.md",
             trigger=None,
         )
@@ -407,22 +389,12 @@ templates.",
         context = AgentContext(skills=[repo_agent])
         result = context.get_system_message_suffix()
 
-        expected_output = (
-            "<REPO_CONTEXT>\n"
-            "The following information has been included based on several files \
-defined in user's repository.\n"
-            "Please follow them while working.\n"
-            "\n"
-            "\n"
-            "[BEGIN context from [special_chars]]\n"
-            "Use {{ curly braces }} and <angle brackets> carefully in \
-templates.\n"
-            "[END Context]\n"
-            "\n"
-            "</REPO_CONTEXT>"
-        )
-
-        assert result == expected_output
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "[BEGIN context from [special_chars] (special-chars.md)]" in result
+        # Special characters should be preserved in content
+        assert "{{ curly braces }}" in result
+        assert "<angle brackets>" in result
 
     def test_empty_skill_content(self):
         """Test template rendering with empty skill content."""
@@ -433,34 +405,23 @@ templates.\n"
         context = AgentContext(skills=[repo_agent])
         result = context.get_system_message_suffix()
 
-        expected_output = (
-            "<REPO_CONTEXT>\n"
-            "The following information has been included based on several files \
-defined in user's repository.\n"
-            "Please follow them while working.\n"
-            "\n"
-            "\n"
-            "[BEGIN context from [empty_content]]\n"
-            "\n"
-            "[END Context]\n"
-            "\n"
-            "</REPO_CONTEXT>"
-        )
-
-        assert result == expected_output
+        assert result is not None
+        assert "<REPO_CONTEXT>" in result
+        assert "[BEGIN context from [empty_content] (test.md)]" in result
+        assert "[END Context]" in result
 
     def test_get_system_message_suffix_custom_suffix_only(self):
-        """Test system message suffix with custom suffix but no repo skills.
+        """Test system message suffix with custom suffix and triggered skills.
 
-        This test exposes a bug where get_system_message_suffix() returns None
-        when there are no repo skills, even if system_message_suffix is set.
-        The method should return the custom suffix in this case.
+        With progressive disclosure, triggered skills are listed in <available_skills>
+        and custom suffix is also included.
         """
         # Create context with only knowledge skills (no repo skills)
         # but with a custom system_message_suffix
         knowledge_agent = Skill(
             name="test_knowledge",
             content="Some knowledge content",
+            description="A test knowledge skill",
             source="test-knowledge.md",
             trigger=KeywordTrigger(keywords=["test"]),
         )
@@ -471,7 +432,12 @@ defined in user's repository.\n"
 
         result = context.get_system_message_suffix()
 
-        assert result == "Custom system instructions without repo context."
+        # Both available_skills and custom suffix should be present
+        assert result is not None
+        assert "<SKILLS>" in result
+        assert "<available_skills>" in result
+        assert "<name>test_knowledge</name>" in result
+        assert "Custom system instructions without repo context." in result
 
     def test_get_user_message_suffix_empty_query_with_suffix(self):
         """Test user message suffix with empty query but custom user_message_suffix.

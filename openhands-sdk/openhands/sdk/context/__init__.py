@@ -5,17 +5,21 @@ from openhands.sdk.context.skills import (
     KeywordTrigger,
     Skill,
     SkillKnowledge,
+    SkillResources,
     SkillValidationError,
     TaskTrigger,
     load_project_skills,
     load_skills_from_dir,
     load_user_skills,
+    to_prompt,
+    validate_skill,
 )
 
 
 __all__ = [
     "AgentContext",
     "Skill",
+    "SkillResources",
     "BaseTrigger",
     "KeywordTrigger",
     "TaskTrigger",
@@ -25,4 +29,6 @@ __all__ = [
     "load_project_skills",
     "render_template",
     "SkillValidationError",
+    "to_prompt",
+    "validate_skill",
 ]
