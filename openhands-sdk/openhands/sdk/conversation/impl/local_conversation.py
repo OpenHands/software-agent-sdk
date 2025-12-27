@@ -35,6 +35,7 @@ from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_call
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
+from openhands.sdk.observability.context import get_conversation_context
 from openhands.sdk.observability.laminar import observe
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -316,6 +317,13 @@ class LocalConversation(BaseConversation):
         - Creates and executes actions immediately
 
         Can be paused between steps
+
+        Note:
+            All operations within this run are automatically wrapped in
+            observability context managers for all enabled tools (Weave, Laminar,
+            etc.). This groups LLM calls and traced operations under the
+            conversation ID, enabling conversation-level tracing in observability
+            UIs.
         """
 
         with self._state:
@@ -327,75 +335,78 @@ class LocalConversation(BaseConversation):
                 self._state.execution_status = ConversationExecutionStatus.RUNNING
 
         iteration = 0
-        try:
-            while True:
-                logger.debug(f"Conversation run iteration {iteration}")
-                with self._state:
-                    # Pause attempts to acquire the state lock
-                    # Before value can be modified step can be taken
-                    # Ensure step conditions are checked when lock is already acquired
-                    if self._state.execution_status in [
-                        ConversationExecutionStatus.FINISHED,
-                        ConversationExecutionStatus.PAUSED,
-                        ConversationExecutionStatus.STUCK,
-                    ]:
-                        break
+        # Wrap the run loop in observability context managers for all enabled tools.
+        # This groups all LLM calls and traced operations under the conversation ID.
+        with get_conversation_context(str(self.id)):
+            try:
+                while True:
+                    logger.debug(f"Conversation run iteration {iteration}")
+                    with self._state:
+                        # Pause attempts to acquire the state lock
+                        # Before value can be modified step can be taken
+                        # Ensure step conditions are checked when lock is already acquired
+                        if self._state.execution_status in [
+                            ConversationExecutionStatus.FINISHED,
+                            ConversationExecutionStatus.PAUSED,
+                            ConversationExecutionStatus.STUCK,
+                        ]:
+                            break
 
-                    # Check for stuck patterns if enabled
-                    if self._stuck_detector:
-                        is_stuck = self._stuck_detector.is_stuck()
+                        # Check for stuck patterns if enabled
+                        if self._stuck_detector:
+                            is_stuck = self._stuck_detector.is_stuck()
 
-                        if is_stuck:
-                            logger.warning("Stuck pattern detected.")
+                            if is_stuck:
+                                logger.warning("Stuck pattern detected.")
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.STUCK
+                                )
+                                continue
+
+                        # clear the flag before calling agent.step() (user approved)
+                        if (
+                            self._state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                        ):
                             self._state.execution_status = (
-                                ConversationExecutionStatus.STUCK
+                                ConversationExecutionStatus.RUNNING
                             )
-                            continue
 
-                    # clear the flag before calling agent.step() (user approved)
-                    if (
-                        self._state.execution_status
-                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                    ):
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.RUNNING
+                        self.agent.step(
+                            self, on_event=self._on_event, on_token=self._on_token
                         )
+                        iteration += 1
 
-                    self.agent.step(
-                        self, on_event=self._on_event, on_token=self._on_token
+                        # Check for non-finished terminal conditions
+                        # Note: We intentionally do NOT check for FINISHED status here.
+                        # This allows concurrent user messages to be processed:
+                        # 1. Agent finishes and sets status to FINISHED
+                        # 2. User sends message concurrently via send_message()
+                        # 3. send_message() waits for FIFO lock, then sets status to IDLE
+                        # 4. Run loop continues to next iteration and processes the message
+                        # 5. Without this design, concurrent messages would be lost
+                        if (
+                            self.state.execution_status
+                            == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
+                            or iteration >= self.max_iteration_per_run
+                        ):
+                            break
+            except Exception as e:
+                self._state.execution_status = ConversationExecutionStatus.ERROR
+
+                # Add an error event
+                self._on_event(
+                    ConversationErrorEvent(
+                        source="environment",
+                        code=e.__class__.__name__,
+                        detail=str(e),
                     )
-                    iteration += 1
-
-                    # Check for non-finished terminal conditions
-                    # Note: We intentionally do NOT check for FINISHED status here.
-                    # This allows concurrent user messages to be processed:
-                    # 1. Agent finishes and sets status to FINISHED
-                    # 2. User sends message concurrently via send_message()
-                    # 3. send_message() waits for FIFO lock, then sets status to IDLE
-                    # 4. Run loop continues to next iteration and processes the message
-                    # 5. Without this design, concurrent messages would be lost
-                    if (
-                        self.state.execution_status
-                        == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                        or iteration >= self.max_iteration_per_run
-                    ):
-                        break
-        except Exception as e:
-            self._state.execution_status = ConversationExecutionStatus.ERROR
-
-            # Add an error event
-            self._on_event(
-                ConversationErrorEvent(
-                    source="environment",
-                    code=e.__class__.__name__,
-                    detail=str(e),
                 )
-            )
 
-            # Re-raise with conversation id and persistence dir for better UX
-            raise ConversationRunError(
-                self._state.id, e, persistence_dir=self._state.persistence_dir
-            ) from e
+                # Re-raise with conversation id and persistence dir for better UX
+                raise ConversationRunError(
+                    self._state.id, e, persistence_dir=self._state.persistence_dir
+                ) from e
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""

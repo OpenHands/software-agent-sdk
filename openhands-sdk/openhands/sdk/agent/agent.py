@@ -48,6 +48,7 @@ from openhands.sdk.observability.laminar import (
     should_enable_observability,
 )
 from openhands.sdk.observability.utils import extract_action_name
+from openhands.sdk.observability.weave import maybe_init_weave
 from openhands.sdk.security.llm_analyzer import LLMSecurityAnalyzer
 from openhands.sdk.tool import (
     Action,
@@ -62,6 +63,7 @@ from openhands.sdk.tool.builtins import (
 
 logger = get_logger(__name__)
 maybe_init_laminar()
+maybe_init_weave()
 
 
 class Agent(AgentBase):

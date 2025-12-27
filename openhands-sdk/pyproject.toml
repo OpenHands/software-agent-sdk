@@ -19,6 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
+weave = ["weave>=0.52.22", "wandb"]
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
