@@ -78,6 +78,7 @@ These tests must pass for releases and verify that the agent can successfully co
 - **t06_github_pr_browsing** - Tests GitHub PR browsing
 - **t07_interactive_commands** - Tests interactive command handling
 - **t08_image_file_viewing** - Tests image file viewing capabilities
+- **t09_token_condenser** - Tests that token-based condensation works correctly by verifying `get_token_count()` triggers condensation when token limits are exceeded
 
 ### Behavior Tests (`b*.py`) - **Optional**
 
@@ -86,3 +87,22 @@ These tests track quality improvements and don't block releases. They verify tha
 - **b01_no_premature_implementation** - Tests that the agent doesn't start implementing when asked for advice. Uses a real codebase (software-agent-sdk checked out to a historical commit) to test that the agent explores, provides suggestions, and asks clarifying questions instead of immediately creating or editing files.
 
 For more details on behavior testing and guidelines for adding new tests, see [BEHAVIOR_TESTS.md](BEHAVIOR_TESTS.md).
+
+## Writing Integration Tests
+
+All integration tests inherit from `BaseIntegrationTest` in `base.py`. The base class provides a consistent framework with several customizable properties:
+
+### Required Methods
+
+- **`tools`** (property) - List of tools available to the agent
+- **`setup()`** - Initialize test-specific setup (create files, etc.)
+- **`verify_result()`** - Verify the test succeeded and return `TestResult`
+
+### Optional Properties
+
+- **`condenser`** (property) - Optional condenser configuration for the agent (default: `None`)
+  - Override to test condensation or manage long conversations
+  - Example: `t09_token_condenser` uses this to verify token counting
+- **`max_iteration_per_run`** (property) - Maximum iterations per conversation (default: `100`)
+  - Override to limit LLM calls for faster tests
+  - Useful for tests that should complete quickly
