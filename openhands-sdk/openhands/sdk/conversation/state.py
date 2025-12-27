@@ -43,9 +43,6 @@ class ConversationExecutionStatus(str, Enum):
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
-    MAX_ITERATIONS_REACHED = (
-        "max_iterations_reached"  # Conversation hit the iteration limit per run
-    )
 
 
 class ConversationState(OpenHandsModel):

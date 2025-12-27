@@ -469,9 +469,12 @@ def test_run_exits_immediately_when_stuck(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
-def test_execution_status_max_iterations_reached(mock_completion):
-    """Test that status is set to MAX_ITERATIONS_REACHED when iteration limit is hit."""
+def test_execution_status_error_on_max_iterations(mock_completion):
+    """Test that status is set to ERROR with clear message when max iterations hit."""
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
     status_during_execution: list[ConversationExecutionStatus] = []
+    events_received: list = []
 
     def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
         return StatusTransitionTestTool.create(
@@ -483,7 +486,11 @@ def test_execution_status_max_iterations_reached(mock_completion):
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
     # Set max_iteration_per_run to 2 to quickly hit the limit
-    conversation = Conversation(agent=agent, max_iteration_per_run=2)
+    conversation = Conversation(
+        agent=agent,
+        max_iteration_per_run=2,
+        callbacks=[lambda e: events_received.append(e)],
+    )
 
     # Mock LLM to always return tool calls (never finish)
     tool_call = ChatCompletionMessageToolCall(
@@ -517,52 +524,12 @@ def test_execution_status_max_iterations_reached(mock_completion):
     )
     conversation.run()
 
-    # Status should be MAX_ITERATIONS_REACHED
-    assert (
-        conversation.state.execution_status
-        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
-    )
+    # Status should be ERROR
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
 
-
-@patch("openhands.sdk.llm.llm.litellm_completion")
-def test_run_exits_immediately_when_max_iterations_reached(mock_completion):
-    """Test that run() exits immediately when status is MAX_ITERATIONS_REACHED."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
-    agent = Agent(llm=llm, tools=[])
-    conversation = Conversation(agent=agent)
-
-    # Manually set status to MAX_ITERATIONS_REACHED
-    conversation._state.execution_status = (
-        ConversationExecutionStatus.MAX_ITERATIONS_REACHED
-    )
-
-    # Call run - should exit immediately
-    conversation.run()
-
-    # Status should still be MAX_ITERATIONS_REACHED
-    assert (
-        conversation.state.execution_status
-        == ConversationExecutionStatus.MAX_ITERATIONS_REACHED
-    )
-    # LLM should not be called
-    assert mock_completion.call_count == 0
-
-
-def test_send_message_resets_max_iterations_reached_to_idle():
-    """Test that send_message() resets MAX_ITERATIONS_REACHED status to IDLE."""
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
-    agent = Agent(llm=llm, tools=[])
-    conversation = Conversation(agent=agent)
-
-    # Manually set status to MAX_ITERATIONS_REACHED
-    conversation._state.execution_status = (
-        ConversationExecutionStatus.MAX_ITERATIONS_REACHED
-    )
-
-    # Send a new message - should reset status to IDLE
-    conversation.send_message(
-        Message(role="user", content=[TextContent(text="Continue please")])
-    )
-
-    # Status should be IDLE (ready to process the new message)
-    assert conversation.state.execution_status == ConversationExecutionStatus.IDLE
+    # Should have emitted a ConversationErrorEvent with clear message
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    assert len(error_events) == 1
+    assert error_events[0].code == "MaxIterationsReached"
+    assert "maximum iterations limit" in error_events[0].detail
+    assert "2" in error_events[0].detail  # max_iteration_per_run value

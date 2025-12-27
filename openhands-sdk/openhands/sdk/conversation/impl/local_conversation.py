@@ -267,10 +267,7 @@ class LocalConversation(BaseConversation):
             "Only user messages are allowed to be sent to the agent."
         )
         with self._state:
-            if self._state.execution_status in [
-                ConversationExecutionStatus.FINISHED,
-                ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
-            ]:
+            if self._state.execution_status == ConversationExecutionStatus.FINISHED:
                 self._state.execution_status = (
                     ConversationExecutionStatus.IDLE
                 )  # now we have a new message
@@ -341,7 +338,6 @@ class LocalConversation(BaseConversation):
                         ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
-                        ConversationExecutionStatus.MAX_ITERATIONS_REACHED,
                     ]:
                         break
 
@@ -388,8 +384,17 @@ class LocalConversation(BaseConversation):
                         logger.warning(
                             f"Max iterations ({self.max_iteration_per_run}) reached."
                         )
-                        self._state.execution_status = (
-                            ConversationExecutionStatus.MAX_ITERATIONS_REACHED
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=(
+                                    f"Agent reached maximum iterations limit "
+                                    f"({self.max_iteration_per_run}). The conversation "
+                                    f"was stopped to prevent infinite loops."
+                                ),
+                            )
                         )
                         break
         except Exception as e:
