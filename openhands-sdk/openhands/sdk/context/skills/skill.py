@@ -243,7 +243,6 @@ class Skill(BaseModel):
         skill_dir: Path | None = None,
         file_content: str | None = None,
         directory_name: str | None = None,
-        validate_name: bool = False,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
@@ -258,9 +257,8 @@ class Skill(BaseModel):
             skill_dir: Base directory for skills (used to derive relative names).
             file_content: Optional file content (if not provided, reads from path).
             directory_name: For SKILL.md files, the parent directory name.
-                Used to derive skill name and validate name matches directory.
-            validate_name: If True, validate the skill name according to
-                AgentSkills spec and raise SkillValidationError if invalid.
+                Used to derive skill name. When provided, the name is automatically
+                validated against AgentSkills spec.
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -298,8 +296,8 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use derived name
         agent_name = str(metadata_dict.get("name", skill_name))
 
-        # Validate skill name if requested
-        if validate_name:
+        # Auto-validate skill name when directory_name is provided (SKILL.md format)
+        if directory_name is not None:
             name_errors = validate_skill_name(agent_name, directory_name)
             if name_errors:
                 raise SkillValidationError(
@@ -459,32 +457,42 @@ def _find_third_party_files(repo_root: Path) -> list[Path]:
     Returns:
         List of paths to third-party skill files found.
     """
+    if not repo_root.exists():
+        return []
+
+    # Build a set of target filenames (lowercase) for case-insensitive matching
+    target_names = {name.lower() for name in Skill.PATH_TO_THIRD_PARTY_SKILL_NAME}
+
     files: list[Path] = []
-    for filename in Skill.PATH_TO_THIRD_PARTY_SKILL_NAME.keys():
-        for variant in [filename, filename.lower(), filename.upper()]:
-            if (repo_root / variant).exists():
-                files.append(repo_root / variant)
-                break  # Only add the first variant found to avoid duplicates
+    seen_names: set[str] = set()
+    for item in repo_root.iterdir():
+        if item.is_file() and item.name.lower() in target_names:
+            # Avoid duplicates (e.g., AGENTS.md and agents.md in same dir)
+            name_lower = item.name.lower()
+            if name_lower not in seen_names:
+                files.append(item)
+                seen_names.add(name_lower)
     return files
 
 
-def _find_skill_md_directories(skill_dir: Path) -> list[tuple[Path, str, Path]]:
+def _find_skill_md_directories(skill_dir: Path) -> list[tuple[Path, str]]:
     """Find AgentSkills-style directories containing SKILL.md files.
 
     Args:
         skill_dir: Path to the skills directory.
 
     Returns:
-        List of tuples: (skill_md_path, directory_name, directory_path).
+        List of tuples: (skill_md_path, directory_name).
+        The directory path can be derived from skill_md_path.parent.
     """
-    results: list[tuple[Path, str, Path]] = []
+    results: list[tuple[Path, str]] = []
     if not skill_dir.exists():
         return results
     for subdir in skill_dir.iterdir():
         if subdir.is_dir():
             skill_md = find_skill_md(subdir)
             if skill_md:
-                results.append((skill_md, subdir.name, subdir))
+                results.append((skill_md, subdir.name))
     return results
 
 
@@ -512,43 +520,41 @@ def _find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Pat
     return files
 
 
-def _load_skill_safe(
+def _load_and_categorize(
     path: Path,
     skill_dir: Path,
+    repo_skills: dict[str, Skill],
+    knowledge_skills: dict[str, Skill],
     directory_name: str | None = None,
-    validate_name: bool = False,
-) -> Skill:
-    """Load a skill with consistent error handling.
+) -> None:
+    """Load a skill and categorize it into repo_skills or knowledge_skills.
 
     Args:
         path: Path to the skill file.
         skill_dir: Base directory for skills.
+        repo_skills: Dictionary to store skills with trigger=None.
+        knowledge_skills: Dictionary to store skills with triggers.
         directory_name: For SKILL.md files, the parent directory name.
-        validate_name: If True, validate the skill name.
-
-    Returns:
-        The loaded Skill object.
 
     Raises:
-        SkillValidationError: If skill validation fails.
-        ValueError: If any other error occurs during loading.
+        SkillValidationError: If skill validation fails (with path context).
+        ValueError: If any other error occurs during loading (with path context).
     """
     try:
-        return Skill.load(
-            path,
-            skill_dir,
-            directory_name=directory_name,
-            validate_name=validate_name,
-        )
+        skill = Skill.load(path, skill_dir, directory_name=directory_name)
     except SkillValidationError as e:
         raise SkillValidationError(f"Error loading skill from {path}: {e}") from e
     except Exception as e:
         raise ValueError(f"Error loading skill from {path}: {e}") from e
 
+    if skill.trigger is None:
+        repo_skills[skill.name] = skill
+    else:
+        knowledge_skills[skill.name] = skill
+
 
 def load_skills_from_dir(
     skill_dir: str | Path,
-    validate_names: bool = False,
 ) -> tuple[dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
@@ -560,8 +566,6 @@ def load_skills_from_dir(
 
     Args:
         skill_dir: Path to the skills directory (e.g. .openhands/skills)
-        validate_names: If True, validate skill names according to AgentSkills
-            spec and raise SkillValidationError for invalid names.
 
     Returns:
         Tuple of (repo_skills, knowledge_skills) dictionaries.
@@ -575,30 +579,26 @@ def load_skills_from_dir(
     knowledge_skills: dict[str, Skill] = {}
     logger.debug(f"Loading agents from {skill_dir}")
 
-    def add_skill(skill: Skill) -> None:
-        if skill.trigger is None:
-            repo_skills[skill.name] = skill
-        else:
-            knowledge_skills[skill.name] = skill
-
     # Discover all skill files
     repo_root = skill_dir.parent.parent
     third_party_files = _find_third_party_files(repo_root)
     skill_md_entries = _find_skill_md_directories(skill_dir)
-    skill_md_dirs = {entry[2] for entry in skill_md_entries}
+    skill_md_dirs = {skill_md.parent for skill_md, _ in skill_md_entries}
     regular_md_files = _find_regular_md_files(skill_dir, skill_md_dirs)
 
-    # Load third-party files (no name validation)
+    # Load third-party files (no directory_name, so no name validation)
     for path in third_party_files:
-        add_skill(_load_skill_safe(path, skill_dir))
+        _load_and_categorize(path, skill_dir, repo_skills, knowledge_skills)
 
-    # Load SKILL.md directories
-    for skill_md_path, dir_name, _ in skill_md_entries:
-        add_skill(_load_skill_safe(skill_md_path, skill_dir, dir_name, validate_names))
+    # Load SKILL.md directories (directory_name triggers auto-validation)
+    for skill_md_path, dir_name in skill_md_entries:
+        _load_and_categorize(
+            skill_md_path, skill_dir, repo_skills, knowledge_skills, dir_name
+        )
 
-    # Load regular .md files
+    # Load regular .md files (no directory_name, so no name validation)
     for path in regular_md_files:
-        add_skill(_load_skill_safe(path, skill_dir, validate_name=validate_names))
+        _load_and_categorize(path, skill_dir, repo_skills, knowledge_skills)
 
     logger.debug(
         f"Loaded {len(repo_skills) + len(knowledge_skills)} skills: "
