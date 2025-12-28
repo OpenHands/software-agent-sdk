@@ -377,8 +377,23 @@ class LocalConversation(BaseConversation):
                     if (
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                        or iteration >= self.max_iteration_per_run
                     ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
+                        )
+                        logger.error(error_msg)
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=error_msg,
+                            )
+                        )
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR

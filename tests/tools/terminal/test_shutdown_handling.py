@@ -58,3 +58,21 @@ def test_tmux_terminal_close_multiple_calls():
     # Second close should be safe and not call kill() again
     terminal.close()
     mock_session.kill.assert_called_once()  # Still only called once
+
+
+def test_tmux_terminal_close_when_session_already_dead():
+    """Test that TmuxTerminal.close() handles session already dead/killed externally."""
+    terminal = TmuxTerminal("/tmp")
+
+    # Manually set up a mock session to avoid complex initialization
+    mock_session = Mock()
+    # Simulate the "can't find session" error from tmux
+    mock_session.kill.side_effect = Exception("can't find session: $2")
+    terminal.session = mock_session
+
+    # close() should handle the exception gracefully
+    terminal.close()  # Should not raise an exception
+
+    # session.kill() should have been called but raised an exception
+    mock_session.kill.assert_called_once()
+    assert terminal.closed
