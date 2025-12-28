@@ -381,18 +381,17 @@ class LocalConversation(BaseConversation):
                         break
 
                     if iteration >= self.max_iteration_per_run:
-                        logger.warning(
-                            f"Max iterations ({self.max_iteration_per_run}) reached."
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
                         )
+                        logger.error(error_msg)
                         self._state.execution_status = ConversationExecutionStatus.ERROR
                         self._on_event(
                             ConversationErrorEvent(
                                 source="environment",
                                 code="MaxIterationsReached",
-                                detail=(
-                                    f"Agent reached maximum iterations limit "
-                                    f"({self.max_iteration_per_run})."
-                                ),
+                                detail=error_msg,
                             )
                         )
                         break
