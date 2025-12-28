@@ -11,7 +11,7 @@ from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, TestResult
+from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 
 
 # Instruction designed to generate multiple agent messages
@@ -42,6 +42,20 @@ class TokenCondenserTest(BaseIntegrationTest):
         """Initialize test with tracking variables."""
         self.condensation_count = 0
         super().__init__(*args, **kwargs)
+
+        # Some models explicitly disallow long, repetitive tool loops for cost/safety.
+        # GPT-5.1 Codex Max often refuses the 1..1000 echo prompt and may disable
+        # extended tool usage. In such cases, token-count-based condensation cannot be
+        # reliably exercised. Skip this test for that model to avoid spurious failures.
+        model_name = self.llm.model
+        canonical = self.llm.model_info.get("model") if self.llm.model_info else None
+        name = (canonical or model_name or "").split("/")[-1]
+        if name == "gpt-5.1-codex-max":
+            raise SkipTest(
+                "This test stresses long repetitive tool loops to trigger token-based "
+                "condensation. GPT-5.1 Codex Max often declines such requests for "
+                "efficiency/safety reasons."
+            )
 
     @property
     def tools(self) -> list[Tool]:
