@@ -38,7 +38,7 @@ def detect_platform():
 
 # 2) Create an Apptainer-based remote workspace that will set up and manage
 #    the Apptainer container automatically. Use `ApptainerWorkspace` with a
-#    pre-built image or provide a base_image to build on-demand.
+#    pre-built agent server image.
 #    Apptainer (formerly Singularity) doesn't require root access, making it
 #    ideal for HPC and shared computing environments.
 with ApptainerWorkspace(

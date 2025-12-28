@@ -12,10 +12,9 @@ from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr, model_validator
 
-from openhands.agent_server.docker.build import PlatformType, TargetType
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
-from openhands.sdk.workspace import RemoteWorkspace
+from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 from openhands.workspace.docker.workspace import (
     check_port_available,
     find_available_tcp_port,
@@ -28,15 +27,20 @@ logger = get_logger(__name__)
 class ApptainerWorkspace(RemoteWorkspace):
     """Remote workspace that sets up and manages an Apptainer container.
 
-    This workspace creates an Apptainer container running the OpenHands agent
-    server, waits for it to become healthy, and then provides remote workspace
-    operations through the container's HTTP API.
+    This workspace creates an Apptainer container running a pre-built OpenHands
+    agent server image, waits for it to become healthy, and then provides remote
+    workspace operations through the container's HTTP API.
 
     Apptainer (formerly Singularity) is a container runtime that doesn't require
     root access, making it ideal for HPC and shared computing environments.
 
+    Note: This class only works with pre-built images. It does not support
+    building images on-the-fly from a base image.
+
     Example:
-        with ApptainerWorkspace(base_image="python:3.12") as workspace:
+        with ApptainerWorkspace(
+            server_image="ghcr.io/openhands/agent-server:latest-python"
+        ) as workspace:
             result = workspace.execute_command("ls -la")
     """
 
@@ -51,25 +55,15 @@ class ApptainerWorkspace(RemoteWorkspace):
     )
 
     # Apptainer-specific configuration
-    base_image: str | None = Field(
-        default=None,
-        description=(
-            "Base Docker image to use for the agent server container. "
-            "Mutually exclusive with server_image and sif_file."
-        ),
-    )
     server_image: str | None = Field(
         default=None,
-        description=(
-            "Pre-built agent server image to use. If None, builds from "
-            "base_image. Mutually exclusive with base_image and sif_file."
-        ),
+        description="Pre-built agent server image to use.",
     )
     sif_file: str | None = Field(
         default=None,
         description=(
-            "Path to existing Apptainer SIF file. If provided, skips build. "
-            "Mutually exclusive with base_image and server_image."
+            "Path to existing Apptainer SIF file. If provided, skips image pull. "
+            "Mutually exclusive with server_image."
         ),
     )
     host_port: int | None = Field(
@@ -86,9 +80,6 @@ class ApptainerWorkspace(RemoteWorkspace):
     )
     detach_logs: bool = Field(
         default=True, description="Whether to stream container logs in background."
-    )
-    target: TargetType = Field(
-        default="source", description="Build target for the Docker image."
     )
     platform: PlatformType = Field(
         default="linux/amd64", description="Platform for the Docker image."
@@ -116,17 +107,14 @@ class ApptainerWorkspace(RemoteWorkspace):
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
     _sif_path: str = PrivateAttr()
-    _process: subprocess.Popen | None = PrivateAttr(default=None)
+    _process: subprocess.Popen[str] | None = PrivateAttr(default=None)
 
     @model_validator(mode="after")
     def _validate_images(self):
-        """Ensure exactly one of base_image, server_image, or sif_file is provided."""
-        sources = [self.base_image, self.server_image, self.sif_file]
+        """Ensure exactly one of server_image or sif_file is provided."""
+        sources = [self.server_image, self.sif_file]
         if sum(x is not None for x in sources) != 1:
-            raise ValueError(
-                "Exactly one of 'base_image', 'server_image', or 'sif_file' "
-                "must be set."
-            )
+            raise ValueError("Exactly one of 'server_image' or 'sif_file' must be set.")
         return self
 
     def model_post_init(self, context: Any) -> None:
@@ -191,20 +179,11 @@ class ApptainerWorkspace(RemoteWorkspace):
         super().model_post_init(context)
 
     def _prepare_sif_image(self) -> str:
-        """Prepare the SIF image file from base_image or server_image."""
-        if self.base_image:
-            if "ghcr.io/openhands/agent-server" in self.base_image:
-                raise RuntimeError(
-                    "base_image cannot be a pre-built agent-server image. "
-                    "Use server_image=... instead."
-                )
-            # For base_image, we pull directly from the Docker registry
-            # This doesn't require Docker daemon - Apptainer can pull directly
-            docker_image = self.base_image
-        elif self.server_image:
-            docker_image = self.server_image
-        else:
-            raise RuntimeError("Unreachable: one of base_image or server_image is set")
+        """Prepare the SIF image file from server_image."""
+        if self.server_image is None:
+            raise RuntimeError("server_image must be set")
+
+        docker_image = self.server_image
 
         # Convert Docker image to SIF
         assert self.cache_dir is not None, "cache_dir must be set in model_post_init"
