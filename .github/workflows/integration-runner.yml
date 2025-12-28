@@ -80,10 +80,10 @@ jobs:
                       run-suffix: sonnet_run
                       llm-config:
                           model: litellm_proxy/claude-sonnet-4-5-20250929
-                    - name: GPT-5.2 Codex
-                      run-suffix: gpt52_codex_run
+                    - name: GPT-5.1 Codex Max
+                      run-suffix: gpt51_codex_run
                       llm-config:
-                          model: litellm_proxy/gpt-5.2-codex
+                          model: litellm_proxy/gpt-5.1-codex-max
                           temperature: 1.0
                           reasoning_summary: detailed
                     - name: Deepseek Chat
