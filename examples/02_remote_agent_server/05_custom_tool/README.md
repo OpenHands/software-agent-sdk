@@ -6,19 +6,20 @@ This example demonstrates how to use custom tools with a remote agent server by 
 
 When using a remote agent server, custom tools must be available in the server's Python environment. This example shows the complete workflow for:
 
-1. **Defining custom tools** with structured data collection
+1. **Defining custom tools** that log structured data to a JSON file
 2. **Building a custom base image** that includes your tools
 3. **Using `DockerDevWorkspace`** to build the agent server on top of the custom base image
 4. **Using dynamic tool registration** to make tools available at runtime
+5. **Verifying the results** by reading the logged data back from the workspace
 
 ## Use Cases
 
 This pattern is useful for:
 
-- **Structured data collection**: Define tools like `report_bug`, `log_metric`, or `record_event` to collect structured data during agent runs
+- **Structured data collection**: Define tools like `log_data`, `record_metric`, or `track_event` to collect structured data during agent runs
 - **Custom integrations**: Tools that interact with external systems (APIs, databases, etc.)
 - **Domain-specific operations**: Business logic tools specific to your application
-- **Downstream processing**: Collected data can be used to create Jira tickets, generate reports, trigger workflows, etc.
+- **Downstream processing**: Collected data can be used to generate reports, trigger workflows, etc.
 
 ## Architecture
 
@@ -31,12 +32,13 @@ This pattern is useful for:
 │  - Get results  │         │    Python path           │
 │                 │         │  - Dynamic registration  │
 └─────────────────┘         │  - Tool execution        │
+                            │  - JSON file output      │
                             └──────────────────────────┘
 ```
 
 ## Files in This Example
 
-- **`custom_tools/report_bug.py`**: Example custom tool for reporting bugs with structured data
+- **`custom_tools/log_data.py`**: Example custom tool for logging structured data to JSON
 - **`Dockerfile`**: Simple Dockerfile that copies custom tools into the base image
 - **`build_custom_image.sh`**: Script to build the custom base image
 - **`custom_tool_example.py`**: SDK script demonstrating the full workflow
@@ -44,38 +46,33 @@ This pattern is useful for:
 
 ## The Custom Tool
 
-The example includes a `ReportBugTool` that demonstrates structured data collection:
+The example includes a `LogDataTool` that logs structured data to a JSON file:
 
 ```python
 # Define the action (input to the tool)
-class BugAction(Action):
-    title: str
-    description: str
-    severity: BugSeverity  # Enum: low, medium, high, critical
-    steps_to_reproduce: list[str]
-    expected_behavior: str | None
-    actual_behavior: str | None
-    affected_files: list[str]
-    tags: list[str]
+class LogDataAction(Action):
+    message: str  # The log message
+    level: LogLevel  # Enum: debug, info, warning, error
+    data: dict[str, Any]  # Additional structured data
 
 # Define the observation (output from the tool)
-class BugObservation(Observation):
-    bug_id: str
+class LogDataObservation(Observation):
     success: bool
-    message: str
+    log_file: str
+    entry_count: int
 
 # Auto-register the tool when module is imported
-register_tool("ReportBugTool", ReportBugTool)
+register_tool("LogDataTool", LogDataTool)
 ```
 
 ## How It Works
 
-### 1. Tool Implementation (`custom_tools/report_bug.py`)
+### 1. Tool Implementation (`custom_tools/log_data.py`)
 
 The tool defines:
 - **Action**: Input structure (what the LLM provides)
 - **Observation**: Output structure (what the LLM receives back)
-- **Executor**: Logic that executes when the tool is called
+- **Executor**: Logic that writes to `/tmp/agent_data.json`
 - **Auto-registration**: `register_tool()` call at module level
 
 ### 2. Dockerfile
@@ -109,6 +106,7 @@ The script:
 - Creates an agent with the custom tool specified
 - Sends a task that uses the custom tool
 - Agent executes on the remote server with access to the custom tool
+- **Reads the JSON log file back** to verify the tool worked
 
 ## Running the Example
 
@@ -135,21 +133,42 @@ The script will:
 - Build the agent server on top of the base image (first run may take a few minutes)
 - Start the agent server with custom tools
 - Execute the task using the custom tool
-- Show the results
+- Read and display the logged data from the JSON file
 
 ### Expected Output
 
 ```
 🔍 Checking for custom base image: custom-base-image:latest
-🐳 Building custom base image with custom tools...
+📦 Building custom base image with custom tools...
 ✅ Custom base image built successfully!
 🚀 Building and starting agent server with custom tools...
 📋 Conversation ID: <id>
-📝 Sending task to find and report bugs...
+📝 Sending task to analyze files and log findings...
 🚀 Running conversation...
 ✅ Task completed!
-📊 Bug Report Summary:
-...
+📊 Logged Data Summary:
+================================================================================
+Found 3 log entries:
+
+Entry 1:
+  Timestamp: 2024-01-15T10:30:00.000000+00:00
+  Level: info
+  Message: Starting analysis of Python files
+  Data: {"directory": "/workspace"}
+
+Entry 2:
+  Timestamp: 2024-01-15T10:30:05.000000+00:00
+  Level: info
+  Message: Found interesting pattern
+  Data: {"file": "example.py", "pattern": "decorator usage"}
+
+Entry 3:
+  Timestamp: 2024-01-15T10:30:10.000000+00:00
+  Level: warning
+  Message: Potential issue detected
+  Data: {"file": "utils.py", "line": 42, "issue": "missing error handling"}
+
+================================================================================
 ✅ Example completed successfully!
 ```
 

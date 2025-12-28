@@ -11,16 +11,17 @@ Prerequisites:
     2. Set LLM_API_KEY environment variable
 
 The workflow is:
-1. Define a custom tool (in this case, ReportBugTool for structured bug reporting)
+1. Define a custom tool (LogDataTool for logging structured data to JSON)
 2. Create a simple Dockerfile that copies the tool into the base image
 3. Build the custom base image
 4. Use DockerDevWorkspace with base_image pointing to the custom image
 5. DockerDevWorkspace builds the agent server on top of the custom base image
 6. The server dynamically registers tools when the client creates a conversation
 7. The agent can use the custom tool during execution
+8. Verify the logged data by reading the JSON file from the workspace
 
 This pattern is useful for:
-- Collecting structured data during agent runs (bugs, metrics, etc.)
+- Collecting structured data during agent runs (logs, metrics, events)
 - Implementing custom integrations with external systems
 - Adding domain-specific operations to the agent
 """
@@ -114,7 +115,7 @@ with DockerDevWorkspace(
     # 4) Import custom tools to register them in the client's registry
     #    This allows the client to send the module qualname to the server
     #    The server will then import the same module and execute the tool
-    import custom_tools.report_bug  # noqa: F401
+    import custom_tools.log_data  # noqa: F401
 
     # 5) Create agent with custom tools
     #    Note: We specify the tool here, but it's actually executed on the server
@@ -124,7 +125,7 @@ with DockerDevWorkspace(
 
     tools = get_default_tools(enable_browser=False)
     # Add our custom tool!
-    tools.append(Tool(name="ReportBugTool"))
+    tools.append(Tool(name="LogDataTool"))
 
     agent = Agent(
         llm=llm,
@@ -165,22 +166,16 @@ with DockerDevWorkspace(
     try:
         logger.info(f"\n📋 Conversation ID: {conversation.state.id}")
 
-        logger.info("📝 Sending task to find and report bugs...")
+        logger.info("📝 Sending task to analyze files and log findings...")
         conversation.send_message(
-            "Please analyze the Python files in the current directory "
-            "and use the ReportBugTool to report any potential bugs you find. "
-            "For each bug, include:\n"
-            "- A clear title\n"
-            "- Detailed description\n"
-            "- Severity level (low, medium, high, critical)\n"
-            "- Steps to reproduce if applicable\n"
-            "- Affected files\n\n"
-            "Look for issues like:\n"
-            "- Missing error handling\n"
-            "- Potential null/None reference errors\n"
-            "- Type inconsistencies\n"
-            "- Resource leaks\n"
-            "Report at least 2 bugs using the ReportBugTool."
+            "Please analyze the Python files in the current directory. "
+            "Use the LogDataTool to log your findings as you work. "
+            "For example:\n"
+            "- Log when you start analyzing a file (level: info)\n"
+            "- Log any interesting patterns you find (level: info)\n"
+            "- Log any potential issues (level: warning)\n"
+            "- Include relevant data like file names, line numbers, etc.\n\n"
+            "Make at least 3 log entries using the LogDataTool."
         )
         logger.info("🚀 Running conversation...")
         conversation.run()
@@ -193,24 +188,32 @@ with DockerDevWorkspace(
             time.sleep(0.1)
         logger.info("✅ Events have stopped")
 
-        # 9) Access the collected bug reports
-        # In a real application, you would:
-        # - Query the agent server for collected data
-        # - Store the data in a database
-        # - Create Jira tickets
-        # - Generate a bug report
-        # For this example, we just show that the tool was used
-        logger.info("\n📊 Bug Report Summary:")
+        # 9) Read the logged data from the JSON file
+        logger.info("\n📊 Logged Data Summary:")
         logger.info("=" * 80)
-        logger.info(
-            "In a production setup, you would access the collected bug reports here."
-        )
-        logger.info(
-            "The ReportBugTool's executor stores all bugs with structured data."
-        )
-        logger.info(
-            "You can query this data for downstream processing (Jira, reports, etc.)"
-        )
+
+        # Read the log file from the workspace
+        log_result = workspace.execute_command("cat /tmp/agent_data.json 2>/dev/null")
+        if log_result.exit_code == 0 and log_result.stdout.strip():
+            import json
+
+            try:
+                log_entries = json.loads(log_result.stdout)
+                logger.info(f"Found {len(log_entries)} log entries:\n")
+                for i, entry in enumerate(log_entries, 1):
+                    logger.info(f"Entry {i}:")
+                    logger.info(f"  Timestamp: {entry.get('timestamp', 'N/A')}")
+                    logger.info(f"  Level: {entry.get('level', 'N/A')}")
+                    logger.info(f"  Message: {entry.get('message', 'N/A')}")
+                    if entry.get("data"):
+                        logger.info(f"  Data: {json.dumps(entry['data'], indent=4)}")
+                    logger.info("")
+            except json.JSONDecodeError:
+                logger.info("Log file exists but couldn't parse JSON")
+                logger.info(f"Raw content: {log_result.stdout}")
+        else:
+            logger.info("No log file found (agent may not have used the tool)")
+
         logger.info("=" * 80)
 
         # Report cost (must be before conversation.close())
@@ -226,8 +229,9 @@ with DockerDevWorkspace(
 
 logger.info("\n✅ Example completed successfully!")
 logger.info("\nThis example demonstrated how to:")
-logger.info("1. Create a custom tool for structured data collection")
+logger.info("1. Create a custom tool that logs structured data to JSON")
 logger.info("2. Build a simple base image with the custom tool")
 logger.info("3. Use DockerDevWorkspace with base_image to build agent server on top")
 logger.info("4. Enable dynamic tool registration on the server")
 logger.info("5. Use the custom tool during agent execution")
+logger.info("6. Read the logged data back from the workspace")
