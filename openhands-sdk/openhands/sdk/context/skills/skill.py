@@ -874,6 +874,8 @@ def load_public_skills(
                     path=skill_file,
                     skill_dir=repo_path,
                 )
+                if skill is None:
+                    continue
                 all_skills.append(skill)
                 logger.debug(f"Loaded public skill: {skill.name}")
             except Exception as e:

@@ -33,6 +33,12 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookEventType,
+    HookManager,
+)
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -430,6 +436,8 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
+    _hook_processor: HookEventProcessor | None
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -442,6 +450,7 @@ class RemoteConversation(BaseConversation):
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
         ) = None,
+        hook_config: HookConfig | None = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -462,6 +471,7 @@ class RemoteConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
+            hook_config: Optional hook configuration for session hooks
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -475,6 +485,8 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
+        self._hook_processor = None
+        self._cleanup_initiated = False
 
         if conversation_id is None:
             payload = {
@@ -570,6 +582,25 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
+        if hook_config is not None:
+            unsupported = (
+                HookEventType.PRE_TOOL_USE,
+                HookEventType.POST_TOOL_USE,
+                HookEventType.USER_PROMPT_SUBMIT,
+                HookEventType.STOP,
+            )
+            if any(hook_config.has_hooks_for_event(t) for t in unsupported):
+                logger.warning(
+                    "RemoteConversation only supports SessionStart/SessionEnd hooks; "
+                    "other hook types will not be enforced."
+                )
+            hook_manager = HookManager(
+                config=hook_config,
+                working_dir=os.getcwd(),
+                session_id=str(self._id),
+            )
+            self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
+            self._hook_processor.run_session_start()
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -866,6 +897,11 @@ class RemoteConversation(BaseConversation):
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
         """
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
+        if self._hook_processor is not None:
+            self._hook_processor.run_session_end()
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:
