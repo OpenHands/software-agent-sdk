@@ -38,6 +38,11 @@ jobs:
                 Read the sections below in order, and perform each in order. Do NOT take action
                 on the same issue or PR twice.
 
+                IMPORTANT: DO NOT comment if you have already commented once and there has not yet been a reply.
+                Before posting any "[Automatic Post]" comment, check the issue/PR comments to see if there is
+                already an "[Automatic Post]" comment from this workflow. If there is, and no one has replied
+                to it yet, skip that issue/PR entirely.
+
                 # Issues with needs-info - Check for OP Response
 
                 Find all open issues that have the "needs-info" label. For each issue:
