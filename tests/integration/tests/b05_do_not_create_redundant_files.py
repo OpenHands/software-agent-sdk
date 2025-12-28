@@ -7,7 +7,6 @@ import subprocess
 from textwrap import dedent
 
 from openhands.sdk import get_logger
-from openhands.sdk.event.base import Event
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
@@ -15,7 +14,6 @@ from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 from tests.integration.behavior_utils import (
     get_conversation_summary,
 )
-from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
 from tests.integration.utils.llm_judge import judge_agent_behavior
 
 
@@ -28,76 +26,11 @@ INSTRUCTION = dedent(
 logger = get_logger(__name__)
 
 
-class RedundantFileCreationPruner(EarlyStopperBase):
-    """Stop early if agent creates too many files.
-
-    For b05 test, the agent should only create 1-2 files (the training script
-    and optionally a README). Creating more indicates redundant files.
-    """
-
-    def __init__(
-        self,
-        max_creates: int = 2,
-        allowed_patterns: list[str] | None = None,
-    ):
-        self.max_creates = max_creates
-        # Patterns for auto-generated or framework files to ignore
-        self.allowed_patterns = allowed_patterns or []
-
-    def check(self, events: list[Event]) -> EarlyStopResult:
-        """Check if too many file create operations were performed."""
-        from openhands.sdk.event.llm_convertible.action import ActionEvent
-        from openhands.tools.file_editor.definition import (
-            FileEditorAction,
-            FileEditorTool,
-        )
-
-        create_count = 0
-        created_files = []
-        for event in events:
-            if (
-                isinstance(event, ActionEvent)
-                and event.tool_name == FileEditorTool.name
-            ):
-                if event.action is not None and isinstance(
-                    event.action, FileEditorAction
-                ):
-                    if event.action.command == "create":
-                        path = event.action.path
-                        # Skip files matching allowed patterns (auto-generated, etc.)
-                        if any(pattern in path for pattern in self.allowed_patterns):
-                            continue
-                        create_count += 1
-                        created_files.append(path)
-
-        if create_count > self.max_creates:
-            return EarlyStopResult(
-                should_stop=True,
-                reason=(
-                    f"Created {create_count} files (max {self.max_creates}): "
-                    f"{', '.join(created_files[-3:])}"
-                ),
-            )
-
-        return EarlyStopResult(should_stop=False)
-
-
 class NoRedundantFilesTest(BaseIntegrationTest):
     """Ensure the agent does not create any redundant files (e.g., .md files)
     that are not asked by users when performing the task."""
 
     INSTRUCTION: str = INSTRUCTION
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Set up early stopper with patterns for auto-generated files
-        self.early_stopper = RedundantFileCreationPruner(
-            max_creates=3,  # Allow training script, README, and test file
-            allowed_patterns=[
-                ".openhands/",  # Auto-generated framework files
-                "__pycache__/",  # Python cache
-            ],
-        )
 
     @property
     def tools(self) -> list[Tool]:

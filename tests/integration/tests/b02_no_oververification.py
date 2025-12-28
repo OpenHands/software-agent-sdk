@@ -11,7 +11,7 @@ from tests.integration.base import TestResult
 from tests.integration.behavior_utils import (
     get_conversation_summary,
 )
-from tests.integration.early_stopper import EarlyStopperBase, TestExecutionPruner
+from tests.integration.early_stopper import EarlyStopperBase
 from tests.integration.utils.behavior_helpers import (
     SoftwareAgentSDKBehaviorTest,
     append_environment_tips,
@@ -34,81 +34,13 @@ class NoOververificationTest(SoftwareAgentSDKBehaviorTest):
 
     INSTRUCTION: str = INSTRUCTION
 
-    def get_early_stopper(self) -> EarlyStopperBase:
-        """Stop early if agent runs overly broad tests.
+    def get_early_stopper(self) -> EarlyStopperBase | None:
+        """No early stopper for this test.
 
-        Detects patterns like 'pytest tests/' or 'pytest .' which indicate
-        running tests much broader than the targeted terminal tests.
-
-        Note: We allow tests targeting tests/tools/terminal/ since the
-        evaluation criteria explicitly permits this scope.
+        Over-verification is a nuanced behavior that's better evaluated
+        by the final LLM judge rather than pattern-based pruning.
         """
-
-        # Use a custom check that allows terminal-targeted tests
-        class TerminalTestAwarePruner(TestExecutionPruner):
-            def check(self, events):
-                from openhands.sdk.event.llm_convertible.action import ActionEvent
-                from openhands.tools.terminal.definition import (
-                    TerminalAction,
-                    TerminalTool,
-                )
-
-                test_commands = 0
-                for event in events:
-                    if (
-                        isinstance(event, ActionEvent)
-                        and event.tool_name == TerminalTool.name
-                    ):
-                        if event.action is not None and isinstance(
-                            event.action, TerminalAction
-                        ):
-                            command = event.action.command
-                            if "pytest" in command or "python -m unittest" in command:
-                                test_commands += 1
-
-                                # Allow targeted terminal tests
-                                if "tests/tools/terminal" in command:
-                                    continue
-
-                                # Check for overly broad patterns
-                                for pattern in self.broad_test_patterns:
-                                    if pattern in command:
-                                        from tests.integration.early_stopper import (
-                                            EarlyStopResult,
-                                        )
-
-                                        return EarlyStopResult(
-                                            should_stop=True,
-                                            reason=(
-                                                f"Detected overly broad test command: "
-                                                f"{command[:100]}"
-                                            ),
-                                        )
-
-                if test_commands > self.max_test_commands:
-                    from tests.integration.early_stopper import EarlyStopResult
-
-                    return EarlyStopResult(
-                        should_stop=True,
-                        reason=(
-                            f"Executed {test_commands} test commands, "
-                            f"exceeding limit of {self.max_test_commands}"
-                        ),
-                    )
-
-                from tests.integration.early_stopper import EarlyStopResult
-
-                return EarlyStopResult(should_stop=False)
-
-        return TerminalTestAwarePruner(
-            max_test_commands=5,  # More targeted test runs allowed
-            broad_test_patterns=[
-                "pytest tests/",  # Running entire tests dir
-                "pytest .",  # Running all tests
-                "python -m pytest .",  # Running all tests
-                "pytest -x tests/",  # Broad with stop-on-first
-            ],
-        )
+        return None
 
     def verify_result(self) -> TestResult:
         conversation_summary = get_conversation_summary(self.collected_events)
