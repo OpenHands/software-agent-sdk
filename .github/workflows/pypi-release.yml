@@ -11,9 +11,25 @@ on:
 jobs:
     publish:
         runs-on: blacksmith-4vcpu-ubuntu-2404
+        outputs:
+            version: ${{ steps.extract_version.outputs.version }}
         steps:
             - name: Checkout
               uses: actions/checkout@v5
+
+            - name: Extract version from release tag
+              id: extract_version
+              run: |
+                  # Get version from release tag (e.g., v1.2.3 -> 1.2.3)
+                  if [[ "${{ github.event_name }}" == "release" ]]; then
+                    VERSION="${{ github.event.release.tag_name }}"
+                    VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+                  else
+                    # For manual dispatch, extract from pyproject.toml
+                    VERSION=$(grep -m1 '^version = ' openhands-sdk/pyproject.toml | cut -d'"' -f2)
+                  fi
+                  echo "version=$VERSION" >> $GITHUB_OUTPUT
+                  echo "📦 Version: $VERSION"
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -45,3 +61,148 @@ jobs:
                     done
                   uv publish --token "$UV_PUBLISH_TOKEN"
                   echo "✅ All packages built and published successfully!"
+
+    create-version-bump-prs:
+        needs: publish
+        runs-on: blacksmith-4vcpu-ubuntu-2404
+        if: github.event_name == 'release'
+        env:
+            VERSION: ${{ needs.publish.outputs.version }}
+            GH_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+        steps:
+            - name: Validate version
+              run: |
+                  if [ -z "$VERSION" ]; then
+                    echo "❌ Version is empty"
+                    exit 1
+                  fi
+                  echo "📦 Creating version bump PRs for version: $VERSION"
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+
+            - name: Install Poetry
+              run: |
+                  pipx install poetry
+
+            - name: Create PR for OpenHands repo
+              run: |
+                  set -euo pipefail
+
+                  REPO="All-Hands-AI/OpenHands"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-repo
+                  cd openhands-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Create branch
+                  git checkout -b "$BRANCH"
+
+                  # Update versions using poetry
+                  poetry add "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION" --lock
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Commit and push
+                  git add pyproject.toml poetry.lock
+                  git commit -m "Bump openhands-sdk, openhands-tools, openhands-agent-server to $VERSION" \
+                    -m "Automated version bump after PyPI release." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Create PR
+                  gh pr create \
+                    --repo "$REPO" \
+                    --title "Bump SDK packages to v$VERSION" \
+                    --body "## Automated Version Bump
+
+                  This PR updates the following packages to version **$VERSION**:
+                  - \`openhands-sdk\`
+                  - \`openhands-tools\`
+                  - \`openhands-agent-server\`
+
+                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
+
+                  ---
+                  _This PR was automatically created by the pypi-release workflow._" \
+                    --base main \
+                    --head "$BRANCH"
+
+                  echo "✅ PR created for $REPO"
+
+            - name: Create PR for OpenHands-CLI repo
+              run: |
+                  set -euo pipefail
+
+                  REPO="All-Hands-AI/openhands-cli"
+                  BRANCH="bump-sdk-$VERSION"
+
+                  echo "🔄 Creating PR for $REPO..."
+
+                  # Clone the repo
+                  git clone "https://x-access-token:${GH_TOKEN}@github.com/${REPO}.git" openhands-cli-repo
+                  cd openhands-cli-repo
+
+                  # Configure git
+                  git config user.name "github-actions[bot]"
+                  git config user.email "github-actions[bot]@users.noreply.github.com"
+
+                  # Create branch
+                  git checkout -b "$BRANCH"
+
+                  # Update versions using uv
+                  uv add "openhands-sdk==$VERSION" "openhands-tools==$VERSION"
+
+                  # Check if there are changes
+                  if git diff --quiet; then
+                    echo "⚠️ No changes detected in $REPO - versions may already be up to date"
+                    exit 0
+                  fi
+
+                  # Commit and push
+                  git add pyproject.toml uv.lock
+                  git commit -m "Bump openhands-sdk, openhands-tools to $VERSION" \
+                    -m "Automated version bump after PyPI release." \
+                    -m "Co-authored-by: openhands <openhands@all-hands.dev>"
+                  git push -u origin "$BRANCH"
+
+                  # Create PR
+                  gh pr create \
+                    --repo "$REPO" \
+                    --title "Bump SDK packages to v$VERSION" \
+                    --body "## Automated Version Bump
+
+                  This PR updates the following packages to version **$VERSION**:
+                  - \`openhands-sdk\`
+                  - \`openhands-tools\`
+
+                  **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
+
+                  ---
+                  _This PR was automatically created by the pypi-release workflow._" \
+                    --base main \
+                    --head "$BRANCH"
+
+                  echo "✅ PR created for $REPO"
+
+            - name: Summary
+              run: |
+                  echo "## ✅ Version Bump PRs Created" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "PRs have been created to bump SDK packages to version **$VERSION**:" >> $GITHUB_STEP_SUMMARY
+                  echo "" >> $GITHUB_STEP_SUMMARY
+                  echo "- [OpenHands](https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+                  echo "- [OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
