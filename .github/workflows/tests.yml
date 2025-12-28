@@ -188,6 +188,7 @@ jobs:
                     --ignore=tests/tools/terminal/test_shutdown_handling.py `
                     --ignore=tests/tools/terminal/test_conversation_cleanup.py `
                     --ignore=tests/tools/terminal/test_terminal_tool_auto_detection.py `
+                    --ignore=tests/tools/terminal/test_terminal_exit_code_top_level.py `
                     --ignore=tests/tools/file_editor/test_memory_usage.py
                   if (Test-Path .coverage) {
                     Move-Item .coverage coverage-tools-windows.dat
