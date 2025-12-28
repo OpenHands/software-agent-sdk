@@ -130,7 +130,7 @@ jobs:
               uses: actions/checkout@v5
               with:
                   fetch-depth: 0
-                  token: ${{ secrets.GITHUB_TOKEN }}
+                  token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
 
             - name: Switch to feature branch with TODO management files
               run: |
@@ -170,7 +170,7 @@ jobs:
                   LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   GITHUB_REPOSITORY: ${{ github.repository }}
                   TODO_FILE: ${{ matrix.todo.file }}
                   TODO_LINE: ${{ matrix.todo.line }}

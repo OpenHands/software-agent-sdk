@@ -15,6 +15,7 @@ jobs:
         steps:
             - uses: actions/stale@v10
               with:
+                  repo-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   stale-issue-message: This issue is stale because it has been open for 40 days with no activity. Remove the stale label or leave a 
                       comment, otherwise it will be closed in 10 days.
                   stale-pr-message: This PR is stale because it has been open for 40 days with no activity. Remove the stale label or leave a comment,
