@@ -188,7 +188,6 @@ class TerminalSession(TerminalSessionBase):
         self._ready_for_next_command()
         return TerminalObservation.from_text(
             command=command,
-            exit_code=metadata.exit_code if metadata.exit_code != -1 else None,
             text=command_output,
             metadata=metadata,
             exit_code=metadata.exit_code,
