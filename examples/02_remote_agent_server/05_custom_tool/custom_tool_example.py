@@ -216,10 +216,6 @@ with DockerDevWorkspace(
 
         logger.info("=" * 80)
 
-        # Report cost (must be before conversation.close())
-        conversation.state._cached_state = (
-            None  # Invalidate cache to fetch latest stats
-        )
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
         print(f"\nEXAMPLE_COST: {cost}")
 
