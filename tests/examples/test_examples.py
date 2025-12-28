@@ -25,7 +25,7 @@ _TARGET_DIRECTORIES = (
 )
 
 # LLM-specific examples that require model overrides
-_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
+_LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
     "examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py": {
         "LLM_MODEL": "openhands/gpt-5.1",
     },
@@ -54,7 +54,7 @@ def _discover_examples() -> list[Path]:
             continue
         candidates.extend(sorted(directory.glob("*.py")))
     # Append any explicitly listed LLM-specific examples if present
-    for rel_path in _SPECIFIC_EXAMPLES.keys():
+    for rel_path in _LLM_SPECIFIC_EXAMPLES.keys():
         abs_path = REPO_ROOT / rel_path
         if abs_path.exists():
             candidates.append(abs_path)
@@ -96,7 +96,7 @@ def test_example_scripts(
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
     # Apply model overrides for certain examples requiring provider-specific models
-    overrides = _SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
+    overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
     if overrides:
         env.update(overrides)
 
