@@ -14,6 +14,7 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.secret import SecretValue
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
@@ -56,6 +57,7 @@ class Conversation:
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -76,6 +78,7 @@ class Conversation:
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -96,6 +99,7 @@ class Conversation:
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -123,6 +127,7 @@ class Conversation:
                 conversation_id=conversation_id,
                 callbacks=callbacks,
                 token_callbacks=token_callbacks,
+                hook_config=hook_config,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
                 stuck_detection_thresholds=stuck_detection_thresholds,
@@ -136,6 +141,7 @@ class Conversation:
             conversation_id=conversation_id,
             callbacks=callbacks,
             token_callbacks=token_callbacks,
+            hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
             stuck_detection_thresholds=stuck_detection_thresholds,
