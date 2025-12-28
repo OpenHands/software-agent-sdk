@@ -1,5 +1,8 @@
-"""Test that the security policy is properly integrated into the agent system prompt."""
+"""Test configurable security policy functionality."""
 
+import shutil
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from litellm import ChatCompletionMessageToolCall
@@ -18,8 +21,7 @@ from openhands.sdk.llm import LLM, Message, TextContent
 
 
 def test_security_policy_in_system_message():
-    """Test that the security policy is included in the agent's system message."""
-    # Create a minimal agent configuration
+    """Test that security policy is included in system message."""
     agent = Agent(
         llm=LLM(
             usage_id="test-llm",
@@ -28,11 +30,9 @@ def test_security_policy_in_system_message():
             base_url="http://test",
         )
     )
-
-    # Get the system message
     system_message = agent.system_message
 
-    # Verify that the security policy content is included
+    # Verify that security policy section is present
     assert "🔐 Security Policy" in system_message
     assert "OK to do without Explicit User Consent" in system_message
     assert "Do only with Explicit User Consent" in system_message
@@ -56,6 +56,67 @@ def test_security_policy_in_system_message():
     assert "General Security Guidelines" in system_message
     assert "Only use GITHUB_TOKEN and other credentials" in system_message
     assert "Use APIs to work with GitHub or other platforms" in system_message
+
+
+def test_custom_security_policy_in_system_message():
+    """Test that custom security policy filename is used in system message."""
+    # Create a temporary directory for test files
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create a custom policy file with distinctive content
+        custom_policy_path = Path(temp_dir) / "custom_policy.j2"
+        custom_policy_content = (
+            "# 🔐 Custom Test Security Policy\n"
+            "This is a custom security policy for testing.\n"
+            "- **CUSTOM_RULE**: Always test custom policies."
+        )
+        custom_policy_path.write_text(custom_policy_content)
+
+        # Copy required template files to temp directory
+        original_prompt_dir = (
+            Path(__file__).parent.parent.parent.parent
+            / "openhands-sdk"
+            / "openhands"
+            / "sdk"
+            / "agent"
+            / "prompts"
+        )
+
+        # Copy system_prompt.j2
+        system_prompt_path = Path(temp_dir) / "system_prompt.j2"
+        original_system_prompt = original_prompt_dir / "system_prompt.j2"
+        shutil.copy2(original_system_prompt, system_prompt_path)
+
+        # Copy security_risk_assessment.j2
+        security_risk_assessment_path = Path(temp_dir) / "security_risk_assessment.j2"
+        original_security_risk_assessment = (
+            original_prompt_dir / "security_risk_assessment.j2"
+        )
+        shutil.copy2(original_security_risk_assessment, security_risk_assessment_path)
+
+        # Copy self_documentation.j2
+        self_documentation_path = Path(temp_dir) / "self_documentation.j2"
+        original_self_documentation = original_prompt_dir / "self_documentation.j2"
+        shutil.copy2(original_self_documentation, self_documentation_path)
+
+        # Create agent with custom security policy using absolute paths for both
+        agent = Agent(
+            llm=LLM(
+                usage_id="test-llm",
+                model="test-model",
+                api_key=SecretStr("test-key"),
+                base_url="http://test",
+            ),
+            system_prompt_filename=str(system_prompt_path),
+            security_policy_filename=str(custom_policy_path),
+        )
+
+        # Get system message - this should include our custom policy
+        system_message = agent.system_message
+
+        # Verify that custom policy content appears in system message
+        assert "Custom Test Security Policy" in system_message
+        assert "CUSTOM_RULE" in system_message
+        assert "Always test custom policies" in system_message
 
 
 def test_security_policy_template_rendering():

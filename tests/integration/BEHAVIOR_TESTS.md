@@ -31,16 +31,6 @@ Behavior tests verify that agents:
 - ✅ Follow system message guidelines and best practices
 - ✅ Handle complex, nuanced scenarios appropriately
 
-### Current Behavior Tests
-
-1. **b01_no_premature_implementation.py**
-   - Tests: Agent doesn't start implementing when asked for advice
-   - Prompt: Asks "how to implement" a feature in a real codebase
-   - Setup: Clones software-agent-sdk repo, checks out historical commit
-   - Expected: Agent explores, suggests approaches, asks questions
-   - Failure: Agent creates/edits files without being asked
-   - Uses: LLM-as-judge for behavior quality assessment
-
 ### Guidelines for Adding Behavior Tests
 
 Behavior tests should focus on **complex, real-world scenarios** that reveal subtle behavioral issues:

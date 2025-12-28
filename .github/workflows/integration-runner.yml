@@ -53,6 +53,7 @@ jobs:
         # Security: Only run when integration-related labels are present, via workflow_dispatch, or on schedule
         # This prevents automatic execution on fork PRs without maintainer approval
         # Note: uses always() to run even when post-initial-comment is skipped (e.g., for workflow_dispatch)
+        # Schedule trigger only runs in the main repository, not in forks
         if: |
             always() && (
                 (
@@ -62,7 +63,7 @@ jobs:
                     )
                 ) ||
                 github.event_name == 'workflow_dispatch' ||
-                github.event_name == 'schedule'
+                (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
         needs: [post-initial-comment]
         runs-on: blacksmith-4vcpu-ubuntu-2204
@@ -151,6 +152,9 @@ jobs:
                         echo "workflow_dispatch provided unknown test_type '$test_type'; defaulting to full suite."
                         ;;
                     esac
+                  elif [ "${{ github.event_name }}" = "schedule" ]; then
+                    TEST_TYPE_ARGS="--test-type integration"
+                    echo "Scheduled run; running integration tests only."
                   else
                     echo "Running full integration test suite."
                   fi
@@ -235,7 +239,7 @@ jobs:
                     )
                 ) ||
                 github.event_name == 'workflow_dispatch' ||
-                github.event_name == 'schedule'
+                (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
         runs-on: blacksmith-2vcpu-ubuntu-2404
         permissions:
