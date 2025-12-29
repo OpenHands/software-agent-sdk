@@ -297,10 +297,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
+    def resolve_diff_from_deserialized(
+        self,
+        persisted: "AgentBase",
+        used_tools: set[str] | None = None,
+    ) -> "AgentBase":
         """
         Return a new AgentBase instance equivalent to `persisted` but with
         explicitly whitelisted fields (e.g. api_key) taken from `self`.
+
+        Args:
+            persisted: The persisted agent from the conversation state.
+            used_tools: Optional set of tool names that were actually used in
+                the conversation history. If provided, only these tools are
+                required to be present in the runtime agent. New tools can be
+                added freely.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
@@ -339,28 +350,45 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         runtime_tools_map = {tool.name: tool for tool in self.tools}
         persisted_tools_map = {tool.name: tool for tool in persisted.tools}
 
-        # Check that tool names match
         runtime_names = set(runtime_tools_map.keys())
         persisted_names = set(persisted_tools_map.keys())
 
-        if runtime_names != persisted_names:
-            missing_in_runtime = persisted_names - runtime_names
-            missing_in_persisted = runtime_names - persisted_names
-            error_msg = "Tools don't match between runtime and persisted agents."
-            if missing_in_runtime:
-                error_msg += f" Missing in runtime: {missing_in_runtime}."
-            if missing_in_persisted:
-                error_msg += f" Missing in persisted: {missing_in_persisted}."
-            raise ValueError(error_msg)
+        # Relaxed tool matching: only fail if tools that were actually USED
+        # in history are missing. Allow adding new tools freely.
+        if used_tools is not None:
+            # Only check that used tools are present in runtime
+            missing_used_tools = used_tools - runtime_names
+            if missing_used_tools:
+                raise ValueError(
+                    f"Cannot resume conversation: tools that were used in history "
+                    f"are missing from runtime: {missing_used_tools}. "
+                    f"Available tools: {runtime_names}"
+                )
+            # Update tools to match runtime (allows new tools to be added)
+            updates["tools"] = self.tools
+        else:
+            # Legacy behavior: require exact match when used_tools not provided
+            if runtime_names != persisted_names:
+                missing_in_runtime = persisted_names - runtime_names
+                missing_in_persisted = runtime_names - persisted_names
+                error_msg = "Tools don't match between runtime and persisted agents."
+                if missing_in_runtime:
+                    error_msg += f" Missing in runtime: {missing_in_runtime}."
+                if missing_in_persisted:
+                    error_msg += f" Missing in persisted: {missing_in_persisted}."
+                raise ValueError(error_msg)
 
         reconciled = persisted.model_copy(update=updates)
-        if self.model_dump(exclude_none=True) != reconciled.model_dump(
-            exclude_none=True
-        ):
-            raise ValueError(
-                "The Agent provided is different from the one in persisted state.\n"
-                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-            )
+
+        # When used_tools is provided, we allow tool changes so skip strict comparison
+        if used_tools is None:
+            if self.model_dump(exclude_none=True) != reconciled.model_dump(
+                exclude_none=True
+            ):
+                raise ValueError(
+                    "The Agent provided is different from the one in persisted state.\n"
+                    f"Diff: {pretty_pydantic_diff(self, reconciled)}"
+                )
         return reconciled
 
     def model_dump_succint(self, **kwargs):
