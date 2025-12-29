@@ -83,6 +83,22 @@ def mock_llm() -> LLM:
     return mock_llm
 
 
+def test_default_values(mock_llm: LLM) -> None:
+    """Test that LLMSummarizingCondenser has correct default values.
+
+    These defaults are tuned to ensure workable manipulation indices for condensation.
+    See https://github.com/OpenHands/software-agent-sdk/issues/1518 for context.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm)
+
+    # Default max_size should be 240 (raised from 120 to allow more room for tool loops)
+    assert condenser.max_size == 240
+
+    # Default keep_first should be 2 (reduced from 4 to leave more room for
+    # condensation)
+    assert condenser.keep_first == 2
+
+
 def test_should_condense(mock_llm: LLM) -> None:
     """Test that LLMSummarizingCondenser correctly determines when to condense."""
     max_size = 100

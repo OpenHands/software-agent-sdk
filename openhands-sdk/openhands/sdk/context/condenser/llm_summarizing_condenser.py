@@ -36,9 +36,9 @@ class LLMSummarizingCondenser(RollingCondenser):
     """
 
     llm: LLM
-    max_size: int = Field(default=120, gt=0)
+    max_size: int = Field(default=240, gt=0)
     max_tokens: int | None = None
-    keep_first: int = Field(default=4, ge=0)
+    keep_first: int = Field(default=2, ge=0)
 
     @model_validator(mode="after")
     def validate_keep_first_vs_max_size(self):
