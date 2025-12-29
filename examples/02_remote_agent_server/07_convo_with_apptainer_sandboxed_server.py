@@ -11,7 +11,7 @@ from openhands.sdk import (
     get_logger,
 )
 from openhands.tools.preset.default import get_default_agent
-from openhands.workspace import DockerWorkspace
+from openhands.workspace import ApptainerWorkspace
 
 
 logger = get_logger(__name__)
@@ -29,23 +29,19 @@ llm = LLM(
 
 
 def detect_platform():
-    """Detects the correct Docker platform string."""
+    """Detects the correct platform string."""
     machine = platform.machine().lower()
     if "arm" in machine or "aarch64" in machine:
         return "linux/arm64"
     return "linux/amd64"
 
 
-# 2) Create a Docker-based remote workspace that will set up and manage
-#    the Docker container automatically. Use `DockerWorkspace` with a pre-built
-#    image or `DockerDevWorkspace` to automatically build the image on-demand.
-#    with DockerDevWorkspace(
-#        # dynamically build agent-server image
-#        base_image="nikolaik/python-nodejs:python3.12-nodejs22",
-#        host_port=8010,
-#        platform=detect_platform(),
-#    ) as workspace:
-with DockerWorkspace(
+# 2) Create an Apptainer-based remote workspace that will set up and manage
+#    the Apptainer container automatically. Use `ApptainerWorkspace` with a
+#    pre-built agent server image.
+#    Apptainer (formerly Singularity) doesn't require root access, making it
+#    ideal for HPC and shared computing environments.
+with ApptainerWorkspace(
     # use pre-built image for faster startup
     server_image="ghcr.io/openhands/agent-server:latest-python",
     host_port=8010,
@@ -105,6 +101,7 @@ with DockerWorkspace(
         conversation.run()
         logger.info("✅ Second task completed!")
 
+        # Report cost (must be before conversation.close())
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
         print(f"EXAMPLE_COST: {cost}")
     finally:

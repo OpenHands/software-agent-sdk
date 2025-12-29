@@ -208,6 +208,32 @@ class ConversationService:
             )
             return conversation_info, False
 
+        # Dynamically register tools from client's registry
+        if request.tool_module_qualnames:
+            import importlib
+
+            for tool_name, module_qualname in request.tool_module_qualnames.items():
+                try:
+                    # Import the module to trigger tool auto-registration
+                    importlib.import_module(module_qualname)
+                    logger.debug(
+                        f"Tool '{tool_name}' registered via module '{module_qualname}'"
+                    )
+                except ImportError as e:
+                    logger.warning(
+                        f"Failed to import module '{module_qualname}' for tool "
+                        f"'{tool_name}': {e}. Tool will not be available."
+                    )
+                    # Continue even if some tools fail to register
+                    # The agent will fail gracefully if it tries to use unregistered
+                    # tools
+            if request.tool_module_qualnames:
+                logger.info(
+                    f"Dynamically registered {len(request.tool_module_qualnames)} "
+                    f"tools for conversation {conversation_id}: "
+                    f"{list(request.tool_module_qualnames.keys())}"
+                )
+
         stored = StoredConversation(id=conversation_id, **request.model_dump())
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
@@ -378,6 +404,36 @@ class ConversationService:
                         "cipher": self.cipher,
                     },
                 )
+                # Dynamically register tools when resuming persisted conversations
+                if stored.tool_module_qualnames:
+                    import importlib
+
+                    for (
+                        tool_name,
+                        module_qualname,
+                    ) in stored.tool_module_qualnames.items():
+                        try:
+                            # Import the module to trigger tool auto-registration
+                            importlib.import_module(module_qualname)
+                            logger.debug(
+                                f"Tool '{tool_name}' registered via module "
+                                f"'{module_qualname}' when resuming conversation "
+                                f"{stored.id}"
+                            )
+                        except ImportError as e:
+                            logger.warning(
+                                f"Failed to import module '{module_qualname}' for "
+                                f"tool '{tool_name}' when resuming conversation "
+                                f"{stored.id}: {e}. Tool will not be available."
+                            )
+                            # Continue even if some tools fail to register
+                    if stored.tool_module_qualnames:
+                        logger.info(
+                            f"Dynamically registered "
+                            f"{len(stored.tool_module_qualnames)} tools when "
+                            f"resuming conversation {stored.id}: "
+                            f"{list(stored.tool_module_qualnames.keys())}"
+                        )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(

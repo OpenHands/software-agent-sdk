@@ -25,6 +25,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
 from openhands.sdk.tool import Tool
+from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
 
 
 class SkipTest(Exception):
@@ -101,6 +102,11 @@ class BaseIntegrationTest(ABC):
             self.workspace, f"{self.instance_id}_agent_logs.txt"
         )
 
+        # Early stopping support - must be initialized BEFORE LocalConversation
+        # since the callback may access these attributes
+        self.early_stopper: EarlyStopperBase | None = None
+        self.early_stop_result: EarlyStopResult | None = None
+
         self.conversation: LocalConversation = LocalConversation(
             agent=self.agent,
             workspace=self.workspace,
@@ -114,6 +120,13 @@ class BaseIntegrationTest(ABC):
         self.collected_events.append(event)
         if isinstance(event, MessageEvent):
             self.llm_messages.append(event.llm_message.model_dump())
+
+        # Check early stopping condition
+        if self.early_stopper and not self.early_stop_result:
+            result = self.early_stopper.check(self.collected_events)
+            if result.should_stop:
+                self.early_stop_result = result
+                self.conversation.pause()  # Trigger graceful stop
 
     def run_instruction(self) -> TestResult:
         """
@@ -162,6 +175,13 @@ class BaseIntegrationTest(ABC):
                 print(captured_output, end="")
             if captured_errors:
                 print(captured_errors, file=sys.stderr, end="")
+
+            # Check if early stopped - skip full verification
+            if self.early_stop_result:
+                return TestResult(
+                    success=False,
+                    reason=f"Early stopped: {self.early_stop_result.reason}",
+                )
 
             # Verify results
             result = self.verify_result()
