@@ -44,6 +44,7 @@ class EventService:
     _conversation: LocalConversation | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(default_factory=lambda: PubSub[Event](), init=False)
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
 
     @property
     def conversation_dir(self):
@@ -442,17 +443,60 @@ class EventService:
         await self._publish_state_update()
 
     async def run(self):
-        """Run the conversation asynchronously."""
+        """Run the conversation asynchronously in the background.
+
+        This method starts the conversation run in a background task and returns
+        immediately. The conversation status can be monitored via the
+        GET /api/conversations/{id} endpoint or WebSocket events.
+
+        Raises:
+            ValueError: If the service is inactive or conversation is already running.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.run)
-        # Publish state update after run completes to ensure stats are updated
-        await self._publish_state_update()
+
+        # Use lock to make check-and-set atomic, preventing race conditions
+        async with self._run_lock:
+            # Check if already running
+            with self._conversation._state as state:
+                if state.execution_status == ConversationExecutionStatus.RUNNING:
+                    raise ValueError("conversation_already_running")
+
+            # Check if there's already a running task
+            if self._run_task is not None and not self._run_task.done():
+                raise ValueError("conversation_already_running")
+
+            # Capture conversation reference for the closure
+            conversation = self._conversation
+
+            # Start run in background
+            loop = asyncio.get_running_loop()
+
+            async def _run_and_publish():
+                try:
+                    await loop.run_in_executor(None, conversation.run)
+                except Exception as e:
+                    logger.error(f"Error during conversation run: {e}")
+                finally:
+                    # Clear task reference and publish state update
+                    self._run_task = None
+                    await self._publish_state_update()
+
+            # Create task but don't await it - runs in background
+            self._run_task = asyncio.create_task(_run_and_publish())
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
-            await self.run()
+            try:
+                await self.run()
+            except ValueError as e:
+                # Treat "already running" as a no-op success
+                if str(e) == "conversation_already_running":
+                    logger.debug(
+                        "Confirmation accepted but conversation already running"
+                    )
+                else:
+                    raise
         else:
             await self.reject_pending_actions(request.reason)
 
