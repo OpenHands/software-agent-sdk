@@ -18,6 +18,7 @@ on:
                     - swebench
                     - swtbench
                     - commit0
+                    - multiswebench
             sdk_ref:
                 description: SDK commit/ref to evaluate
                 required: true
