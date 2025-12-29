@@ -236,10 +236,6 @@ with ManagedAPIServer(port=8001) as server:
             if isinstance(event, ConversationStateUpdateEvent):
                 logger.info(f"  - {event}")
 
-        # Report cost (must be before conversation.close())
-        conversation.state._cached_state = (
-            None  # Invalidate cache to fetch latest stats
-        )
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
         print(f"EXAMPLE_COST: {cost}")
 

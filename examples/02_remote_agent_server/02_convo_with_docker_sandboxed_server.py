@@ -105,10 +105,6 @@ with DockerWorkspace(
         conversation.run()
         logger.info("✅ Second task completed!")
 
-        # Report cost (must be before conversation.close())
-        conversation.state._cached_state = (
-            None  # Invalidate cache to fetch latest stats
-        )
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
         print(f"EXAMPLE_COST: {cost}")
     finally:
