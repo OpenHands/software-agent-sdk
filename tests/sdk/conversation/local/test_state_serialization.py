@@ -9,15 +9,10 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import Agent, Conversation
-from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
-)
-from openhands.sdk.conversation.types import (
-    ConversationCallbackType,
-    ConversationTokenCallbackType,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -427,35 +422,16 @@ def test_conversation_state_thread_safety():
     assert not state.owned()
 
 
-def test_agent_resolve_diff_different_class_raises_error():
-    """Test that resolve_diff_from_deserialized raises error for different agent classes."""  # noqa: E501
-
-    class DifferentAgent(AgentBase):
-        def __init__(self):
-            llm = LLM(
-                model="gpt-4o-mini",
-                api_key=SecretStr("test-key"),
-                usage_id="test-llm",
-            )
-            super().__init__(llm=llm, tools=[])
-
-        def init_state(self, state, on_event):
-            pass
-
-        def step(
-            self,
-            conversation,
-            on_event: ConversationCallbackType,
-            on_token: ConversationTokenCallbackType | None = None,
-        ):
-            pass
-
+def test_agent_pydantic_validation_on_creation():
+    """Test that Pydantic validation happens when creating agents."""
+    # Valid agent creation - Pydantic validates
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
-    original_agent = Agent(llm=llm, tools=[])
-    different_agent = DifferentAgent()
+    agent = Agent(llm=llm, tools=[])
+    assert agent.llm.model == "gpt-4o-mini"
 
-    with pytest.raises(ValueError, match="Cannot resolve from deserialized"):
-        original_agent.resolve_diff_from_deserialized(different_agent)
+    # Invalid LLM creation should fail Pydantic validation
+    with pytest.raises(ValueError, match="model must be specified"):
+        LLM(model="", api_key=SecretStr("test-key"), usage_id="test-llm")
 
 
 def test_conversation_state_flags_persistence():

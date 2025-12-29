@@ -7,7 +7,6 @@ from unittest.mock import patch
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
-from openhands.sdk.agent import AgentBase
 from openhands.sdk.context import AgentContext, Skill
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
@@ -106,11 +105,9 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
     )
 
 
-# Tests from test_local_conversation_tools_integration.py
-def test_conversation_with_different_agent_tools_fails():
-    """Test that using an agent with different tools fails (tools must match)."""
-    import pytest
-
+# Tests for agent flexibility - LLM, tools, etc. can be freely changed
+def test_conversation_with_different_agent_tools_succeeds():
+    """Test that using an agent with different tools succeeds (tools can change)."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation with original agent
         original_tools = [
@@ -139,24 +136,26 @@ def test_conversation_with_different_agent_tools_fails():
         # Delete conversation to simulate restart
         del conversation
 
-        # Try to create new conversation with different tools (only bash tool)
-        different_tools = [Tool(name="TerminalTool")]  # Missing FileEditorTool
+        # Create new conversation with different tools - this should succeed
+        different_tools = [Tool(name="TerminalTool")]  # Different tools
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         different_agent = Agent(llm=llm2, tools=different_tools)
 
-        # This should fail - tools must match during reconciliation
-        with pytest.raises(
-            ValueError, match="Tools don't match between runtime and persisted agents"
-        ):
-            LocalConversation(
-                agent=different_agent,
-                workspace=temp_dir,
-                persistence_dir=temp_dir,
-                conversation_id=conversation_id,  # Use same ID to avoid ID mismatch
-                visualizer=None,
-            )
+        # This should succeed - tools can be freely changed between sessions
+        new_conversation = LocalConversation(
+            agent=different_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Verify state was loaded and new agent is used
+        assert len(new_conversation.state.events) > 0
+        assert len(new_conversation.agent.tools) == 1
+        assert new_conversation.agent.tools[0].name == "TerminalTool"
 
 
 def test_conversation_with_same_agent_succeeds():
@@ -212,57 +211,51 @@ def test_conversation_with_same_agent_succeeds():
         assert len(new_conversation.state.events) > 0
 
 
-def test_agent_resolve_diff_from_deserialized():
-    """Test agent's resolve_diff_from_deserialized method.
-
-    Includes tolerance for litellm_extra_body differences injected at CLI load time.
-    """
-    with tempfile.TemporaryDirectory():
-        # Create original agent
+def test_conversation_with_different_llm_succeeds():
+    """Test that using an agent with different LLM succeeds (LLM can change)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create and save conversation with original agent
         tools = [Tool(name="TerminalTool")]
-        llm = LLM(
+        llm1 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        original_agent = Agent(llm=llm, tools=tools)
+        original_agent = Agent(llm=llm1, tools=tools)
+        conversation = LocalConversation(
+            agent=original_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
 
-        # Serialize and deserialize to simulate persistence
-        serialized = original_agent.model_dump_json()
-        deserialized_agent = AgentBase.model_validate_json(serialized)
+        # Send a message to create some state
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="test message")])
+        )
 
-        # Create runtime agent with same configuration
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Create new conversation with different LLM - this should succeed
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+            model="gpt-4o",  # Different model
+            api_key=SecretStr("different-key"),  # Different key
+            usage_id="different-llm",
         )
-        runtime_agent = Agent(llm=llm2, tools=tools)
+        different_agent = Agent(llm=llm2, tools=tools)
 
-        # Should resolve successfully
-        resolved = runtime_agent.resolve_diff_from_deserialized(deserialized_agent)
-        # Test model_dump equality
-        assert resolved.model_dump(mode="json") == runtime_agent.model_dump(mode="json")
-        assert resolved.llm.model == runtime_agent.llm.model
-        assert resolved.__class__ == runtime_agent.__class__
-
-        # Now simulate CLI injecting dynamic litellm_extra_body metadata at load time
-        injected = deserialized_agent.model_copy(
-            update={
-                "llm": deserialized_agent.llm.model_copy(
-                    update={
-                        "litellm_extra_body": {
-                            "metadata": {
-                                "session_id": "sess-123",
-                                "tags": ["app:openhands", "model:gpt-4o-mini"],
-                                "trace_version": "1.2.3",
-                            }
-                        }
-                    }
-                )
-            }
+        # This should succeed - LLM can be freely changed between sessions
+        new_conversation = LocalConversation(
+            agent=different_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
         )
 
-        # Reconcile again: differences in litellm_extra_body should be allowed and
-        # the runtime value should be preferred without raising an error.
-        resolved2 = runtime_agent.resolve_diff_from_deserialized(injected)
-        assert resolved2.llm.litellm_extra_body == runtime_agent.llm.litellm_extra_body
+        # Verify state was loaded and new agent with new LLM is used
+        assert len(new_conversation.state.events) > 0
+        assert new_conversation.agent.llm.model == "gpt-4o"
+        assert new_conversation.agent.llm.usage_id == "different-llm"
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")

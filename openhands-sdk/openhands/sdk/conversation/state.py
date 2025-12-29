@@ -173,10 +173,44 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
     ) -> "ConversationState":
-        """
-        If base_state.json exists: resume (attach EventLog,
-            reconcile agent, enforce id).
-        Else: create fresh (agent required), persist base, and return.
+        """Create a new conversation state or resume from persistence.
+
+        This factory method handles both new conversation creation and resumption
+        from persisted state. The provided Agent is always used directly - users
+        are free to change any Agent configuration between sessions: LLM, tools,
+        mcp_config, filter_tools_regex, agent_context, system_prompt_filename,
+        security_policy_filename, system_prompt_kwargs, and condenser.
+
+        **Execution flow for new conversation:**
+        1. Create ConversationState with the provided Agent
+           (Pydantic validation happens here via cls() constructor)
+        2. Initialize EventLog for event storage
+        3. Save initial base state to persistence
+        4. Return the new state
+
+        **Execution flow for restored conversation:**
+        1. Load persisted base_state.json
+        2. Validate conversation ID matches
+        3. Create new ConversationState with the provided Agent
+           (Pydantic validation happens here via cls() constructor)
+        4. Attach EventLog to load persisted events
+        5. Save updated base state (with the provided Agent)
+        6. Return the resumed state
+
+        Args:
+            id: Unique conversation identifier
+            agent: The Agent to use (Pydantic-validated, freely changeable)
+            workspace: Working directory for agent operations
+            persistence_dir: Directory for persisting state and events
+            max_iterations: Maximum iterations per run
+            stuck_detection: Whether to enable stuck detection
+
+        Returns:
+            ConversationState ready for use
+
+        Raises:
+            ValueError: If conversation ID mismatches
+            ValidationError: If agent or other fields fail Pydantic validation
         """
         file_store = (
             LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
@@ -191,25 +225,45 @@ class ConversationState(OpenHandsModel):
 
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            persisted_state = cls.model_validate(json.loads(base_text))
 
-            # Enforce conversation id match
-            if state.id != id:
+            if persisted_state.id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
-                    f"but persisted state has {state.id}"
+                    f"but persisted state has {persisted_state.id}"
                 )
 
-            # Reconcile agent config with deserialized one
-            resolved = agent.resolve_diff_from_deserialized(state.agent)
+            # Create new state with the provided Agent directly.
+            # No compatibility checking - user is free to change any Agent config.
+            # Pydantic validation of Agent happens in cls() constructor.
+            #
+            # NOTE: There's a case for checking that tools already used in the
+            # conversation history are still available. For now we allow full
+            # flexibility - see issue #1533 for discussion.
+            state = cls(
+                id=id,
+                agent=agent,  # The provided Agent - freely changeable between sessions
+                workspace=workspace,
+                persistence_dir=persistence_dir,
+                max_iterations=max_iterations,
+                stuck_detection=stuck_detection,
+                # Restore persisted conversation metadata
+                execution_status=persisted_state.execution_status,
+                confirmation_policy=persisted_state.confirmation_policy,
+                security_analyzer=persisted_state.security_analyzer,
+                activated_knowledge_skills=persisted_state.activated_knowledge_skills,
+                blocked_actions=persisted_state.blocked_actions,
+                blocked_messages=persisted_state.blocked_messages,
+                secret_registry=persisted_state.secret_registry,
+            )
 
-            # Attach runtime handles and commit reconciled agent (may autosave)
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
-            state._autosave_enabled = True
-            state.agent = resolved
-
             state.stats = ConversationStats()
+
+            # Save updated base state (with the provided Agent)
+            state._save_base_state(file_store)
+            state._autosave_enabled = True
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
@@ -224,6 +278,8 @@ class ConversationState(OpenHandsModel):
                 "agent is required when initializing a new ConversationState"
             )
 
+        # Create new state with the provided Agent.
+        # Pydantic validation of Agent happens in cls() constructor.
         state = cls(
             id=id,
             agent=agent,
