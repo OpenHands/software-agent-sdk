@@ -13,10 +13,10 @@ if (typeof window !== 'undefined' && window.WebSocket) {
 } else {
   // Node.js environment
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
     const ws = require('ws');
     WebSocketImpl = ws;
-  } catch (e) {
+  } catch {
     throw new Error(
       'WebSocket implementation not available. Install ws package for Node.js environments.'
     );
