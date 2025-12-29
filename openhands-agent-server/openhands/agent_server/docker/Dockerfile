@@ -58,7 +58,7 @@ ARG USERNAME UID GID PORT
 # Install base packages and create user
 RUN set -eux; \
     # Install base packages (works for both Debian-based images)
-    apt-get update; \
+    apt-get update --allow-releaseinfo-change; \
     apt-get install -y --no-install-recommends \
         ca-certificates curl wget sudo apt-utils git jq tmux build-essential \
         coreutils util-linux procps findutils grep sed \
@@ -147,7 +147,7 @@ RUN set -eux; \
         echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null; \
     fi; \
     # Install Docker Engine, containerd, and Docker Compose
-    apt-get update; \
+    apt-get update --allow-releaseinfo-change; \
     apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
@@ -164,14 +164,14 @@ RUN set -eux; \
     chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg; \
     echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
         > /etc/apt/sources.list.d/github-cli.list; \
-    apt-get update; \
+    apt-get update --allow-releaseinfo-change; \
     apt-get install -y gh; \
     apt-get clean; \
     rm -rf /var/lib/apt/lists/*
 
 # --- VNC + Desktop + noVNC ---
 RUN set -eux; \
-  apt-get update; \
+  apt-get update --allow-releaseinfo-change; \
   apt-get install -y --no-install-recommends \
     # GUI bits (remove entirely if headless)
     tigervnc-standalone-server xfce4 dbus-x11 novnc websockify \
