@@ -53,7 +53,7 @@ export class RemoteWorkspace {
         payload.cwd = cwd;
       }
 
-      const startResponse = await this.client.post('/api/bash/start_bash_command', payload, {
+      const startResponse = await this.client.post('/api/bash/execute_bash_command', payload, {
         timeout: (timeout + 5) * 1000,
       });
 
