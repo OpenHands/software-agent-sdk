@@ -2,6 +2,8 @@
 
 The `ApptainerWorkspace` provides a container-based workspace using [Apptainer](https://apptainer.org/) (formerly Singularity), which doesn't require root access. This makes it ideal for HPC and shared computing environments where Docker may not be available or permitted.
 
+Note: This class only works with **pre-built images**. It does not support building images on-the-fly from a base image. For on-the-fly building with Docker, use `DockerDevWorkspace` instead.
+
 ## Why Apptainer?
 
 - **No root required**: Unlike Docker, Apptainer doesn't need root/sudo privileges
@@ -26,7 +28,7 @@ sudo yum install -y apptainer
 
 ## Usage
 
-### Basic Example
+### Option 1: Use Pre-built Agent Server Image (Recommended)
 
 ```python
 from openhands.workspace import ApptainerWorkspace
@@ -40,7 +42,7 @@ with ApptainerWorkspace(
     print(result.stdout)
 ```
 
-### Use Existing SIF File
+### Option 2: Use Existing SIF File
 
 ```python
 from openhands.workspace import ApptainerWorkspace
@@ -82,6 +84,7 @@ with ApptainerWorkspace(
 | `detach_logs` | `bool` | `True` | Stream logs in background |
 | `platform` | `PlatformType` | `"linux/amd64"` | Platform architecture |
 | `extra_ports` | `bool` | `False` | Expose additional ports (VSCode, VNC) |
+| `use_fakeroot` | `bool` | `True` | Use --fakeroot for consistent file ownership |
 
 ## How It Works
 
