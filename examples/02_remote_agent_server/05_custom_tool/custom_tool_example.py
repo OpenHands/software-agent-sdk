@@ -188,17 +188,28 @@ with DockerDevWorkspace(
             time.sleep(0.1)
         logger.info("✅ Events have stopped")
 
-        # 9) Read the logged data from the JSON file
+        # 9) Read the logged data from the JSON file using file_download API
         logger.info("\n📊 Logged Data Summary:")
         logger.info("=" * 80)
 
-        # Read the log file from the workspace
-        log_result = workspace.execute_command("cat /tmp/agent_data.json 2>/dev/null")
-        if log_result.exit_code == 0 and log_result.stdout.strip():
-            import json
+        # Download the log file from the workspace using the file download API
+        import json
+        import tempfile
 
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".json", delete=False
+        ) as tmp_file:
+            local_path = tmp_file.name
+
+        download_result = workspace.file_download(
+            source_path="/tmp/agent_data.json",
+            destination_path=local_path,
+        )
+
+        if download_result.success:
             try:
-                log_entries = json.loads(log_result.stdout)
+                with open(local_path) as f:
+                    log_entries = json.load(f)
                 logger.info(f"Found {len(log_entries)} log entries:\n")
                 for i, entry in enumerate(log_entries, 1):
                     logger.info(f"Entry {i}:")
@@ -210,9 +221,15 @@ with DockerDevWorkspace(
                     logger.info("")
             except json.JSONDecodeError:
                 logger.info("Log file exists but couldn't parse JSON")
-                logger.info(f"Raw content: {log_result.stdout}")
+                with open(local_path) as f:
+                    logger.info(f"Raw content: {f.read()}")
+            finally:
+                # Clean up the temporary file
+                Path(local_path).unlink(missing_ok=True)
         else:
             logger.info("No log file found (agent may not have used the tool)")
+            if download_result.error:
+                logger.debug(f"Download error: {download_result.error}")
 
         logger.info("=" * 80)
 
