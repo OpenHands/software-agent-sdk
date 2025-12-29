@@ -109,6 +109,7 @@ with DockerDevWorkspace(
     base_image=CUSTOM_BASE_IMAGE_TAG,
     host_port=8011,
     platform=detect_platform(),
+    target="source",  # NOTE: "binary" target does not work with custom tools
 ) as workspace:
     logger.info("✅ Custom agent server started!")
 
