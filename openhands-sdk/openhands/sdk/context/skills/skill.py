@@ -535,6 +535,8 @@ def _load_and_categorize(
         repo_skills: Dictionary to store skills with trigger=None.
         knowledge_skills: Dictionary to store skills with triggers.
         directory_name: For SKILL.md files, the parent directory name.
+            When provided, the skill is always categorized as knowledge_skills
+            (AgentSkills use progressive loading, not permanent context).
 
     Raises:
         SkillValidationError: If skill validation fails (with path context).
@@ -547,7 +549,12 @@ def _load_and_categorize(
     except Exception as e:
         raise ValueError(f"Error loading skill from {path}: {e}") from e
 
-    if skill.trigger is None:
+    # AgentSkills (SKILL.md directories) always use progressive loading,
+    # so they go to knowledge_skills regardless of trigger presence.
+    # Only regular .md files and third-party files can be repo_skills.
+    if directory_name is not None:
+        knowledge_skills[skill.name] = skill
+    elif skill.trigger is None:
         repo_skills[skill.name] = skill
     else:
         knowledge_skills[skill.name] = skill

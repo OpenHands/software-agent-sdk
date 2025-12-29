@@ -115,3 +115,32 @@ def test_load_skills_from_dir_with_skill_md(tmp_path: Path) -> None:
     assert "flat-skill" in knowledge_skills
     assert "dir-skill" in knowledge_skills
     assert knowledge_skills["dir-skill"].name == "dir-skill"
+
+
+def test_skill_md_always_knowledge_skill(tmp_path: Path) -> None:
+    """SKILL.md directories should always be knowledge_skills, even without triggers.
+
+    AgentSkills use progressive loading, so they should never be categorized
+    as repo_skills (permanent context). This is different from regular .md files
+    which can be repo_skills when they have no triggers.
+    """
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+
+    # Regular .md file without triggers -> repo_skills
+    (skills_dir / "repo-style.md").write_text("# Repo Style\nNo triggers here.")
+
+    # SKILL.md directory without triggers -> still knowledge_skills
+    no_trigger_skill = skills_dir / "no-trigger-skill"
+    no_trigger_skill.mkdir()
+    (no_trigger_skill / "SKILL.md").write_text("# No Trigger\nNo triggers here either.")
+
+    repo_skills, knowledge_skills = load_skills_from_dir(skills_dir)
+
+    # Regular .md without triggers goes to repo_skills
+    assert "repo-style" in repo_skills
+    assert "repo-style" not in knowledge_skills
+
+    # SKILL.md without triggers still goes to knowledge_skills (progressive loading)
+    assert "no-trigger-skill" in knowledge_skills
+    assert "no-trigger-skill" not in repo_skills
