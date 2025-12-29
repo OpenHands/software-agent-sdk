@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.request import urlopen
 
-from pydantic import Field, PrivateAttr, model_validator
+from pydantic import Field, PrivateAttr
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
@@ -109,16 +109,15 @@ class ApptainerWorkspace(RemoteWorkspace):
     _sif_path: str = PrivateAttr()
     _process: subprocess.Popen[str] | None = PrivateAttr(default=None)
 
-    @model_validator(mode="after")
-    def _validate_images(self):
-        """Ensure exactly one of server_image or sif_file is provided."""
+    def model_post_init(self, context: Any) -> None:
+        """Set up the Apptainer container and initialize the remote workspace."""
+        # Validate that exactly one of server_image or sif_file is provided
+        # This must be done here (not in model_validator) because model_post_init
+        # runs before model_validator in Pydantic
         sources = [self.server_image, self.sif_file]
         if sum(x is not None for x in sources) != 1:
             raise ValueError("Exactly one of 'server_image' or 'sif_file' must be set.")
-        return self
 
-    def model_post_init(self, context: Any) -> None:
-        """Set up the Apptainer container and initialize the remote workspace."""
         # Determine port
         if self.host_port is None:
             self.host_port = find_available_tcp_port()
