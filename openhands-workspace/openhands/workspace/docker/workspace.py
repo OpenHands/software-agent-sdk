@@ -356,3 +356,41 @@ class DockerWorkspace(RemoteWorkspace):
                     "Failed to delete image %s: %s", self._image_name, result.stderr
                 )
             self._image_name = None
+
+    def pause(self) -> None:
+        """Pause the Docker container to conserve resources.
+
+        Uses `docker pause` to freeze all processes in the container without
+        stopping it. The container can be resumed later with `resume()`.
+
+        Raises:
+            RuntimeError: If the container is not running or pause fails.
+        """
+        if not self._container_id:
+            raise RuntimeError("Cannot pause: container is not running")
+
+        logger.info("Pausing container: %s", self._container_id)
+        result = execute_command(["docker", "pause", self._container_id])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to pause container: {result.stderr}")
+        logger.info("Container paused: %s", self._container_id)
+
+    def resume(self) -> None:
+        """Resume a paused Docker container.
+
+        Uses `docker unpause` to resume all processes in the container.
+
+        Raises:
+            RuntimeError: If the container is not running or resume fails.
+        """
+        if not self._container_id:
+            raise RuntimeError("Cannot resume: container is not running")
+
+        logger.info("Resuming container: %s", self._container_id)
+        result = execute_command(["docker", "unpause", self._container_id])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to resume container: {result.stderr}")
+
+        # Wait for health after resuming
+        self._wait_for_health(timeout=30.0)
+        logger.info("Container resumed: %s", self._container_id)
