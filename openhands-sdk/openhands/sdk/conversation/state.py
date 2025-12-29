@@ -200,12 +200,23 @@ class ConversationState(OpenHandsModel):
                     f"but persisted state has {state.id}"
                 )
 
-            # Reconcile agent config with deserialized one
-            resolved = agent.resolve_diff_from_deserialized(state.agent)
-
-            # Attach runtime handles and commit reconciled agent (may autosave)
+            # Attach event log early so we can read history
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+
+            # Extract tool names that were actually used in history
+            # This allows adding new tools when resuming conversations
+            used_tools: set[str] = set()
+            for event in state._events:
+                if isinstance(event, ActionEvent):
+                    used_tools.add(event.tool_name)
+
+            # Reconcile agent config with deserialized one, passing used tools
+            resolved = agent.resolve_diff_from_deserialized(
+                state.agent, used_tools=used_tools
+            )
+
+            # Commit reconciled agent (may autosave)
             state._autosave_enabled = True
             state.agent = resolved
 

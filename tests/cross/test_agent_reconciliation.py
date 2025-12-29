@@ -107,12 +107,14 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
 
 
 # Tests from test_local_conversation_tools_integration.py
-def test_conversation_with_different_agent_tools_fails():
-    """Test that using an agent with different tools fails (tools must match)."""
-    import pytest
+def test_conversation_allows_removing_unused_tools():
+    """Test that removing tools that weren't used in history is allowed.
 
+    With relaxed tool matching, only tools that were actually USED in the
+    conversation history need to be present. Unused tools can be removed.
+    """
     with tempfile.TemporaryDirectory() as temp_dir:
-        # Create and save conversation with original agent
+        # Create conversation with original agent having 2 tools
         original_tools = [
             Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),
@@ -128,35 +130,81 @@ def test_conversation_with_different_agent_tools_fails():
             visualizer=None,
         )
 
-        # Send a message to create some state
+        # Send a message but NO tool is used (no ActionEvent in history)
         conversation.send_message(
             Message(role="user", content=[TextContent(text="test message")])
         )
 
-        # Get the conversation ID for reuse
         conversation_id = conversation.state.id
-
-        # Delete conversation to simulate restart
         del conversation
 
-        # Try to create new conversation with different tools (only bash tool)
-        different_tools = [Tool(name="TerminalTool")]  # Missing FileEditorTool
+        # Resume with only one tool - should succeed since no tools were used
+        reduced_tools = [Tool(name="TerminalTool")]  # Removed FileEditorTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        different_agent = Agent(llm=llm2, tools=different_tools)
+        reduced_agent = Agent(llm=llm2, tools=reduced_tools)
 
-        # This should fail - tools must match during reconciliation
-        with pytest.raises(
-            ValueError, match="Tools don't match between runtime and persisted agents"
-        ):
-            LocalConversation(
-                agent=different_agent,
-                workspace=temp_dir,
-                persistence_dir=temp_dir,
-                conversation_id=conversation_id,  # Use same ID to avoid ID mismatch
-                visualizer=None,
-            )
+        # This should succeed - FileEditorTool was never used
+        new_conversation = LocalConversation(
+            agent=reduced_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+        assert new_conversation.id == conversation_id
+
+
+def test_conversation_allows_adding_new_tools():
+    """Test that adding new tools not in the original conversation is allowed.
+
+    With relaxed tool matching, new tools can be added when resuming a
+    conversation without causing failures.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create conversation with only one tool
+        original_tools = [Tool(name="TerminalTool")]
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        original_agent = Agent(llm=llm, tools=original_tools)
+        conversation = LocalConversation(
+            agent=original_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+
+        # Send a message (no tools used)
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="test message")])
+        )
+
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Resume with additional tools - should succeed
+        expanded_tools = [
+            Tool(name="TerminalTool"),
+            Tool(name="FileEditorTool"),  # New tool added
+        ]
+        llm2 = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        expanded_agent = Agent(llm=llm2, tools=expanded_tools)
+
+        # This should succeed - adding new tools is allowed
+        new_conversation = LocalConversation(
+            agent=expanded_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+        assert new_conversation.id == conversation_id
+        # Verify the new tools are available
+        assert len(new_conversation.agent.tools) == 2
 
 
 def test_conversation_with_same_agent_succeeds():
