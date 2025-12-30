@@ -335,10 +335,37 @@ class LocalConversation(BaseConversation):
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
                     if self._state.execution_status in [
-                        ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
                     ]:
+                        break
+
+                    # Handle stop hooks on FINISHED
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        if self._hook_processor is not None:
+                            should_stop, feedback = self._hook_processor.run_stop(
+                                reason="agent_finished"
+                            )
+                            if not should_stop:
+                                logger.info("Stop hook denied agent stopping")
+                                if feedback:
+                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    feedback_msg = MessageEvent(
+                                        source="user",
+                                        llm_message=Message(
+                                            role="user",
+                                            content=[TextContent(text=prefixed)],
+                                        ),
+                                    )
+                                    self._on_event(feedback_msg)
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.RUNNING
+                                )
+                                continue
+                        # No hooks or hooks allowed stopping
                         break
 
                     # Check for stuck patterns if enabled
