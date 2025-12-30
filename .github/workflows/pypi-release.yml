@@ -248,3 +248,12 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands](https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+
+            - name: Notify Slack
+              uses: slackapi/slack-github-action@v2.1.1
+              with:
+                  method: chat.postMessage
+                  token: ${{ secrets.SLACK_BOT_TOKEN }}
+                  payload: |
+                      channel: C08E1SYKEM9
+                      text: "🚀 *SDK v${{ env.VERSION }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ env.VERSION }}|OpenHands>\n• <https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ env.VERSION }}|OpenHands-CLI>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ env.VERSION }}|View Release>"
