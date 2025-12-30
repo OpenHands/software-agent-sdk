@@ -33,54 +33,6 @@ THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(-[a-z0-9]+)*$")
 
 
-def find_skill_md(skill_dir: Path) -> Path | None:
-    """Find SKILL.md file in a directory (case-insensitive).
-
-    Args:
-        skill_dir: Path to the skill directory to search.
-
-    Returns:
-        Path to SKILL.md if found, None otherwise.
-    """
-    if not skill_dir.is_dir():
-        return None
-    for item in skill_dir.iterdir():
-        if item.is_file() and item.name.lower() == "skill.md":
-            return item
-    return None
-
-
-def validate_skill_name(name: str, directory_name: str | None = None) -> list[str]:
-    """Validate skill name according to AgentSkills spec.
-
-    Args:
-        name: The skill name to validate.
-        directory_name: Optional directory name to check for match.
-
-    Returns:
-        List of validation error messages (empty if valid).
-    """
-    errors = []
-
-    if not name:
-        errors.append("Name cannot be empty")
-        return errors
-
-    if len(name) > 64:
-        errors.append(f"Name exceeds 64 characters: {len(name)}")
-
-    if not SKILL_NAME_PATTERN.match(name):
-        errors.append(
-            "Name must be lowercase alphanumeric with single hyphens "
-            "(e.g., 'my-skill', 'pdf-tools')"
-        )
-
-    if directory_name and name != directory_name:
-        errors.append(f"Name '{name}' does not match directory '{directory_name}'")
-
-    return errors
-
-
 # Union type for all trigger types
 TriggerType = Annotated[
     KeywordTrigger | TaskTrigger,
@@ -191,6 +143,19 @@ class Skill(BaseModel):
             return {str(k): str(val) for k, val in v.items()}
         raise SkillValidationError("metadata must be a dictionary")
 
+    @field_validator("mcp_tools")
+    @classmethod
+    def _validate_mcp_tools(cls, v: dict | None, _info):
+        """Validate mcp_tools conforms to MCPConfig schema."""
+        if v is None:
+            return v
+        if isinstance(v, dict):
+            try:
+                MCPConfig.model_validate(v)
+            except Exception as e:
+                raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
+        return v
+
     PATH_TO_THIRD_PARTY_SKILL_NAME: ClassVar[dict[str, str]] = {
         ".cursorrules": "cursorrules",
         "agents.md": "agents",
@@ -198,43 +163,6 @@ class Skill(BaseModel):
         "claude.md": "claude",
         "gemini.md": "gemini",
     }
-
-    @classmethod
-    def _handle_third_party(cls, path: Path, file_content: str) -> Union["Skill", None]:
-        # Determine the agent name based on file type
-        skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
-
-        # Create Skill with None trigger (always active) if we recognized the file type
-        if skill_name is not None:
-            # Truncate content if it exceeds the limit
-            # Third-party files are always active, so we want to keep them
-            # reasonably sized
-            truncated_content = maybe_truncate(
-                file_content,
-                truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
-                truncate_notice=(
-                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the "
-                    f"maximum length ({THIRD_PARTY_SKILL_MAX_CHARS} "
-                    f"characters) and has been truncated. Only the "
-                    f"beginning and end are shown. You can read the full "
-                    f"file if needed.</NOTE>\n\n"
-                ),
-            )
-
-            if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
-                logger.warning(
-                    f"Third-party skill file {path} ({len(file_content)} chars) "
-                    f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
-                )
-
-            return Skill(
-                name=skill_name,
-                content=truncated_content,
-                source=str(path),
-                trigger=None,
-            )
-
-        return None
 
     @classmethod
     def load(
@@ -298,7 +226,7 @@ class Skill(BaseModel):
 
         # Auto-validate skill name when directory_name is provided (SKILL.md format)
         if directory_name is not None:
-            name_errors = validate_skill_name(agent_name, directory_name)
+            name_errors = _validate_skill_name(agent_name, directory_name)
             if name_errors:
                 raise SkillValidationError(
                     f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
@@ -372,18 +300,42 @@ class Skill(BaseModel):
                 **agentskills_fields,
             )
 
-    # Field-level validation for mcp_tools
-    @field_validator("mcp_tools")
     @classmethod
-    def _validate_mcp_tools(cls, v: dict | None, _info):
-        if v is None:
-            return v
-        if isinstance(v, dict):
-            try:
-                MCPConfig.model_validate(v)
-            except Exception as e:
-                raise SkillValidationError(f"Invalid MCPConfig dictionary: {e}") from e
-        return v
+    def _handle_third_party(cls, path: Path, file_content: str) -> Union["Skill", None]:
+        """Handle third-party skill files (e.g., .cursorrules, AGENTS.md).
+
+        Creates a Skill with None trigger (always active) if the file type is recognized.
+        Truncates content if it exceeds the limit.
+        """
+        skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
+
+        if skill_name is not None:
+            truncated_content = maybe_truncate(
+                file_content,
+                truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
+                truncate_notice=(
+                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the "
+                    f"maximum length ({THIRD_PARTY_SKILL_MAX_CHARS} "
+                    f"characters) and has been truncated. Only the "
+                    f"beginning and end are shown. You can read the full "
+                    f"file if needed.</NOTE>\n\n"
+                ),
+            )
+
+            if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
+                logger.warning(
+                    f"Third-party skill file {path} ({len(file_content)} chars) "
+                    f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
+                )
+
+            return Skill(
+                name=skill_name,
+                content=truncated_content,
+                source=str(path),
+                trigger=None,
+            )
+
+        return None
 
     @model_validator(mode="after")
     def _append_missing_variables_prompt(self):
@@ -445,6 +397,54 @@ class Skill(BaseModel):
         return len(variables) > 0
 
 
+def _find_skill_md(skill_dir: Path) -> Path | None:
+    """Find SKILL.md file in a directory (case-insensitive).
+
+    Args:
+        skill_dir: Path to the skill directory to search.
+
+    Returns:
+        Path to SKILL.md if found, None otherwise.
+    """
+    if not skill_dir.is_dir():
+        return None
+    for item in skill_dir.iterdir():
+        if item.is_file() and item.name.lower() == "skill.md":
+            return item
+    return None
+
+
+def _validate_skill_name(name: str, directory_name: str | None = None) -> list[str]:
+    """Validate skill name according to AgentSkills spec.
+
+    Args:
+        name: The skill name to validate.
+        directory_name: Optional directory name to check for match.
+
+    Returns:
+        List of validation error messages (empty if valid).
+    """
+    errors = []
+
+    if not name:
+        errors.append("Name cannot be empty")
+        return errors
+
+    if len(name) > 64:
+        errors.append(f"Name exceeds 64 characters: {len(name)}")
+
+    if not SKILL_NAME_PATTERN.match(name):
+        errors.append(
+            "Name must be lowercase alphanumeric with single hyphens "
+            "(e.g., 'my-skill', 'pdf-tools')"
+        )
+
+    if directory_name and name != directory_name:
+        errors.append(f"Name '{name}' does not match directory '{directory_name}'")
+
+    return errors
+
+
 def _find_third_party_files(repo_root: Path) -> list[Path]:
     """Find third-party skill files in the repository root.
 
@@ -490,7 +490,7 @@ def _find_skill_md_directories(skill_dir: Path) -> list[tuple[Path, str]]:
         return results
     for subdir in skill_dir.iterdir():
         if subdir.is_dir():
-            skill_md = find_skill_md(subdir)
+            skill_md = _find_skill_md(subdir)
             if skill_md:
                 results.append((skill_md, subdir.name))
     return results
