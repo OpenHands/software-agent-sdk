@@ -137,7 +137,8 @@ jobs:
                     sed -i "s|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:[^']*'|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:${SDK_COMMIT_HASH}-python'|" "$SANDBOX_SPEC_FILE"
                     echo "✅ Updated AGENT_SERVER_IMAGE to: ghcr.io/openhands/agent-server:${SDK_COMMIT_HASH}-python"
                   else
-                    echo "⚠️ sandbox_spec_service.py not found at expected path"
+                    echo "❌ sandbox_spec_service.py not found at expected path"
+                    exit 1
                   fi
 
                   # Check if there are changes
@@ -147,7 +148,7 @@ jobs:
                   fi
 
                   # Commit and push
-                  git add pyproject.toml poetry.lock enterprise/poetry.lock "$SANDBOX_SPEC_FILE"
+                  git add .
                   git commit -m "Bump openhands-sdk, openhands-tools, openhands-agent-server to $VERSION" \
                     -m "Automated version bump after PyPI release." \
                     -m "" \
