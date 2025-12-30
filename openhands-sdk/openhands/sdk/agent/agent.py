@@ -502,16 +502,29 @@ class Agent(AgentBase):
             )
 
         # Execute actions!
-        if should_enable_observability():
-            tool_name = extract_action_name(action_event)
-            observation: Observation = observe(name=tool_name, span_type="TOOL")(tool)(
-                action_event.action, conversation
+        try:
+            if should_enable_observability():
+                tool_name = extract_action_name(action_event)
+                observation: Observation = observe(name=tool_name, span_type="TOOL")(
+                    tool
+                )(action_event.action, conversation)
+            else:
+                observation = tool(action_event.action, conversation)
+            assert isinstance(observation, Observation), (
+                f"Tool '{tool.name}' executor must return an Observation"
             )
-        else:
-            observation = tool(action_event.action, conversation)
-        assert isinstance(observation, Observation), (
-            f"Tool '{tool.name}' executor must return an Observation"
-        )
+        except ValueError as e:
+            # Tool execution raised a ValueError (e.g., invalid argument combination)
+            # Convert to AgentErrorEvent so the agent can correct itself
+            err = f"Error executing tool '{tool.name}': {e}"
+            logger.warning(err)
+            error_event = AgentErrorEvent(
+                error=err,
+                tool_name=tool.name,
+                tool_call_id=action_event.tool_call.id,
+            )
+            on_event(error_event)
+            return error_event
 
         obs_event = ObservationEvent(
             observation=observation,
