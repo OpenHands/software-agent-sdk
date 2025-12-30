@@ -551,3 +551,23 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     # Forgotten events: events[3:28] = 25 events
     expected_forgotten_count = 25
     assert len(result.forgotten_event_ids) == expected_forgotten_count
+
+
+def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
+    """Test that _generate_condensation raises ValueError when given 0 events.
+
+    This prevents the LLM from being called with an empty event list, which would
+    produce a confusing summary like "I don't see any events provided to summarize."
+    See https://github.com/OpenHands/software-agent-sdk/issues/1518 for context.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+
+    with pytest.raises(ValueError, match="Cannot condense 0 events"):
+        condenser._generate_condensation(
+            summary_event_content="",
+            forgotten_events=[],
+            summary_offset=0,
+        )
+
+    # Verify the LLM was never called
+    cast(MagicMock, mock_llm.completion).assert_not_called()
