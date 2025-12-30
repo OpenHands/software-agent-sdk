@@ -697,7 +697,7 @@ This is a repo skill with invalid MCP tools configuration.
     test_path = tmp_path / "invalid-mcp-tools.md"
     test_path.write_text(skill_content)
 
-    # Loading should raise an error (either SkillValidationError or AttributeError)
+    # Loading should raise SkillValidationError for invalid mcp_tools type
     with pytest.raises(SkillValidationError) as excinfo:
         Skill.load(test_path)
 

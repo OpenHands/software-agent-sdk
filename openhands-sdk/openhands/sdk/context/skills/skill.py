@@ -201,18 +201,17 @@ class Skill(BaseModel):
             file_content: Content of the file.
         """
         # For SKILL.md files, use parent directory name as the skill name
-        skill_name = path.parent.name
+        directory_name = path.parent.name
 
         file_io = io.StringIO(file_content)
         loaded = frontmatter.load(file_io)
         content = loaded.content
         metadata_dict = loaded.metadata or {}
 
-        # Use name from frontmatter if provided, otherwise use derived name
-        agent_name = str(metadata_dict.get("name", skill_name))
+        # Use name from frontmatter if provided, otherwise use directory name
+        agent_name = str(metadata_dict.get("name", directory_name))
 
         # Validate skill name
-        directory_name = path.parent.name
         name_errors = _validate_skill_name(agent_name, directory_name)
         if name_errors:
             raise SkillValidationError(
@@ -324,7 +323,7 @@ class Skill(BaseModel):
         else:
             # No triggers, default to None (always active)
             mcp_tools = metadata_dict.get("mcp_tools")
-            if not isinstance(mcp_tools, dict | None):
+            if mcp_tools is not None and not isinstance(mcp_tools, dict):
                 raise SkillValidationError("mcp_tools must be a dictionary or None")
             return Skill(
                 name=agent_name,
