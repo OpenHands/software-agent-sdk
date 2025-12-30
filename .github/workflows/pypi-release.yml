@@ -89,8 +89,8 @@ jobs:
                     openhands-agent-server
                   )
 
-                  MAX_ATTEMPTS=30
-                  SLEEP_SECONDS=10
+                  MAX_ATTEMPTS=60
+                  SLEEP_SECONDS=20
 
                   echo "⏳ Waiting for packages to be available on PyPI..."
 
