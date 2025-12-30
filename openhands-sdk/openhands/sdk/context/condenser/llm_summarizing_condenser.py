@@ -120,7 +120,17 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         Returns:
             Condensation: The generated condensation object.
+
+        Raises:
+            ValueError: If forgotten_events is empty (0 events to condense).
         """
+        if len(forgotten_events) == 0:
+            raise ValueError(
+                "Cannot condense 0 events. This typically occurs when a tool loop "
+                "spans almost the entire view, leaving no valid range for forgetting "
+                "events. Consider adjusting keep_first or max_size parameters."
+            )
+
         # Convert events to strings for the template
         event_strings = [str(forgotten_event) for forgotten_event in forgotten_events]
 
