@@ -1,4 +1,6 @@
 import io
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -219,7 +221,16 @@ class Skill(BaseModel):
                 f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
             )
 
-        return cls._create_skill_from_metadata(agent_name, content, path, metadata_dict)
+        # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
+        mcp_tools: dict | None = None
+        skill_root = path.parent
+        mcp_json_path = _find_mcp_config(skill_root)
+        if mcp_json_path:
+            mcp_tools = _load_mcp_config(mcp_json_path, skill_root)
+
+        return cls._create_skill_from_metadata(
+            agent_name, content, path, metadata_dict, mcp_tools
+        )
 
     @classmethod
     def _load_legacy_openhands_skill(
@@ -253,11 +264,23 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use derived name
         agent_name = str(metadata_dict.get("name", skill_name))
 
-        return cls._create_skill_from_metadata(agent_name, content, path, metadata_dict)
+        # Legacy skills ONLY use mcp_tools from frontmatter (not .mcp.json)
+        mcp_tools = metadata_dict.get("mcp_tools")
+        if mcp_tools is not None and not isinstance(mcp_tools, dict):
+            raise SkillValidationError("mcp_tools must be a dictionary or None")
+
+        return cls._create_skill_from_metadata(
+            agent_name, content, path, metadata_dict, mcp_tools
+        )
 
     @classmethod
     def _create_skill_from_metadata(
-        cls, agent_name: str, content: str, path: Path, metadata_dict: dict
+        cls,
+        agent_name: str,
+        content: str,
+        path: Path,
+        metadata_dict: dict,
+        mcp_tools: dict | None = None,
     ) -> "Skill":
         """Create a Skill object from parsed metadata.
 
@@ -266,6 +289,7 @@ class Skill(BaseModel):
             content: The markdown content (without frontmatter).
             path: Path to the skill file.
             metadata_dict: Parsed frontmatter metadata.
+            mcp_tools: MCP tools configuration (from .mcp.json or frontmatter).
         """
         # Extract AgentSkills standard fields (Pydantic validators handle
         # transformation). Handle "allowed-tools" to "allowed_tools" key mapping.
@@ -323,9 +347,6 @@ class Skill(BaseModel):
             )
         else:
             # No triggers, default to None (always active)
-            mcp_tools = metadata_dict.get("mcp_tools")
-            if not isinstance(mcp_tools, dict | None):
-                raise SkillValidationError("mcp_tools must be a dictionary or None")
             return Skill(
                 name=agent_name,
                 content=content,
@@ -447,6 +468,110 @@ def _find_skill_md(skill_dir: Path) -> Path | None:
         if item.is_file() and item.name.lower() == "skill.md":
             return item
     return None
+
+
+def _find_mcp_config(skill_dir: Path) -> Path | None:
+    """Find .mcp.json file in a skill directory.
+
+    Args:
+        skill_dir: Path to the skill directory to search.
+
+    Returns:
+        Path to .mcp.json if found, None otherwise.
+    """
+    if not skill_dir.is_dir():
+        return None
+    mcp_json = skill_dir / ".mcp.json"
+    if mcp_json.exists() and mcp_json.is_file():
+        return mcp_json
+    return None
+
+
+def _expand_mcp_variables(
+    config: dict,
+    variables: dict[str, str],
+) -> dict:
+    """Expand variables in MCP configuration.
+
+    Supports variable expansion similar to Claude Code:
+    - ${VAR} - Environment variables or provided variables
+    - ${VAR:-default} - With default value
+
+    Args:
+        config: MCP configuration dictionary.
+        variables: Dictionary of variable names to values.
+
+    Returns:
+        Configuration with variables expanded.
+    """
+    # Convert to JSON string for easy replacement
+    config_str = json.dumps(config)
+
+    # Pattern for ${VAR} or ${VAR:-default}
+    var_pattern = re.compile(r"\$\{([a-zA-Z_][a-zA-Z0-9_]*)(?::-([^}]*))?\}")
+
+    def replace_var(match: re.Match) -> str:
+        var_name = match.group(1)
+        default_value = match.group(2)
+
+        # Check provided variables first, then environment
+        if var_name in variables:
+            return variables[var_name]
+        if var_name in os.environ:
+            return os.environ[var_name]
+        if default_value is not None:
+            return default_value
+        # Return original if not found
+        return match.group(0)
+
+    config_str = var_pattern.sub(replace_var, config_str)
+    return json.loads(config_str)
+
+
+def _load_mcp_config(
+    mcp_json_path: Path,
+    skill_root: Path | None = None,
+) -> dict:
+    """Load and parse .mcp.json with variable expansion.
+
+    Args:
+        mcp_json_path: Path to the .mcp.json file.
+        skill_root: Root directory of the skill (for ${SKILL_ROOT} expansion).
+
+    Returns:
+        Parsed MCP configuration dictionary.
+
+    Raises:
+        SkillValidationError: If the file cannot be parsed or is invalid.
+    """
+    try:
+        with open(mcp_json_path) as f:
+            config = json.load(f)
+    except json.JSONDecodeError as e:
+        raise SkillValidationError(f"Invalid JSON in {mcp_json_path}: {e}") from e
+    except OSError as e:
+        raise SkillValidationError(f"Cannot read {mcp_json_path}: {e}") from e
+
+    if not isinstance(config, dict):
+        raise SkillValidationError(
+            f"Invalid .mcp.json format: expected object, got {type(config).__name__}"
+        )
+
+    # Prepare variables for expansion
+    variables: dict[str, str] = {}
+    if skill_root:
+        variables["SKILL_ROOT"] = str(skill_root)
+
+    # Expand variables
+    config = _expand_mcp_variables(config, variables)
+
+    # Validate using MCPConfig
+    try:
+        MCPConfig.model_validate(config)
+    except Exception as e:
+        raise SkillValidationError(f"Invalid MCP configuration: {e}") from e
+
+    return config
 
 
 def _validate_skill_name(name: str, directory_name: str | None = None) -> list[str]:
