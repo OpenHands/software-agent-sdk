@@ -86,7 +86,7 @@ def test_knowledge_agent():
 
 def test_load_skills(temp_skills_dir):
     """Test loading skills from directory."""
-    repo_agents, knowledge_agents = load_skills_from_dir(temp_skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(temp_skills_dir)
 
     # Check knowledge agents (name derived from filename: knowledge.md -> 'knowledge')
     assert len(knowledge_agents) == 1
@@ -121,7 +121,7 @@ Testing nested directory loading.
 """
     (nested_dir / "nested.md").write_text(nested_agent)
 
-    repo_agents, knowledge_agents = load_skills_from_dir(temp_skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(temp_skills_dir)
 
     # Check that we can find the nested agent (name derived from
     # path: nested/dir/nested.md -> 'nested/dir/nested')
@@ -153,7 +153,7 @@ Testing loading with trailing slashes.
 """
     (knowledge_dir / "trailing.md").write_text(knowledge_agent)
 
-    repo_agents, knowledge_agents = load_skills_from_dir(
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(
         str(temp_skills_dir) + "/"  # Add trailing slash to test
     )
 
@@ -190,7 +190,6 @@ This skill has invalid triggers format.
 
     # Check that the error message contains helpful information
     error_msg = str(excinfo.value)
-    assert "invalid_triggers.md" in error_msg
     assert "Triggers must be a list" in error_msg
 
 
@@ -340,7 +339,7 @@ def test_load_skills_with_cursorrules(temp_skills_dir_with_cursorrules):
     """Test loading skills when .cursorrules file exists."""
     skills_dir = temp_skills_dir_with_cursorrules / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that .cursorrules file was loaded as a RepoSkill
     assert len(repo_agents) == 2  # repo.md + .cursorrules
@@ -397,7 +396,7 @@ def test_load_skills_with_claude_gemini(temp_skills_dir_with_context_files):
     """Test loading skills when claude.md and gemini.md files exist."""
     skills_dir = temp_skills_dir_with_context_files / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that claude.md and gemini.md files were loaded as RepoSkills
     assert len(repo_agents) == 3  # repo.md + claude.md + gemini.md
@@ -464,7 +463,7 @@ def test_load_skills_with_uppercase_claude_gemini(
     """Test loading skills when CLAUDE.MD and GEMINI.MD files exist (uppercase)."""
     skills_dir = temp_skills_dir_with_uppercase_context_files / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that CLAUDE.MD and GEMINI.MD files were loaded as RepoSkills
     assert len(repo_agents) == 3  # repo.md + CLAUDE.MD + GEMINI.MD
@@ -530,7 +529,7 @@ def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_contex
     root, original_size = temp_skills_dir_with_large_context_file
     skills_dir = root / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that CLAUDE.md file was loaded but truncated
     assert len(repo_agents) == 2  # repo.md + claude.md

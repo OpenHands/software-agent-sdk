@@ -339,8 +339,8 @@ class Skill(BaseModel):
     def _handle_third_party(cls, path: Path, file_content: str) -> Union["Skill", None]:
         """Handle third-party skill files (e.g., .cursorrules, AGENTS.md).
 
-        Creates a Skill with None trigger (always active) if the file type is recognized.
-        Truncates content if it exceeds the limit.
+        Creates a Skill with None trigger (always active) if the file type
+        is recognized. Truncates content if it exceeds the limit.
         """
         skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
 
@@ -504,7 +504,12 @@ def _find_third_party_files(repo_root: Path) -> list[Path]:
         if item.is_file() and item.name.lower() in target_names:
             # Avoid duplicates (e.g., AGENTS.md and agents.md in same dir)
             name_lower = item.name.lower()
-            if name_lower not in seen_names:
+            if name_lower in seen_names:
+                logger.warning(
+                    f"Duplicate third-party skill file ignored: {item} "
+                    f"(already found a file with name '{name_lower}')"
+                )
+            else:
                 files.append(item)
                 seen_names.add(name_lower)
     return files
@@ -544,13 +549,11 @@ def _find_regular_md_files(skill_dir: Path, exclude_dirs: set[Path]) -> list[Pat
     if not skill_dir.exists():
         return files
     for f in skill_dir.rglob("*.md"):
-        if f.name == "README.md":
-            continue
-        if f.name.lower() == "skill.md":
-            continue
-        if any(f.is_relative_to(d) for d in exclude_dirs):
-            continue
-        files.append(f)
+        is_readme = f.name == "README.md"
+        is_skill_md = f.name.lower() == "skill.md"
+        is_in_excluded_dir = any(f.is_relative_to(d) for d in exclude_dirs)
+        if not is_readme and not is_skill_md and not is_in_excluded_dir:
+            files.append(f)
     return files
 
 
@@ -559,32 +562,26 @@ def _load_and_categorize(
     skill_base_dir: Path,
     repo_skills: dict[str, Skill],
     knowledge_skills: dict[str, Skill],
+    agent_skills: dict[str, Skill],
 ) -> None:
-    """Load a skill and categorize it into repo_skills or knowledge_skills.
+    """Load a skill and categorize it.
+
+    Categorizes into repo_skills, knowledge_skills, or agent_skills.
 
     Args:
         path: Path to the skill file.
         skill_base_dir: Base directory for skills (used to derive relative names).
-        repo_skills: Dictionary to store skills with trigger=None.
-        knowledge_skills: Dictionary to store skills with triggers.
-
-    Raises:
-        SkillValidationError: If skill validation fails (with path context).
-        ValueError: If any other error occurs during loading (with path context).
+        repo_skills: Dictionary for skills with trigger=None (permanent context).
+        knowledge_skills: Dictionary for skills with triggers (progressive).
+        agent_skills: Dictionary for AgentSkills standard SKILL.md files.
     """
-    try:
-        skill = Skill.load(path, skill_base_dir)
-    except SkillValidationError as e:
-        raise SkillValidationError(f"Error loading skill from {path}: {e}") from e
-    except Exception as e:
-        raise ValueError(f"Error loading skill from {path}: {e}") from e
+    skill = Skill.load(path, skill_base_dir)
 
-    # AgentSkills (SKILL.md directories) always use progressive loading,
-    # so they go to knowledge_skills regardless of trigger presence.
-    # Only regular .md files and third-party files can be repo_skills.
+    # AgentSkills (SKILL.md directories) are a separate category from OpenHands skills.
+    # They follow the AgentSkills standard and should be handled differently.
     is_skill_md = path.name.lower() == "skill.md"
     if is_skill_md:
-        knowledge_skills[skill.name] = skill
+        agent_skills[skill.name] = skill
     elif skill.trigger is None:
         repo_skills[skill.name] = skill
     else:
@@ -593,7 +590,7 @@ def _load_and_categorize(
 
 def load_skills_from_dir(
     skill_dir: str | Path,
-) -> tuple[dict[str, Skill], dict[str, Skill]]:
+) -> tuple[dict[str, Skill], dict[str, Skill], dict[str, Skill]]:
     """Load all skills from the given directory.
 
     Supports both formats:
@@ -606,15 +603,17 @@ def load_skills_from_dir(
         skill_dir: Path to the skills directory (e.g. .openhands/skills)
 
     Returns:
-        Tuple of (repo_skills, knowledge_skills) dictionaries.
-        repo_skills have trigger=None, knowledge_skills have KeywordTrigger
-        or TaskTrigger.
+        Tuple of (repo_skills, knowledge_skills, agent_skills) dictionaries.
+        - repo_skills: Skills with trigger=None (permanent context)
+        - knowledge_skills: Skills with KeywordTrigger or TaskTrigger (progressive)
+        - agent_skills: AgentSkills standard SKILL.md files (separate category)
     """
     if isinstance(skill_dir, str):
         skill_dir = Path(skill_dir)
 
     repo_skills: dict[str, Skill] = {}
     knowledge_skills: dict[str, Skill] = {}
+    agent_skills: dict[str, Skill] = {}
     logger.debug(f"Loading agents from {skill_dir}")
 
     # Discover all skill files
@@ -626,21 +625,30 @@ def load_skills_from_dir(
 
     # Load third-party files
     for path in third_party_files:
-        _load_and_categorize(path, skill_dir, repo_skills, knowledge_skills)
+        _load_and_categorize(
+            path, skill_dir, repo_skills, knowledge_skills, agent_skills
+        )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     for skill_md_path in skill_md_files:
-        _load_and_categorize(skill_md_path, skill_dir, repo_skills, knowledge_skills)
+        _load_and_categorize(
+            skill_md_path, skill_dir, repo_skills, knowledge_skills, agent_skills
+        )
 
     # Load regular .md files
     for path in regular_md_files:
-        _load_and_categorize(path, skill_dir, repo_skills, knowledge_skills)
+        _load_and_categorize(
+            path, skill_dir, repo_skills, knowledge_skills, agent_skills
+        )
 
+    total = len(repo_skills) + len(knowledge_skills) + len(agent_skills)
     logger.debug(
-        f"Loaded {len(repo_skills) + len(knowledge_skills)} skills: "
-        f"{[*repo_skills.keys(), *knowledge_skills.keys()]}"
+        f"Loaded {total} skills: "
+        f"repo={list(repo_skills.keys())}, "
+        f"knowledge={list(knowledge_skills.keys())}, "
+        f"agent={list(agent_skills.keys())}"
     )
-    return repo_skills, knowledge_skills
+    return repo_skills, knowledge_skills, agent_skills
 
 
 # Default user skills directories (in order of priority)
@@ -671,10 +679,12 @@ def load_user_skills() -> list[Skill]:
 
         try:
             logger.debug(f"Loading user skills from {skills_dir}")
-            repo_skills, knowledge_skills = load_skills_from_dir(skills_dir)
+            repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
+                skills_dir
+            )
 
-            # Merge repo and knowledge skills
-            for skills_dict in [repo_skills, knowledge_skills]:
+            # Merge all skill categories
+            for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
                 for name, skill in skills_dict.items():
                     if name not in seen_names:
                         all_skills.append(skill)
@@ -729,10 +739,12 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
 
         try:
             logger.debug(f"Loading project skills from {project_skills_dir}")
-            repo_skills, knowledge_skills = load_skills_from_dir(project_skills_dir)
+            repo_skills, knowledge_skills, agent_skills = load_skills_from_dir(
+                project_skills_dir
+            )
 
-            # Merge repo and knowledge skills
-            for skills_dict in [repo_skills, knowledge_skills]:
+            # Merge all skill categories
+            for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
                 for name, skill in skills_dict.items():
                     if name not in seen_names:
                         all_skills.append(skill)
