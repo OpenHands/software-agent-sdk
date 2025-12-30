@@ -2217,12 +2217,14 @@ name = "openhands-workspace"
 version = "1.7.2"
 source = { editable = "openhands-workspace" }
 dependencies = [
+    { name = "openhands-agent-server" },
     { name = "openhands-sdk" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "openhands-agent-server", editable = "openhands-agent-server" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.11.7" },
 ]
