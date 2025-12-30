@@ -220,14 +220,13 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     def _resume_runtime(self) -> None:
         """Resume a paused runtime."""
-        resp = self._send_api_request(
+        self._send_api_request(
             "POST",
             f"{self.runtime_api_url}/resume",
             json={"runtime_id": self._runtime_id},
             timeout=self.init_timeout,
             headers=self._api_headers,
         )
-        self._parse_runtime_response(resp)
 
     def pause(self) -> None:
         """Pause the runtime to conserve resources.
