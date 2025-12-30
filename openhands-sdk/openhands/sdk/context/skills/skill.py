@@ -184,50 +184,89 @@ class Skill(BaseModel):
         """
         path = Path(path) if isinstance(path, str) else path
 
-        # Auto-detect SKILL.md files (AgentSkills format)
-        is_skill_md = path.name.lower() == "skill.md"
+        with open(path) as f:
+            file_content = f.read()
+
+        if path.name.lower() == "skill.md":
+            return cls._load_agentskills_skill(path, file_content)
+        else:
+            return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
+
+    @classmethod
+    def _load_agentskills_skill(cls, path: Path, file_content: str) -> "Skill":
+        """Load a skill from an AgentSkills-format SKILL.md file.
+
+        Args:
+            path: Path to the SKILL.md file.
+            file_content: Content of the file.
+        """
+        # For SKILL.md files, use parent directory name as the skill name
+        skill_name = path.parent.name
+
+        file_io = io.StringIO(file_content)
+        loaded = frontmatter.load(file_io)
+        content = loaded.content
+        metadata_dict = loaded.metadata or {}
+
+        # Use name from frontmatter if provided, otherwise use derived name
+        agent_name = str(metadata_dict.get("name", skill_name))
+
+        # Validate skill name
+        directory_name = path.parent.name
+        name_errors = _validate_skill_name(agent_name, directory_name)
+        if name_errors:
+            raise SkillValidationError(
+                f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
+            )
+
+        return cls._create_skill_from_metadata(agent_name, content, path, metadata_dict)
+
+    @classmethod
+    def _load_legacy_openhands_skill(
+        cls, path: Path, file_content: str, skill_base_dir: Path | None
+    ) -> "Skill":
+        """Load a skill from a legacy OpenHands-format file.
+
+        Args:
+            path: Path to the skill file.
+            file_content: Content of the file.
+            skill_base_dir: Base directory for skills (used to derive relative names).
+        """
+        # Handle third-party agent instruction files
+        third_party_agent = cls._handle_third_party(path, file_content)
+        if third_party_agent is not None:
+            return third_party_agent
 
         # Calculate derived name from path
-        skill_name: str | None = None
-
-        if is_skill_md:
-            # For SKILL.md files, use parent directory name as the skill name
-            skill_name = path.parent.name
-        elif skill_base_dir is not None:
-            # Special handling for files which are not in skill_base_dir
+        if skill_base_dir is not None:
             skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(
                 path.name.lower()
             ) or str(path.relative_to(skill_base_dir).with_suffix(""))
         else:
             skill_name = path.stem
 
-        with open(path) as f:
-            file_content = f.read()
-
-        # Handle third-party agent instruction files
-        third_party_agent = cls._handle_third_party(path, file_content)
-        if third_party_agent is not None:
-            return third_party_agent
-
         file_io = io.StringIO(file_content)
         loaded = frontmatter.load(file_io)
         content = loaded.content
-
-        # Handle case where there's no frontmatter or empty frontmatter
         metadata_dict = loaded.metadata or {}
 
         # Use name from frontmatter if provided, otherwise use derived name
         agent_name = str(metadata_dict.get("name", skill_name))
 
-        # Auto-validate skill name for SKILL.md files (AgentSkills format)
-        if is_skill_md:
-            directory_name = path.parent.name
-            name_errors = _validate_skill_name(agent_name, directory_name)
-            if name_errors:
-                raise SkillValidationError(
-                    f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
-                )
+        return cls._create_skill_from_metadata(agent_name, content, path, metadata_dict)
 
+    @classmethod
+    def _create_skill_from_metadata(
+        cls, agent_name: str, content: str, path: Path, metadata_dict: dict
+    ) -> "Skill":
+        """Create a Skill object from parsed metadata.
+
+        Args:
+            agent_name: The name of the skill.
+            content: The markdown content (without frontmatter).
+            path: Path to the skill file.
+            metadata_dict: Parsed frontmatter metadata.
+        """
         # Extract AgentSkills standard fields (Pydantic validators handle
         # transformation). Handle "allowed-tools" to "allowed_tools" key mapping.
         allowed_tools_value = metadata_dict.get(
