@@ -12,7 +12,7 @@ from pydantic import (
     Tag,
     ValidationError,
 )
-from pydantic_core import ErrorDetails
+from pydantic_core import ErrorDetails, core_schema
 
 
 logger = logging.getLogger(__name__)
@@ -167,11 +167,6 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
 
     Child classes will automatically have a type field defined, which is used as a
     discriminator for union types.
-
-    The implementation uses Pydantic's recommended hooks and avoids directly
-    modifying internal Pydantic attributes like __pydantic_core_schema__,
-    __pydantic_validator__, or __pydantic_serializer__. Instead, it relies on
-    __get_pydantic_core_schema__ to generate proper discriminated union schemas.
     """
 
     kind: str = Field(default="")  # Dynamically updated per concrete subclass
@@ -200,40 +195,44 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
         discriminated union schema. For concrete types, it delegates to the
         default handler.
         """
-        if cls.__name__ == "DiscriminatedUnionMixin":
+        if cls.__name__ == "DiscriminatedUnionMixin" or not _is_abstract(source_type):
             return handler(source_type)
 
-        if _is_abstract(source_type):
-            _rebuild_if_required()
+        _rebuild_if_required()
+        serializable_type = source_type.get_serializable_type()
+
+        # If there are subclasses, generate schema for the discriminated union
+        if serializable_type is not source_type:
+            # Generate the base schema for the discriminated union type
+            base_schema = handler.generate_schema(serializable_type)
+        else:
+            base_schema = handler(source_type)
+
+        # Wrap it with a custom validation function that provides
+        # enhanced error messages
+        def validate_with_enhanced_error(value, handler_func, info):  # noqa: ARG001
             serializable_type = source_type.get_serializable_type()
-            # If there are subclasses, generate schema for the discriminated union
-            if serializable_type is not source_type:
-                from pydantic_core import core_schema
-
-                # Generate the base schema for the discriminated union type
-                base_schema = handler.generate_schema(serializable_type)
-
-                # Wrap it with a custom validation function that provides
-                # enhanced error messages
-                def validate_with_enhanced_error(value, handler_func, info):  # noqa: ARG001
-                    try:
-                        return handler_func(value)
-                    except ValidationError as e:
-                        valid_kinds = [
-                            subclass.__name__
-                            for subclass in get_known_concrete_subclasses(source_type)
-                        ]
-                        _handle_discriminated_union_validation_error(
-                            e, source_type.__name__, valid_kinds
-                        )
-
-                # Create a with_info_wrap_validator_function schema
-                return core_schema.with_info_wrap_validator_function(
-                    validate_with_enhanced_error,
-                    base_schema,
+            if serializable_type is source_type:
+                raise ValueError(
+                    f"No implementations loaded for: {source_type.__name__}. "
+                    "You may need to update your imports!"
+                )
+            try:
+                return handler_func(value)
+            except ValidationError as e:
+                valid_kinds = [
+                    subclass.__name__
+                    for subclass in get_known_concrete_subclasses(source_type)
+                ]
+                _handle_discriminated_union_validation_error(
+                    e, source_type.__name__, valid_kinds
                 )
 
-        return handler(source_type)
+        # Create a with_info_wrap_validator_function schema
+        return core_schema.with_info_wrap_validator_function(
+            validate_with_enhanced_error,
+            base_schema,
+        )
 
     @classmethod
     def __get_pydantic_json_schema__(cls, core_schema, handler):

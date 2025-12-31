@@ -1,4 +1,4 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import ClassVar
 
 import pytest
@@ -15,6 +15,7 @@ from pydantic import (
 
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
+    OpenHandsModel,
 )
 
 
@@ -76,6 +77,18 @@ class AnimalPack(BaseModel):
         return data
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
+
+
+class Mythical(DiscriminatedUnionMixin, ABC):
+    """Mythical beasts have no implementations - they do not exist!"""
+
+    @abstractmethod
+    def get_description(self) -> str:
+        """Get a discription of the mythical beast"""
+
+
+class MythicalPack(OpenHandsModel):
+    mythical: Mythical
 
 
 def test_serializable_type_expected() -> None:
@@ -235,3 +248,43 @@ def test_dynamic_field_error():
 
     error_message = str(exc_info.value)
     assert "OpenHandsModel instead of BaseModel" in error_message
+
+
+def test_enhanced_error_message_for_no_kinds():
+    with pytest.raises(ValueError) as exc_info:
+        Mythical.model_validate({"kind": "Unicorn"})
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    assert (
+        "Unexpected kind 'Unicorn' for Mythical. Expected one of: none."
+        in error_message
+    )
+
+
+def test_enhanced_error_message_for_nested_no_kinds():
+    with pytest.raises(ValueError) as exc_info:
+        MythicalPack.model_validate({"mythical": {"kind": "Unicorn"}})
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    assert (
+        "No implementations loaded for: Mythical. You may need to update your imports!"
+        in error_message
+    )
+
+
+def test_enhanced_error_message_for_nested_no_kinds_type_adapter():
+    type_adapter = TypeAdapter(MythicalPack)
+    with pytest.raises(ValueError) as exc_info:
+        type_adapter.validate_python({"mythical": {"kind": "Unicorn"}})
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    assert (
+        "No implementations loaded for: Mythical. You may need to update your imports!"
+        in error_message
+    )
