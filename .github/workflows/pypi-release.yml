@@ -78,6 +78,48 @@ jobs:
                   fi
                   echo "📦 Creating version bump PRs for version: $VERSION"
 
+            - name: Wait for packages to be available on PyPI
+              run: |
+                  set -euo pipefail
+
+                  PACKAGES=(
+                    openhands-sdk
+                    openhands-tools
+                    openhands-workspace
+                    openhands-agent-server
+                  )
+
+                  MAX_ATTEMPTS=60
+                  SLEEP_SECONDS=20
+
+                  echo "⏳ Waiting for packages to be available on PyPI..."
+
+                  for PKG in "${PACKAGES[@]}"; do
+                    echo "Checking $PKG==$VERSION..."
+                    ATTEMPT=1
+                    while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                      # Check if the package version is available on PyPI
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                        "https://pypi.org/pypi/$PKG/$VERSION/json")
+
+                      if [ "$HTTP_CODE" = "200" ]; then
+                        echo "✅ $PKG==$VERSION is available on PyPI"
+                        break
+                      fi
+
+                      echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: $PKG==$VERSION not yet available (HTTP $HTTP_CODE), waiting ${SLEEP_SECONDS}s..."
+                      sleep $SLEEP_SECONDS
+                      ATTEMPT=$((ATTEMPT + 1))
+                    done
+
+                    if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+                      echo "❌ Timeout waiting for $PKG==$VERSION to be available on PyPI"
+                      exit 1
+                    fi
+                  done
+
+                  echo "✅ All packages are available on PyPI!"
+
             - name: Install uv
               uses: astral-sh/setup-uv@v7
               with:
@@ -250,3 +292,12 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands](https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+
+            - name: Notify Slack
+              uses: slackapi/slack-github-action@v2.1.1
+              with:
+                  method: chat.postMessage
+                  token: ${{ secrets.SLACK_BOT_TOKEN }}
+                  payload: |
+                      channel: C08E1SYKEM9
+                      text: "🚀 *SDK v${{ env.VERSION }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ env.VERSION }}|OpenHands>\n• <https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ env.VERSION }}|OpenHands-CLI>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ env.VERSION }}|View Release>"
