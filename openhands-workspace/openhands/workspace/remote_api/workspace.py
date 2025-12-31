@@ -1,5 +1,6 @@
 """API-based remote workspace implementation using runtime API."""
 
+import os
 import uuid
 from typing import Any, Literal
 from urllib.request import urlopen
@@ -73,6 +74,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
     target_type: Literal["binary", "source"] = Field(
         default="binary",
         description="Type of agent server target (binary or source)",
+    )
+    forward_env: list[str] = Field(
+        default_factory=list,
+        description="Environment variable names to forward from host to runtime.",
     )
 
     _runtime_id: str | None = PrivateAttr(default=None)
@@ -177,12 +182,19 @@ class APIRemoteWorkspace(RemoteWorkspace):
             executable = "/usr/local/bin/openhands-agent-server"
         else:
             executable = "/agent-server/.venv/bin/python -m openhands.agent_server"
+
+        # Build environment dict from forward_env
+        environment: dict[str, str] = {}
+        for key in self.forward_env:
+            if key in os.environ:
+                environment[key] = os.environ[key]
+
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {
             "image": self.server_image,
             "command": f"{executable} --port 60000",
             "working_dir": "/",  # Match Dockerfile WORKDIR
-            "environment": {},
+            "environment": environment,
             "session_id": self.session_id,
             "run_as_user": 10001,
             "fs_group": 10001,

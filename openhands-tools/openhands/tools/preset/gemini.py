@@ -88,7 +88,8 @@ def get_gemini_agent(
     llm: LLM,
     cli_mode: bool = False,
 ) -> Agent:
-    """Get an agent configured with gemini-style file editing tools."""
+    """Get an agent with gemini-style tools: read_file, write_file, edit,
+    list_directory."""
     tools = get_gemini_tools(
         enable_browser=not cli_mode,
     )

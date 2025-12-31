@@ -71,8 +71,8 @@ def test_skill_load_with_resources(tmp_path: Path) -> None:
     scripts_dir.mkdir()
     (scripts_dir / "run.sh").write_text("#!/bin/bash")
 
-    # SKILL.md directory format - should have resources
-    skill = Skill.load(my_skill_dir / "SKILL.md", skill_dir, directory_name="my-skill")
+    # SKILL.md directory format - should have resources (auto-detects directory name)
+    skill = Skill.load(my_skill_dir / "SKILL.md", skill_dir)
     assert skill.resources is not None
     assert "run.sh" in skill.resources.scripts
 

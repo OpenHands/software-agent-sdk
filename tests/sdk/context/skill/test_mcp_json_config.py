@@ -77,7 +77,8 @@ def test_skill_load_with_mcp_json(tmp_path: Path) -> None:
     mcp_config = {"mcpServers": {"test": {"command": "python", "args": []}}}
     (my_skill_dir / ".mcp.json").write_text(json.dumps(mcp_config))
 
-    skill = Skill.load(my_skill_dir / "SKILL.md", skill_dir, directory_name="my-skill")
+    # SKILL.md files auto-detect directory name
+    skill = Skill.load(my_skill_dir / "SKILL.md", skill_dir)
     assert skill.mcp_tools is not None
     assert "test" in skill.mcp_tools["mcpServers"]
     assert skill.mcp_config_path == str(my_skill_dir / ".mcp.json")
