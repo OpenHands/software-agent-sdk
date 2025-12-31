@@ -434,6 +434,96 @@ def test_agent_pydantic_validation_on_creation():
         LLM(model="", api_key=SecretStr("test-key"), usage_id="test-llm")
 
 
+def test_agent_load_validates_tools_match():
+    """Test that agent.load() validates tools match between runtime and persisted."""
+    from openhands.sdk.agent import AgentBase
+    from openhands.sdk.tool import Tool
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+
+    # Create original agent with two tools
+    original_agent = Agent(
+        llm=llm, tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+    )
+
+    # Serialize and deserialize to simulate persistence
+    serialized = original_agent.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    # Runtime agent with same tools should succeed
+    same_tools_agent = Agent(
+        llm=llm, tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+    )
+    result = same_tools_agent.load(persisted_agent)
+    assert result is same_tools_agent
+
+    # Runtime agent with different tools should fail
+    different_tools_agent = Agent(llm=llm, tools=[Tool(name="TerminalTool")])
+    with pytest.raises(
+        ValueError, match="Tools don't match between runtime and persisted agents"
+    ):
+        different_tools_agent.load(persisted_agent)
+
+
+def test_agent_load_allows_different_llm():
+    """Test that agent.load() allows different LLM configuration."""
+    from openhands.sdk.agent import AgentBase
+    from openhands.sdk.tool import Tool
+
+    tools = [Tool(name="TerminalTool")]
+
+    # Create original agent
+    llm1 = LLM(model="gpt-4o-mini", api_key=SecretStr("key1"), usage_id="llm1")
+    original_agent = Agent(llm=llm1, tools=tools)
+
+    # Serialize and deserialize
+    serialized = original_agent.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    # Runtime agent with different LLM should succeed (LLM can change freely)
+    llm2 = LLM(model="gpt-4o", api_key=SecretStr("key2"), usage_id="llm2")
+    different_llm_agent = Agent(llm=llm2, tools=tools)
+    result = different_llm_agent.load(persisted_agent)
+    assert result is different_llm_agent
+    assert result.llm.model == "gpt-4o"
+
+
+def test_agent_load_different_class_raises_error():
+    """Test that agent.load() raises error for different agent classes."""
+    from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.conversation.types import (
+        ConversationCallbackType,
+        ConversationTokenCallbackType,
+    )
+
+    class DifferentAgent(AgentBase):
+        def __init__(self):
+            llm = LLM(
+                model="gpt-4o-mini",
+                api_key=SecretStr("test-key"),
+                usage_id="test-llm",
+            )
+            super().__init__(llm=llm, tools=[])
+
+        def init_state(self, state, on_event):
+            pass
+
+        def step(
+            self,
+            conversation,
+            on_event: ConversationCallbackType,
+            on_token: ConversationTokenCallbackType | None = None,
+        ):
+            pass
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    original_agent = Agent(llm=llm, tools=[])
+    different_agent = DifferentAgent()
+
+    with pytest.raises(ValueError, match="Cannot load from persisted"):
+        original_agent.load(different_agent)
+
+
 def test_conversation_state_flags_persistence():
     """Test that conversation state flags are properly persisted."""
     with tempfile.TemporaryDirectory() as temp_dir:

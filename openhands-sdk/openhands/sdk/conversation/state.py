@@ -176,30 +176,21 @@ class ConversationState(OpenHandsModel):
         """Create a new conversation state or resume from persistence.
 
         This factory method handles both new conversation creation and resumption
-        from persisted state. The provided Agent is always used directly - users
-        are free to change any Agent configuration between sessions: LLM, tools,
-        mcp_config, filter_tools_regex, agent_context, system_prompt_filename,
-        security_policy_filename, system_prompt_kwargs, and condenser.
+        from persisted state.
 
-        **Execution flow for new conversation:**
-        1. Create ConversationState with the provided Agent
-           (Pydantic validation happens here via cls() constructor)
-        2. Initialize EventLog for event storage
-        3. Save initial base state to persistence
-        4. Return the new state
+        **New conversation:**
+        The provided Agent is used directly. Pydantic validation happens via the
+        cls() constructor.
 
-        **Execution flow for restored conversation:**
-        1. Load persisted base_state.json
-        2. Validate conversation ID matches
-        3. Create new ConversationState with the provided Agent
-           (Pydantic validation happens here via cls() constructor)
-        4. Attach EventLog to load persisted events
-        5. Save updated base state (with the provided Agent)
-        6. Return the resumed state
+        **Restored conversation:**
+        The provided Agent is validated against the persisted agent using
+        agent.load(). Tools must match (they may have been used in conversation
+        history), but all other configuration can be freely changed: LLM,
+        agent_context, condenser, system prompts, etc.
 
         Args:
             id: Unique conversation identifier
-            agent: The Agent to use (Pydantic-validated, freely changeable)
+            agent: The Agent to use (tools must match persisted on restore)
             workspace: Working directory for agent operations
             persistence_dir: Directory for persisting state and events
             max_iterations: Maximum iterations per run
@@ -209,7 +200,7 @@ class ConversationState(OpenHandsModel):
             ConversationState ready for use
 
         Raises:
-            ValueError: If conversation ID mismatches
+            ValueError: If conversation ID or tools mismatch on restore
             ValidationError: If agent or other fields fail Pydantic validation
         """
         file_store = (
@@ -233,16 +224,13 @@ class ConversationState(OpenHandsModel):
                     f"but persisted state has {persisted_state.id}"
                 )
 
-            # Create new state with the provided Agent directly.
-            # No compatibility checking - user is free to change any Agent config.
-            # Pydantic validation of Agent happens in cls() constructor.
-            #
-            # NOTE: There's a case for checking that tools already used in the
-            # conversation history are still available. For now we allow full
-            # flexibility - see issue #1533 for discussion.
+            # Validate tools match - they may have been used in conversation history.
+            # All other config (LLM, agent_context, condenser, etc.) can change freely.
+            agent.load(persisted_state.agent)
+
             state = cls(
                 id=id,
-                agent=agent,  # The provided Agent - freely changeable between sessions
+                agent=agent,
                 workspace=workspace,
                 persistence_dir=persistence_dir,
                 max_iterations=max_iterations,
@@ -261,7 +249,6 @@ class ConversationState(OpenHandsModel):
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state.stats = ConversationStats()
 
-            # Save updated base state (with the provided Agent)
             state._save_base_state(file_store)
             state._autosave_enabled = True
 
@@ -278,8 +265,6 @@ class ConversationState(OpenHandsModel):
                 "agent is required when initializing a new ConversationState"
             )
 
-        # Create new state with the provided Agent.
-        # Pydantic validation of Agent happens in cls() constructor.
         state = cls(
             id=id,
             agent=agent,
@@ -288,13 +273,12 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
-        # Record existing analyzer configuration in state
         state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()
 
-        state._save_base_state(file_store)  # initial snapshot
+        state._save_base_state(file_store)
         state._autosave_enabled = True
         logger.info(
             f"Created new conversation {state.id}\n"

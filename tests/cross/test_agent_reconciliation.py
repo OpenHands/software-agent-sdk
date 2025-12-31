@@ -105,9 +105,11 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
     )
 
 
-# Tests for agent flexibility - LLM, tools, etc. can be freely changed
-def test_conversation_with_different_agent_tools_succeeds():
-    """Test that using an agent with different tools succeeds (tools can change)."""
+# Tests for agent tools restriction and LLM flexibility
+def test_conversation_with_different_agent_tools_fails():
+    """Test that using an agent with different tools fails (tools must match)."""
+    import pytest
+
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create and save conversation with original agent
         original_tools = [
@@ -136,26 +138,24 @@ def test_conversation_with_different_agent_tools_succeeds():
         # Delete conversation to simulate restart
         del conversation
 
-        # Create new conversation with different tools - this should succeed
-        different_tools = [Tool(name="TerminalTool")]  # Different tools
+        # Try to create new conversation with different tools (only bash tool)
+        different_tools = [Tool(name="TerminalTool")]  # Missing FileEditorTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         different_agent = Agent(llm=llm2, tools=different_tools)
 
-        # This should succeed - tools can be freely changed between sessions
-        new_conversation = LocalConversation(
-            agent=different_agent,
-            workspace=temp_dir,
-            persistence_dir=temp_dir,
-            conversation_id=conversation_id,
-            visualizer=None,
-        )
-
-        # Verify state was loaded and new agent is used
-        assert len(new_conversation.state.events) > 0
-        assert len(new_conversation.agent.tools) == 1
-        assert new_conversation.agent.tools[0].name == "TerminalTool"
+        # This should fail - tools must match during load
+        with pytest.raises(
+            ValueError, match="Tools don't match between runtime and persisted agents"
+        ):
+            LocalConversation(
+                agent=different_agent,
+                workspace=temp_dir,
+                persistence_dir=temp_dir,
+                conversation_id=conversation_id,  # Use same ID to avoid ID mismatch
+                visualizer=None,
+            )
 
 
 def test_conversation_with_same_agent_succeeds():

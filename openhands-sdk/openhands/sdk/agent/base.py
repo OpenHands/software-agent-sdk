@@ -299,6 +299,51 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
+    def load(self, persisted: "AgentBase") -> "AgentBase":
+        """Validate that this agent can resume a conversation from persisted state.
+
+        This method validates that the tools configuration matches between this
+        agent and the persisted agent. Tools must match because they may have been
+        used in the conversation history.
+
+        All other configuration (LLM, agent_context, condenser, system prompts,
+        etc.) can be freely changed between sessions.
+
+        Args:
+            persisted: The agent loaded from persisted state
+
+        Returns:
+            This agent (self) if validation passes
+
+        Raises:
+            ValueError: If agent class or tools don't match
+        """
+        if persisted.__class__ is not self.__class__:
+            raise ValueError(
+                f"Cannot load from persisted: persisted agent is of type "
+                f"{persisted.__class__.__name__}, but self is of type "
+                f"{self.__class__.__name__}."
+            )
+
+        # Check that tool names match - tools may have been used in conversation history
+        runtime_tools_map = {tool.name: tool for tool in self.tools}
+        persisted_tools_map = {tool.name: tool for tool in persisted.tools}
+
+        runtime_names = set(runtime_tools_map.keys())
+        persisted_names = set(persisted_tools_map.keys())
+
+        if runtime_names != persisted_names:
+            missing_in_runtime = persisted_names - runtime_names
+            missing_in_persisted = runtime_names - persisted_names
+            error_msg = "Tools don't match between runtime and persisted agents."
+            if missing_in_runtime:
+                error_msg += f" Missing in runtime: {missing_in_runtime}."
+            if missing_in_persisted:
+                error_msg += f" Missing in persisted: {missing_in_persisted}."
+            raise ValueError(error_msg)
+
+        return self
+
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
         if "exclude_none" not in kwargs:
