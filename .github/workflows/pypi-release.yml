@@ -78,6 +78,48 @@ jobs:
                   fi
                   echo "📦 Creating version bump PRs for version: $VERSION"
 
+            - name: Wait for packages to be available on PyPI
+              run: |
+                  set -euo pipefail
+
+                  PACKAGES=(
+                    openhands-sdk
+                    openhands-tools
+                    openhands-workspace
+                    openhands-agent-server
+                  )
+
+                  MAX_ATTEMPTS=60
+                  SLEEP_SECONDS=20
+
+                  echo "⏳ Waiting for packages to be available on PyPI..."
+
+                  for PKG in "${PACKAGES[@]}"; do
+                    echo "Checking $PKG==$VERSION..."
+                    ATTEMPT=1
+                    while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+                      # Check if the package version is available on PyPI
+                      HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+                        "https://pypi.org/pypi/$PKG/$VERSION/json")
+
+                      if [ "$HTTP_CODE" = "200" ]; then
+                        echo "✅ $PKG==$VERSION is available on PyPI"
+                        break
+                      fi
+
+                      echo "  Attempt $ATTEMPT/$MAX_ATTEMPTS: $PKG==$VERSION not yet available (HTTP $HTTP_CODE), waiting ${SLEEP_SECONDS}s..."
+                      sleep $SLEEP_SECONDS
+                      ATTEMPT=$((ATTEMPT + 1))
+                    done
+
+                    if [ $ATTEMPT -gt $MAX_ATTEMPTS ]; then
+                      echo "❌ Timeout waiting for $PKG==$VERSION to be available on PyPI"
+                      exit 1
+                    fi
+                  done
+
+                  echo "✅ All packages are available on PyPI!"
+
             - name: Install uv
               uses: astral-sh/setup-uv@v7
               with:
@@ -107,8 +149,39 @@ jobs:
                   # Create branch
                   git checkout -b "$BRANCH"
 
-                  # Update versions using poetry
-                  poetry add "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION" --lock
+                  # Get the git hash from the release branch in software-agent-sdk
+                  SDK_COMMIT_HASH=$(git ls-remote https://github.com/OpenHands/software-agent-sdk.git "refs/tags/v$VERSION" | cut -c1-7)
+                  if [ -z "$SDK_COMMIT_HASH" ]; then
+                    echo "⚠️ Could not find commit hash for tag v$VERSION, using full version"
+                    SDK_COMMIT_HASH="$VERSION"
+                  fi
+                  echo "📦 SDK commit hash: $SDK_COMMIT_HASH"
+
+                  # 1. Update versions in pyproject.toml using poetry
+                  echo "📝 Updating pyproject.toml..."
+                  poetry add "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
+
+                  # 2. Generate poetry.lock in root
+                  echo "🔒 Running poetry lock in root..."
+                  poetry lock --no-update
+
+                  # 3. Generate poetry.lock in enterprise directory
+                  echo "🔒 Running poetry lock in enterprise/..."
+                  cd enterprise
+                  poetry lock --no-update
+                  cd ..
+
+                  # 4. Update the hash in sandbox_spec_service.py
+                  echo "🔧 Updating AGENT_SERVER_IMAGE hash..."
+                  SANDBOX_SPEC_FILE="openhands/app_server/sandbox/sandbox_spec_service.py"
+                  if [ -f "$SANDBOX_SPEC_FILE" ]; then
+                    # Update the AGENT_SERVER_IMAGE line with the new hash
+                    sed -i "s|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:[^']*'|AGENT_SERVER_IMAGE = 'ghcr.io/openhands/agent-server:${SDK_COMMIT_HASH}-python'|" "$SANDBOX_SPEC_FILE"
+                    echo "✅ Updated AGENT_SERVER_IMAGE to: ghcr.io/openhands/agent-server:${SDK_COMMIT_HASH}-python"
+                  else
+                    echo "❌ sandbox_spec_service.py not found at expected path"
+                    exit 1
+                  fi
 
                   # Check if there are changes
                   if git diff --quiet; then
@@ -117,9 +190,16 @@ jobs:
                   fi
 
                   # Commit and push
-                  git add pyproject.toml poetry.lock
+                  git add .
                   git commit -m "Bump openhands-sdk, openhands-tools, openhands-agent-server to $VERSION" \
                     -m "Automated version bump after PyPI release." \
+                    -m "" \
+                    -m "Changes:" \
+                    -m "- Updated SDK packages to v$VERSION in pyproject.toml" \
+                    -m "- Regenerated poetry.lock" \
+                    -m "- Regenerated enterprise/poetry.lock" \
+                    -m "- Updated AGENT_SERVER_IMAGE hash to ${SDK_COMMIT_HASH}" \
+                    -m "" \
                     -m "Co-authored-by: openhands <openhands@all-hands.dev>"
                   git push -u origin "$BRANCH"
 
@@ -133,6 +213,12 @@ jobs:
                   - \`openhands-sdk\`
                   - \`openhands-tools\`
                   - \`openhands-agent-server\`
+
+                  ### Changes
+                  - Updated SDK packages in \`pyproject.toml\`
+                  - Regenerated \`poetry.lock\`
+                  - Regenerated \`enterprise/poetry.lock\`
+                  - Updated \`AGENT_SERVER_IMAGE\` hash to \`${SDK_COMMIT_HASH}\` in \`sandbox_spec_service.py\`
 
                   **Triggered by:** Release of [software-agent-sdk v$VERSION](https://github.com/OpenHands/software-agent-sdk/releases/tag/v$VERSION)
 
@@ -206,3 +292,12 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands](https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
                   echo "- [OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-$VERSION)" >> $GITHUB_STEP_SUMMARY
+
+            - name: Notify Slack
+              uses: slackapi/slack-github-action@v2.1.1
+              with:
+                  method: chat.postMessage
+                  token: ${{ secrets.SLACK_BOT_TOKEN }}
+                  payload: |
+                      channel: C08E1SYKEM9
+                      text: "🚀 *SDK v${{ env.VERSION }} published to PyPI!*\n\nVersion bump PRs created:\n• <https://github.com/All-Hands-AI/OpenHands/pulls?q=is%3Apr+bump-sdk-${{ env.VERSION }}|OpenHands>\n• <https://github.com/All-Hands-AI/openhands-cli/pulls?q=is%3Apr+bump-sdk-${{ env.VERSION }}|OpenHands-CLI>\n\n<https://github.com/OpenHands/software-agent-sdk/releases/tag/v${{ env.VERSION }}|View Release>"
