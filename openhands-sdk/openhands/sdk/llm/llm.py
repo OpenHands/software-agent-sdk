@@ -321,19 +321,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         exclude=True,
     )
     _metrics: Metrics | None = PrivateAttr(default=None)
-    # ===== Plain class vars (NOT Fields) =====
-    # When serializing, these fields (SecretStr) will be dump to "****"
-    # When deserializing, these fields will be ignored and we will override
-    # them from the LLM instance provided at runtime.
-    OVERRIDE_ON_SERIALIZE: tuple[str, ...] = (
-        "api_key",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        # Dynamic runtime metadata for telemetry/routing that can differ across sessions
-        # and should not cause resume-time diffs. Always prefer the runtime value.
-        "litellm_extra_body",
-    )
-
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
