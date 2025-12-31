@@ -777,7 +777,7 @@ class RemoteConversation(BaseConversation):
                     ),
                 )
 
-            stop_reason = self._get_terminal_poll_stop_reason()
+            stop_reason = self._get_poll_stop_reason()
             if stop_reason:
                 logger.info(
                     "Run completed with terminal state from cached data: %s", stop_reason
@@ -801,7 +801,7 @@ class RemoteConversation(BaseConversation):
                     return
 
             except Exception as e:
-                stop_reason = self._get_terminal_poll_stop_reason()
+                stop_reason = self._get_poll_stop_reason()
                 if stop_reason:
                     logger.info(
                         "Stopping polling after error due to terminal state: %s",
@@ -814,7 +814,7 @@ class RemoteConversation(BaseConversation):
 
             time.sleep(poll_interval)
 
-    def _get_terminal_poll_stop_reason(self) -> str | None:
+    def _get_poll_stop_reason(self) -> str | None:
         """Return a reason to stop polling based on cached state/events."""
         cached_status = self._state.get_cached_execution_status()
         if cached_status == ConversationExecutionStatus.STUCK:
