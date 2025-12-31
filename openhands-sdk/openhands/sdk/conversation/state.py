@@ -224,7 +224,7 @@ class ConversationState(OpenHandsModel):
                     f"but persisted state has {persisted_state.id}"
                 )
 
-            # Validate tools match - they may have been used in conversation history.
+            # Limit to the tools that match - they may have been used in conversation history.
             # All other config (LLM, agent_context, condenser, etc.) can change freely.
             agent.load(persisted_state.agent)
 
