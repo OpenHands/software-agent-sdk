@@ -28,6 +28,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
@@ -255,6 +256,11 @@ class RemoteEventsList(EventsListBase):
         with self._lock:
             return iter(self._cached_events)
 
+    def get_snapshot(self) -> list[Event]:
+        """Return a stable copy of cached events."""
+        with self._lock:
+            return list(self._cached_events)
+
 
 class RemoteState(ConversationStateProtocol):
     """A state-like interface for accessing remote conversation state."""
@@ -312,6 +318,22 @@ class RemoteState(ConversationStateProtocol):
                 self.update_state_from_event(event)
 
         return callback
+
+    def get_cached_execution_status(self) -> ConversationExecutionStatus | None:
+        """Return execution_status from cached state without hitting the network."""
+        with self._lock:
+            if not self._cached_state:
+                return None
+            status_str = self._cached_state.get("execution_status")
+            if not status_str:
+                return None
+            try:
+                return ConversationExecutionStatus(status_str)
+            except ValueError:
+                logger.warning(
+                    "Unknown execution_status in cached state: %s", status_str
+                )
+                return None
 
     @property
     def events(self) -> RemoteEventsList:
@@ -755,6 +777,13 @@ class RemoteConversation(BaseConversation):
                     ),
                 )
 
+            stop_reason = self._get_terminal_poll_stop_reason()
+            if stop_reason:
+                logger.info(
+                    "Run completed with terminal state from cached data: %s", stop_reason
+                )
+                return
+
             try:
                 resp = _send_request(
                     self._client,
@@ -772,11 +801,40 @@ class RemoteConversation(BaseConversation):
                     return
 
             except Exception as e:
+                stop_reason = self._get_terminal_poll_stop_reason()
+                if stop_reason:
+                    logger.info(
+                        "Stopping polling after error due to terminal state: %s",
+                        stop_reason,
+                    )
+                    return
                 # Log but continue polling - transient network errors shouldn't
                 # stop us from waiting for the run to complete
                 logger.warning(f"Error polling status (will retry): {e}")
 
             time.sleep(poll_interval)
+
+    def _get_terminal_poll_stop_reason(self) -> str | None:
+        """Return a reason to stop polling based on cached state/events."""
+        cached_status = self._state.get_cached_execution_status()
+        if cached_status == ConversationExecutionStatus.STUCK:
+            return "stuck"
+        if cached_status == ConversationExecutionStatus.ERROR:
+            if self._has_max_iterations_error():
+                return "max_iterations_reached"
+        return None
+
+    def _has_max_iterations_error(self) -> bool:
+        events = self._state.events
+        if isinstance(events, RemoteEventsList):
+            snapshot = events.get_snapshot()
+        else:
+            snapshot = list(events)
+        for event in reversed(snapshot):
+            if isinstance(event, ConversationErrorEvent):
+                if event.code == "MaxIterationsReached":
+                    return True
+        return False
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
