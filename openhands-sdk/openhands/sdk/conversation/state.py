@@ -216,41 +216,25 @@ class ConversationState(OpenHandsModel):
 
         # ---- Resume path ----
         if base_text:
-            persisted_state = cls.model_validate(json.loads(base_text))
+            state = cls.model_validate(json.loads(base_text))
 
-            if persisted_state.id != id:
+            if state.id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
-                    f"but persisted state has {persisted_state.id}"
+                    f"but persisted state has {state.id}"
                 )
 
             # Verify tools match - they may have been used in conversation history.
             # All other config (LLM, agent_context, condenser, etc.) can change freely.
-            verified_agent = agent.verify(persisted_state.agent)
+            verified_agent = agent.verify(state.agent)
 
-            state = cls(
-                id=id,
-                agent=verified_agent,
-                workspace=workspace,
-                persistence_dir=persistence_dir,
-                max_iterations=max_iterations,
-                stuck_detection=stuck_detection,
-                # Restore persisted conversation metadata
-                execution_status=persisted_state.execution_status,
-                confirmation_policy=persisted_state.confirmation_policy,
-                security_analyzer=persisted_state.security_analyzer,
-                activated_knowledge_skills=persisted_state.activated_knowledge_skills,
-                blocked_actions=persisted_state.blocked_actions,
-                blocked_messages=persisted_state.blocked_messages,
-                secret_registry=persisted_state.secret_registry,
-            )
-
+            # Attach runtime handles and update agent
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
-            state.stats = ConversationStats()
-
-            state._save_base_state(file_store)
             state._autosave_enabled = True
+            state.agent = verified_agent
+
+            state.stats = ConversationStats()
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
