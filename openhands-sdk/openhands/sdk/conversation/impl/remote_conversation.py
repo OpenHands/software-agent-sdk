@@ -28,6 +28,7 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
@@ -489,6 +490,11 @@ class RemoteConversation(BaseConversation):
         self._cleanup_initiated = False
 
         if conversation_id is None:
+            # Import here to avoid circular imports
+            from openhands.sdk.tool.registry import get_tool_module_qualnames
+
+            tool_qualnames = get_tool_module_qualnames()
+            logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -500,6 +506,8 @@ class RemoteConversation(BaseConversation):
                 "workspace": LocalWorkspace(
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
+                # Include tool module qualnames for dynamic registration on server
+                "tool_module_qualnames": tool_qualnames,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -759,6 +767,19 @@ class RemoteConversation(BaseConversation):
                 status = info.get("execution_status")
 
                 if status != ConversationExecutionStatus.RUNNING.value:
+                    if status == ConversationExecutionStatus.ERROR.value:
+                        detail = self._get_last_error_detail()
+                        raise ConversationRunError(
+                            self._id,
+                            RuntimeError(
+                                detail or "Remote conversation ended with error"
+                            ),
+                        )
+                    if status == ConversationExecutionStatus.STUCK.value:
+                        raise ConversationRunError(
+                            self._id,
+                            RuntimeError("Remote conversation got stuck"),
+                        )
                     logger.info(
                         f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
                     )
@@ -770,6 +791,22 @@ class RemoteConversation(BaseConversation):
                 logger.warning(f"Error polling status (will retry): {e}")
 
             time.sleep(poll_interval)
+
+    def _get_last_error_detail(self) -> str | None:
+        """Return the most recent ConversationErrorEvent detail, if available."""
+        try:
+            events = self._state.events
+            for idx in range(len(events) - 1, -1, -1):
+                event = events[idx]
+                if isinstance(event, ConversationErrorEvent):
+                    detail = event.detail.strip()
+                    code = event.code.strip()
+                    if detail and code:
+                        return f"{code}: {detail}"
+                    return detail or code or None
+        except Exception as exc:
+            logger.debug("Failed to read conversation error detail: %s", exc)
+        return None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}

@@ -24,6 +24,16 @@ _TARGET_DIRECTORIES = (
     EXAMPLES_ROOT / "02_remote_agent_server",
 )
 
+# LLM-specific examples that require model overrides
+_LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
+    "examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py": {
+        "LLM_MODEL": "openhands/gpt-5.1",
+    },
+    "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
+        "LLM_MODEL": "openhands/gemini-3-pro-preview",
+    },
+}
+
 # Examples that require interactive input or additional infrastructure.
 _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/01_hello_world.py",
@@ -43,6 +53,11 @@ def _discover_examples() -> list[Path]:
         if not directory.exists():
             continue
         candidates.extend(sorted(directory.glob("*.py")))
+    # Append any explicitly listed LLM-specific examples if present
+    for rel_path in _LLM_SPECIFIC_EXAMPLES.keys():
+        abs_path = REPO_ROOT / rel_path
+        if abs_path.exists():
+            candidates.append(abs_path)
     return candidates
 
 
@@ -80,6 +95,11 @@ def test_example_scripts(
     start = time.perf_counter()
     env = os.environ.copy()
     env.setdefault("PYTHONUNBUFFERED", "1")
+    # Apply model overrides for certain examples requiring provider-specific models
+    overrides = _LLM_SPECIFIC_EXAMPLES.get(_normalize_path(example_path))
+    if overrides:
+        env.update(overrides)
+
     process = subprocess.run(  # noqa: S603
         [sys.executable, str(example_path)],
         cwd=str(REPO_ROOT),
