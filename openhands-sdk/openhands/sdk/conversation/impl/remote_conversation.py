@@ -779,8 +779,10 @@ class RemoteConversation(BaseConversation):
 
             stop_reason = self._get_poll_stop_reason()
             if stop_reason:
+                self._handle_terminal_stop_reason(stop_reason)
                 logger.info(
-                    "Run completed with terminal state from cached data: %s", stop_reason
+                    "Run completed with terminal state from cached data: %s",
+                    stop_reason,
                 )
                 return
 
@@ -795,6 +797,7 @@ class RemoteConversation(BaseConversation):
                 status = info.get("execution_status")
 
                 if status != ConversationExecutionStatus.RUNNING.value:
+                    self._handle_terminal_status(status)
                     logger.info(
                         f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
                     )
@@ -803,6 +806,7 @@ class RemoteConversation(BaseConversation):
             except Exception as e:
                 stop_reason = self._get_poll_stop_reason()
                 if stop_reason:
+                    self._handle_terminal_stop_reason(stop_reason)
                     logger.info(
                         "Stopping polling after error due to terminal state: %s",
                         stop_reason,
@@ -813,6 +817,27 @@ class RemoteConversation(BaseConversation):
                 logger.warning(f"Error polling status (will retry): {e}")
 
             time.sleep(poll_interval)
+
+    def _handle_terminal_status(self, status: str | None) -> None:
+        if status == ConversationExecutionStatus.ERROR.value:
+            detail = self._get_last_error_detail()
+            raise ConversationRunError(
+                self._id,
+                RuntimeError(detail or "Remote conversation ended with error"),
+            )
+        if status == ConversationExecutionStatus.STUCK.value:
+            raise ConversationRunError(
+                self._id,
+                RuntimeError("Remote conversation got stuck"),
+            )
+
+    def _handle_terminal_stop_reason(self, stop_reason: str) -> None:
+        if stop_reason == "stuck":
+            self._handle_terminal_status(ConversationExecutionStatus.STUCK.value)
+            return
+        if stop_reason == "max_iterations_reached":
+            self._handle_terminal_status(ConversationExecutionStatus.ERROR.value)
+            return
 
     def _get_poll_stop_reason(self) -> str | None:
         """Return a reason to stop polling based on cached state/events."""
@@ -835,6 +860,22 @@ class RemoteConversation(BaseConversation):
                 if event.code == "MaxIterationsReached":
                     return True
         return False
+
+    def _get_last_error_detail(self) -> str | None:
+        """Return the most recent ConversationErrorEvent detail, if available."""
+        try:
+            events = self._state.events
+            for idx in range(len(events) - 1, -1, -1):
+                event = events[idx]
+                if isinstance(event, ConversationErrorEvent):
+                    detail = event.detail.strip()
+                    code = event.code.strip()
+                    if detail and code:
+                        return f"{code}: {detail}"
+                    return detail or code or None
+        except Exception as exc:
+            logger.debug("Failed to read conversation error detail: %s", exc)
+        return None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
