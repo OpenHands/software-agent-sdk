@@ -300,7 +300,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
 
     def load(self, persisted: "AgentBase") -> "AgentBase":
-        """Validate that this agent can resume a conversation from persisted state.
+        """Verify that we can resume this agent from persisted state.
 
         This method validates that the tools configuration matches between this
         agent and the persisted agent. Tools must match because they may have been
