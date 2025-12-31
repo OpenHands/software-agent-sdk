@@ -31,6 +31,7 @@ from openhands.sdk.event import (
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
@@ -56,6 +57,7 @@ class LocalConversation(BaseConversation):
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
+    _hook_processor: HookEventProcessor | None
 
     def __init__(
         self,
@@ -65,6 +67,7 @@ class LocalConversation(BaseConversation):
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
         stuck_detection_thresholds: (
@@ -89,6 +92,7 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
+            hook_config: Optional hook configuration to auto-wire session hooks
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -136,7 +140,20 @@ class LocalConversation(BaseConversation):
         def _default_callback(e):
             self._state.events.append(e)
 
-        composed_list = (callbacks if callbacks else []) + [_default_callback]
+        self._hook_processor = None
+        hook_callback = None
+        if hook_config is not None:
+            self._hook_processor, hook_callback = create_hook_callback(
+                hook_config=hook_config,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(desired_id),
+            )
+
+        callback_list = list(callbacks) if callbacks else []
+        if hook_callback is not None:
+            callback_list.insert(0, hook_callback)
+
+        composed_list = callback_list + [_default_callback]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -182,6 +199,10 @@ class LocalConversation(BaseConversation):
             )
         else:
             self._stuck_detector = None
+
+        if self._hook_processor is not None:
+            self._hook_processor.set_conversation_state(self._state)
+            self._hook_processor.run_session_start()
 
         with self._state:
             self.agent.init_state(self._state, on_event=self._on_event)
@@ -356,8 +377,23 @@ class LocalConversation(BaseConversation):
                     if (
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                        or iteration >= self.max_iteration_per_run
                     ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
+                        )
+                        logger.error(error_msg)
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=error_msg,
+                            )
+                        )
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
@@ -458,16 +494,25 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if self._cleanup_initiated:
+        # Use getattr for safety - object may be partially constructed
+        if getattr(self, "_cleanup_initiated", False):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
+        hook_processor = getattr(self, "_hook_processor", None)
+        if hook_processor is not None:
+            hook_processor.run_session_end()
         try:
             self._end_observability_span()
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        for tool in self.agent.tools_map.values():
+        try:
+            tools_map = self.agent.tools_map
+        except (AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed
+            return
+        for tool in tools_map.values():
             try:
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()

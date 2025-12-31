@@ -28,11 +28,18 @@ from openhands.sdk.conversation.visualizer import (
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
     FULL_STATE_KEY,
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.hooks import (
+    HookConfig,
+    HookEventProcessor,
+    HookEventType,
+    HookManager,
+)
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.observability.laminar import observe
@@ -430,6 +437,8 @@ class RemoteConversation(BaseConversation):
     max_iteration_per_run: int
     workspace: RemoteWorkspace
     _client: httpx.Client
+    _hook_processor: HookEventProcessor | None
+    _cleanup_initiated: bool
 
     def __init__(
         self,
@@ -442,6 +451,7 @@ class RemoteConversation(BaseConversation):
         stuck_detection_thresholds: (
             StuckDetectionThresholds | Mapping[str, int] | None
         ) = None,
+        hook_config: HookConfig | None = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -462,6 +472,7 @@ class RemoteConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
+            hook_config: Optional hook configuration for session hooks
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
@@ -475,8 +486,15 @@ class RemoteConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
         self.workspace = workspace
         self._client = workspace.client
+        self._hook_processor = None
+        self._cleanup_initiated = False
 
         if conversation_id is None:
+            # Import here to avoid circular imports
+            from openhands.sdk.tool.registry import get_tool_module_qualnames
+
+            tool_qualnames = get_tool_module_qualnames()
+            logger.debug(f"Sending tool_module_qualnames to server: {tool_qualnames}")
             payload = {
                 "agent": agent.model_dump(
                     mode="json", context={"expose_secrets": True}
@@ -488,6 +506,8 @@ class RemoteConversation(BaseConversation):
                 "workspace": LocalWorkspace(
                     working_dir=self.workspace.working_dir
                 ).model_dump(),
+                # Include tool module qualnames for dynamic registration on server
+                "tool_module_qualnames": tool_qualnames,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -570,6 +590,25 @@ class RemoteConversation(BaseConversation):
             self.update_secrets(secret_values)
 
         self._start_observability_span(str(self._id))
+        if hook_config is not None:
+            unsupported = (
+                HookEventType.PRE_TOOL_USE,
+                HookEventType.POST_TOOL_USE,
+                HookEventType.USER_PROMPT_SUBMIT,
+                HookEventType.STOP,
+            )
+            if any(hook_config.has_hooks_for_event(t) for t in unsupported):
+                logger.warning(
+                    "RemoteConversation only supports SessionStart/SessionEnd hooks; "
+                    "other hook types will not be enforced."
+                )
+            hook_manager = HookManager(
+                config=hook_config,
+                working_dir=os.getcwd(),
+                session_id=str(self._id),
+            )
+            self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
+            self._hook_processor.run_session_start()
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -728,6 +767,19 @@ class RemoteConversation(BaseConversation):
                 status = info.get("execution_status")
 
                 if status != ConversationExecutionStatus.RUNNING.value:
+                    if status == ConversationExecutionStatus.ERROR.value:
+                        detail = self._get_last_error_detail()
+                        raise ConversationRunError(
+                            self._id,
+                            RuntimeError(
+                                detail or "Remote conversation ended with error"
+                            ),
+                        )
+                    if status == ConversationExecutionStatus.STUCK.value:
+                        raise ConversationRunError(
+                            self._id,
+                            RuntimeError("Remote conversation got stuck"),
+                        )
                     logger.info(
                         f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
                     )
@@ -739,6 +791,22 @@ class RemoteConversation(BaseConversation):
                 logger.warning(f"Error polling status (will retry): {e}")
 
             time.sleep(poll_interval)
+
+    def _get_last_error_detail(self) -> str | None:
+        """Return the most recent ConversationErrorEvent detail, if available."""
+        try:
+            events = self._state.events
+            for idx in range(len(events) - 1, -1, -1):
+                event = events[idx]
+                if isinstance(event, ConversationErrorEvent):
+                    detail = event.detail.strip()
+                    code = event.code.strip()
+                    if detail and code:
+                        return f"{code}: {detail}"
+                    return detail or code or None
+        except Exception as exc:
+            logger.debug("Failed to read conversation error detail: %s", exc)
+        return None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
@@ -866,6 +934,11 @@ class RemoteConversation(BaseConversation):
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
         """
+        if self._cleanup_initiated:
+            return
+        self._cleanup_initiated = True
+        if self._hook_processor is not None:
+            self._hook_processor.run_session_end()
         try:
             # Stop WebSocket client if it exists
             if self._ws_client:

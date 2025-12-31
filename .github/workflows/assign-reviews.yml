@@ -188,6 +188,7 @@ jobs:
             - name: Run task
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   PYTHONPATH: ''
               run: |
                   echo "Running agent script: $AGENT_SCRIPT_URL"

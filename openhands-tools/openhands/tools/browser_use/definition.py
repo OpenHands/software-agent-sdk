@@ -1,6 +1,9 @@
 """Browser-use tool implementation for web automation."""
 
+import base64
+import hashlib
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Self
 
 from pydantic import Field
@@ -57,6 +60,29 @@ class BrowserObservation(Observation):
         description="Directory where full output files are saved",
     )
 
+    def _save_screenshot(self, base64_data: str, save_dir: str) -> str | None:
+        try:
+            save_dir_path = Path(save_dir)
+            save_dir_path.mkdir(parents=True, exist_ok=True)
+
+            mime_type = detect_image_mime_type(base64_data)
+            ext = mime_type.split("/")[-1]
+            if ext == "jpeg":
+                ext = "jpg"
+
+            # Generate hash for filename
+            content_hash = hashlib.sha256(base64_data.encode("utf-8")).hexdigest()[:8]
+            filename = f"browser_screenshot_{content_hash}.{ext}"
+            file_path = save_dir_path / filename
+
+            if not file_path.exists():
+                image_data = base64.b64decode(base64_data)
+                file_path.write_bytes(image_data)
+
+            return str(file_path)
+        except Exception:
+            return None
+
     @property
     def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
         llm_content: list[TextContent | ImageContent] = []
@@ -81,6 +107,17 @@ class BrowserObservation(Observation):
 
         if self.screenshot_data:
             mime_type = detect_image_mime_type(self.screenshot_data)
+
+            # Save screenshot if directory is available
+            if self.full_output_save_dir:
+                saved_path = self._save_screenshot(
+                    self.screenshot_data, self.full_output_save_dir
+                )
+                if saved_path:
+                    llm_content.append(
+                        TextContent(text=f"Screenshot saved to: {saved_path}")
+                    )
+
             # Convert base64 to data URL format for ImageContent
             data_url = f"data:{mime_type};base64,{self.screenshot_data}"
             llm_content.append(ImageContent(image_urls=[data_url]))
@@ -542,6 +579,95 @@ class BrowserCloseTabTool(ToolDefinition[BrowserCloseTabAction, BrowserObservati
         ]
 
 
+# ============================================
+# `browser_get_storage`
+# ============================================
+class BrowserGetStorageAction(BrowserAction):
+    """Schema for getting browser storage (cookies, local storage, session storage)."""
+
+    pass
+
+
+BROWSER_GET_STORAGE_DESCRIPTION = """Get browser storage data including cookies,
+local storage, and session storage.
+
+This tool extracts all cookies and storage data from the current browser session.
+Useful for debugging, session management, or extracting authentication tokens.
+"""
+
+
+class BrowserGetStorageTool(
+    ToolDefinition[BrowserGetStorageAction, BrowserObservation]
+):
+    """Tool for getting browser storage."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_GET_STORAGE_DESCRIPTION,
+                action_type=BrowserGetStorageAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_get_storage",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=True,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+# ============================================
+# `browser_set_storage`
+# ============================================
+class BrowserSetStorageAction(BrowserAction):
+    """Schema for setting browser storage (cookies, local storage, session storage)."""
+
+    storage_state: dict = Field(
+        description="Storage state dictionary containing 'cookies' and 'origins' (from browser_get_storage)"  # noqa: E501
+    )
+
+
+BROWSER_SET_STORAGE_DESCRIPTION = """Set browser storage data including cookies,
+local storage, and session storage.
+
+This tool allows you to restore or set the browser's storage state. You can use the
+output from browser_get_storage to restore a previous session.
+
+Parameters:
+- storage_state: A dictionary containing 'cookies' and 'origins'.
+  - cookies: List of cookie objects
+  - origins: List of origin objects containing 'localStorage' and 'sessionStorage'
+"""
+
+
+class BrowserSetStorageTool(
+    ToolDefinition[BrowserSetStorageAction, BrowserObservation]
+):
+    """Tool for setting browser storage."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_SET_STORAGE_DESCRIPTION,
+                action_type=BrowserSetStorageAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_set_storage",
+                    readOnlyHint=False,
+                    destructiveHint=True,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
 class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
@@ -593,6 +719,8 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserListTabsTool,
             BrowserSwitchTabTool,
             BrowserCloseTabTool,
+            BrowserGetStorageTool,
+            BrowserSetStorageTool,
         ]:
             tools.extend(tool_class.create(executor))
         return tools
