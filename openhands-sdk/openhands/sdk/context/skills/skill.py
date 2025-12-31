@@ -1,4 +1,6 @@
 import io
+import json
+import os
 import re
 import shutil
 import subprocess
@@ -211,8 +213,6 @@ def expand_mcp_variables(
     Returns:
         Configuration with variables expanded.
     """
-    import json
-    import os
 
     # Convert to JSON string for easy replacement
     config_str = json.dumps(config)
@@ -254,7 +254,6 @@ def load_mcp_config(
     Raises:
         SkillValidationError: If the file cannot be parsed or is invalid.
     """
-    import json
 
     try:
         with open(mcp_json_path) as f:
@@ -487,6 +486,7 @@ class Skill(BaseModel):
             )
 
         # Load MCP configuration from .mcp.json if present
+        # AgentSkills ONLY use .mcp.json, ignoring mcp_tools from frontmatter
         mcp_tools: dict | None = None
         mcp_config_path: str | None = None
         mcp_json_path = find_mcp_config(skill_root)
@@ -499,6 +499,10 @@ class Skill(BaseModel):
                     f"Skill '{agent_name}' has both .mcp.json and mcp_tools "
                     "frontmatter. Using .mcp.json configuration."
                 )
+
+        # Remove mcp_tools from metadata_dict to prevent fallback in
+        # _create_skill_from_metadata (AgentSkills should ONLY use .mcp.json)
+        metadata_dict.pop("mcp_tools", None)
 
         # Discover resource directories
         resources: SkillResources | None = None
