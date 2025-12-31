@@ -237,7 +237,6 @@ class ConversationState(OpenHandsModel):
             state.agent = verified_agent
             state.workspace = workspace
             state.max_iterations = max_iterations
-            state.stuck_detection = stuck_detection
 
             # Reset stats for this session
             state.stats = ConversationStats()
