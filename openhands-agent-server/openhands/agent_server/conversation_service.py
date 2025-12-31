@@ -33,27 +33,7 @@ logger = logging.getLogger(__name__)
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    # Guard against transient incomplete state serialization during startup/resume.
-    with state:
-        state_dump = state.model_dump()
-
-    missing_fields = [
-        field for field in ("id", "agent", "workspace") if field not in state_dump
-    ]
-    if missing_fields:
-        logger.warning(
-            "ConversationState model_dump missing required fields",
-            extra={
-                "conversation_id": str(stored.id),
-                "missing_fields": missing_fields,
-            },
-        )
-        # Fall back to direct attributes to avoid 500s on GET /api/conversations/{id}.
-        for field in missing_fields:
-            value = getattr(state, field, None)
-            if value is not None:
-                state_dump[field] = value
-
+    state_dump = state.model_dump()
     return ConversationInfo(
         **state_dump,
         title=stored.title,

@@ -290,6 +290,14 @@ class ConversationState(OpenHandsModel):
                         f"State change callback failed for field {name}", exc_info=True
                     )
 
+    def model_dump(self, **kwargs):
+        """Serialize with the state lock to avoid concurrent mutation races."""
+        lock = getattr(self, "_lock", None)
+        if lock is None:
+            return super().model_dump(**kwargs)
+        with lock:
+            return super().model_dump(**kwargs)
+
     def block_action(self, action_id: str, reason: str) -> None:
         """Persistently record a hook-blocked action."""
         self.blocked_actions = {**self.blocked_actions, action_id: reason}
