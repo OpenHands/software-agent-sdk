@@ -3,13 +3,15 @@ import json
 import logging
 import os
 from abc import ABC
-from typing import Annotated, Any, Literal, NoReturn, Self, Union
+from copy import copy
+from typing import Annotated, Any, ClassVar, Literal, NoReturn, Self, Union
 
 from pydantic import (
     BaseModel,
     Discriminator,
     Field,
     Tag,
+    TypeAdapter,
     ValidationError,
 )
 from pydantic_core import ErrorDetails, core_schema
@@ -169,11 +171,14 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
     discriminator for union types.
     """
 
-    kind: str = Field(default="")  # Dynamically updated per concrete subclass
+    __pydantic_core_schema__: ClassVar[Any]
+    __pydantic_validator__: ClassVar[Any]
+    __pydantic_serializer__: ClassVar[Any]
+
+    kind: str = Field(default="")  # We dynamically update on a per class basis
 
     @classmethod
     def resolve_kind(cls, kind: str) -> type:
-        """Resolve a kind string to its corresponding concrete subclass."""
         for subclass in get_known_concrete_subclasses(cls):
             if subclass.__name__ == kind:
                 return subclass
@@ -189,29 +194,26 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
 
     @classmethod
     def __get_pydantic_core_schema__(cls, source_type, handler):
-        """Generate discriminated union schema for TypeAdapter compatibility.
+        """Generate discriminated union schema for TypeAdapter compatibility."""
+        if cls.__name__ == "DiscriminatedUnionMixin":
+            return handler(source_type)
 
-        For abstract types with concrete subclasses, this generates a proper
-        discriminated union schema. For concrete types, it delegates to the
-        default handler.
-        """
-        if cls.__name__ == "DiscriminatedUnionMixin" or not _is_abstract(source_type):
+        if not _is_abstract(source_type):
             return handler(source_type)
 
         _rebuild_if_required()
         serializable_type = source_type.get_serializable_type()
 
         # If there are subclasses, generate schema for the discriminated union
-        if serializable_type is not source_type:
-            # Generate the base schema for the discriminated union type
-            base_schema = handler.generate_schema(serializable_type)
-        else:
+        if serializable_type is source_type:
             base_schema = handler(source_type)
+        else:
+            # Otherwise Generate the base schema
+            base_schema = handler.generate_schema(serializable_type)
 
         # Wrap it with a custom validation function that provides
         # enhanced error messages
         def validate_with_enhanced_error(value, handler_func, info):  # noqa: ARG001
-            serializable_type = source_type.get_serializable_type()
             if serializable_type is source_type:
                 raise ValueError(
                     f"No implementations loaded for: {source_type.__name__}. "
@@ -261,15 +263,50 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
         return json_schema
 
     @classmethod
-    def get_serializable_type(cls) -> type:
-        """Get the union of all currently loaded non-abstract subclasses.
+    def model_rebuild(
+        cls,
+        *,
+        force=False,
+        raise_errors=True,
+        _parent_namespace_depth=2,
+        _types_namespace=None,
+    ):
+        if cls == DiscriminatedUnionMixin:
+            pass
+        if _is_abstract(cls):
+            subclasses = get_known_concrete_subclasses(cls)
+            kinds = [subclass.__name__ for subclass in subclasses]
+            if kinds:
+                # Defensive copy as variables are shared between classes
+                model_fields = copy(cls.model_fields)
+                cls.model_fields = model_fields  # type:ignore
+                kind_field = copy(cls.model_fields["kind"])  # type:ignore
+                model_fields["kind"] = kind_field
 
-        Returns:
-            For abstract classes with subclasses: An Annotated Union type with
-            discriminator support.
-            For concrete classes or abstract without subclasses: The class itself.
+                kind_field.annotation = Literal[tuple(kinds)]  # type: ignore
+                kind_field.default = kinds[0]
+
+            type_adapter = TypeAdapter(cls.get_serializable_type())
+            cls.__pydantic_core_schema__ = type_adapter.core_schema
+            cls.__pydantic_validator__ = type_adapter.validator
+            cls.__pydantic_serializer__ = type_adapter.serializer
+            return
+
+        return super().model_rebuild(
+            force=force,
+            raise_errors=raise_errors,
+            _parent_namespace_depth=_parent_namespace_depth,
+            _types_namespace=_types_namespace,
+        )
+
+    @classmethod
+    def get_serializable_type(cls) -> type:
         """
-        # If the class is not abstract, return self
+        Custom method to get the union of all currently loaded
+        non absract subclasses
+        """
+
+        # If the class is not abstract return self
         if not _is_abstract(cls):
             return cls
 
@@ -291,7 +328,6 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
 
     @classmethod
     def model_validate(cls, obj: Any, **kwargs) -> Self:
-        """Validate an object, dispatching to the correct subclass based on kind."""
         try:
             if _is_abstract(cls):
                 resolved = cls.resolve_kind(kind_of(obj))
@@ -311,7 +347,6 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
         json_data: str | bytes | bytearray,
         **kwargs,
     ) -> Self:
-        """Validate JSON data, dispatching to the correct subclass based on kind."""
         data = json.loads(json_data)
         if _is_abstract(cls):
             resolved = cls.resolve_kind(kind_of(data))
@@ -321,23 +356,18 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
         return result  # type: ignore
 
     def __init_subclass__(cls, **kwargs):
-        """Set up subclass with proper kind field annotation.
-
-        This runs before Pydantic's metaclass completes, allowing us to
-        properly set the kind field's Literal type annotation.
-        """
         super().__init_subclass__(**kwargs)
 
-        # For concrete subclasses, stamp the kind discriminator
+        # If concrete, stamp kind Literal and collision check
         if not _is_abstract(cls):
-            # Set kind field as Literal type with class name
+            # 1) Stamp discriminator
             cls.kind = cls.__name__
             cls.__annotations__["kind"] = Literal[cls.__name__]
 
-            # Collision check: ensure no duplicate kind values
+            # 2) Collision check
             mro = cls.mro()
             union_class = mro[mro.index(DiscriminatedUnionMixin) - 1]
-            concretes = get_known_concrete_subclasses(union_class)
+            concretes = get_known_concrete_subclasses(union_class)  # sorted list
             kinds: dict[str, type] = {}
             for sub in concretes:
                 k = kind_of(sub)
@@ -347,10 +377,18 @@ class DiscriminatedUnionMixin(OpenHandsModel, ABC):
                     )
                 kinds[k] = sub
 
-        # Mark that rebuild is needed for abstract union owners
-        # This ensures schemas are regenerated when new subclasses are added
-        global _rebuild_required
-        _rebuild_required = True
+        # Rebuild any abstract union owners in the MRO that rely on subclass sets
+        for base in cls.mro():
+            # Stop when we pass ourselves
+            if base is cls:
+                continue
+            # Only rebuild abstract DiscriminatedUnion owners
+            if (
+                isinstance(base, type)
+                and issubclass(base, DiscriminatedUnionMixin)
+                and _is_abstract(base)
+            ):
+                base.model_rebuild(force=True)
 
 
 def _rebuild_if_required():

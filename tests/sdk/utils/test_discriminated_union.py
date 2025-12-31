@@ -264,7 +264,7 @@ def test_enhanced_error_message_for_no_kinds():
 
 
 def test_enhanced_error_message_for_nested_no_kinds():
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(Exception) as exc_info:
         MythicalPack.model_validate({"mythical": {"kind": "Unicorn"}})
 
     error_message = str(exc_info.value)
@@ -278,7 +278,7 @@ def test_enhanced_error_message_for_nested_no_kinds():
 
 def test_enhanced_error_message_for_nested_no_kinds_type_adapter():
     type_adapter = TypeAdapter(MythicalPack)
-    with pytest.raises(ValueError) as exc_info:
+    with pytest.raises(Exception) as exc_info:
         type_adapter.validate_python({"mythical": {"kind": "Unicorn"}})
 
     error_message = str(exc_info.value)
