@@ -60,7 +60,10 @@ class ConversationState(OpenHandsModel):
     )
     workspace: BaseWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution",
+        description=(
+            "Workspace used by the agent to execute commands and read/write files. "
+            "Not the process working directory."
+        ),
     )
     persistence_dir: str | None = Field(
         default="workspace/conversations",
