@@ -228,12 +228,18 @@ class ConversationState(OpenHandsModel):
             # All other config (LLM, agent_context, condenser, etc.) can change freely.
             verified_agent = agent.verify(state.agent)
 
-            # Attach runtime handles and update agent
+            # Attach runtime handles
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._autosave_enabled = True
-            state.agent = verified_agent
 
+            # Override with runtime-provided values
+            state.agent = verified_agent
+            state.workspace = workspace
+            state.max_iterations = max_iterations
+            state.stuck_detection = stuck_detection
+
+            # Reset stats for this session
             state.stats = ConversationStats()
 
             logger.info(
