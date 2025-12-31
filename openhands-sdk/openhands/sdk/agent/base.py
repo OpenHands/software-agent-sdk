@@ -299,10 +299,10 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def load(self, persisted: "AgentBase") -> "AgentBase":
+    def verify(self, persisted: "AgentBase") -> "AgentBase":
         """Verify that we can resume this agent from persisted state.
 
-        This method validates that the tools configuration matches between this
+        This method verifies that the tools configuration matches between this
         agent and the persisted agent. Tools must match because they may have been
         used in the conversation history.
 
@@ -313,7 +313,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             persisted: The agent loaded from persisted state
 
         Returns:
-            This agent (self) if validation passes
+            This agent (self) if verification passes
 
         Raises:
             ValueError: If agent class or tools don't match

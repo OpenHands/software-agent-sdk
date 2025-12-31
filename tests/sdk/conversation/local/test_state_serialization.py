@@ -434,8 +434,8 @@ def test_agent_pydantic_validation_on_creation():
         LLM(model="", api_key=SecretStr("test-key"), usage_id="test-llm")
 
 
-def test_agent_load_validates_tools_match():
-    """Test that agent.load() validates tools match between runtime and persisted."""
+def test_agent_verify_validates_tools_match():
+    """Test that agent.verify() validates tools match between runtime and persisted."""
     from openhands.sdk.agent import AgentBase
     from openhands.sdk.tool import Tool
 
@@ -454,7 +454,7 @@ def test_agent_load_validates_tools_match():
     same_tools_agent = Agent(
         llm=llm, tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
     )
-    result = same_tools_agent.load(persisted_agent)
+    result = same_tools_agent.verify(persisted_agent)
     assert result is same_tools_agent
 
     # Runtime agent with different tools should fail
@@ -462,11 +462,11 @@ def test_agent_load_validates_tools_match():
     with pytest.raises(
         ValueError, match="Tools don't match between runtime and persisted agents"
     ):
-        different_tools_agent.load(persisted_agent)
+        different_tools_agent.verify(persisted_agent)
 
 
-def test_agent_load_allows_different_llm():
-    """Test that agent.load() allows different LLM configuration."""
+def test_agent_verify_allows_different_llm():
+    """Test that agent.verify() allows different LLM configuration."""
     from openhands.sdk.agent import AgentBase
     from openhands.sdk.tool import Tool
 
@@ -483,13 +483,13 @@ def test_agent_load_allows_different_llm():
     # Runtime agent with different LLM should succeed (LLM can change freely)
     llm2 = LLM(model="gpt-4o", api_key=SecretStr("key2"), usage_id="llm2")
     different_llm_agent = Agent(llm=llm2, tools=tools)
-    result = different_llm_agent.load(persisted_agent)
+    result = different_llm_agent.verify(persisted_agent)
     assert result is different_llm_agent
     assert result.llm.model == "gpt-4o"
 
 
-def test_agent_load_different_class_raises_error():
-    """Test that agent.load() raises error for different agent classes."""
+def test_agent_verify_different_class_raises_error():
+    """Test that agent.verify() raises error for different agent classes."""
     from openhands.sdk.agent.base import AgentBase
     from openhands.sdk.conversation.types import (
         ConversationCallbackType,
@@ -521,7 +521,7 @@ def test_agent_load_different_class_raises_error():
     different_agent = DifferentAgent()
 
     with pytest.raises(ValueError, match="Cannot load from persisted"):
-        original_agent.load(different_agent)
+        original_agent.verify(different_agent)
 
 
 def test_conversation_state_flags_persistence():
