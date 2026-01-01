@@ -1,7 +1,7 @@
 import inspect
 import logging
+import threading
 from abc import ABC
-from dataclasses import MISSING
 from typing import Annotated, Any, Self, Union
 
 from pydantic import (
@@ -21,7 +21,18 @@ from pydantic_core import CoreSchema
 
 
 logger = logging.getLogger(__name__)
-_schemas_in_progress: dict[type, JsonSchemaValue] = {}
+
+# Thread-local storage for tracking schemas currently being generated.
+# This prevents infinite recursion when generating JSON schemas for
+# discriminated unions that reference each other.
+_thread_local = threading.local()
+
+
+def _get_schemas_in_progress() -> dict[type, JsonSchemaValue]:
+    """Get the thread-local dict for tracking in-progress schema generation."""
+    if not hasattr(_thread_local, "schemas_in_progress"):
+        _thread_local.schemas_in_progress = {}
+    return _thread_local.schemas_in_progress
 
 
 def _is_abstract(type_: type) -> bool:
@@ -88,7 +99,14 @@ def _get_checked_concrete_subclasses(cls: type) -> dict[str, type]:
 
 
 class OpenHandsModel(BaseModel):
-    """This class is in place only for backward compatibility"""
+    """Deprecated: This class exists only for backward compatibility.
+
+    This class is no longer required for discriminated union support.
+    New code should extend pydantic.BaseModel directly instead of OpenHandsModel.
+
+    Existing code that extends OpenHandsModel will continue to work, but
+    migration to BaseModel is recommended.
+    """
 
 
 class DiscriminatedUnionMixin(OpenHandsModel):
@@ -104,11 +122,15 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     ) -> Self:
         if isinstance(data, cls):
             return data
-        kind = data.pop("kind", MISSING)
+        kind = data.pop("kind", None)
         if not _is_abstract(cls):
-            assert kind is MISSING or kind == cls.__name__
+            # Sanity check: if we're validating a concrete class directly,
+            # the kind (if provided) should match the class name. This should
+            # always be true at this point since resolve_kind() would have
+            # already routed to the correct subclass.
+            assert kind is None or kind == cls.__name__
             return handler(data)
-        if kind is MISSING:
+        if kind is None:
             subclasses = _get_checked_concrete_subclasses(cls)
             if subclasses:
                 kind = next(iter(subclasses))
@@ -142,8 +164,20 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def _is_handler_for_current_class(
         self, handler: SerializerFunctionWrapHandler
     ) -> bool:
-        """The handler is a pydantic wrapper around a rust function which gives no
-        way of interrogating what it is except for the repr function..."""
+        """Check if the handler is for this class by parsing its repr string.
+
+        WARNING: This is a fragile approach that relies on Pydantic's internal
+        repr format for SerializerFunctionWrapHandler. The handler is a Pydantic
+        wrapper around a Rust function that provides no public API for determining
+        which class it serializes. Parsing the repr string is the only available
+        mechanism.
+
+        Expected format: `SerializationCallable(serializer=<ClassName>)`
+
+        If Pydantic changes this format, multiple unit tests will fail immediately,
+        including tests in test_discriminated_union.py that verify serialization
+        behavior across the class hierarchy.
+        """
         # should be in the format `SerializationCallable(serializer=<NAME>)`
         repr_str = str(handler)
 
@@ -160,13 +194,15 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def __get_pydantic_json_schema__(
         cls, core_schema: CoreSchema, handler: Any
     ) -> JsonSchemaValue:
+        schemas_in_progress = _get_schemas_in_progress()
+
         # First we check if we are already generating a schema
-        schema = _schemas_in_progress.get(cls)
+        schema = schemas_in_progress.get(cls)
         if schema:
             return schema
 
         # Set a temp schema to prevent infinite recursion
-        _schemas_in_progress[cls] = {"$ref": f"#/$defs/{cls.__name__}"}
+        schemas_in_progress[cls] = {"$ref": f"#/$defs/{cls.__name__}"}
         try:
             if _is_abstract(cls):
                 subclasses = _get_checked_concrete_subclasses(cls)
@@ -196,7 +232,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
                 }
         finally:
             # Reset temp schema
-            _schemas_in_progress.pop(cls)
+            schemas_in_progress.pop(cls)
         return schema
 
     @classmethod

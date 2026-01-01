@@ -78,3 +78,4 @@ def test_enum_serialization():
 
     conversation._state.execution_status = ConversationExecutionStatus.ERROR
     serialized = conversation._state.model_dump_json()
+    assert '"execution_status":"error"' in serialized
