@@ -366,6 +366,13 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             )
         return reconciled
 
+    def _clone_with_llm(self, llm: LLM) -> "AgentBase":
+        """Return a copy of this agent with ``llm`` swapped in."""
+
+        clone = self.model_copy(update={"llm": llm})
+        clone._tools = dict(self._tools)
+        return clone
+
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
         if "exclude_none" not in kwargs:

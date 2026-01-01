@@ -250,6 +250,18 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    def switch_llm(self, profile_id: str) -> None:
+        """Switch the active agent LLM to ``profile_id`` at runtime."""
+
+        with self._state:
+            self._state.switch_agent_llm(profile_id, registry=self.llm_registry)
+            self.agent = self._state.agent
+        logger.info(
+            "Switched conversation %s to profile %s",
+            self._state.id,
+            profile_id,
+        )
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.

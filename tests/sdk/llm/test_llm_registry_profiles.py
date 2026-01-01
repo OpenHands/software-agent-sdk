@@ -343,3 +343,41 @@ def test_profile_serialization_mode_reference_only(tmp_path):
     assert ref_data == {"profile_id": "ref-test"}
     assert "model" not in ref_data
     assert "usage_id" not in ref_data
+
+
+def test_switch_profile_replaces_active_llm(tmp_path):
+    registry = LLMRegistry(profile_dir=tmp_path)
+    base_llm = LLM(model="gpt-4o-mini", usage_id="primary")
+    registry.add(base_llm)
+    registry.save_profile("alternate", LLM(model="gpt-4o", usage_id="alternate"))
+
+    events: list = []
+    registry.subscribe(events.append)
+
+    switched = registry.switch_profile("primary", "alternate")
+
+    assert switched.profile_id == "alternate"
+    assert switched.usage_id == "primary"
+    assert registry.get("primary") is switched
+    assert switched.model == "gpt-4o"
+    assert len(events) == 1
+    assert events[0].llm is switched
+
+    # switching to the same profile should be a no-op
+    again = registry.switch_profile("primary", "alternate")
+    assert again is switched
+    assert len(events) == 1
+
+
+def test_switch_profile_unknown_usage(tmp_path):
+    registry = LLMRegistry(profile_dir=tmp_path)
+    with pytest.raises(KeyError):
+        registry.switch_profile("missing", "profile")
+
+
+def test_switch_profile_missing_profile(tmp_path):
+    registry = LLMRegistry(profile_dir=tmp_path)
+    registry.add(LLM(model="gpt-4o-mini", usage_id="primary"))
+
+    with pytest.raises(FileNotFoundError):
+        registry.switch_profile("primary", "does-not-exist")

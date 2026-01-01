@@ -652,3 +652,126 @@ def test_conversation_with_agent_different_llm_config():
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
 
         assert new_dump == original_state_dump
+
+
+def test_local_conversation_switch_llm_persists_profile(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "false")
+
+    registry = LLMRegistry()
+    base_llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    registry.save_profile("base", base_llm)
+    alt_llm = LLM(model="gpt-4o", usage_id="alternate", temperature=0.4)
+    registry.save_profile("alt", alt_llm)
+
+    agent = Agent(llm=registry.load_profile("base"), tools=[])
+    workspace_dir = tmp_path / "workspace"
+    persistence_dir = tmp_path / "persist"
+
+    conversation = Conversation(
+        agent=agent,
+        workspace=str(workspace_dir),
+        persistence_dir=str(persistence_dir),
+        visualizer=None,
+    )
+    assert isinstance(conversation, LocalConversation)
+
+    conversation.switch_llm("alt")
+
+    assert conversation.agent.llm.profile_id == "alt"
+    assert conversation.state.agent.llm.profile_id == "alt"
+    assert conversation.agent.llm.usage_id == "test-llm"
+    assert conversation.llm_registry.get("test-llm").model == alt_llm.model
+
+    persistence_path = conversation.state.persistence_dir
+    assert persistence_path is not None
+    base_state_path = Path(persistence_path) / "base_state.json"
+    data = json.loads(base_state_path.read_text())
+    assert data["agent"]["llm"] == {"profile_id": "alt"}
+
+    reloaded_agent = Agent(llm=registry.load_profile("alt"), tools=[])
+    reloaded = Conversation(
+        agent=reloaded_agent,
+        workspace=str(workspace_dir),
+        persistence_dir=str(persistence_dir),
+        conversation_id=conversation.id,
+        visualizer=None,
+    )
+    assert isinstance(reloaded, LocalConversation)
+    assert reloaded.state.agent.llm.profile_id == "alt"
+
+
+def test_local_conversation_switch_llm_inline_mode_rejected(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "true")
+
+    registry = LLMRegistry()
+    base_llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    registry.save_profile("base", base_llm)
+    registry.save_profile("alt", LLM(model="gpt-4o", usage_id="alternate"))
+
+    agent = Agent(llm=registry.load_profile("base"), tools=[])
+    conversation = Conversation(
+        agent=agent,
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "persist"),
+        visualizer=None,
+    )
+    assert isinstance(conversation, LocalConversation)
+
+    with pytest.raises(RuntimeError, match="OPENHANDS_INLINE_CONVERSATIONS"):
+        conversation.switch_llm("alt")
+
+
+def test_local_conversation_switch_llm_requires_idle(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "false")
+
+    registry = LLMRegistry()
+    base_llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    registry.save_profile("base", base_llm)
+    registry.save_profile("alt", LLM(model="gpt-4o", usage_id="alternate"))
+
+    agent = Agent(llm=registry.load_profile("base"), tools=[])
+    conversation = Conversation(
+        agent=agent,
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "persist"),
+        visualizer=None,
+    )
+    assert isinstance(conversation, LocalConversation)
+
+    with conversation.state:
+        conversation.state.execution_status = ConversationExecutionStatus.RUNNING
+
+    with pytest.raises(RuntimeError, match="Agent must be idle"):
+        conversation.switch_llm("alt")
+
+
+def test_local_conversation_switch_llm_missing_profile_rejected(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    home_dir.mkdir()
+    monkeypatch.setenv("HOME", str(home_dir))
+    monkeypatch.setenv("OPENHANDS_INLINE_CONVERSATIONS", "false")
+
+    registry = LLMRegistry()
+    base_llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    registry.save_profile("base", base_llm)
+
+    agent = Agent(llm=registry.load_profile("base"), tools=[])
+    conversation = Conversation(
+        agent=agent,
+        workspace=str(tmp_path / "workspace"),
+        persistence_dir=str(tmp_path / "persist"),
+        visualizer=None,
+    )
+    assert isinstance(conversation, LocalConversation)
+
+    with pytest.raises(ValueError, match=r"Profile not found: does-not-exist"):
+        conversation.switch_llm("does-not-exist")

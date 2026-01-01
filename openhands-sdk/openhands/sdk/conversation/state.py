@@ -347,6 +347,32 @@ class ConversationState(OpenHandsModel):
         self.blocked_messages = updated
         return reason
 
+    def switch_agent_llm(self, profile_id: str, *, registry: "LLMRegistry") -> None:
+        """Swap the agent's primary LLM to ``profile_id`` using ``registry``."""
+
+        if should_inline_conversations():
+            raise RuntimeError(
+                "LLM switching requires OPENHANDS_INLINE_CONVERSATIONS to be false."
+            )
+
+        if self.execution_status not in (
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.FINISHED,
+        ):
+            raise RuntimeError("Agent must be idle before switching LLM profiles.")
+
+        usage_id = self.agent.llm.usage_id
+        try:
+            new_llm = registry.switch_profile(usage_id, profile_id)
+        except FileNotFoundError as exc:
+            raise ValueError(str(exc)) from exc
+        except KeyError as exc:
+            raise ValueError(str(exc)) from exc
+
+        self.agent = self.agent._clone_with_llm(new_llm)
+        if self.execution_status == ConversationExecutionStatus.FINISHED:
+            self.execution_status = ConversationExecutionStatus.IDLE
+
     @staticmethod
     def get_unmatched_actions(events: Sequence[Event]) -> list[ActionEvent]:
         """Find actions in the event history that don't have matching observations.

@@ -128,6 +128,27 @@ class LLMRegistry:
         safe_id = self._ensure_safe_profile_id(profile_id)
         return self.profile_dir / f"{safe_id}.json"
 
+    def switch_profile(self, usage_id: str, profile_id: str) -> LLM:
+        """Replace ``usage_id``'s active LLM with ``profile_id`` and return it."""
+
+        if usage_id not in self._usage_to_llm:
+            raise KeyError(f"Usage ID '{usage_id}' not found in registry")
+
+        current_llm = self._usage_to_llm[usage_id]
+        safe_id = self._ensure_safe_profile_id(profile_id)
+        if getattr(current_llm, "profile_id", None) == safe_id:
+            return current_llm
+
+        llm = self.load_profile(safe_id)
+        llm = llm.model_copy(update={"usage_id": usage_id})
+        self._usage_to_llm[usage_id] = llm
+        self.notify(RegistryEvent(llm=llm))
+        logger.info(
+            f"[LLM registry {self.registry_id}]: Switched usage {usage_id} "
+            f"to profile {safe_id}"
+        )
+        return llm
+
     def load_profile(self, profile_id: str) -> LLM:
         """Load profile_id from disk and return an LLM."""
 
