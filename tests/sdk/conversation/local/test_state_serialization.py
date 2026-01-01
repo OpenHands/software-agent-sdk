@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 
 import pytest
+from jsonschema import ValidationError
 from pydantic import SecretStr
 
 from openhands.sdk import Agent, Conversation
@@ -303,7 +304,7 @@ def test_conversation_state_corrupted_event_handling():
         )
 
         # Load conversation - EventLog will fail on corrupted files
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(ValidationError):
             Conversation(
                 agent=agent,
                 workspace=LocalWorkspace(working_dir="/tmp"),
