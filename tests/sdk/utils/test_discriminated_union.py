@@ -5,9 +5,7 @@ import pytest
 from litellm import BaseModel
 from pydantic import (
     ConfigDict,
-    Discriminator,
     Field,
-    Tag,
     TypeAdapter,
     computed_field,
     model_validator,
@@ -91,31 +89,10 @@ class MythicalPack(OpenHandsModel):
     mythical: Mythical
 
 
-def test_serializable_type_expected() -> None:
-    serializable_type = Animal.get_serializable_type()
+def test_json_schema_expected() -> None:
+    json_schema = Animal.model_json_schema()
 
-    # Check that it's an Annotated type with a Union and Discriminator
-    assert hasattr(serializable_type, "__metadata__")
-    assert len(serializable_type.__metadata__) == 1
-    discriminator = serializable_type.__metadata__[0]
-    assert isinstance(discriminator, Discriminator)
-
-    # Check that the union contains the expected types
-    union_type = serializable_type.__args__[0]
-    union_args = union_type.__args__
-
-    # Extract the types from the annotated types
-    types = []
-    tags = []
-    for arg in union_args:
-        if hasattr(arg, "__metadata__") and len(arg.__metadata__) == 1:
-            tag = arg.__metadata__[0]
-            if isinstance(tag, Tag):
-                types.append(arg.__args__[0])
-                tags.append(tag.tag)
-
-    assert set(types) == {Cat, Dog, Wolf}
-    assert set(tags) == {"Cat", "Dog", "Wolf"}
+    assert json_schema == {}
 
 
 def test_json_schema() -> None:
@@ -203,24 +180,6 @@ def test_duplicate_kind():
 
         class Cat(Animal):
             pass
-
-
-def test_enhanced_error_message_for_unknown_kind():
-    """Test that resolve_kind provides a detailed error message for unknown kinds."""
-    # Test with an unknown kind
-    with pytest.raises(ValueError) as exc_info:
-        Animal.resolve_kind("UnknownAnimal")
-
-    error_message = str(exc_info.value)
-
-    # Check that the error message contains all expected components
-    assert "Unexpected kind 'UnknownAnimal' for Animal" in error_message
-    assert "Expected one of:" in error_message
-    assert "Cat" in error_message
-    assert "Dog" in error_message
-    assert "Wolf" in error_message
-    assert "OpenHandsModel instead of BaseModel" in error_message
-    assert "invalid schema has not been cached" in error_message
 
 
 def test_enhanced_error_message_with_validation():

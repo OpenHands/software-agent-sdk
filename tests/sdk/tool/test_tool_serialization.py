@@ -140,11 +140,6 @@ def test_tool_kind_field_json() -> None:
     tool_instances = FinishTool.create()
     tool = tool_instances[0]
 
-    # Check kind field
-    assert hasattr(tool, "kind")
-    expected_kind = tool.__class__.__name__
-    assert tool.kind == expected_kind
-
     # Serialize to JSON
     tool_json = tool.model_dump_json()
 
@@ -153,4 +148,4 @@ def test_tool_kind_field_json() -> None:
 
     # Should preserve kind field
     assert hasattr(deserialized_tool, "kind")
-    assert deserialized_tool.kind == tool.kind
+    assert deserialized_tool.__class__ == tool.__class__

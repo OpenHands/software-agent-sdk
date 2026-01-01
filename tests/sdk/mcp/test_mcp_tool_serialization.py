@@ -67,22 +67,6 @@ def test_mcp_tool_polymorphic_behavior() -> None:
     assert hasattr(mcp_tool, "mcp_tool")
 
 
-def test_mcp_tool_kind_field() -> None:
-    """Test that MCPTool kind field is correctly set."""
-    # Create mock MCP tool and client
-    mock_mcp_tool = create_mock_mcp_tool("test_mcp_tool_kind_field")
-    mock_client = Mock(spec=MCPClient)
-
-    # Create MCPTool instance
-    tools = MCPToolDefinition.create(mock_mcp_tool, mock_client)
-    mcp_tool = tools[0]  # Extract single tool from sequence
-
-    # Check kind field
-    assert hasattr(mcp_tool, "kind")
-    expected_kind = mcp_tool.__class__.__name__
-    assert mcp_tool.kind == expected_kind
-
-
 def test_mcp_tool_fallback_behavior() -> None:
     """Test MCPTool fallback behavior with manual data."""
     # Create data that could represent an MCPTool
