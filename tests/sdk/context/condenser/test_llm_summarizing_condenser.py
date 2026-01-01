@@ -83,6 +83,22 @@ def mock_llm() -> LLM:
     return mock_llm
 
 
+def test_default_values(mock_llm: LLM) -> None:
+    """Test that LLMSummarizingCondenser has correct default values.
+
+    These defaults are tuned to ensure workable manipulation indices for condensation.
+    See https://github.com/OpenHands/software-agent-sdk/issues/1518 for context.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm)
+
+    # Default max_size should be 240 (raised from 120 to allow more room for tool loops)
+    assert condenser.max_size == 240
+
+    # Default keep_first should be 2 (reduced from 4 to leave more room for
+    # condensation)
+    assert condenser.keep_first == 2
+
+
 def test_should_condense(mock_llm: LLM) -> None:
     """Test that LLMSummarizingCondenser correctly determines when to condense."""
     max_size = 100
@@ -535,3 +551,23 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     # Forgotten events: events[3:28] = 25 events
     expected_forgotten_count = 25
     assert len(result.forgotten_event_ids) == expected_forgotten_count
+
+
+def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
+    """Test that _generate_condensation raises ValueError when given 0 events.
+
+    This prevents the LLM from being called with an empty event list, which would
+    produce a confusing summary like "I don't see any events provided to summarize."
+    See https://github.com/OpenHands/software-agent-sdk/issues/1518 for context.
+    """
+    condenser = LLMSummarizingCondenser(llm=mock_llm, max_size=100, keep_first=2)
+
+    with pytest.raises(ValueError, match="Cannot condense 0 events"):
+        condenser._generate_condensation(
+            summary_event_content="",
+            forgotten_events=[],
+            summary_offset=0,
+        )
+
+    # Verify the LLM was never called
+    cast(MagicMock, mock_llm.completion).assert_not_called()

@@ -2116,7 +2116,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.7.0"
+version = "1.7.3"
 source = { editable = "openhands-agent-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2147,7 +2147,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.7.0"
+version = "1.7.3"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "deprecation" },
@@ -2185,7 +2185,7 @@ provides-extras = ["boto3"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.7.0"
+version = "1.7.3"
 source = { editable = "openhands-tools" }
 dependencies = [
     { name = "bashlex" },
@@ -2214,15 +2214,17 @@ requires-dist = [
 
 [[package]]
 name = "openhands-workspace"
-version = "1.7.0"
+version = "1.7.3"
 source = { editable = "openhands-workspace" }
 dependencies = [
+    { name = "openhands-agent-server" },
     { name = "openhands-sdk" },
     { name = "pydantic" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "openhands-agent-server", editable = "openhands-agent-server" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.11.7" },
 ]
