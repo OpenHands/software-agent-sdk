@@ -9,7 +9,6 @@ from pydantic import (
     Discriminator,
     ModelWrapValidatorHandler,
     Tag,
-    TypeAdapter,
     ValidationInfo,
     computed_field,
     model_serializer,
@@ -107,24 +106,38 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     def __get_pydantic_json_schema__(
         cls, core_schema: CoreSchema, handler: Any
     ) -> JsonSchemaValue:
+        # Always use the handler to generate the base schema first.
+        # This is critical to avoid infinite recursion when a subclass
+        # contains a field that references the abstract parent type
+        # (e.g., PipelineCondenser has condensers: list[CondenserBase]).
+        schema = handler(core_schema)
+
         if _is_abstract(cls):
-            subclasses = get_known_concrete_subclasses(cls)
-            if not subclasses:
-                raise ValueError(f"No subclasses defined for {cls.__name__}")
-            if len(subclasses) == 1:
-                return subclasses[0].model_json_schema()
-            serializable_type = cls.get_serializable_type()
-            type_adapter = TypeAdapter(serializable_type)
-            schema = type_adapter.json_schema()
-            return schema
+            # For abstract classes, add discriminator info if this is a oneOf schema
+            if isinstance(schema, dict) and "oneOf" in schema:
+                if "title" not in schema:
+                    schema["title"] = cls.__name__
+                if "discriminator" not in schema:
+                    mapping = {}
+                    for option in schema["oneOf"]:
+                        if "$ref" in option:
+                            kind = option["$ref"].split("/")[-1]
+                            mapping[kind] = option["$ref"]
+                    if mapping:
+                        schema["discriminator"] = {
+                            "propertyName": "kind",
+                            "mapping": mapping,
+                        }
         else:
-            schema = handler(core_schema)
-            schema["properties"]["kind"] = {
-                "const": cls.__name__,
-                "title": "Kind",
-                "type": "string",
-            }
-            return schema
+            # For concrete classes, add the kind field as a const
+            if "properties" in schema:
+                schema["properties"]["kind"] = {
+                    "const": cls.__name__,
+                    "title": "Kind",
+                    "type": "string",
+                }
+
+        return schema
 
     @classmethod
     def resolve_kind(cls, kind: str) -> type:
