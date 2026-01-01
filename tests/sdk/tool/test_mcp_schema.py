@@ -126,6 +126,7 @@ def test_kind_field_works_for_discriminated_union():
 
     # The instance should have the 'kind' field set correctly
     assert hasattr(action, "kind")
+    assert action.kind == "MCPSchemaTestAction"
 
     # Serialization should include 'kind'
     dumped = action.model_dump()
@@ -136,3 +137,4 @@ def test_kind_field_works_for_discriminated_union():
     data = {"kind": "MCPSchemaTestAction", "command": "test"}
     restored = MCPSchemaTestAction.model_validate(data)
     assert restored.command == "test"
+    assert restored.kind == "MCPSchemaTestAction"

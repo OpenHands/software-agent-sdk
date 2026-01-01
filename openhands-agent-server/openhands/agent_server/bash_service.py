@@ -42,7 +42,7 @@ class BashEventService:
 
     def _get_event_filename(self, event: BashEventBase) -> str:
         """Generate filename using YYYYMMDDHHMMSS_eventId_actionId format."""
-        result = [self._timestamp_to_str(event.timestamp), event.__class__.__name__]
+        result = [self._timestamp_to_str(event.timestamp), event.kind]
         command_id = getattr(event, "command_id", None)
         if command_id:
             result.append(command_id.hex)

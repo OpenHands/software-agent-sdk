@@ -1,6 +1,7 @@
 import inspect
 import logging
 from abc import ABC
+from dataclasses import MISSING
 from typing import Annotated, Any, Self, Union
 
 from pydantic import (
@@ -10,6 +11,7 @@ from pydantic import (
     Tag,
     TypeAdapter,
     ValidationInfo,
+    computed_field,
     model_serializer,
     model_validator,
 )
@@ -68,6 +70,11 @@ class OpenHandsModel(BaseModel):
 
 
 class DiscriminatedUnionMixin(OpenHandsModel):
+    @computed_field
+    @property
+    def kind(self) -> str:
+        return self.__class__.__name__
+
     @model_validator(mode="wrap")
     @classmethod
     def _validate_subtype(
@@ -75,11 +82,14 @@ class DiscriminatedUnionMixin(OpenHandsModel):
     ) -> Self:
         if isinstance(data, cls):
             return data
-        kind = data.pop("kind")
+        kind = data.pop("kind", MISSING)
         if not _is_abstract(cls):
-            assert kind == cls.__name__
+            assert kind is MISSING or kind == cls.__name__
             return handler(data)
         subclasses = get_known_concrete_subclasses(cls)
+        if kind is MISSING and subclasses:
+            result = subclasses[0].model_validate(data, context=info.context)
+            return result
         for subclass in subclasses:
             if subclass.__name__ == kind:
                 result = subclass.model_validate(data, context=info.context)
