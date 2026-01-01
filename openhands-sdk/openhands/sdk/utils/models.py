@@ -8,6 +8,8 @@ from pydantic import (
     BaseModel,
     Discriminator,
     ModelWrapValidatorHandler,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
     Tag,
     ValidationInfo,
     computed_field,
@@ -97,9 +99,42 @@ class DiscriminatedUnionMixin(OpenHandsModel):
         raise ValueError(f"Unknown kind: {kind}; Expected one of: {kinds}")
 
     @model_serializer(mode="wrap")
-    def _serialize_by_kind(self, handler):
-        result = handler(self)
-        result["kind"] = self.__class__.__name__
+    def _serialize_by_kind(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ):
+        if self._is_handler_for_current_class(handler):
+            result = handler(self)
+            return result
+
+        # Delegate to the implementing class
+        result = self.model_dump(
+            mode=info.mode,
+            context=info.context,
+            by_alias=info.by_alias,
+            exclude_unset=info.exclude_unset,
+            exclude_defaults=info.exclude_defaults,
+            exclude_none=info.exclude_none,
+            exclude_computed_fields=info.exclude_computed_fields,
+            round_trip=info.round_trip,
+            serialize_as_any=info.serialize_as_any,
+        )
+        return result
+
+    def _is_handler_for_current_class(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> bool:
+        """The handler is a pydantic wrapper around a rust function which gives no
+        way of interrogating what it is except for the repr function..."""
+        # should be in the format `SerializationCallable(serializer=<NAME>)`
+        repr_str = str(handler)
+
+        # Get everything after =
+        _, name = repr_str.split("=", 1)
+
+        # Cut off the )
+        name = name[:-1]
+
+        result = self.__class__.__name__ == name
         return result
 
     @classmethod
