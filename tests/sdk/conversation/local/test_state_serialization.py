@@ -6,8 +6,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from jsonschema import ValidationError
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.agent.base import AgentBase
