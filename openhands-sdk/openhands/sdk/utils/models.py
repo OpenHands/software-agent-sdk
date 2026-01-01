@@ -11,7 +11,6 @@ from pydantic import (
     SerializationInfo,
     SerializerFunctionWrapHandler,
     Tag,
-    TypeAdapter,
     ValidationInfo,
     computed_field,
     model_serializer,
@@ -156,11 +155,20 @@ class DiscriminatedUnionMixin(OpenHandsModel):
                 if not subclasses:
                     raise ValueError(f"No subclasses defined for {cls.__name__}")
                 if len(subclasses) == 1:
-                    return subclasses[0].model_json_schema()
+                    # Use the shared generator for single subclass too
+                    gen = handler.generate_json_schema
+                    sub_schema = gen.generate_inner(
+                        subclasses[0].__pydantic_core_schema__
+                    )
+                    return sub_schema
 
-                serializable_type = cls.get_serializable_type()
-                type_adapter = TypeAdapter(serializable_type)
-                schema = type_adapter.json_schema()
+                # Use the shared generator to properly register definitions
+                gen = handler.generate_json_schema
+                schemas = []
+                for sub in subclasses:
+                    sub_schema = gen.generate_inner(sub.__pydantic_core_schema__)
+                    schemas.append(sub_schema)
+                schema = {"oneOf": schemas}
             else:
                 schema = handler(core_schema)
                 schema["properties"]["kind"] = {

@@ -92,7 +92,44 @@ class MythicalPack(OpenHandsModel):
 def test_json_schema_expected() -> None:
     json_schema = Animal.model_json_schema()
 
-    assert json_schema == {}
+    assert json_schema == {
+        "$defs": {
+            "Cat": {
+                "properties": {
+                    "name": {"title": "Name", "type": "string"},
+                    "kind": {"const": "Cat", "title": "Kind", "type": "string"},
+                },
+                "required": ["name"],
+                "title": "Cat",
+                "type": "object",
+            },
+            "Dog": {
+                "properties": {
+                    "name": {"title": "Name", "type": "string"},
+                    "barking": {"title": "Barking", "type": "boolean"},
+                    "kind": {"const": "Dog", "title": "Kind", "type": "string"},
+                },
+                "required": ["name", "barking"],
+                "title": "Dog",
+                "type": "object",
+            },
+            "Wolf": {
+                "additionalProperties": False,
+                "properties": {
+                    "name": {"title": "Name", "type": "string"},
+                    "kind": {"const": "Wolf", "title": "Kind", "type": "string"},
+                },
+                "required": ["name"],
+                "title": "Wolf",
+                "type": "object",
+            },
+        },
+        "oneOf": [
+            {"$ref": "#/$defs/Cat"},
+            {"$ref": "#/$defs/Dog"},
+            {"$ref": "#/$defs/Wolf"},
+        ],
+    }
 
 
 def test_json_schema() -> None:
