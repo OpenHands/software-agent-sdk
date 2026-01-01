@@ -67,6 +67,26 @@ def get_known_concrete_subclasses(cls) -> list[type]:
     return out
 
 
+def _get_checked_concrete_subclasses(cls: type) -> dict[str, type]:
+    result = {}
+    for sub in get_known_concrete_subclasses(cls):
+        existing = result.get(sub.__name__)
+        if existing:
+            raise ValueError(
+                f"Duplicate class definition for {cls.__module__}.{cls.__name__}: "
+                f"{existing.__module__}.{existing.__name__} : "
+                f"{sub.__module__}.{sub.__name__}"
+            )
+        if "<locals>" in sub.__qualname__:
+            raise ValueError(
+                f"Local classes not supported! {sub.__module__}.{sub.__name__} "
+                f"/ {cls.__module__}.{cls.__name__} "
+                "(Since they may not exist at deserialization time)"
+            )
+        result[sub.__name__] = sub
+    return result
+
+
 class OpenHandsModel(BaseModel):
     """This class is in place only for backward compatibility"""
 
@@ -88,16 +108,14 @@ class DiscriminatedUnionMixin(OpenHandsModel):
         if not _is_abstract(cls):
             assert kind is MISSING or kind == cls.__name__
             return handler(data)
-        subclasses = get_known_concrete_subclasses(cls)
-        if kind is MISSING and subclasses:
-            result = subclasses[0].model_validate(data, context=info.context)
-            return result
-        for subclass in subclasses:
-            if subclass.__name__ == kind:
-                result = subclass.model_validate(data, context=info.context)
-                return result
-        kinds = [subclass.__name__ for subclass in subclasses]
-        raise ValueError(f"Unknown kind: {kind}; Expected one of: {kinds}")
+        if kind is MISSING:
+            subclasses = _get_checked_concrete_subclasses(cls)
+            if subclasses:
+                kind = next(iter(subclasses))
+            else:
+                kind = ""
+        subclass = cls.resolve_kind(kind)
+        return subclass.model_validate(data, context=info.context)
 
     @model_serializer(mode="wrap")
     def _serialize_by_kind(
@@ -151,21 +169,21 @@ class DiscriminatedUnionMixin(OpenHandsModel):
         _schemas_in_progress[cls] = {"$ref": f"#/$defs/{cls.__name__}"}
         try:
             if _is_abstract(cls):
-                subclasses = get_known_concrete_subclasses(cls)
+                subclasses = _get_checked_concrete_subclasses(cls)
                 if not subclasses:
                     raise ValueError(f"No subclasses defined for {cls.__name__}")
                 if len(subclasses) == 1:
                     # Use the shared generator for single subclass too
                     gen = handler.generate_json_schema
                     sub_schema = gen.generate_inner(
-                        subclasses[0].__pydantic_core_schema__
+                        next(iter(subclasses.values())).__pydantic_core_schema__
                     )
                     return sub_schema
 
                 # Use the shared generator to properly register definitions
                 gen = handler.generate_json_schema
                 schemas = []
-                for sub in subclasses:
+                for sub in subclasses.values():
                     sub_schema = gen.generate_inner(sub.__pydantic_core_schema__)
                     schemas.append(sub_schema)
                 schema = {"oneOf": schemas}
@@ -182,13 +200,15 @@ class DiscriminatedUnionMixin(OpenHandsModel):
         return schema
 
     @classmethod
-    def resolve_kind(cls, kind: str) -> type:
-        subclasses = get_known_concrete_subclasses(cls)
-        for subclass in subclasses:
-            if subclass.__name__ == kind:
-                return subclass
-        kinds = [subclass.__name__ for subclass in subclasses]
-        raise ValueError(f"Unknown kind: {kind}; Expected one of: {kinds}")
+    def resolve_kind(cls, kind: str) -> type[Self]:
+        subclasses = _get_checked_concrete_subclasses(cls)
+        subclass = subclasses.get(kind)
+        if subclass:
+            return subclass
+        raise ValueError(
+            f"Unknown kind '{kind}' for {cls.__module__}.{cls.__name__}; "
+            f"Expected one of: {list(subclasses)}"
+        )
 
     @classmethod
     def get_serializable_type(cls) -> type:
@@ -201,7 +221,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
         if not _is_abstract(cls):
             return cls
 
-        subclasses = list(get_known_concrete_subclasses(cls))
+        subclasses = _get_checked_concrete_subclasses(cls)
         if not subclasses:
             return cls
 
@@ -209,10 +229,10 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             # Returning the concrete type ensures Pydantic instantiates the subclass
             # (e.g. Agent) rather than the abstract base (e.g. AgentBase) when there is
             # only ONE concrete subclass.
-            return subclasses[0]
+            return next(iter(subclasses.values()))
 
         serializable_type = Annotated[
-            Union[*tuple(Annotated[t, Tag(t.__name__)] for t in subclasses)],
+            Union[*tuple(Annotated[t, Tag(n)] for n, t in subclasses.items())],
             Discriminator(kind_of),
         ]
         return serializable_type  # type: ignore

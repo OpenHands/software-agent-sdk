@@ -89,6 +89,14 @@ class MythicalPack(OpenHandsModel):
     mythical: Mythical
 
 
+class SomeBase(DiscriminatedUnionMixin, ABC):
+    """Base class for duplicate test"""
+
+
+class SomeImpl(SomeBase):
+    """Implementation for duplicate test"""
+
+
 def test_json_schema_expected() -> None:
     json_schema = Animal.model_json_schema()
 
@@ -213,10 +221,21 @@ def test_model_containing_polymorphic_field():
 def test_duplicate_kind():
     # nAn error should be raised when a duplicate class name is detected
 
-    with pytest.raises(ValueError):
+    with pytest.raises(ValueError) as exc_info:
 
-        class Cat(Animal):
-            pass
+        class SomeImpl(SomeBase):
+            """Duplicate implementation name"""
+
+        SomeBase.model_json_schema()
+
+    error_message = str(exc_info.value)
+    expected = (
+        "Duplicate class definition for "
+        "tests.sdk.utils.test_discriminated_union.SomeBase: "
+        "tests.sdk.utils.test_discriminated_union.SomeImpl : "
+        "tests.sdk.utils.test_discriminated_union.SomeImpl"
+    )
+    assert expected in error_message
 
 
 def test_enhanced_error_message_with_validation():
@@ -230,9 +249,12 @@ def test_enhanced_error_message_with_validation():
     error_message = str(exc_info.value)
 
     # Check that the error message contains expected components
-    assert "Unexpected kind 'UnknownAnimal' for Animal" in error_message
-    assert "Expected one of:" in error_message
-    assert "Cat, Dog, Wolf" in error_message
+    expected = (
+        "Unknown kind 'UnknownAnimal' for "
+        "tests.sdk.utils.test_discriminated_union.Animal; "
+        "Expected one of: ['Cat', 'Dog', 'Wolf']"
+    )
+    assert expected in error_message
 
 
 def test_dynamic_field_error():
@@ -240,10 +262,16 @@ def test_dynamic_field_error():
         pass
 
     with pytest.raises(ValueError) as exc_info:
-        AnimalPack(members=[Tiger(name="Tony")])
+        AnimalPack.model_json_schema()
 
     error_message = str(exc_info.value)
-    assert "OpenHandsModel instead of BaseModel" in error_message
+    expected = (
+        "Local classes not supported! "
+        "tests.sdk.utils.test_discriminated_union.Tiger / "
+        "tests.sdk.utils.test_discriminated_union.Animal "
+        "(Since they may not exist at deserialization time)"
+    )
+    assert expected in error_message
 
 
 def test_enhanced_error_message_for_no_kinds():
@@ -253,10 +281,11 @@ def test_enhanced_error_message_for_no_kinds():
     error_message = str(exc_info.value)
 
     # Check that the error message contains all expected components
-    assert (
-        "Unexpected kind 'Unicorn' for Mythical. Expected one of: none."
-        in error_message
+    expected = (
+        "Unknown kind 'Unicorn' for tests.sdk.utils.test_discriminated_union.Mythical; "
+        "Expected one of: []"
     )
+    assert expected in error_message
 
 
 def test_enhanced_error_message_for_nested_no_kinds():
@@ -266,10 +295,11 @@ def test_enhanced_error_message_for_nested_no_kinds():
     error_message = str(exc_info.value)
 
     # Check that the error message contains all expected components
-    assert (
-        "No implementations loaded for: Mythical. You may need to update your imports!"
-        in error_message
+    expected = (
+        "Unknown kind 'Unicorn' for tests.sdk.utils.test_discriminated_union.Mythical; "
+        "Expected one of: []"
     )
+    assert expected in error_message
 
 
 def test_enhanced_error_message_for_nested_no_kinds_type_adapter():
@@ -280,7 +310,8 @@ def test_enhanced_error_message_for_nested_no_kinds_type_adapter():
     error_message = str(exc_info.value)
 
     # Check that the error message contains all expected components
-    assert (
-        "No implementations loaded for: Mythical. You may need to update your imports!"
-        in error_message
+    expected = (
+        "Unknown kind 'Unicorn' for tests.sdk.utils.test_discriminated_union.Mythical; "
+        "Expected one of: []"
     )
+    assert expected in error_message
