@@ -1,5 +1,6 @@
 """API-based remote workspace implementation using runtime API."""
 
+import os
 import uuid
 from typing import Any, Literal
 from urllib.request import urlopen
@@ -73,6 +74,10 @@ class APIRemoteWorkspace(RemoteWorkspace):
     target_type: Literal["binary", "source"] = Field(
         default="binary",
         description="Type of agent server target (binary or source)",
+    )
+    forward_env: list[str] = Field(
+        default_factory=list,
+        description="Environment variable names to forward from host to runtime.",
     )
 
     _runtime_id: str | None = PrivateAttr(default=None)
@@ -177,12 +182,19 @@ class APIRemoteWorkspace(RemoteWorkspace):
             executable = "/usr/local/bin/openhands-agent-server"
         else:
             executable = "/agent-server/.venv/bin/python -m openhands.agent_server"
+
+        # Build environment dict from forward_env
+        environment: dict[str, str] = {}
+        for key in self.forward_env:
+            if key in os.environ:
+                environment[key] = os.environ[key]
+
         # For binary target, use the standalone binary
         payload: dict[str, Any] = {
             "image": self.server_image,
             "command": f"{executable} --port 60000",
             "working_dir": "/",  # Match Dockerfile WORKDIR
-            "environment": {},
+            "environment": environment,
             "session_id": self.session_id,
             "run_as_user": 10001,
             "fs_group": 10001,
@@ -208,14 +220,51 @@ class APIRemoteWorkspace(RemoteWorkspace):
 
     def _resume_runtime(self) -> None:
         """Resume a paused runtime."""
-        resp = self._send_api_request(
+        self._send_api_request(
             "POST",
             f"{self.runtime_api_url}/resume",
             json={"runtime_id": self._runtime_id},
             timeout=self.init_timeout,
             headers=self._api_headers,
         )
-        self._parse_runtime_response(resp)
+
+    def pause(self) -> None:
+        """Pause the runtime to conserve resources.
+
+        Calls the /pause endpoint on the runtime API to pause the container.
+        The runtime can be resumed later with `resume()`.
+
+        Raises:
+            RuntimeError: If the runtime is not running.
+        """
+        if not self._runtime_id:
+            raise RuntimeError("Cannot pause: runtime is not running")
+
+        logger.info(f"Pausing runtime {self._runtime_id}")
+        self._send_api_request(
+            "POST",
+            f"{self.runtime_api_url}/pause",
+            json={"runtime_id": self._runtime_id},
+            timeout=30.0,
+            headers=self._api_headers,
+        )
+        logger.info(f"Runtime paused: {self._runtime_id}")
+
+    def resume(self) -> None:
+        """Resume a paused runtime.
+
+        Calls the /resume endpoint on the runtime API to resume the container.
+
+        Raises:
+            RuntimeError: If the runtime is not running.
+        """
+        if not self._runtime_id:
+            raise RuntimeError("Cannot resume: runtime is not running")
+
+        logger.info(f"Resuming runtime {self._runtime_id}")
+        self._resume_runtime()
+        self._wait_until_runtime_alive()
+        logger.info(f"Runtime resumed: {self._runtime_id}")
 
     def _parse_runtime_response(self, response: httpx.Response) -> None:
         """Parse the runtime response and extract connection info."""

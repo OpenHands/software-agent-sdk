@@ -4,7 +4,45 @@ import re
 import sys
 from functools import lru_cache
 
-from jinja2 import Environment, FileSystemBytecodeCache, FileSystemLoader, Template
+from jinja2 import (
+    BaseLoader,
+    Environment,
+    FileSystemBytecodeCache,
+    Template,
+    TemplateNotFound,
+)
+
+
+class FlexibleFileSystemLoader(BaseLoader):
+    """A Jinja2 loader that supports both relative paths (within a base directory)
+    and absolute paths anywhere on the filesystem.
+    """
+
+    def __init__(self, searchpath: str):
+        self.searchpath = os.path.abspath(searchpath)
+
+    def get_source(self, environment, template):  # noqa: ARG002
+        # If template is an absolute path, use it directly
+        if os.path.isabs(template):
+            path = template
+        else:
+            # Otherwise, look for it in the searchpath
+            path = os.path.join(self.searchpath, template)
+
+        if not os.path.exists(path):
+            raise TemplateNotFound(template)
+
+        mtime = os.path.getmtime(path)
+        with open(path, encoding="utf-8") as f:
+            source = f.read()
+
+        def uptodate():
+            try:
+                return os.path.getmtime(path) == mtime
+            except OSError:
+                return False
+
+        return source, path, uptodate
 
 
 def refine(text: str) -> str:
@@ -27,7 +65,7 @@ def _get_env(prompt_dir: str) -> Environment:
     os.makedirs(cache_folder, exist_ok=True)
     bcc = FileSystemBytecodeCache(directory=cache_folder)
     env = Environment(
-        loader=FileSystemLoader(prompt_dir),
+        loader=FlexibleFileSystemLoader(prompt_dir),
         bytecode_cache=bcc,
         autoescape=False,
     )

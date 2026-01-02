@@ -1,3 +1,5 @@
+from typing import TYPE_CHECKING
+
 import pytest
 from pydantic import PrivateAttr
 
@@ -8,6 +10,10 @@ from openhands.sdk.conversation import Conversation
 from openhands.sdk.event.condenser import CondensationRequest
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.exceptions import LLMContextWindowExceedError
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event.condenser import Condensation
 
 
 class RaisingLLM(LLM):
@@ -28,7 +34,9 @@ class RaisingLLM(LLM):
 
 
 class HandlesRequestsCondenser(CondenserBase):
-    def condense(self, view: View):  # pragma: no cover - trivial passthrough
+    def condense(
+        self, view: View, agent_llm: "LLM | None" = None
+    ) -> "View | Condensation":  # pragma: no cover - trivial passthrough
         return view
 
     def handles_condensation_requests(self) -> bool:
@@ -90,7 +98,9 @@ def test_agent_logs_warning_when_no_condenser_on_ctx_exceeded(
 class NoHandlesRequestsCondenser(CondenserBase):
     """A condenser that doesn't handle condensation requests."""
 
-    def condense(self, view: View):  # pragma: no cover - trivial passthrough
+    def condense(
+        self, view: View, agent_llm: "LLM | None" = None
+    ) -> "View | Condensation":  # pragma: no cover - trivial passthrough
         return view
 
     def handles_condensation_requests(self) -> bool:

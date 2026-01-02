@@ -108,8 +108,13 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to enable GPU support with --gpus all.",
     )
+    cleanup_image: bool = Field(
+        default=False,
+        description="Whether to delete the Docker image when cleaning up workspace.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
+    _image_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
 
@@ -151,6 +156,9 @@ class DockerWorkspace(RemoteWorkspace):
             image: The Docker image tag to use.
             context: The Pydantic context from model_post_init.
         """
+        # Store the image name for cleanup
+        self._image_name = image
+
         # Determine port
         if self.host_port is None:
             self.host_port = find_available_tcp_port()
@@ -188,9 +196,7 @@ class DockerWorkspace(RemoteWorkspace):
             mount_path = "/workspace"
             flags += ["-v", f"{self.mount_dir}:{mount_path}"]
             logger.info(
-                "Mounting host dir %s to container path %s",
-                self.mount_dir,
-                mount_path,
+                f"Mounting host dir {self.mount_dir} to container path {mount_path}"
             )
 
         ports = ["-p", f"{self.host_port}:8000"]
@@ -229,7 +235,7 @@ class DockerWorkspace(RemoteWorkspace):
             raise RuntimeError(f"Failed to run docker container: {proc.stderr}")
 
         self._container_id = proc.stdout.strip()
-        logger.info("Started container: %s", self._container_id)
+        logger.info(f"Started container: {self._container_id}")
 
         # Optionally stream logs in background
         if self.detach_logs:
@@ -246,7 +252,7 @@ class DockerWorkspace(RemoteWorkspace):
 
         # Wait for container to be healthy
         self._wait_for_health()
-        logger.info("Docker workspace is ready at %s", self.host)
+        logger.info(f"Docker workspace is ready at {self.host}")
 
         # Now initialize the parent RemoteWorkspace with the container URL
         super().model_post_init(context)
@@ -333,6 +339,56 @@ class DockerWorkspace(RemoteWorkspace):
                 self._logs_thread.join(timeout=2)
 
             # Stop and remove the container
-            logger.info("Stopping container: %s", self._container_id)
+            logger.info(f"Stopping container: {self._container_id}")
             execute_command(["docker", "stop", self._container_id])
             self._container_id = None
+
+        # Optionally delete the Docker image
+        if self.cleanup_image and self._image_name:
+            logger.info(f"Deleting Docker image: {self._image_name}")
+            result = execute_command(["docker", "rmi", "-f", self._image_name])
+            if result.returncode == 0:
+                logger.info(f"Successfully deleted image: {self._image_name}")
+            else:
+                logger.warning(
+                    f"Failed to delete image {self._image_name}: {result.stderr}"
+                )
+            self._image_name = None
+
+    def pause(self) -> None:
+        """Pause the Docker container to conserve resources.
+
+        Uses `docker pause` to freeze all processes in the container without
+        stopping it. The container can be resumed later with `resume()`.
+
+        Raises:
+            RuntimeError: If the container is not running or pause fails.
+        """
+        if not self._container_id:
+            raise RuntimeError("Cannot pause: container is not running")
+
+        logger.info(f"Pausing container: {self._container_id}")
+        result = execute_command(["docker", "pause", self._container_id])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to pause container: {result.stderr}")
+        logger.info(f"Container paused: {self._container_id}")
+
+    def resume(self) -> None:
+        """Resume a paused Docker container.
+
+        Uses `docker unpause` to resume all processes in the container.
+
+        Raises:
+            RuntimeError: If the container is not running or resume fails.
+        """
+        if not self._container_id:
+            raise RuntimeError("Cannot resume: container is not running")
+
+        logger.info(f"Resuming container: {self._container_id}")
+        result = execute_command(["docker", "unpause", self._container_id])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to resume container: {result.stderr}")
+
+        # Wait for health after resuming (use same timeout as initial startup)
+        self._wait_for_health(timeout=120.0)
+        logger.info(f"Container resumed: {self._container_id}")

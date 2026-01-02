@@ -24,7 +24,7 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v5
               with:
-                  token: ${{ secrets.GITHUB_TOKEN }}
+                  token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
 
             - name: Install uv
               uses: astral-sh/setup-uv@v7
@@ -65,7 +65,7 @@ jobs:
 
             - name: Create Pull Request
               env:
-                  GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  GH_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
               run: |
                   cat > pr_body.txt << 'EOF'
                   ## Release v${{ inputs.version }}
@@ -75,8 +75,9 @@ jobs:
                   ### Release Checklist
                   - [x] Version set to ${{ inputs.version }}
                   - [ ] Fix any deprecation deadlines if they exist
-                  - [ ] Integration tests pass (tagged with `integration-tests`)
-                  - [ ] Example checks pass (tagged with `test-examples`)
+                  - [ ] Integration tests pass (tagged with `integration-test`)
+                  - [ ] Behavior tests pass (tagged with `behavior-test`)
+                  - [ ] Example tests pass (tagged with `test-examples`)
                   - [ ] Draft release created at https://github.com/OpenHands/software-agent-sdk/releases/new
                     - [ ] Select tag: `v${{ inputs.version }}`
                     - [ ] Select branch: `${{ env.BRANCH_NAME }}`
@@ -88,8 +89,9 @@ jobs:
                   1. Review the version changes
                   2. Address any deprecation deadlines
                   3. Ensure integration tests pass
-                  4. Ensure example tests pass
-                  5. Create and publish the release
+                  4. Ensure behavior tests pass
+                  5. Ensure example tests pass
+                  6. Create and publish the release
 
                   Once the release is published on GitHub, the PyPI packages will be automatically published via the `pypi-release.yml` workflow.
                   EOF
@@ -99,7 +101,8 @@ jobs:
                     --body-file pr_body.txt \
                     --base main \
                     --head "${{ env.BRANCH_NAME }}" \
-                    --label "integration-tests" \
+                    --label "integration-test" \
+                    --label "behavior-test" \
                     --label "test-examples"
 
                   rm pr_body.txt
@@ -120,6 +123,6 @@ jobs:
                   echo "" >> $GITHUB_STEP_SUMMARY
                   echo "### Next Steps:" >> $GITHUB_STEP_SUMMARY
                   echo "1. Review the PR and address any deprecation deadlines" >> $GITHUB_STEP_SUMMARY
-                  echo "2. Wait for integration tests and example checks to pass" >> $GITHUB_STEP_SUMMARY
+                  echo "2. Wait for integration, behavior, and example tests to pass" >> $GITHUB_STEP_SUMMARY
                   echo "3. Create and publish the release on GitHub" >> $GITHUB_STEP_SUMMARY
                   echo "4. PyPI will automatically publish when the release is created" >> $GITHUB_STEP_SUMMARY

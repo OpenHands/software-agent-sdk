@@ -363,7 +363,13 @@ class FileEditor:
 
         # Validate file and count lines
         self.validate_file(path)
-        num_lines = self._count_lines(path)
+        try:
+            num_lines = self._count_lines(path)
+        except UnicodeDecodeError as e:
+            raise ToolError(
+                f"Cannot view {path}: file contains binary content that cannot be "
+                f"decoded as text. Error: {e}"
+            ) from None
 
         start_line = 1
         if not view_range:
