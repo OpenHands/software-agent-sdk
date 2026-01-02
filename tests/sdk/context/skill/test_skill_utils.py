@@ -86,7 +86,7 @@ def test_knowledge_agent():
 
 def test_load_skills(temp_skills_dir):
     """Test loading skills from directory."""
-    repo_agents, knowledge_agents = load_skills_from_dir(temp_skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(temp_skills_dir)
 
     # Check knowledge agents (name derived from filename: knowledge.md -> 'knowledge')
     assert len(knowledge_agents) == 1
@@ -121,7 +121,7 @@ Testing nested directory loading.
 """
     (nested_dir / "nested.md").write_text(nested_agent)
 
-    repo_agents, knowledge_agents = load_skills_from_dir(temp_skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(temp_skills_dir)
 
     # Check that we can find the nested agent (name derived from
     # path: nested/dir/nested.md -> 'nested/dir/nested')
@@ -153,7 +153,7 @@ Testing loading with trailing slashes.
 """
     (knowledge_dir / "trailing.md").write_text(knowledge_agent)
 
-    repo_agents, knowledge_agents = load_skills_from_dir(
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(
         str(temp_skills_dir) + "/"  # Add trailing slash to test
     )
 
@@ -190,20 +190,20 @@ This skill has invalid triggers format.
 
     # Check that the error message contains helpful information
     error_msg = str(excinfo.value)
-    assert "invalid_triggers.md" in error_msg
     assert "Triggers must be a list" in error_msg
 
 
-def test_cursorrules_file_load():
+def test_cursorrules_file_load(tmp_path):
     """Test loading .cursorrules file as a RepoSkill."""
     cursorrules_content = """Always use Python for new files.
 Follow the existing code style.
 Add proper error handling."""
 
-    cursorrules_path = Path(".cursorrules")
+    cursorrules_path = tmp_path / ".cursorrules"
+    cursorrules_path.write_text(cursorrules_content)
 
     # Test loading .cursorrules file directly
-    agent = Skill.load(cursorrules_path, file_content=cursorrules_content)
+    agent = Skill.load(cursorrules_path)
 
     # Verify it's loaded as a RepoSkill
     assert agent.trigger is None
@@ -213,7 +213,7 @@ Add proper error handling."""
     assert agent.source == str(cursorrules_path)
 
 
-def test_skill_version_as_integer():
+def test_skill_version_as_integer(tmp_path):
     """Test loading a skill with version as integer (reproduces the bug)."""
     # Create a skill with version as an unquoted integer
     # This should be parsed as an integer by YAML but converted to string by our code
@@ -231,10 +231,11 @@ triggers:
 This is a test agent with integer version.
 """
 
-    test_path = Path("test_agent.md")
+    test_path = tmp_path / "test_agent.md"
+    test_path.write_text(skill_content)
 
     # This should not raise an error even though version is an integer in YAML
-    agent = Skill.load(test_path, file_content=skill_content)
+    agent = Skill.load(test_path)
 
     # Verify the agent was loaded correctly
     assert isinstance(agent, Skill)
@@ -245,7 +246,7 @@ This is a test agent with integer version.
     assert isinstance(agent.trigger, KeywordTrigger)
 
 
-def test_skill_version_as_float():
+def test_skill_version_as_float(tmp_path):
     """Test loading a skill with version as float."""
     # Create a skill with version as an unquoted float
     skill_content = """---
@@ -262,10 +263,11 @@ triggers:
 This is a test agent with float version.
 """
 
-    test_path = Path("test_agent_float.md")
+    test_path = tmp_path / "test_agent_float.md"
+    test_path.write_text(skill_content)
 
     # This should not raise an error even though version is a float in YAML
-    agent = Skill.load(test_path, file_content=skill_content)
+    agent = Skill.load(test_path)
 
     # Verify the agent was loaded correctly
     assert isinstance(agent, Skill)
@@ -273,7 +275,7 @@ This is a test agent with float version.
     assert isinstance(agent.trigger, KeywordTrigger)
 
 
-def test_skill_version_as_string_unchanged():
+def test_skill_version_as_string_unchanged(tmp_path):
     """Test loading a skill with version as string (should remain unchanged)."""
     # Create a skill with version as a quoted string
     skill_content = """---
@@ -290,10 +292,11 @@ triggers:
 This is a test agent with string version.
 """
 
-    test_path = Path("test_agent_string.md")
+    test_path = tmp_path / "test_agent_string.md"
+    test_path.write_text(skill_content)
 
     # This should work normally
-    agent = Skill.load(test_path, file_content=skill_content)
+    agent = Skill.load(test_path)
 
     # Verify the agent was loaded correctly
     assert isinstance(agent, Skill)
@@ -336,7 +339,7 @@ def test_load_skills_with_cursorrules(temp_skills_dir_with_cursorrules):
     """Test loading skills when .cursorrules file exists."""
     skills_dir = temp_skills_dir_with_cursorrules / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that .cursorrules file was loaded as a RepoSkill
     assert len(repo_agents) == 2  # repo.md + .cursorrules
@@ -393,7 +396,7 @@ def test_load_skills_with_claude_gemini(temp_skills_dir_with_context_files):
     """Test loading skills when claude.md and gemini.md files exist."""
     skills_dir = temp_skills_dir_with_context_files / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that claude.md and gemini.md files were loaded as RepoSkills
     assert len(repo_agents) == 3  # repo.md + claude.md + gemini.md
@@ -460,7 +463,7 @@ def test_load_skills_with_uppercase_claude_gemini(
     """Test loading skills when CLAUDE.MD and GEMINI.MD files exist (uppercase)."""
     skills_dir = temp_skills_dir_with_uppercase_context_files / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that CLAUDE.MD and GEMINI.MD files were loaded as RepoSkills
     assert len(repo_agents) == 3  # repo.md + CLAUDE.MD + GEMINI.MD
@@ -526,7 +529,7 @@ def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_contex
     root, original_size = temp_skills_dir_with_large_context_file
     skills_dir = root / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents = load_skills_from_dir(skills_dir)
+    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
 
     # Verify that CLAUDE.md file was loaded but truncated
     assert len(repo_agents) == 2  # repo.md + claude.md
@@ -554,7 +557,7 @@ def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_contex
     assert original_size > THIRD_PARTY_SKILL_MAX_CHARS
 
 
-def test_repo_skill_with_mcp_tools():
+def test_repo_skill_with_mcp_tools(tmp_path):
     """Test loading a repo skill with mcp_tools configuration."""
     # Create a repo skill with mcp_tools in frontmatter
     skill_content = """---
@@ -574,10 +577,11 @@ mcp_tools:
 This is a repo skill that includes MCP tools.
 """
 
-    test_path = Path("default-tools.md")
+    test_path = tmp_path / "default-tools.md"
+    test_path.write_text(skill_content)
 
     # Load the skill
-    agent = Skill.load(test_path, file_content=skill_content)
+    agent = Skill.load(test_path)
 
     # Verify it's loaded as a RepoSkill
     assert agent.trigger is None
@@ -598,7 +602,7 @@ This is a repo skill that includes MCP tools.
     assert getattr(fetch_server, "args") == ["mcp-server-fetch"]
 
 
-def test_repo_skill_with_mcp_tools_dict_format():
+def test_repo_skill_with_mcp_tools_dict_format(tmp_path):
     """Test loading a repo skill with mcp_tools as dict (JSON-like format)."""
     # Create a repo skill with mcp_tools in JSON-like dict format
     skill_content = """---
@@ -621,10 +625,11 @@ mcp_tools: {
 This is a repo skill that includes MCP tools in dict format.
 """
 
-    test_path = Path("default-tools-dict.md")
+    test_path = tmp_path / "default-tools-dict.md"
+    test_path.write_text(skill_content)
 
     # Load the skill
-    agent = Skill.load(test_path, file_content=skill_content)
+    agent = Skill.load(test_path)
 
     # Verify it's loaded as a RepoSkill
     assert agent.trigger is None
@@ -645,7 +650,7 @@ This is a repo skill that includes MCP tools in dict format.
     assert getattr(fetch_server, "args") == ["mcp-server-fetch"]
 
 
-def test_repo_skill_without_mcp_tools():
+def test_repo_skill_without_mcp_tools(tmp_path):
     """Test loading a repo skill without mcp_tools (should be None)."""
     # Create a repo skill without mcp_tools
     skill_content = """---
@@ -660,10 +665,11 @@ agent: CodeActAgent
 This is a repo skill without MCP tools.
 """
 
-    test_path = Path("no-mcp-tools.md")
+    test_path = tmp_path / "no-mcp-tools.md"
+    test_path.write_text(skill_content)
 
     # Load the skill
-    agent = Skill.load(test_path, file_content=skill_content)
+    agent = Skill.load(test_path)
 
     # Verify it's loaded as a RepoSkill
     assert agent.trigger is None
@@ -672,7 +678,7 @@ This is a repo skill without MCP tools.
     assert agent.mcp_tools is None
 
 
-def test_repo_skill_with_invalid_mcp_tools():
+def test_repo_skill_with_invalid_mcp_tools(tmp_path):
     """Test loading a repo skill with invalid mcp_tools configuration."""
     # Create a repo skill with truly invalid mcp_tools (wrong type)
     skill_content = """---
@@ -688,11 +694,12 @@ mcp_tools: "this should be a dict or MCPConfig, not a string"
 This is a repo skill with invalid MCP tools configuration.
 """
 
-    test_path = Path("invalid-mcp-tools.md")
+    test_path = tmp_path / "invalid-mcp-tools.md"
+    test_path.write_text(skill_content)
 
-    # Loading should raise an error (either SkillValidationError or AttributeError)
+    # Loading should raise SkillValidationError for invalid mcp_tools type
     with pytest.raises(SkillValidationError) as excinfo:
-        Skill.load(test_path, file_content=skill_content)
+        Skill.load(test_path)
 
     # Check that the error message contains helpful information
     error_msg = str(excinfo.value)

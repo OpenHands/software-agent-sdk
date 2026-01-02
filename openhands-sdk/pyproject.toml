@@ -1,6 +1,6 @@
 [project]
 name = "openhands-sdk"
-version = "1.7.2"
+version = "1.7.3"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
