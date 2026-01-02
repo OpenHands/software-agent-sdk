@@ -51,7 +51,9 @@ class MockRollingCondenser(RollingCondenser):
 
 
 def test_rolling_condenser_returns_view_when_no_condensation_needed() -> None:
-    """Test that RollingCondenser returns the original view when should_condense returns False."""
+    """Test that RollingCondenser returns the original view when should_condense returns
+    False.
+    """
     condenser = MockRollingCondenser(should_condense_value=False)
 
     events: list[Event] = [
@@ -68,7 +70,9 @@ def test_rolling_condenser_returns_view_when_no_condensation_needed() -> None:
 
 
 def test_rolling_condenser_returns_condensation_when_needed() -> None:
-    """Test that RollingCondenser returns a Condensation when should_condense returns True."""
+    """Test that RollingCondenser returns a Condensation when should_condense returns
+    True.
+    """
     condenser = MockRollingCondenser(should_condense_value=True, raise_exception=False)
 
     events: list[Event] = [
