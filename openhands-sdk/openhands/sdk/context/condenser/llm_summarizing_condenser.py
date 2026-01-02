@@ -4,7 +4,7 @@ from enum import Enum
 
 from pydantic import Field, model_validator
 
-from openhands.sdk.context.condenser.base import RollingCondenser
+from openhands.sdk.context.condenser.base import NoCondensationAvailableException, RollingCondenser
 from openhands.sdk.context.condenser.utils import (
     get_suffix_length_for_token_reduction,
     get_total_token_count,
@@ -124,12 +124,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         Raises:
             ValueError: If forgotten_events is empty (0 events to condense).
         """
-        if len(forgotten_events) == 0:
-            raise ValueError(
-                "Cannot condense 0 events. This typically occurs when a tool loop "
-                "spans almost the entire view, leaving no valid range for forgetting "
-                "events. Consider adjusting keep_first or max_size parameters."
-            )
+        assert len(forgotten_events) > 0, "No events to condense."
 
         # Convert events to strings for the template
         event_strings = [str(forgotten_event) for forgotten_event in forgotten_events]
@@ -236,10 +231,18 @@ class LLMSummarizingCondenser(RollingCondenser):
     ) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
         # summary.
-        summary_event_content = self._get_summary_event_content(view)
         forgotten_events, summary_offset = self._get_forgotten_events(
             view, agent_llm=agent_llm
         )
+
+        if not forgotten_events:
+            raise NoCondensationAvailableException(
+                "Cannot condense 0 events. This typically occurs when a tool loop "
+                "spans almost the entire view, leaving no valid range for forgetting "
+                "events. Consider adjusting keep_first or max_size parameters."
+            )
+        
+        summary_event_content = self._get_summary_event_content(view)
 
         return self._generate_condensation(
             summary_event_content=summary_event_content,
