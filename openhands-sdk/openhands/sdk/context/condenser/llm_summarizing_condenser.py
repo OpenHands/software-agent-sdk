@@ -4,7 +4,10 @@ from enum import Enum
 
 from pydantic import Field, model_validator
 
-from openhands.sdk.context.condenser.base import NoCondensationAvailableException, RollingCondenser
+from openhands.sdk.context.condenser.base import (
+    NoCondensationAvailableException,
+    RollingCondenser,
+)
 from openhands.sdk.context.condenser.utils import (
     get_suffix_length_for_token_reduction,
     get_total_token_count,
@@ -241,7 +244,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                 "spans almost the entire view, leaving no valid range for forgetting "
                 "events. Consider adjusting keep_first or max_size parameters."
             )
-        
+
         summary_event_content = self._get_summary_event_content(view)
 
         return self._generate_condensation(

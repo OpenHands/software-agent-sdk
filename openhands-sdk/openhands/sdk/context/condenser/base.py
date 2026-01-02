@@ -65,15 +65,17 @@ class PipelinableCondenserBase(CondenserBase):
     """Abstract condenser interface which may be pipelined. (Since a pipeline
     condenser should not nest another pipeline condenser)"""
 
+
 class NoCondensationAvailableException(Exception):
     """Raised when a condenser is asked to provide a condensation but none is available.
-    
+
     This can happen if the condenser's `should_condense` method returns True, but due to
     API constraints no condensation can be generated.
 
     When this exception is raised from a rolling condenser's `get_condensation` method,
     the agent will fall back to using the uncondensed view for the next agent step.
     """
+
 
 class RollingCondenser(PipelinableCondenserBase, ABC):
     """Base class for a specialized condenser strategy that applies condensation to a

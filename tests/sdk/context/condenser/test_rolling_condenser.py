@@ -84,7 +84,9 @@ def test_rolling_condenser_returns_condensation_when_needed() -> None:
     assert result.summary == "Mock summary"
 
 
-def test_rolling_condenser_returns_view_on_no_condensation_available_exception() -> None:
+def test_rolling_condenser_returns_view_on_no_condensation_available_exception() -> (
+    None
+):
     """Test that RollingCondenser returns the original view when NoCondensationAvailableException is raised.
 
     This tests the exception handling added in base.py:105-110 which catches
