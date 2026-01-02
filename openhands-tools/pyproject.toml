@@ -9,7 +9,7 @@ dependencies = [
     "bashlex>=0.18",
     "binaryornot>=0.4.4",
     "cachetools",
-    "libtmux>=0.46.2",
+    "libtmux>=0.53.0",
     "pydantic>=2.11.7",
     "browser-use>=0.8.0",
     "func-timeout>=4.3.5",

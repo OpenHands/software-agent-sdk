@@ -1549,11 +1549,11 @@ wheels = [
 
 [[package]]
 name = "libtmux"
-version = "0.46.2"
+version = "0.53.0"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/9c/aa/7e1dcaa097156d6f3a7d8669be4389dced997feeb81744e3ff4681d65ee8/libtmux-0.46.2.tar.gz", hash = "sha256:9a398fec5d714129c8344555d466e1a903dfc0f741ba07aabe75a8ceb25c5dda", size = 346887, upload-time = "2025-05-26T19:40:04.096Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e7/28/e2b252817cb181aec2f42fe2d1d7fac5ec9c4d15bfb2b8ea4bd1179e4244/libtmux-0.53.0.tar.gz", hash = "sha256:1d19af4cea0c19543954d7e7317c7025c0739b029cccbe3b843212fae238f1bd", size = 405001, upload-time = "2025-12-14T11:59:11.337Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d6/2f/9d207039fcfa00d3b30e4d765f062fbcc42c873c7518a8cfebb3eafd00e0/libtmux-0.46.2-py3-none-any.whl", hash = "sha256:6c32dbf22bde8e5e33b2714a4295f6e838dc640f337cd4c085a044f6828c7793", size = 60873, upload-time = "2025-05-26T19:40:02.284Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/d0/2e8bc5caa639ebb9f8801ba0be7070a28d48d8ed60e2a428d40f71fb88b8/libtmux-0.53.0-py3-none-any.whl", hash = "sha256:024b7ae6a12aae55358e8feb914c8632b3ab9bd61c0987c53559643c6a58ee4f", size = 77582, upload-time = "2025-12-14T11:59:09.739Z" },
 ]
 
 [[package]]
@@ -2206,7 +2206,7 @@ requires-dist = [
     { name = "browser-use", specifier = ">=0.8.0" },
     { name = "cachetools" },
     { name = "func-timeout", specifier = ">=4.3.5" },
-    { name = "libtmux", specifier = ">=0.46.2" },
+    { name = "libtmux", specifier = ">=0.53.0" },
     { name = "openhands-sdk", editable = "openhands-sdk" },
     { name = "pydantic", specifier = ">=2.11.7" },
     { name = "tom-swe", specifier = ">=1.0.3" },

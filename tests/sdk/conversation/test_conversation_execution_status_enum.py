@@ -64,18 +64,18 @@ def test_enum_serialization():
     # Set to different states and test serialization
     conversation._state.execution_status = ConversationExecutionStatus.FINISHED
     serialized = conversation._state.model_dump_json()
-    assert '"execution_status": "finished"' in serialized
+    assert '"execution_status":"finished"' in serialized
 
     conversation._state.execution_status = ConversationExecutionStatus.PAUSED
     serialized = conversation._state.model_dump_json()
-    assert '"execution_status": "paused"' in serialized
+    assert '"execution_status":"paused"' in serialized
 
     conversation._state.execution_status = (
         ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
     )
     serialized = conversation._state.model_dump_json()
-    assert '"execution_status": "waiting_for_confirmation"' in serialized
+    assert '"execution_status":"waiting_for_confirmation"' in serialized
 
     conversation._state.execution_status = ConversationExecutionStatus.ERROR
     serialized = conversation._state.model_dump_json()
-    assert '"execution_status": "error"' in serialized
+    assert '"execution_status":"error"' in serialized
