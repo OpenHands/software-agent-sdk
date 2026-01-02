@@ -87,7 +87,8 @@ def test_rolling_condenser_returns_condensation_when_needed() -> None:
 def test_rolling_condenser_returns_view_on_no_condensation_available_exception() -> (
     None
 ):
-    """Test that RollingCondenser returns the original view when NoCondensationAvailableException is raised.
+    """Test that RollingCondenser returns the original view when
+    NoCondensationAvailableException is raised.
 
     This tests the exception handling added in base.py:105-110 which catches
     NoCondensationAvailableException from get_condensation() and returns the
@@ -133,7 +134,7 @@ def test_rolling_condenser_with_agent_llm() -> None:
 
 
 def test_no_condensation_available_exception_message() -> None:
-    """Test that NoCondensationAvailableException can be raised with a custom message."""
+    """Test that NoCondensationAvailableException raisable with custom message."""
     exception_message = "Custom error message about API constraints"
 
     with pytest.raises(NoCondensationAvailableException, match=exception_message):
