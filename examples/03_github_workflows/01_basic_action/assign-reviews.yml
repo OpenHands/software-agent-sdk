@@ -50,7 +50,8 @@ jobs:
 
                 # Issues with needs-triage
 
-                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 4 days since the last activity:
+                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 4 days since the last
+                activity:
                 1. First, check if the issue has already been triaged by verifying it does NOT have:
                    - The "enhancement" label
                    - Any "priority" label (priority:low, priority:medium, priority:high, etc.)
