@@ -1,3 +1,4 @@
+import asyncio
 import time
 from importlib.metadata import version
 
@@ -55,3 +56,9 @@ async def set_service_suspended(service_suspended: bool) -> bool:
     global _service_suspended
     _service_suspended = service_suspended
     return service_suspended
+
+
+@server_details_router.get("/long-stand")
+async def long_stand(time: int = 10) -> str:
+    await asyncio.sleep(time)
+    return f"Slept for {time} seconds"
