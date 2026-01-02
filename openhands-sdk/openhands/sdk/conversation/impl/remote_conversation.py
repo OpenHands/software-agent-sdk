@@ -741,7 +741,9 @@ class RemoteConversation(BaseConversation):
             timeout: Maximum time in seconds to wait.
 
         Raises:
-            ConversationRunError: If the wait times out.
+            ConversationRunError: If the run fails, the conversation disappears,
+                or the wait times out. Transient network errors, 429s, and 5xx
+                responses are retried until timeout.
         """
         start_time = time.monotonic()
 
@@ -785,10 +787,37 @@ class RemoteConversation(BaseConversation):
                     )
                     return
 
-            except Exception as e:
-                # Log but continue polling - transient network errors shouldn't
-                # stop us from waiting for the run to complete
+            except ConversationRunError:
+                raise
+            except httpx.HTTPStatusError as e:
+                status_code = e.response.status_code
+                reason = e.response.reason_phrase
+                if status_code == 404:
+                    raise ConversationRunError(
+                        self._id,
+                        RuntimeError(
+                            "Remote conversation not found (404). "
+                            "The runtime may have been deleted."
+                        ),
+                    ) from e
+                if 400 <= status_code < 500 and status_code != 429:
+                    raise ConversationRunError(
+                        self._id,
+                        RuntimeError(
+                            f"Polling failed with HTTP {status_code} {reason}"
+                        ),
+                    ) from e
+                # Retry on 429s and 5xx errors
+                logger.warning(
+                    "Error polling status (will retry): HTTP %d %s",
+                    status_code,
+                    reason,
+                )
+            except httpx.RequestError as e:
+                # Transient network errors shouldn't stop us from waiting
                 logger.warning(f"Error polling status (will retry): {e}")
+            except Exception as e:
+                raise ConversationRunError(self._id, e) from e
 
             time.sleep(poll_interval)
 
