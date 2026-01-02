@@ -756,10 +756,11 @@ class RemoteConversation(BaseConversation):
 
             try:
                 status = self._poll_status_once()
-                if self._handle_terminal_status(status, elapsed):
-                    return
             except Exception as exc:
                 self._handle_poll_exception(exc)
+            else:
+                if self._handle_terminal_status(status, elapsed):
+                    return
 
             time.sleep(poll_interval)
 
@@ -794,8 +795,6 @@ class RemoteConversation(BaseConversation):
 
     def _handle_poll_exception(self, exc: Exception) -> None:
         """Classify polling exceptions into retryable vs terminal failures."""
-        if isinstance(exc, ConversationRunError):
-            raise
         if isinstance(exc, httpx.HTTPStatusError):
             status_code = exc.response.status_code
             reason = exc.response.reason_phrase
