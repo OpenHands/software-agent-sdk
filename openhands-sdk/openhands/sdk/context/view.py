@@ -15,6 +15,7 @@ from openhands.sdk.event import (
     LLMConvertibleEvent,
 )
 from openhands.sdk.event.base import Event, EventID
+from openhands.sdk.event.condenser import CondensationRequestReason
 from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     ObservationBaseEvent,
@@ -79,6 +80,9 @@ class View(BaseModel):
 
     unhandled_condensation_request: bool = False
     """Whether there is an unhandled condensation request in the view."""
+
+    unhandled_condensation_request_reasons: list[CondensationRequestReason] = []
+    """List of reasons for unhandled condensation requests in the view."""
 
     condensations: list[Condensation] = []
     """A list of condensations that were processed to produce the view."""
@@ -489,15 +493,21 @@ class View(BaseModel):
         # Check for an unhandled condensation request -- these are events closer to the
         # end of the list than any condensation action.
         unhandled_condensation_request = False
+        unhandled_condensation_request_reasons: list[CondensationRequestReason] = []
+        
         for event in reversed(events):
             if isinstance(event, Condensation):
                 break
+            
             if isinstance(event, CondensationRequest):
                 unhandled_condensation_request = True
-                break
+
+                if event.reason is not None:
+                    unhandled_condensation_request_reasons.append(event.reason)
 
         return View(
             events=View.filter_unmatched_tool_calls(kept_events),
             unhandled_condensation_request=unhandled_condensation_request,
+            unhandled_condensation_request_reasons=unhandled_condensation_request_reasons,
             condensations=condensations,
         )
