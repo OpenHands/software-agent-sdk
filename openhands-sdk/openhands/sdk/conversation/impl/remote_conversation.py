@@ -739,8 +739,7 @@ class RemoteConversation(BaseConversation):
         Raises:
             ConversationRunError: If the run fails, the conversation disappears,
                 or the wait times out. Transient network errors, 429s, and 5xx
-                responses are retried until timeout. A STUCK status is treated
-                as a terminal completion (matching local behavior).
+                responses are retried until timeout.
         """
         start_time = time.monotonic()
 
@@ -786,12 +785,10 @@ class RemoteConversation(BaseConversation):
                 RuntimeError(detail or "Remote conversation ended with error"),
             )
         if status == ConversationExecutionStatus.STUCK.value:
-            logger.warning(
-                "Run completed with status: %s (elapsed: %.1fs)",
-                status,
-                elapsed,
+            raise ConversationRunError(
+                self._id,
+                RuntimeError("Remote conversation got stuck"),
             )
-            return True
         logger.info(f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)")
         return True
 
