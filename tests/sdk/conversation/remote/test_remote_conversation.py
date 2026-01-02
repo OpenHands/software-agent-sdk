@@ -496,8 +496,8 @@ class TestRemoteConversation:
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
     )
-    def test_remote_conversation_run_stuck_status_raises(self, mock_ws_client):
-        """Test that stuck status raises ConversationRunError."""
+    def test_remote_conversation_run_stuck_status_returns(self, mock_ws_client):
+        """Test that stuck status returns without raising."""
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
 
@@ -520,9 +520,7 @@ class TestRemoteConversation:
         mock_ws_client.return_value = mock_ws_instance
 
         conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
-        with pytest.raises(ConversationRunError) as exc_info:
-            conversation.run(poll_interval=0.01)
-        assert "stuck" in str(exc_info.value).lower()
+        conversation.run(poll_interval=0.01)
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
