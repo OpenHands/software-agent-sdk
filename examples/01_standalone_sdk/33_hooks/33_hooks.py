@@ -70,7 +70,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"LOG_FILE={log_file} {SCRIPT_DIR / 'log_tools.sh'}",
+                                "command": f"LOG_FILE={log_file} "
+                                f"{SCRIPT_DIR / 'log_tools.sh'}",
                                 "timeout": 5,
                             }
                         ],
@@ -91,7 +92,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
                         "hooks": [
                             {
                                 "type": "command",
-                                "command": f"SUMMARY_FILE={summary_file} {SCRIPT_DIR / 'require_summary.sh'}",
+                                "command": f"SUMMARY_FILE={summary_file} "
+                                f"{SCRIPT_DIR / 'require_summary.sh'}",
                             }
                         ],
                     }
