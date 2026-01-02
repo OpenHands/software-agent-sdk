@@ -759,7 +759,12 @@ class RemoteConversation(BaseConversation):
             except Exception as exc:
                 self._handle_poll_exception(exc)
             else:
-                if self._handle_terminal_status(status, elapsed):
+                if self._handle_conversation_status(status):
+                    logger.info(
+                        "Run completed with status: %s (elapsed: %.1fs)",
+                        status,
+                        elapsed,
+                    )
                     return
 
             time.sleep(poll_interval)
@@ -775,7 +780,7 @@ class RemoteConversation(BaseConversation):
         info = resp.json()
         return info.get("execution_status")
 
-    def _handle_terminal_status(self, status: str | None, elapsed: float) -> bool:
+    def _handle_conversation_status(self, status: str | None) -> bool:
         """Handle non-running statuses; return True if the run is complete."""
         if status == ConversationExecutionStatus.RUNNING.value:
             return False
@@ -790,7 +795,6 @@ class RemoteConversation(BaseConversation):
                 self._id,
                 RuntimeError("Remote conversation got stuck"),
             )
-        logger.info(f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)")
         return True
 
     def _handle_poll_exception(self, exc: Exception) -> None:
