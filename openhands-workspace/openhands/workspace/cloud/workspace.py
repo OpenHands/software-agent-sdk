@@ -249,6 +249,36 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
 
         return None
 
+    def pause(self) -> None:
+        """Pause the sandbox to conserve resources.
+
+        Note: OpenHands Cloud does not currently support pausing sandboxes.
+        This method raises NotImplementedError until the API is available.
+
+        Raises:
+            NotImplementedError: Cloud API pause endpoint is not yet available.
+        """
+        raise NotImplementedError(
+            "OpenHandsCloudWorkspace.pause() is not yet supported - "
+            "Cloud API pause endpoint not available"
+        )
+
+    def resume(self) -> None:
+        """Resume a paused sandbox.
+
+        Calls the /resume endpoint on the Cloud API to resume the sandbox.
+
+        Raises:
+            RuntimeError: If the sandbox is not running.
+        """
+        if not self._sandbox_id:
+            raise RuntimeError("Cannot resume: sandbox is not running")
+
+        logger.info(f"Resuming sandbox {self._sandbox_id}")
+        self._resume_sandbox()
+        self._wait_until_sandbox_ready()
+        logger.info(f"Sandbox resumed: {self._sandbox_id}")
+
     def _send_api_request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:
         """Send an API request to the Cloud API with error handling."""
         logger.debug(f"Sending {method} request to {url}")
