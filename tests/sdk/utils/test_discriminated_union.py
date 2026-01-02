@@ -100,43 +100,52 @@ class SomeImpl(SomeBase):
 def test_json_schema_expected() -> None:
     json_schema = Animal.model_json_schema()
 
-    assert json_schema == {
-        "$defs": {
-            "Cat": {
-                "properties": {
-                    "name": {"title": "Name", "type": "string"},
-                    "kind": {"const": "Cat", "title": "Kind", "type": "string"},
-                },
-                "required": ["name"],
-                "title": "Cat",
-                "type": "object",
-            },
-            "Dog": {
-                "properties": {
-                    "name": {"title": "Name", "type": "string"},
-                    "barking": {"title": "Barking", "type": "boolean"},
-                    "kind": {"const": "Dog", "title": "Kind", "type": "string"},
-                },
-                "required": ["name", "barking"],
-                "title": "Dog",
-                "type": "object",
-            },
-            "Wolf": {
-                "additionalProperties": False,
-                "properties": {
-                    "name": {"title": "Name", "type": "string"},
-                    "kind": {"const": "Wolf", "title": "Kind", "type": "string"},
-                },
-                "required": ["name"],
-                "title": "Wolf",
-                "type": "object",
-            },
+    # Verify the schema has the expected structure
+    assert "$defs" in json_schema
+    assert "oneOf" in json_schema
+    assert "discriminator" in json_schema
+
+    # Check discriminator structure
+    discriminator = json_schema["discriminator"]
+    assert discriminator["propertyName"] == "kind"
+    assert "mapping" in discriminator
+
+    # Check the oneOf variants
+    assert json_schema["oneOf"] == [
+        {"$ref": "#/$defs/Cat"},
+        {"$ref": "#/$defs/Dog"},
+        {"$ref": "#/$defs/Wolf"},
+    ]
+
+    # Check the $defs structure
+    assert json_schema["$defs"]["Cat"] == {
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "kind": {"const": "Cat", "title": "Kind", "type": "string"},
         },
-        "oneOf": [
-            {"$ref": "#/$defs/Cat"},
-            {"$ref": "#/$defs/Dog"},
-            {"$ref": "#/$defs/Wolf"},
-        ],
+        "required": ["name"],
+        "title": "Cat",
+        "type": "object",
+    }
+    assert json_schema["$defs"]["Dog"] == {
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "barking": {"title": "Barking", "type": "boolean"},
+            "kind": {"const": "Dog", "title": "Kind", "type": "string"},
+        },
+        "required": ["name", "barking"],
+        "title": "Dog",
+        "type": "object",
+    }
+    assert json_schema["$defs"]["Wolf"] == {
+        "additionalProperties": False,
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "kind": {"const": "Wolf", "title": "Kind", "type": "string"},
+        },
+        "required": ["name"],
+        "title": "Wolf",
+        "type": "object",
     }
 
 

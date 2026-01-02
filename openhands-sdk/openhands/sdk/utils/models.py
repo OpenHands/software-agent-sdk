@@ -222,7 +222,18 @@ class DiscriminatedUnionMixin(OpenHandsModel):
                 for sub in subclasses.values():
                     sub_schema = gen.generate_inner(sub.__pydantic_core_schema__)
                     schemas.append(sub_schema)
-                schema = {"oneOf": schemas}
+
+                # Build discriminator mapping from $ref schemas
+                mapping = {}
+                for option in schemas:
+                    if "$ref" in option:
+                        kind = option["$ref"].split("/")[-1]
+                        mapping[kind] = option["$ref"]
+
+                schema = {
+                    "oneOf": schemas,
+                    "discriminator": {"propertyName": "kind", "mapping": mapping},
+                }
             else:
                 schema = handler(core_schema)
                 schema["properties"]["kind"] = {
