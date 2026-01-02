@@ -1,3 +1,4 @@
+from enum import Enum
 from pydantic import Field
 from rich.text import Text
 
@@ -45,6 +46,15 @@ class Condensation(Event):
             text.append(f"{self.summary}\n")
         return text
 
+class CondensationRequestReason(Enum):
+    MANUAL = "manual"
+    """The condensation was requested manually by the user or system."""
+
+    CONTEXT_LIMIT = "context_limit"
+    """The condensation was requested due to reaching the context window limit."""
+
+    UNRECOVERABLE = "unrecoverable"
+    """The condensation was requested due to an unrecoverable error."""
 
 class CondensationRequest(Event):
     """This action is used to request a condensation of the conversation history.
@@ -52,9 +62,10 @@ class CondensationRequest(Event):
     Attributes:
         action (str): The action type, namely ActionType.CONDENSATION_REQUEST.
     """
-
+    
     source: SourceType = "environment"
-
+    reason: CondensationRequestReason | None = None
+    
     @property
     def visualize(self) -> Text:
         text = Text()
