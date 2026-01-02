@@ -216,7 +216,6 @@ class ConversationState(OpenHandsModel):
                 f"State: {state.model_dump(exclude={'agent'})}\n"
                 f"Agent: {state.agent.model_dump_succint()}"
             )
-
             return state
 
         # ---- Fresh path ----
