@@ -217,11 +217,6 @@ class ConversationState(OpenHandsModel):
                 f"Agent: {state.agent.model_dump_succint()}"
             )
 
-            # If the execution_status was "running" while serialized, then the
-            # conversation can't possibly be running - something is wrong
-            if state.execution_status == ConversationExecutionStatus.RUNNING:
-                state.execution_status = ConversationExecutionStatus.ERROR
-
             return state
 
         # ---- Fresh path ----

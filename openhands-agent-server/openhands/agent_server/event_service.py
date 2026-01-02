@@ -439,6 +439,12 @@ class EventService:
         # Setup stats streaming for remote execution
         self._setup_stats_streaming(self._conversation.agent)
 
+        # If the execution_status was "running" while serialized, then the
+        # conversation can't possibly be running - something is wrong
+        state = self._conversation.state
+        if state.execution_status == ConversationExecutionStatus.RUNNING:
+            state.execution_status = ConversationExecutionStatus.ERROR
+
         # Publish initial state update
         await self._publish_state_update()
 
