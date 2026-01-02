@@ -503,6 +503,9 @@ class ConversationService:
 
         try:
             await event_service.start()
+            # Save metadata immediately after successful start to ensure persistence
+            # even if the system is not shut down gracefully
+            await event_service.save_meta()
         except Exception:
             # Clean up the event service if startup fails
             await event_service.close()
