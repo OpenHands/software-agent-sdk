@@ -131,11 +131,7 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             assert kind is None or kind == cls.__name__
             return handler(data)
         if kind is None:
-            subclasses = _get_checked_concrete_subclasses(cls)
-            if subclasses:
-                kind = next(iter(subclasses))
-            else:
-                kind = ""
+            raise ValueError(f"Expected 'kind' to be present: {data}")
         subclass = cls.resolve_kind(kind)
         return subclass.model_validate(data, context=info.context)
 
