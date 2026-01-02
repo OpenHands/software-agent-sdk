@@ -768,6 +768,7 @@ class RemoteConversation(BaseConversation):
             time.sleep(poll_interval)
 
     def _poll_status_once(self) -> str | None:
+        """Fetch the current execution status from the remote conversation."""
         resp = _send_request(
             self._client,
             "GET",
@@ -778,6 +779,7 @@ class RemoteConversation(BaseConversation):
         return info.get("execution_status")
 
     def _handle_terminal_status(self, status: str | None, elapsed: float) -> bool:
+        """Handle non-running statuses; return True if the run is complete."""
         if status == ConversationExecutionStatus.RUNNING.value:
             return False
         if status == ConversationExecutionStatus.ERROR.value:
@@ -795,6 +797,7 @@ class RemoteConversation(BaseConversation):
         return True
 
     def _handle_poll_exception(self, exc: Exception) -> None:
+        """Classify polling exceptions into retryable vs terminal failures."""
         if isinstance(exc, ConversationRunError):
             raise
         if isinstance(exc, httpx.HTTPStatusError):
