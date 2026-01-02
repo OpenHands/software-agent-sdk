@@ -719,12 +719,8 @@ class RemoteConversation(BaseConversation):
 
         if resp.status_code == 409:
             logger.info("Conversation is already running; skipping run trigger")
-            if blocking:
-                # Still wait for the existing run to complete
-                self._wait_for_run_completion(poll_interval, timeout)
-            return
-
-        logger.info(f"run() triggered successfully: {resp}")
+        else:
+            logger.info(f"run() triggered successfully: {resp}")
 
         if blocking:
             self._wait_for_run_completion(poll_interval, timeout)
@@ -794,19 +790,15 @@ class RemoteConversation(BaseConversation):
 
     def _get_last_error_detail(self) -> str | None:
         """Return the most recent ConversationErrorEvent detail, if available."""
-        try:
-            events = self._state.events
-            for idx in range(len(events) - 1, -1, -1):
-                event = events[idx]
-                if isinstance(event, ConversationErrorEvent):
-                    detail = event.detail.strip()
-                    code = event.code.strip()
-                    if detail and code:
-                        return f"{code}: {detail}"
-                    return detail or code or None
-        except Exception as exc:
-            logger.debug("Failed to read conversation error detail: %s", exc)
-        return None
+        events = self._state.events
+        for idx in range(len(events) - 1, -1, -1):
+            event = events[idx]
+            if isinstance(event, ConversationErrorEvent):
+                detail = event.detail.strip()
+                code = event.code.strip()
+                if detail and code:
+                    return f"{code}: {detail}"
+                return detail or code or None
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         payload = {"policy": policy.model_dump()}
