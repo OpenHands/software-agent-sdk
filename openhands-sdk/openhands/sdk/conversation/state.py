@@ -221,6 +221,7 @@ class ConversationState(OpenHandsModel):
         if base_text:
             state = cls.model_validate(json.loads(base_text))
 
+            # Restore the conversation with the same id
             if state.id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
