@@ -737,7 +737,9 @@ class RemoteConversation(BaseConversation):
             timeout: Maximum time in seconds to wait.
 
         Raises:
-            ConversationRunError: If the wait times out.
+            ConversationRunError: If the run fails, the conversation disappears,
+                or the wait times out. Transient network errors, 429s, and 5xx
+                responses are retried until timeout.
         """
         start_time = time.monotonic()
 
@@ -753,40 +755,76 @@ class RemoteConversation(BaseConversation):
                 )
 
             try:
-                resp = _send_request(
-                    self._client,
-                    "GET",
-                    f"/api/conversations/{self._id}",
-                    timeout=30,
-                )
-                info = resp.json()
-                status = info.get("execution_status")
-
-                if status != ConversationExecutionStatus.RUNNING.value:
-                    if status == ConversationExecutionStatus.ERROR.value:
-                        detail = self._get_last_error_detail()
-                        raise ConversationRunError(
-                            self._id,
-                            RuntimeError(
-                                detail or "Remote conversation ended with error"
-                            ),
-                        )
-                    if status == ConversationExecutionStatus.STUCK.value:
-                        raise ConversationRunError(
-                            self._id,
-                            RuntimeError("Remote conversation got stuck"),
-                        )
+                status = self._poll_status_once()
+            except Exception as exc:
+                self._handle_poll_exception(exc)
+            else:
+                if self._handle_conversation_status(status):
                     logger.info(
-                        f"Run completed with status: {status} (elapsed: {elapsed:.1f}s)"
+                        "Run completed with status: %s (elapsed: %.1fs)",
+                        status,
+                        elapsed,
                     )
                     return
 
-            except Exception as e:
-                # Log but continue polling - transient network errors shouldn't
-                # stop us from waiting for the run to complete
-                logger.warning(f"Error polling status (will retry): {e}")
-
             time.sleep(poll_interval)
+
+    def _poll_status_once(self) -> str | None:
+        """Fetch the current execution status from the remote conversation."""
+        resp = _send_request(
+            self._client,
+            "GET",
+            f"/api/conversations/{self._id}",
+            timeout=30,
+        )
+        info = resp.json()
+        return info.get("execution_status")
+
+    def _handle_conversation_status(self, status: str | None) -> bool:
+        """Handle non-running statuses; return True if the run is complete."""
+        if status == ConversationExecutionStatus.RUNNING.value:
+            return False
+        if status == ConversationExecutionStatus.ERROR.value:
+            detail = self._get_last_error_detail()
+            raise ConversationRunError(
+                self._id,
+                RuntimeError(detail or "Remote conversation ended with error"),
+            )
+        if status == ConversationExecutionStatus.STUCK.value:
+            raise ConversationRunError(
+                self._id,
+                RuntimeError("Remote conversation got stuck"),
+            )
+        return True
+
+    def _handle_poll_exception(self, exc: Exception) -> None:
+        """Classify polling exceptions into retryable vs terminal failures."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code
+            reason = exc.response.reason_phrase
+            if status_code == 404:
+                raise ConversationRunError(
+                    self._id,
+                    RuntimeError(
+                        "Remote conversation not found (404). "
+                        "The runtime may have been deleted."
+                    ),
+                ) from exc
+            if 400 <= status_code < 500 and status_code != 429:
+                raise ConversationRunError(
+                    self._id,
+                    RuntimeError(f"Polling failed with HTTP {status_code} {reason}"),
+                ) from exc
+            logger.warning(
+                "Error polling status (will retry): HTTP %d %s",
+                status_code,
+                reason,
+            )
+            return
+        if isinstance(exc, httpx.RequestError):
+            logger.warning(f"Error polling status (will retry): {exc}")
+            return
+        raise ConversationRunError(self._id, exc) from exc
 
     def _get_last_error_detail(self) -> str | None:
         """Return the most recent ConversationErrorEvent detail, if available."""
