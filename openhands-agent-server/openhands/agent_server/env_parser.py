@@ -419,7 +419,7 @@ def from_env(
             inspect.isabstract(target_type) or ABC in target_type.__bases__
         ):
             kind_key = f"{prefix}_KIND" if prefix else "KIND"
-            if kind_key in os.environ:
+            if kind_key in os.environ and isinstance(json_data, dict):
                 json_data["kind"] = os.environ[kind_key]
         json_str = json.dumps(json_data)
         type_adapter = TypeAdapter(target_type)
