@@ -142,11 +142,8 @@ class DiscriminatedUnionMixin(OpenHandsModel):
                 kind = next(iter(subclasses))
             else:
                 # There is more than 1 kind defined but the input did not specify
-                # which one
-                raise ValueError(
-                    f"Expected 'kind' to be present: {data} : "
-                    f"{cls.__module__}.{cls.__name__}"
-                )
+                # This will cause an error to be raised
+                kind = ""
         subclass = cls.resolve_kind(kind)
         return subclass.model_validate(data, context=info.context)
 
