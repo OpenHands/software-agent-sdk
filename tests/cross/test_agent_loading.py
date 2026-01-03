@@ -1,4 +1,4 @@
-"""Test agent reconciliation logic in agent deserialization and conversation restart."""
+"""Test agent loading (conversation restart) behavior."""
 
 import tempfile
 import uuid
