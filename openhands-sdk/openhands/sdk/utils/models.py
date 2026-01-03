@@ -132,9 +132,17 @@ class DiscriminatedUnionMixin(OpenHandsModel):
             return handler(data)
         if kind is None:
             subclasses = _get_checked_concrete_subclasses(cls)
-            if subclasses:
+            if not subclasses:
+                raise ValueError(
+                    f"No kinds defined for {cls.__module__}.{cls.__name__}"
+                )
+            elif len(subclasses) == 1:
+                # If there is ony 1 possible implementation, then we do not need
+                # to state the kind explicitly - it can only be this!
                 kind = next(iter(subclasses))
             else:
+                # There is more than 1 kind defined but the input did not specify
+                # This will cause an error to be raised
                 kind = ""
         subclass = cls.resolve_kind(kind)
         return subclass.model_validate(data, context=info.context)
