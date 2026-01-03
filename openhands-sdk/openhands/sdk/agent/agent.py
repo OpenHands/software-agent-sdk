@@ -204,7 +204,9 @@ class Agent(AgentBase):
                 logger.warning(
                     "LLM raised context window exceeded error, triggering condensation"
                 )
-                on_event(CondensationRequest(reason=CondensationRequestReason.CONTEXT_LIMIT))
+                on_event(
+                    CondensationRequest(reason=CondensationRequestReason.CONTEXT_LIMIT)
+                )
                 return
             # No condenser available or doesn't handle requests; log helpful warning
             self._log_context_window_exceeded_warning()

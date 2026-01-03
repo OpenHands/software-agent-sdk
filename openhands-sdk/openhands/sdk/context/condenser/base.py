@@ -122,7 +122,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
 
             except NoCondensationAvailableException as e:
                 logger.debug(f"No condensation available: {e}")
-                
+
                 # Check if all condensation requests are continuable. If so, or if there
                 # are no requests, we can safely return the uncondensed view.
                 all_continuable = all(
@@ -131,7 +131,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
                 )
                 if not view.unhandled_condensation_request or all_continuable:
                     return view
-                
+
                 # Otherwise re-raise the exception.
                 else:
                     raise e

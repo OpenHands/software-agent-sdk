@@ -494,11 +494,11 @@ class View(BaseModel):
         # end of the list than any condensation action.
         unhandled_condensation_request = False
         unhandled_condensation_request_reasons: list[CondensationRequestReason] = []
-        
+
         for event in reversed(events):
             if isinstance(event, Condensation):
                 break
-            
+
             if isinstance(event, CondensationRequest):
                 unhandled_condensation_request = True
 
