@@ -472,7 +472,7 @@ class TestBrowserExecutorE2E:
         )
 
     def test_get_storage_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test getting browser storage."""
         # Navigate to the test page
@@ -539,7 +539,7 @@ class TestBrowserExecutorE2E:
         assert "origins" in storage_data
 
     def test_set_storage_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test setting browser storage."""
         # Navigate to test page
