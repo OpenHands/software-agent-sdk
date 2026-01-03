@@ -140,42 +140,38 @@ class LocalConversation(BaseConversation):
         def _default_callback(e):
             self._state.events.append(e)
 
-        self._hook_processor = None
-        hook_callback = None
-        if hook_config is not None:
-            self._hook_processor, hook_callback = create_hook_callback(
-                hook_config=hook_config,
-                working_dir=str(self.workspace.working_dir),
-                session_id=str(desired_id),
-            )
-
+        # Build the callback chain WITHOUT hooks first
         callback_list = list(callbacks) if callbacks else []
-        if hook_callback is not None:
-            callback_list.insert(0, hook_callback)
-
         composed_list = callback_list + [_default_callback]
+
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
-            # Use custom visualizer instance
             self._visualizer = visualizer
-            # Initialize the visualizer with conversation state
             self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
-            # visualizer should happen first for visibility
         elif isinstance(visualizer, type) and issubclass(
             visualizer, ConversationVisualizerBase
         ):
-            # Instantiate the visualizer class with appropriate parameters
             self._visualizer = visualizer()
-            # Initialize with state
             self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
-            # visualizer should happen first for visibility
         else:
-            # No visualization (visualizer is None)
             self._visualizer = None
 
-        self._on_event = BaseConversation.compose_callbacks(composed_list)
+        # Compose the base callback chain (visualizer -> user callbacks -> default)
+        base_callback = BaseConversation.compose_callbacks(composed_list)
+
+        # If hooks configured, wrap with hook processor that forwards to base chain
+        self._hook_processor = None
+        if hook_config is not None:
+            self._hook_processor, self._on_event = create_hook_callback(
+                hook_config=hook_config,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(desired_id),
+                original_callback=base_callback,
+            )
+        else:
+            self._on_event = base_callback
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks

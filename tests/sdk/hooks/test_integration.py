@@ -478,6 +478,60 @@ class TestCreateHookCallback:
         assert callback == processor.on_event
 
 
+class TestLocalConversationHookCallbackWiring:
+    """Tests that LocalConversation correctly wires hook callbacks to event persistence."""
+
+    def test_modified_events_with_additional_context_persisted(self, tmp_path):
+        """Test that hook-modified events (with additional_context) get persisted."""
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.conversation import LocalConversation
+        from openhands.sdk.llm import LLM
+
+        # Create a hook that adds additional_context
+        script = tmp_path / "add_context.sh"
+        script.write_text(
+            '#!/bin/bash\n'
+            'echo \'{"additionalContext": "HOOK_INJECTED_CONTEXT"}\'\n'
+            'exit 0'
+        )
+        script.chmod(0o755)
+
+        hook_config = HookConfig.from_dict({
+            "hooks": {
+                "UserPromptSubmit": [
+                    {"hooks": [{"type": "command", "command": str(script)}]}
+                ]
+            }
+        })
+
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+
+        conversation = LocalConversation(
+            agent=agent,
+            workspace=str(tmp_path),
+            hook_config=hook_config,
+            visualizer=None,
+        )
+
+        conversation.send_message("Hello")
+
+        # Verify the MODIFIED event (with extended_content) was persisted
+        events = list(conversation.state.events)
+        message_events = [e for e in events if isinstance(e, MessageEvent)]
+
+        assert len(message_events) == 1
+        assert len(message_events[0].extended_content) > 0
+        assert any(
+            "HOOK_INJECTED_CONTEXT" in c.text
+            for c in message_events[0].extended_content
+        )
+
+        conversation.close()
+
+
 class TestAdditionalContextInjection:
     """Tests for additional_context injection into LLM messages."""
 
