@@ -224,11 +224,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserCloseTabAction,
             BrowserGetContentAction,
             BrowserGetStateAction,
+            BrowserGetStorageAction,
             BrowserGoBackAction,
             BrowserListTabsAction,
             BrowserNavigateAction,
             BrowserObservation,
             BrowserScrollAction,
+            BrowserSetStorageAction,
             BrowserSwitchTabAction,
             BrowserTypeAction,
         )
@@ -244,6 +246,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.type_text(action.index, action.text)
             elif isinstance(action, BrowserGetStateAction):
                 return await self.get_state(action.include_screenshot)
+            elif isinstance(action, BrowserGetStorageAction):
+                result = await self.get_storage()
+            elif isinstance(action, BrowserSetStorageAction):
+                result = await self.set_storage(action.storage_state)
             elif isinstance(action, BrowserGetContentAction):
                 result = await self.get_content(
                     action.extract_links, action.start_from_char
@@ -343,6 +349,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             is_error=False,
             full_output_save_dir=self.full_output_save_dir,
         )
+
+    async def get_storage(self) -> str:
+        """Get browser storage (cookies, local storage, session storage)."""
+        await self._ensure_initialized()
+        return await self._server._get_storage()
+
+    async def set_storage(self, storage_state: dict) -> str:
+        """Set browser storage (cookies, local storage, session storage)."""
+        await self._ensure_initialized()
+        return await self._server._set_storage(storage_state)
 
     # Tab Management
     async def list_tabs(self) -> str:
