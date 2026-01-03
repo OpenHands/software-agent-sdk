@@ -60,7 +60,10 @@ class ConversationState(OpenHandsModel):
     )
     workspace: BaseWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution",
+        description=(
+            "Workspace used by the agent to execute commands and read/write files. "
+            "Not the process working directory."
+        ),
     )
     persistence_dir: str | None = Field(
         default="workspace/conversations",
@@ -173,10 +176,35 @@ class ConversationState(OpenHandsModel):
         max_iterations: int = 500,
         stuck_detection: bool = True,
     ) -> "ConversationState":
-        """
-        If base_state.json exists: resume (attach EventLog,
-            reconcile agent, enforce id).
-        Else: create fresh (agent required), persist base, and return.
+        """Create a new conversation state or resume from persistence.
+
+        This factory method handles both new conversation creation and resumption
+        from persisted state.
+
+        **New conversation:**
+        The provided Agent is used directly. Pydantic validation happens via the
+        cls() constructor.
+
+        **Restored conversation:**
+        The provided Agent is validated against the persisted agent using
+        agent.load(). Tools must match (they may have been used in conversation
+        history), but all other configuration can be freely changed: LLM,
+        agent_context, condenser, system prompts, etc.
+
+        Args:
+            id: Unique conversation identifier
+            agent: The Agent to use (tools must match persisted on restore)
+            workspace: Working directory for agent operations
+            persistence_dir: Directory for persisting state and events
+            max_iterations: Maximum iterations per run
+            stuck_detection: Whether to enable stuck detection
+
+        Returns:
+            ConversationState ready for use
+
+        Raises:
+            ValueError: If conversation ID or tools mismatch on restore
+            ValidationError: If agent or other fields fail Pydantic validation
         """
         file_store = (
             LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
@@ -193,22 +221,27 @@ class ConversationState(OpenHandsModel):
         if base_text:
             state = cls.model_validate(json.loads(base_text))
 
-            # Enforce conversation id match
+            # Restore the conversation with the same id
             if state.id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
                     f"but persisted state has {state.id}"
                 )
 
-            # Reconcile agent config with deserialized one
-            resolved = agent.resolve_diff_from_deserialized(state.agent)
+            # Verify tools match - they may have been used in conversation history.
+            verified_agent = agent.verify(state.agent)
 
-            # Attach runtime handles and commit reconciled agent (may autosave)
+            # Attach runtime handles
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
             state._autosave_enabled = True
-            state.agent = resolved
 
+            # Override with runtime-provided values
+            state.agent = verified_agent
+            state.workspace = workspace
+            state.max_iterations = max_iterations
+
+            # Reset stats for this session
             state.stats = ConversationStats()
 
             logger.info(
@@ -232,13 +265,12 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
-        # Record existing analyzer configuration in state
         state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()
 
-        state._save_base_state(file_store)  # initial snapshot
+        state._save_base_state(file_store)
         state._autosave_enabled = True
         logger.info(
             f"Created new conversation {state.id}\n"
