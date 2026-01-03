@@ -103,13 +103,17 @@ class CondensationThinkingTest(BaseIntegrationTest):
 
         We want ONLY manual condensation to occur, so we can precisely control
         when condensation happens (after the second thinking block).
+
+        We set keep_first=1 to only keep the initial user message, which means
+        the first thinking block will be forgotten during condensation while the
+        second one is kept. This is the scenario that tests the hypothesis.
         """
         condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=10000,     # Very high - won't auto-trigger
             max_tokens=100000,  # Very high - won't auto-trigger
-            keep_first=2,       # Keep initial messages
+            keep_first=1,       # Keep only initial user message
         )
 
     @property
