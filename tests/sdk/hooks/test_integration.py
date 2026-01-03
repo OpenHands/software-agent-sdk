@@ -479,7 +479,7 @@ class TestCreateHookCallback:
 
 
 class TestLocalConversationHookCallbackWiring:
-    """Tests that LocalConversation correctly wires hook callbacks to event persistence."""
+    """Tests that LocalConversation wires hook callbacks to event persistence."""
 
     def test_modified_events_with_additional_context_persisted(self, tmp_path):
         """Test that hook-modified events (with additional_context) get persisted."""
@@ -492,19 +492,21 @@ class TestLocalConversationHookCallbackWiring:
         # Create a hook that adds additional_context
         script = tmp_path / "add_context.sh"
         script.write_text(
-            '#!/bin/bash\n'
+            "#!/bin/bash\n"
             'echo \'{"additionalContext": "HOOK_INJECTED_CONTEXT"}\'\n'
-            'exit 0'
+            "exit 0"
         )
         script.chmod(0o755)
 
-        hook_config = HookConfig.from_dict({
-            "hooks": {
-                "UserPromptSubmit": [
-                    {"hooks": [{"type": "command", "command": str(script)}]}
-                ]
+        hook_config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "UserPromptSubmit": [
+                        {"hooks": [{"type": "command", "command": str(script)}]}
+                    ]
+                }
             }
-        })
+        )
 
         llm = LLM(model="test-model", api_key=SecretStr("test-key"))
         agent = Agent(llm=llm, tools=[])

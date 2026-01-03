@@ -140,22 +140,27 @@ class LocalConversation(BaseConversation):
         def _default_callback(e):
             self._state.events.append(e)
 
-        # Build the callback chain WITHOUT hooks first
         callback_list = list(callbacks) if callbacks else []
         composed_list = callback_list + [_default_callback]
-
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
+            # Use custom visualizer instance
             self._visualizer = visualizer
+            # Initialize the visualizer with conversation state
             self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
+            # visualizer should happen first for visibility
         elif isinstance(visualizer, type) and issubclass(
             visualizer, ConversationVisualizerBase
         ):
+            # Instantiate the visualizer class with appropriate parameters
             self._visualizer = visualizer()
+            # Initialize with state
             self._visualizer.initialize(self._state)
             composed_list = [self._visualizer.on_event] + composed_list
+            # visualizer should happen first for visibility
         else:
+            # No visualization (visualizer is None)
             self._visualizer = None
 
         # Compose the base callback chain (visualizer -> user callbacks -> default)

@@ -1,12 +1,11 @@
 #!/bin/bash
 # PreToolUse hook: Block dangerous rm -rf commands
-# Uses jq for JSON parsing (needed for nested fields like tool_input.command)
+# Uses grep on raw JSON input (no jq needed)
 
 input=$(cat)
-command=$(echo "$input" | jq -r '.tool_input.command // ""')
 
-# Block rm -rf commands
-if [[ "$command" =~ "rm -rf" ]]; then
+# Block rm -rf commands by checking if the input contains the pattern
+if echo "$input" | grep -q "rm -rf"; then
     echo '{"decision": "deny", "reason": "rm -rf commands are blocked for safety"}'
     exit 2  # Exit code 2 = block the operation
 fi
