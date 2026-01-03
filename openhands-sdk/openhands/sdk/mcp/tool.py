@@ -186,7 +186,9 @@ class MCPToolDefinition(ToolDefinition[MCPToolAction, MCPToolObservation]):
         # Use exclude_none to avoid injecting nulls back to the call
         # Exclude DiscriminatedUnionMixin fields (e.g., 'kind') as they're
         # internal to OpenHands and not part of the MCP tool schema
-        exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys())
+        exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys()) | set(
+            DiscriminatedUnionMixin.model_computed_fields.keys()
+        )
         sanitized = validated.model_dump(exclude_none=True, exclude=exclude_fields)
         return MCPToolAction(data=sanitized)
 
