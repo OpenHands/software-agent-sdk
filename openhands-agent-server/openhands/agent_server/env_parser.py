@@ -12,7 +12,17 @@ from enum import Enum
 from io import StringIO
 from pathlib import Path
 from types import UnionType
-from typing import IO, Annotated, Any, Literal, TypeVar, Union, cast, get_args, get_origin
+from typing import (
+    IO,
+    Annotated,
+    Any,
+    Literal,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+)
 from uuid import UUID
 
 from pydantic import BaseModel, SecretStr, TypeAdapter
