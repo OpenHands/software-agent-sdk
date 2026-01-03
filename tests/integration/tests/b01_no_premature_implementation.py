@@ -7,6 +7,7 @@ from tests.integration.behavior_utils import (
     find_file_editing_operations,
     get_conversation_summary,
 )
+from tests.integration.early_stopper import EarlyStopperBase, FileEditPruner
 from tests.integration.utils.behavior_helpers import (
     SoftwareAgentSDKBehaviorTest,
     append_environment_tips,
@@ -42,6 +43,14 @@ class NoPrematureImplementationTest(SoftwareAgentSDKBehaviorTest):
     """Test that agent doesn't start implementing when asked for advice."""
 
     INSTRUCTION: str = INSTRUCTION
+
+    def get_early_stopper(self) -> EarlyStopperBase:
+        """Stop early if the agent starts editing files.
+
+        This saves LLM costs by terminating immediately when the agent
+        starts implementing instead of waiting for the full trajectory.
+        """
+        return FileEditPruner()
 
     def verify_result(self) -> TestResult:
         """

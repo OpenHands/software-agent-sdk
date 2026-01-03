@@ -285,6 +285,11 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive
         ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        # DeepSeek reasoner model
+        ("deepseek/deepseek-reasoner", True),
+        ("DeepSeek/deepseek-reasoner", True),
+        # Models that should NOT match
+        ("deepseek/deepseek-chat", False),  # Different DeepSeek model
         ("kimi-k2-instruct", False),  # Different variant
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
