@@ -341,7 +341,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _telemetry: Telemetry | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
-        extra="forbid", arbitrary_types_allowed=True
+        extra="ignore", arbitrary_types_allowed=True
     )
 
     # =========================================================================
