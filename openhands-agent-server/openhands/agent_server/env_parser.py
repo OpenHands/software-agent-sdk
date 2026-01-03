@@ -401,7 +401,7 @@ def _create_sample(type_: type):
     return type_()
 
 
-def from_env(
+def from_env[T](
     target_type: type[T],
     prefix: str = "",
     parsers: dict[type, EnvParser] | None = None,
