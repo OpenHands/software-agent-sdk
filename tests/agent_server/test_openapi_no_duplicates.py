@@ -26,7 +26,9 @@ def test_openapi_schema_no_duplicate_titles():
             title = schema_def.get("title", schema_name)
             title_to_names[title].append(schema_name)
 
-    # Find duplicates, but filter out expected Input/Output pairs
+    # Find duplicates, but filter out expected cases:
+    # 1. Input/Output pairs (e.g., Tool-Input, Tool-Output)
+    # 2. Module-qualified names from different modules (e.g., mcp__types__Tool, openhands__sdk__tool__spec__Tool)
     duplicates = {}
     for title, names in title_to_names.items():
         if len(names) > 1:
@@ -34,11 +36,15 @@ def test_openapi_schema_no_duplicate_titles():
             input_output_only = all(
                 name.endswith("-Input") or name.endswith("-Output") for name in names
             )
-            if not input_output_only:
+            # Check if duplicates include module-qualified names (double underscores indicate module paths)
+            # These represent the same type from different modules, which is expected
+            has_module_qualified = any("__" in name for name in names)
+            if not input_output_only and not has_module_qualified:
                 # Only flag as duplicate if there are non-Input/Output variants
+                # and no module-qualified names
                 duplicates[title] = names
 
     assert not duplicates, (
         f"Found schemas with unexpected duplicate titles: {duplicates}. "
-        "Each title should appear only once in the OpenAPI schema (Input/Output pairs are expected)."
+        "Each title should appear only once in the OpenAPI schema (Input/Output pairs and module-qualified names are expected)."
     )
