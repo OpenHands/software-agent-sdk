@@ -229,7 +229,6 @@ class ConversationState(OpenHandsModel):
                 )
 
             # Verify tools match - they may have been used in conversation history.
-            # All other config (LLM, agent_context, condenser, etc.) can change freely.
             verified_agent = agent.verify(state.agent)
 
             # Attach runtime handles
