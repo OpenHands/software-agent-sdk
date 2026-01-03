@@ -781,6 +781,12 @@ class RemoteConversation(BaseConversation):
                     )
                     return
 
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 404:
+                    raise ConversationRunError(self._id, e) from e
+                # Log but continue polling - transient network errors shouldn't
+                # stop us from waiting for the run to complete
+                logger.warning(f"Error polling status (will retry): {e}")
             except Exception as e:
                 # Log but continue polling - transient network errors shouldn't
                 # stop us from waiting for the run to complete
