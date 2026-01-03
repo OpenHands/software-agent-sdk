@@ -128,6 +128,17 @@ class BaseIntegrationTest(ABC):
                 self.early_stop_result = result
                 self.conversation.pause()  # Trigger graceful stop
 
+    def execute_conversation(self) -> None:
+        """
+        Execute the conversation flow. Override for custom multi-message flows.
+
+        Default implementation sends the instruction and runs the conversation once.
+        """
+        self.conversation.send_message(
+            message=Message(role="user", content=[TextContent(text=self.instruction)])
+        )
+        self.conversation.run()
+
     def run_instruction(self) -> TestResult:
         """
         Run user instruction through the agent and verify results.
@@ -149,12 +160,7 @@ class BaseIntegrationTest(ABC):
             stderr_buffer = StringIO()
 
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                self.conversation.send_message(
-                    message=Message(
-                        role="user", content=[TextContent(text=self.instruction)]
-                    )
-                )
-                self.conversation.run()
+                self.execute_conversation()
 
             # Save captured output to log file
             captured_output = stdout_buffer.getvalue()

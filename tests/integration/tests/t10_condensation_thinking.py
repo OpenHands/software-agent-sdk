@@ -5,10 +5,6 @@ thinking blocks are forgotten. Tests that signature verification works correctly
 when earlier thinking blocks are condensed away while later ones remain.
 """
 
-import sys
-from contextlib import redirect_stderr, redirect_stdout
-from io import StringIO
-
 from openhands.sdk import get_logger
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.event import ActionEvent
@@ -72,11 +68,8 @@ class CondensationThinkingTest(BaseIntegrationTest):
 
     @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
         register_tool("TerminalTool", TerminalTool)
-        return [
-            Tool(name="TerminalTool"),
-        ]
+        return [Tool(name="TerminalTool")]
 
     @property
     def condenser(self) -> LLMSummarizingCondenser:
@@ -146,68 +139,30 @@ class CondensationThinkingTest(BaseIntegrationTest):
             ),
         )
 
-    def run_instruction(self) -> TestResult:
-        """Override to trigger follow-up messages and manual condensation."""
+    def execute_conversation(self) -> None:
+        """Custom conversation flow with follow-up messages and manual condensation."""
+        # Send the instruction and run until completion
+        self.conversation.send_message(self.INSTRUCTION)
+        self.conversation.run()
+
+        # If we only got one thinking block, send a follow-up to get another
+        if self.tool_loop_count < 2:
+            self.conversation.send_message(
+                "Now verify your calculations are correct by running the commands again "
+                "and comparing the results. Show your reasoning about whether the "
+                "calculations match."
+            )
+            self.conversation.run()
+
+        # Manually trigger condensation
         try:
-            self.setup()
+            self.conversation.condense()
+        except Exception as e:
+            self.post_condensation_errors.append(str(e))
 
-            # Initialize log file with header
-            with open(self.log_file_path, "w") as f:
-                f.write(f"Agent Logs for Test: {self.instance_id}\n")
-                f.write("=" * 50 + "\n\n")
-
-            # Capture stdout and stderr during conversation
-            stdout_buffer = StringIO()
-            stderr_buffer = StringIO()
-
-            with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                # Send the instruction and run until completion
-                self.conversation.send_message(self.INSTRUCTION)
-                self.conversation.run()
-
-                # If we only got one thinking block, send a follow-up to get another
-                if self.tool_loop_count < 2:
-                    self.conversation.send_message(
-                        "Now verify your calculations are correct by running the commands again "
-                        "and comparing the results. Show your reasoning about whether the "
-                        "calculations match."
-                    )
-                    self.conversation.run()
-
-                # Manually trigger condensation
-                try:
-                    self.conversation.condense()
-                except Exception as e:
-                    self.post_condensation_errors.append(str(e))
-
-                # Send one more message to see if conversation can continue
-                try:
-                    self.conversation.send_message("What was the final compound interest result?")
-                    self.conversation.run()
-                except Exception as e:
-                    self.post_condensation_errors.append(str(e))
-
-            # Save captured output to log file
-            captured_output = stdout_buffer.getvalue()
-            captured_errors = stderr_buffer.getvalue()
-
-            with open(self.log_file_path, "a") as f:
-                if captured_output:
-                    f.write("STDOUT:\n")
-                    f.write(captured_output)
-                    f.write("\n")
-                if captured_errors:
-                    f.write("STDERR:\n")
-                    f.write(captured_errors)
-                    f.write("\n")
-
-            # Also print to console for debugging
-            if captured_output:
-                print(captured_output, end="")
-            if captured_errors:
-                print(captured_errors, file=sys.stderr, end="")
-
-            return self.verify_result()
-
-        finally:
-            self.teardown()
+        # Send one more message to see if conversation can continue
+        try:
+            self.conversation.send_message("What was the final compound interest result?")
+            self.conversation.run()
+        except Exception as e:
+            self.post_condensation_errors.append(str(e))
