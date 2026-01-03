@@ -23,7 +23,6 @@ def test_llm_config_defaults():
     assert config.temperature == 0.0
     assert config.top_p == 1.0
     assert config.top_k is None
-    assert config.custom_llm_provider is None
     assert config.max_input_tokens == 8192  # Auto-populated from model info
     assert config.max_output_tokens == 4096  # Auto-populated from model info
     assert config.input_cost_per_token is None
@@ -59,7 +58,6 @@ def test_llm_config_custom_values():
         temperature=0.5,
         top_p=0.9,
         top_k=50,
-        custom_llm_provider="custom",
         max_input_tokens=4000,
         max_output_tokens=1000,
         input_cost_per_token=0.001,
@@ -98,7 +96,6 @@ def test_llm_config_custom_values():
     assert config.temperature == 0.5
     assert config.top_p == 0.9
     assert config.top_k == 50
-    assert config.custom_llm_provider == "custom"
     assert config.max_input_tokens == 4000
     assert config.max_output_tokens == 1000
     assert config.input_cost_per_token == 0.001
@@ -331,7 +328,6 @@ def test_llm_config_optional_fields():
         aws_region_name=None,
         timeout=None,
         top_k=None,
-        custom_llm_provider=None,
         max_input_tokens=None,
         max_output_tokens=None,
         input_cost_per_token=None,
@@ -354,7 +350,6 @@ def test_llm_config_optional_fields():
     assert config.aws_region_name is None
     assert config.timeout is None
     assert config.top_k is None
-    assert config.custom_llm_provider is None
     assert (
         config.max_input_tokens == 8192
     )  # Auto-populated from model info even when set to None
