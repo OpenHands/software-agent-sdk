@@ -349,12 +349,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if self.agent_context is not None:
             updates["agent_context"] = self.agent_context
 
-        # Create maps by tool name for easy lookup
-        runtime_tools_map = {tool.name: tool for tool in self.tools}
-        persisted_tools_map = {tool.name: tool for tool in persisted.tools}
-
-        runtime_names = set(runtime_tools_map.keys())
-        persisted_names = set(persisted_tools_map.keys())
+        # Get tool names for comparison
+        runtime_names = {tool.name for tool in self.tools}
+        persisted_names = {tool.name for tool in persisted.tools}
 
         # Relaxed tool matching: only fail if tools that were actually USED
         # in history are missing. Allow adding new tools freely.
@@ -364,8 +361,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             if missing_used_tools:
                 raise ValueError(
                     f"Cannot resume conversation: tools that were used in history "
-                    f"are missing from runtime: {missing_used_tools}. "
-                    f"Available tools: {runtime_names}"
+                    f"are missing from runtime: {sorted(missing_used_tools)}. "
+                    f"Available tools: {sorted(runtime_names)}"
                 )
             # Update tools to match runtime (allows new tools to be added)
             updates["tools"] = self.tools
@@ -376,22 +373,28 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 missing_in_persisted = runtime_names - persisted_names
                 error_msg = "Tools don't match between runtime and persisted agents."
                 if missing_in_runtime:
-                    error_msg += f" Missing in runtime: {missing_in_runtime}."
+                    error_msg += f" Missing in runtime: {sorted(missing_in_runtime)}."
                 if missing_in_persisted:
-                    error_msg += f" Missing in persisted: {missing_in_persisted}."
+                    error_msg += (
+                        f" Missing in persisted: {sorted(missing_in_persisted)}."
+                    )
                 raise ValueError(error_msg)
 
         reconciled = persisted.model_copy(update=updates)
 
-        # When used_tools is provided, we allow tool changes so skip strict comparison
-        if used_tools is None:
-            if self.model_dump(exclude_none=True) != reconciled.model_dump(
-                exclude_none=True
-            ):
-                raise ValueError(
-                    "The Agent provided is different from the one in persisted state.\n"
-                    f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-                )
+        # Validate agent equality - when used_tools is provided, we exclude tools
+        # from comparison since we already validated tool requirements above
+        exclude_fields = {"tools"} if used_tools is not None else set()
+        self_dump = self.model_dump(exclude_none=True, exclude=exclude_fields)
+        reconciled_dump = reconciled.model_dump(
+            exclude_none=True, exclude=exclude_fields
+        )
+
+        if self_dump != reconciled_dump:
+            raise ValueError(
+                "The Agent provided is different from the one in persisted state.\n"
+                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
+            )
         return reconciled
 
     def model_dump_succint(self, **kwargs):

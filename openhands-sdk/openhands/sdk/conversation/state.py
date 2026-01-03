@@ -159,11 +159,10 @@ class ConversationState(OpenHandsModel):
         self._events.append(event)
 
         # Update used_tool_names cache for ActionEvents
-        if isinstance(event, ActionEvent):
-            tool_name = event.tool_name
-            if tool_name not in self.used_tool_names:
+        if isinstance(event, ActionEvent) and event.tool_name:
+            if event.tool_name not in self.used_tool_names:
                 # Use assignment to trigger autosave via __setattr__
-                self.used_tool_names = self.used_tool_names | {tool_name}
+                self.used_tool_names = self.used_tool_names | {event.tool_name}
 
     @property
     def env_observation_persistence_dir(self) -> str | None:
@@ -231,13 +230,22 @@ class ConversationState(OpenHandsModel):
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
 
-            # Use persisted used_tool_names cache instead of iterating all events
-            # This provides O(1) lookup on resume vs O(n) iteration
-            # The cache is incrementally updated via append_event()
+            # Use persisted used_tool_names cache for O(1) lookup on resume.
+            # If the cache is empty but there are events, we need to backfill
+            # for backward compatibility with old persisted conversations.
+            used_tools = state.used_tool_names
+            if not used_tools and len(state._events) > 0:
+                # Backfill cache from event history (O(n) but only once)
+                logger.info("Backfilling used_tool_names cache from event history...")
+                for event in state._events:
+                    if isinstance(event, ActionEvent) and event.tool_name:
+                        used_tools = used_tools | {event.tool_name}
+                # Persist backfilled cache
+                state.used_tool_names = used_tools
 
             # Reconcile agent config with deserialized one, passing used tools
             resolved = agent.resolve_diff_from_deserialized(
-                state.agent, used_tools=state.used_tool_names
+                state.agent, used_tools=used_tools
             )
 
             # Commit reconciled agent (may autosave)

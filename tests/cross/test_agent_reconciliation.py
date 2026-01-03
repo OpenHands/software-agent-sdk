@@ -207,6 +207,59 @@ def test_conversation_allows_adding_new_tools():
         assert len(new_conversation.agent.tools) == 2
 
 
+def test_conversation_fails_when_used_tool_is_missing():
+    """Test that removing a tool that WAS used in history fails.
+
+    This is the core correctness requirement: if a tool was actually used
+    in the conversation history, it MUST be present when resuming.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create conversation with two tools
+        original_tools = [
+            Tool(name="TerminalTool"),
+            Tool(name="FileEditorTool"),
+        ]
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        original_agent = Agent(llm=llm, tools=original_tools)
+        conversation = LocalConversation(
+            agent=original_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+
+        # Initialize the agent to get actual tool definitions
+        conversation.agent.init_state(conversation.state, lambda e: None)
+
+        # Simulate that TerminalTool was used by recording it in used_tool_names
+        # In real usage this happens via state.append_event() with ActionEvents
+        conversation.state.used_tool_names = {"TerminalTool"}
+
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Try to resume WITHOUT TerminalTool - should fail
+        reduced_tools = [Tool(name="FileEditorTool")]  # Missing TerminalTool
+        llm2 = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        reduced_agent = Agent(llm=llm2, tools=reduced_tools)
+
+        # This should raise - TerminalTool was used in history but is now missing
+        import pytest
+
+        with pytest.raises(ValueError, match="tools that were used in history"):
+            LocalConversation(
+                agent=reduced_agent,
+                workspace=temp_dir,
+                persistence_dir=temp_dir,
+                conversation_id=conversation_id,
+                visualizer=None,
+            )
+
+
 def test_conversation_with_same_agent_succeeds():
     """Test that using the same agent configuration succeeds."""
     with tempfile.TemporaryDirectory() as temp_dir:
