@@ -489,7 +489,23 @@ class RemoteConversation(BaseConversation):
         self._hook_processor = None
         self._cleanup_initiated = False
 
-        if conversation_id is None:
+        should_create = conversation_id is None
+        if conversation_id is not None:
+            # Try to attach to existing conversation
+            resp = _send_request(
+                self._client,
+                "GET",
+                f"/api/conversations/{conversation_id}",
+                acceptable_status_codes={404},
+            )
+            if resp.status_code == 404:
+                # Conversation doesn't exist, we'll create it
+                should_create = True
+            else:
+                # Conversation exists, use the provided ID
+                self._id = conversation_id
+
+        if should_create:
             # Import here to avoid circular imports
             from openhands.sdk.tool.registry import get_tool_module_qualnames
 
@@ -518,6 +534,9 @@ class RemoteConversation(BaseConversation):
                 else:
                     threshold_config = stuck_detection_thresholds
                 payload["stuck_detection_thresholds"] = threshold_config.model_dump()
+            # Include conversation_id if provided (for creating with specific ID)
+            if conversation_id is not None:
+                payload["conversation_id"] = str(conversation_id)
             resp = _send_request(
                 self._client, "POST", "/api/conversations", json=payload
             )
@@ -529,11 +548,6 @@ class RemoteConversation(BaseConversation):
                     "Invalid response from server: missing conversation id"
                 )
             self._id = uuid.UUID(cid)
-        else:
-            # Attach to existing
-            self._id = conversation_id
-            # Validate it exists
-            _send_request(self._client, "GET", f"/api/conversations/{self._id}")
 
         # Initialize the remote state
         self._state = RemoteState(self._client, str(self._id))
