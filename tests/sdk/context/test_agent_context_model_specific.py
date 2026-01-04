@@ -25,7 +25,7 @@ def test_context_gates_claude_vendor_file():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _ = load_skills_from_dir(skills_dir)
+        repo_skills, _, _ = load_skills_from_dir(skills_dir)
         ac = AgentContext(skills=list(repo_skills.values()))
         suffix = ac.get_system_message_suffix(
             llm_model="litellm_proxy/anthropic/claude-sonnet-4"
@@ -40,7 +40,7 @@ def test_context_gates_gemini_vendor_file():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _ = load_skills_from_dir(skills_dir)
+        repo_skills, _, _ = load_skills_from_dir(skills_dir)
         ac = AgentContext(skills=list(repo_skills.values()))
         suffix = ac.get_system_message_suffix(llm_model="gemini-2.5-pro")
         assert suffix is not None
@@ -53,7 +53,7 @@ def test_context_excludes_both_for_other_models():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _ = load_skills_from_dir(skills_dir)
+        repo_skills, _, _ = load_skills_from_dir(skills_dir)
         ac = AgentContext(skills=list(repo_skills.values()))
         suffix = ac.get_system_message_suffix(llm_model="openai/gpt-4o")
         assert suffix is not None
@@ -66,7 +66,7 @@ def test_context_uses_canonical_name_for_vendor_match():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _ = load_skills_from_dir(skills_dir)
+        repo_skills, _, _ = load_skills_from_dir(skills_dir)
         ac = AgentContext(skills=list(repo_skills.values()))
         # Non-matching "proxy" model, but canonical matches Anthropic/Claude
         suffix = ac.get_system_message_suffix(
@@ -83,7 +83,7 @@ def test_context_includes_all_when_model_unknown():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
         skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _ = load_skills_from_dir(skills_dir)
+        repo_skills, _, _ = load_skills_from_dir(skills_dir)
         ac = AgentContext(skills=list(repo_skills.values()))
         # No model info provided -> backward-compatible include-all behavior
         suffix = ac.get_system_message_suffix()

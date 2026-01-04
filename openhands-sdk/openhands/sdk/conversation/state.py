@@ -133,7 +133,6 @@ class ConversationState(OpenHandsModel):
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
 
-    # ===== Public "events" facade (Sequence[Event]) =====
     @property
     def events(self) -> EventLog:
         return self._events
@@ -200,12 +199,17 @@ class ConversationState(OpenHandsModel):
                     f"but persisted state has {state.id}"
                 )
 
-            # Reconcile agent config with deserialized one
-            resolved = agent.resolve_diff_from_deserialized(state.agent)
-
-            # Attach runtime handles and commit reconciled agent (may autosave)
+            # Attach event log early so we can read history
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+
+            # Reconcile agent config with deserialized one
+            # Pass event log so tool usage can be checked on-the-fly if needed
+            resolved = agent.resolve_diff_from_deserialized(
+                state.agent, events=state._events
+            )
+
+            # Commit reconciled agent (may autosave)
             state._autosave_enabled = True
             state.agent = resolved
 
