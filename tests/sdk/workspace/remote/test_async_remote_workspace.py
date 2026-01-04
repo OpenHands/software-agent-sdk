@@ -136,7 +136,7 @@ async def test_async_execute_command():
     with patch(
         "openhands.sdk.workspace.remote.async_remote_workspace.connect",
         return_value=mock_connect,
-    ):
+    ) as patched_connect:
         result = await workspace.execute_command("echo hello", cwd="/tmp", timeout=30.0)
 
     assert result.command == "echo hello"
@@ -144,6 +144,12 @@ async def test_async_execute_command():
     assert result.stdout == "hello\n"
     assert result.stderr == ""
     assert result.timeout_occurred is False
+
+    # Verify connect was called with ws:// scheme (converted from http://)
+    patched_connect.assert_called_once()
+    ws_url = patched_connect.call_args[0][0]
+    assert ws_url.startswith("ws://")
+    assert "localhost:8000/api/sockets/bash-events" in ws_url
 
     # Verify websocket was called with correct payload
     mock_websocket.send.assert_called_once()
@@ -211,9 +217,9 @@ async def test_async_file_download(mock_execute):
 
 @pytest.mark.asyncio
 async def test_async_execute_command_with_path_objects():
-    """Test execute_command works with Path objects for cwd."""
+    """Test execute_command works with Path objects for cwd and https:// to wss://."""
     workspace = AsyncRemoteWorkspace(
-        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
+        host="https://example.com", api_key="test-key", working_dir="workspace"
     )
 
     # Create mock websocket
@@ -241,7 +247,7 @@ async def test_async_execute_command_with_path_objects():
     with patch(
         "openhands.sdk.workspace.remote.async_remote_workspace.connect",
         return_value=mock_connect,
-    ):
+    ) as patched_connect:
         result = await workspace.execute_command("ls", cwd=Path("/tmp/test"))
 
     assert result.command == "ls"
@@ -249,6 +255,12 @@ async def test_async_execute_command_with_path_objects():
     assert result.stdout == "file1.txt\n"
     assert result.stderr == ""
     assert result.timeout_occurred is False
+
+    # Verify connect was called with wss:// scheme (converted from https://)
+    patched_connect.assert_called_once()
+    ws_url = patched_connect.call_args[0][0]
+    assert ws_url.startswith("wss://")
+    assert "example.com/api/sockets/bash-events" in ws_url
 
     # Verify Path object was converted to string in the payload
     mock_websocket.send.assert_called_once()
