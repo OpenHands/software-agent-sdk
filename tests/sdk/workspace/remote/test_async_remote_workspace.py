@@ -1,6 +1,7 @@
 """Unit tests for AsyncRemoteWorkspace class."""
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -104,26 +105,52 @@ async def test_async_execute_method():
 
 @pytest.mark.asyncio
 async def test_async_execute_command():
-    """Test execute_command method calls _execute_command with correct arguments."""
+    """Test execute_command method with websocket mocking."""
     workspace = AsyncRemoteWorkspace(
-        host="http://localhost:8000", working_dir="workspace"
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
     )
 
-    expected_result = CommandResult(
-        command="echo hello",
-        exit_code=0,
-        stdout="hello\n",
-        stderr="",
-        timeout_occurred=False,
+    # Create mock websocket
+    mock_websocket = AsyncMock()
+    mock_websocket.send = AsyncMock()
+    # Simulate server responses: BashCommand event followed by BashOutput event
+    mock_websocket.recv = AsyncMock(
+        side_effect=[
+            json.dumps({"kind": "BashCommand", "command": "echo hello", "id": "cmd-1"}),
+            json.dumps(
+                {
+                    "kind": "BashOutput",
+                    "command_id": "cmd-1",
+                    "stdout": "hello\n",
+                    "stderr": "",
+                    "exit_code": 0,
+                }
+            ),
+        ]
     )
 
-    with patch.object(workspace, "_execute_command") as mock_execute_command:
-        mock_execute_command.return_value = expected_result
+    mock_connect = AsyncMock()
+    mock_connect.__aenter__.return_value = mock_websocket
+    mock_connect.__aexit__.return_value = None
 
+    with patch(
+        "openhands.sdk.workspace.remote.async_remote_workspace.connect",
+        return_value=mock_connect,
+    ):
         result = await workspace.execute_command("echo hello", cwd="/tmp", timeout=30.0)
 
-        assert result == expected_result
-        mock_execute_command.assert_called_once_with("echo hello", "/tmp", 30.0)
+    assert result.command == "echo hello"
+    assert result.exit_code == 0
+    assert result.stdout == "hello\n"
+    assert result.stderr == ""
+    assert result.timeout_occurred is False
+
+    # Verify websocket was called with correct payload
+    mock_websocket.send.assert_called_once()
+    sent_payload = json.loads(mock_websocket.send.call_args[0][0])
+    assert sent_payload["command"] == "echo hello"
+    assert sent_payload["timeout"] == 30
+    assert sent_payload["cwd"] == "/tmp"
 
 
 @pytest.mark.asyncio
@@ -186,23 +213,48 @@ async def test_async_file_download(mock_execute):
 async def test_async_execute_command_with_path_objects():
     """Test execute_command works with Path objects for cwd."""
     workspace = AsyncRemoteWorkspace(
-        host="http://localhost:8000", working_dir="workspace"
+        host="http://localhost:8000", api_key="test-key", working_dir="workspace"
     )
 
-    with patch.object(workspace, "_execute_command") as mock_execute_command:
-        expected_result = CommandResult(
-            command="ls",
-            exit_code=0,
-            stdout="file1.txt\n",
-            stderr="",
-            timeout_occurred=False,
-        )
-        mock_execute_command.return_value = expected_result
+    # Create mock websocket
+    mock_websocket = AsyncMock()
+    mock_websocket.send = AsyncMock()
+    mock_websocket.recv = AsyncMock(
+        side_effect=[
+            json.dumps({"kind": "BashCommand", "command": "ls", "id": "cmd-2"}),
+            json.dumps(
+                {
+                    "kind": "BashOutput",
+                    "command_id": "cmd-2",
+                    "stdout": "file1.txt\n",
+                    "stderr": "",
+                    "exit_code": 0,
+                }
+            ),
+        ]
+    )
 
+    mock_connect = AsyncMock()
+    mock_connect.__aenter__.return_value = mock_websocket
+    mock_connect.__aexit__.return_value = None
+
+    with patch(
+        "openhands.sdk.workspace.remote.async_remote_workspace.connect",
+        return_value=mock_connect,
+    ):
         result = await workspace.execute_command("ls", cwd=Path("/tmp/test"))
 
-        assert result == expected_result
-        mock_execute_command.assert_called_once_with("ls", Path("/tmp/test"), 30.0)
+    assert result.command == "ls"
+    assert result.exit_code == 0
+    assert result.stdout == "file1.txt\n"
+    assert result.stderr == ""
+    assert result.timeout_occurred is False
+
+    # Verify Path object was converted to string in the payload
+    mock_websocket.send.assert_called_once()
+    sent_payload = json.loads(mock_websocket.send.call_args[0][0])
+    assert sent_payload["command"] == "ls"
+    assert sent_payload["cwd"] == "/tmp/test"  # Path is converted to string
 
 
 @pytest.mark.asyncio

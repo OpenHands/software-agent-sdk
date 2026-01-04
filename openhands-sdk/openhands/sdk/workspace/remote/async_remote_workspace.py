@@ -102,7 +102,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
                 "timeout": int(timeout),
             }
             if cwd:
-                payload["cwd"] = cwd
+                payload["cwd"] = str(cwd)
             await websocket.send(json.dumps(payload))
             command_id: str | None = None
             stdout_parts: list[str] = []
