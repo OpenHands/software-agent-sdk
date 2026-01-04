@@ -149,7 +149,7 @@ async def test_async_execute_command():
     patched_connect.assert_called_once()
     ws_url = patched_connect.call_args[0][0]
     assert ws_url.startswith("ws://")
-    assert "localhost:8000/api/sockets/bash-events" in ws_url
+    assert "localhost:8000/sockets/bash-events" in ws_url
 
     # Verify websocket was called with correct payload
     mock_websocket.send.assert_called_once()
@@ -260,7 +260,7 @@ async def test_async_execute_command_with_path_objects():
     patched_connect.assert_called_once()
     ws_url = patched_connect.call_args[0][0]
     assert ws_url.startswith("wss://")
-    assert "example.com/api/sockets/bash-events" in ws_url
+    assert "example.com/sockets/bash-events" in ws_url
 
     # Verify Path object was converted to string in the payload
     mock_websocket.send.assert_called_once()

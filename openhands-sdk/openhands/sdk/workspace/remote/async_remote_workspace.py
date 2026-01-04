@@ -97,7 +97,7 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     ):
         # Convert http(s) scheme to ws(s) for websocket connection
         ws_host = self.host.replace("https://", "wss://").replace("http://", "ws://")
-        url = f"{ws_host}/api/sockets/bash-events?session_api_key={self.api_key}"
+        url = f"{ws_host}/sockets/bash-events?session_api_key={self.api_key}"
         async with connect(url) as websocket:
             payload = {
                 "command": command,
