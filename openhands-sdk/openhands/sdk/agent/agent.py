@@ -399,6 +399,7 @@ class Agent(AgentBase):
                 error=err,
                 tool_name=tool_name,
                 tool_call_id=tool_call.id,
+                recoverable=True,
             )
             on_event(event)
             return
@@ -444,6 +445,7 @@ class Agent(AgentBase):
                 error=err,
                 tool_name=tool_name,
                 tool_call_id=tool_call.id,
+                recoverable=True,
             )
             on_event(event)
             return
