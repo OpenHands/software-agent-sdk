@@ -4,9 +4,6 @@ import os
 import subprocess
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -19,19 +16,12 @@ logger = get_logger(__name__)
 
 
 class GitStagingTest(BaseIntegrationTest):
-    """Test that an agent can write a git commit message and commit changes."""
+    """Test that an agent can write a git commit message and commit changes.
+
+    Uses the default agent preset (TerminalTool, FileEditorTool, TaskTrackerTool).
+    """
 
     INSTRUCTION: str = INSTRUCTION
-
-    @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [
-            Tool(name="TerminalTool"),
-            Tool(name="FileEditorTool"),
-        ]
 
     def setup(self) -> None:
         """Set up git repository with staged changes."""

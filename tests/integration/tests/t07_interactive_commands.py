@@ -4,9 +4,6 @@ import hashlib
 import os
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
@@ -32,23 +29,16 @@ logger = get_logger(__name__)
 
 
 class InteractiveCommandsTest(BaseIntegrationTest):
-    """Test that an agent can execute interactive Python scripts with input."""
+    """Test that an agent can execute interactive Python scripts with input.
+
+    Uses the default agent preset (TerminalTool, FileEditorTool, TaskTrackerTool).
+    """
 
     INSTRUCTION: str = INSTRUCTION
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.script_path: str = os.path.join(self.workspace, "python_script.py")
-
-    @property
-    def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [
-            Tool(name="TerminalTool"),
-            Tool(name="FileEditorTool"),
-        ]
 
     def setup(self) -> None:
         """Set up the interactive Python script."""

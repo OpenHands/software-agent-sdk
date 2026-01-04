@@ -25,6 +25,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
 from openhands.sdk.tool import Tool
+from openhands.tools.preset.default import get_default_condenser, get_default_tools
 from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
 
 
@@ -195,19 +196,39 @@ class BaseIntegrationTest(ABC):
             self.teardown()
 
     @property
-    @abstractmethod
+    def enable_browser(self) -> bool:
+        """Whether to enable browser tools. Override to enable browser.
+
+        Returns:
+            True to enable browser tools, False otherwise (default)
+        """
+        return False
+
+    @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        pass
+        """List of tools available to the agent.
+
+        By default, uses the default preset tools from openhands.tools.preset.default.
+        Override this property to provide custom tools.
+
+        Returns:
+            List of Tool instances
+        """
+        return get_default_tools(enable_browser=self.enable_browser)
 
     @property
     def condenser(self) -> CondenserBase | None:
-        """Optional condenser for the agent. Override to provide a custom condenser.
+        """Optional condenser for the agent.
+
+        By default, uses the default condenser from openhands.tools.preset.default.
+        Override to provide a custom condenser or return None to disable.
 
         Returns:
-            CondenserBase instance or None (default)
+            CondenserBase instance (default condenser) or None
         """
-        return None
+        return get_default_condenser(
+            llm=self.llm.model_copy(update={"usage_id": "condenser"})
+        )
 
     @property
     def max_iteration_per_run(self) -> int:
