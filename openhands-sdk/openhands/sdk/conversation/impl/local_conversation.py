@@ -30,6 +30,7 @@ from openhands.sdk.event import (
     PauseEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.condenser import CondensationRequestReason
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -646,7 +647,9 @@ class LocalConversation(BaseConversation):
             )
 
         # Add a condensation request event
-        condensation_request = CondensationRequest()
+        condensation_request = CondensationRequest(
+            reason=CondensationRequestReason.MANUAL
+        )
         self._on_event(condensation_request)
 
         # Force the agent to take a single step to process the condensation request

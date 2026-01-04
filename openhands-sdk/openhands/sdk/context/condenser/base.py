@@ -2,7 +2,7 @@ from abc import ABC, abstractmethod
 from logging import getLogger
 
 from openhands.sdk.context.view import View
-from openhands.sdk.event.condenser import Condensation
+from openhands.sdk.event.condenser import Condensation, CondensationRequestReason
 from openhands.sdk.llm import LLM
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
@@ -66,6 +66,17 @@ class PipelinableCondenserBase(CondenserBase):
     condenser should not nest another pipeline condenser)"""
 
 
+class NoCondensationAvailableException(Exception):
+    """Raised when a condenser is asked to provide a condensation but none is available.
+
+    This can happen if the condenser's `should_condense` method returns True, but due to
+    API constraints no condensation can be generated.
+
+    When this exception is raised from a rolling condenser's `get_condensation` method,
+    the agent will fall back to using the uncondensed view for the next agent step.
+    """
+
+
 class RollingCondenser(PipelinableCondenserBase, ABC):
     """Base class for a specialized condenser strategy that applies condensation to a
     rolling history.
@@ -89,11 +100,41 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
     ) -> Condensation:
         """Get the condensation from a view."""
 
+    def is_continuable_reason(self, reason: CondensationRequestReason) -> bool:
+        """Determine if the given condensation request reason is continuable by this
+        condenser.
+
+        Args:
+            reason: The reason for the condensation request.
+        Returns:
+            bool: True if the reason is continuable, False otherwise.
+        """
+        if reason == CondensationRequestReason.MANUAL:
+            return True
+        return False
+
     def condense(self, view: View, agent_llm: LLM | None = None) -> View | Condensation:
         # If we trigger the condenser-specific condensation threshold, compute and
         # return the condensation.
         if self.should_condense(view, agent_llm=agent_llm):
-            return self.get_condensation(view, agent_llm=agent_llm)
+            try:
+                return self.get_condensation(view, agent_llm=agent_llm)
+
+            except NoCondensationAvailableException as e:
+                logger.debug(f"No condensation available: {e}")
+
+                # Check if all condensation requests are continuable. If so, or if there
+                # are no requests, we can safely return the uncondensed view.
+                all_continuable = all(
+                    self.is_continuable_reason(reason)
+                    for reason in view.unhandled_condensation_request_reasons
+                )
+                if not view.unhandled_condensation_request or all_continuable:
+                    return view
+
+                # Otherwise re-raise the exception.
+                else:
+                    raise e
 
         # Otherwise we're safe to just return the view.
         else:
