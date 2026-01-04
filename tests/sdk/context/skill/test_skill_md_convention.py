@@ -7,11 +7,9 @@ import pytest
 from openhands.sdk.context.skills import (
     Skill,
     SkillValidationError,
+    find_skill_md,
     load_skills_from_dir,
-)
-from openhands.sdk.context.skills.skill import (
-    _find_skill_md as find_skill_md,
-    _validate_skill_name as validate_skill_name,
+    validate_skill_name,
 )
 
 
