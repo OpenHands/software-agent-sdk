@@ -1,8 +1,10 @@
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from collections.abc import Generator
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -21,7 +23,15 @@ from openhands.tools.browser_use.definition import (
     BrowserSwitchTabAction,
     BrowserTypeAction,
 )
-from openhands.tools.browser_use.impl import BrowserToolExecutor
+from openhands.tools.browser_use.impl import get_browser_executor_class
+
+
+if TYPE_CHECKING:
+    from openhands.tools.browser_use.impl import (
+        BrowserToolExecutor as BrowserToolExecutorType,
+    )
+
+BrowserToolExecutor = get_browser_executor_class()
 
 
 # Test HTML content for browser operations
@@ -116,9 +126,9 @@ def test_server() -> Generator[str, None, None]:
         with open(os.path.join(temp_dir, "page2.html"), "w") as f:
             f.write(PAGE2_HTML)
 
-        # Start HTTP server
+        # Start HTTP server (use sys.executable for cross-platform compatibility)
         server_process = subprocess.Popen(
-            ["python3", "-m", "http.server", "8001"],
+            [sys.executable, "-m", "http.server", "8001"],
             cwd=temp_dir,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -144,11 +154,12 @@ def test_server() -> Generator[str, None, None]:
 
 
 @pytest.fixture
-def browser_executor() -> Generator[BrowserToolExecutor, None, None]:
+def browser_executor() -> Generator["BrowserToolExecutorType", None, None]:
     """Create a real BrowserToolExecutor for testing."""
+    executor_class = BrowserToolExecutor
     executor = None
     try:
-        executor = BrowserToolExecutor(
+        executor = executor_class(
             headless=True,  # Run in headless mode for CI/testing
             session_timeout_minutes=5,  # Shorter timeout for tests
         )
@@ -166,7 +177,7 @@ class TestBrowserExecutorE2E:
     """End-to-end tests for BrowserToolExecutor."""
 
     def test_navigate_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test browser navigation action."""
         action = BrowserNavigateAction(url=test_server)
@@ -178,7 +189,7 @@ class TestBrowserExecutorE2E:
         assert "successfully" in output_text or "navigated" in output_text
 
     def test_get_state_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test getting browser state."""
         # First navigate to the test page
@@ -201,7 +212,7 @@ class TestBrowserExecutorE2E:
         assert test_server in result.text
 
     def test_get_state_with_screenshot(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test getting browser state with screenshot."""
         # Navigate to test page
@@ -218,7 +229,7 @@ class TestBrowserExecutorE2E:
         assert len(result.screenshot_data) > 0
 
     def test_click_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test clicking an element."""
         # Navigate to test page
@@ -240,7 +251,9 @@ class TestBrowserExecutorE2E:
         assert isinstance(result, BrowserObservation)
         assert not result.is_error
 
-    def test_type_action(self, browser_executor: BrowserToolExecutor, test_server: str):
+    def test_type_action(
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
+    ):
         """Test typing text into an input field."""
         # Navigate to test page
         navigate_action = BrowserNavigateAction(url=test_server)
@@ -263,7 +276,7 @@ class TestBrowserExecutorE2E:
         assert not result.is_error
 
     def test_scroll_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test scrolling the page."""
         # Navigate to test page
@@ -285,7 +298,7 @@ class TestBrowserExecutorE2E:
         assert not result.is_error
 
     def test_get_content_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test extracting page content."""
         # Navigate to test page
@@ -311,7 +324,7 @@ class TestBrowserExecutorE2E:
         assert "Browser Test Page" in result.text
 
     def test_navigate_new_tab(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test opening a new tab."""
         # Navigate to test page in new tab
@@ -322,7 +335,7 @@ class TestBrowserExecutorE2E:
         assert not result.is_error
 
     def test_list_tabs_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test listing browser tabs."""
         # Navigate to create at least one tab
@@ -339,7 +352,7 @@ class TestBrowserExecutorE2E:
         assert len(result.text) > 0
 
     def test_go_back_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test browser back navigation."""
         # Navigate to first page
@@ -359,7 +372,7 @@ class TestBrowserExecutorE2E:
         assert not result.is_error
 
     def test_switch_tab_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test switching between tabs."""
         # Create first tab
@@ -387,7 +400,7 @@ class TestBrowserExecutorE2E:
             # Note: This might fail if tab ID format is different, which is expected
 
     def test_close_tab_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test closing a browser tab."""
         # Create first tab
@@ -407,7 +420,7 @@ class TestBrowserExecutorE2E:
         assert isinstance(result, BrowserObservation)
         # Note: This might fail if tab ID format is different, which is expected
 
-    def test_error_handling(self, browser_executor: BrowserToolExecutor):
+    def test_error_handling(self, browser_executor: "BrowserToolExecutorType"):
         """Test error handling for invalid operations."""
         # Try to navigate to invalid URL
         action = BrowserNavigateAction(url="invalid-url")
@@ -431,7 +444,7 @@ class TestBrowserExecutorE2E:
         # Should not raise exceptions
 
     def test_concurrent_actions(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test that multiple actions can be executed in sequence."""
         # Navigate
@@ -459,7 +472,7 @@ class TestBrowserExecutorE2E:
         )
 
     def test_get_storage_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test getting browser storage."""
         # Navigate to the test page
@@ -526,7 +539,7 @@ class TestBrowserExecutorE2E:
         assert "origins" in storage_data
 
     def test_set_storage_action(
-        self, browser_executor: BrowserToolExecutor, test_server: str
+        self, browser_executor: "BrowserToolExecutorType", test_server: str
     ):
         """Test setting browser storage."""
         # Navigate to test page
