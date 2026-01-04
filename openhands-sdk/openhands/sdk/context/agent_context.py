@@ -11,6 +11,7 @@ from openhands.sdk.context.skills import (
     SkillKnowledge,
     load_public_skills,
     load_user_skills,
+    to_prompt,
 )
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
@@ -160,15 +161,22 @@ class AgentContext(BaseModel):
         llm_model: str | None = None,
         llm_model_canonical: str | None = None,
     ) -> str | None:
-        """Get the system message with repo skill content and custom suffix.
+        """Get the system message with skill listings and custom suffix.
 
-        Custom suffix can typically includes:
+        This implements progressive disclosure per the AgentSkills standard:
+        - Skills with triggers are listed in <available_skills> with name,
+          description, and location (agent reads full content on demand)
+        - Skills without triggers (repo skills) have their full content included
+          in <REPO_CONTEXT> (always active)
+
+        Custom suffix can typically include:
         - Repository information (repo name, branch name, PR number, etc.)
         - Runtime information (e.g., available hosts, current date)
         - Conversation instructions (e.g., user preferences, task details)
-        - Repository-specific instructions (collected from repo skills)
         """
+        # Separate skills by type
         repo_skills = [s for s in self.skills if s.trigger is None]
+        triggered_skills = [s for s in self.skills if s.trigger is not None]
 
         # Gate vendor-specific repo skills based on model family.
         if llm_model or llm_model_canonical:
@@ -189,13 +197,29 @@ class AgentContext(BaseModel):
                     filtered.append(s)
                 repo_skills = filtered
 
-        logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
+        logger.debug(
+            f"Found {len(repo_skills)} repo skills, {len(triggered_skills)} "
+            "triggered skills"
+        )
+
+        # Generate available_skills XML for triggered skills (progressive disclosure)
+        available_skills_xml = ""
+        if triggered_skills:
+            available_skills_xml = to_prompt(triggered_skills)
+
         # Build the workspace context information
         secret_infos = self.get_secret_infos()
-        if repo_skills or self.system_message_suffix or secret_infos:
+
+        if (
+            available_skills_xml
+            or repo_skills
+            or self.system_message_suffix
+            or secret_infos
+        ):
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",
+                available_skills=available_skills_xml,
                 repo_skills=repo_skills,
                 system_message_suffix=self.system_message_suffix or "",
                 secret_infos=secret_infos,
