@@ -103,11 +103,8 @@ async def test_async_execute_method():
 
 
 @pytest.mark.asyncio
-@patch(
-    "openhands.sdk.workspace.remote.async_remote_workspace.AsyncRemoteWorkspace._execute"
-)
-async def test_async_execute_command(mock_execute):
-    """Test execute_command method calls _execute with correct generator."""
+async def test_async_execute_command():
+    """Test execute_command method calls _execute_command with correct arguments."""
     workspace = AsyncRemoteWorkspace(
         host="http://localhost:8000", working_dir="workspace"
     )
@@ -119,16 +116,14 @@ async def test_async_execute_command(mock_execute):
         stderr="",
         timeout_occurred=False,
     )
-    mock_execute.return_value = expected_result
 
-    result = await workspace.execute_command("echo hello", cwd="/tmp", timeout=30.0)
+    with patch.object(workspace, "_execute_command") as mock_execute_command:
+        mock_execute_command.return_value = expected_result
 
-    assert result == expected_result
-    mock_execute.assert_called_once()
+        result = await workspace.execute_command("echo hello", cwd="/tmp", timeout=30.0)
 
-    # Verify the generator was created correctly
-    generator_arg = mock_execute.call_args[0][0]
-    assert hasattr(generator_arg, "__next__")
+        assert result == expected_result
+        mock_execute_command.assert_called_once_with("echo hello", "/tmp", 30.0)
 
 
 @pytest.mark.asyncio
@@ -194,7 +189,7 @@ async def test_async_execute_command_with_path_objects():
         host="http://localhost:8000", working_dir="workspace"
     )
 
-    with patch.object(workspace, "_execute") as mock_execute:
+    with patch.object(workspace, "_execute_command") as mock_execute_command:
         expected_result = CommandResult(
             command="ls",
             exit_code=0,
@@ -202,12 +197,12 @@ async def test_async_execute_command_with_path_objects():
             stderr="",
             timeout_occurred=False,
         )
-        mock_execute.return_value = expected_result
+        mock_execute_command.return_value = expected_result
 
         result = await workspace.execute_command("ls", cwd=Path("/tmp/test"))
 
         assert result == expected_result
-        mock_execute.assert_called_once()
+        mock_execute_command.assert_called_once_with("ls", Path("/tmp/test"), 30.0)
 
 
 @pytest.mark.asyncio
@@ -340,29 +335,33 @@ async def test_async_concurrent_operations():
         host="http://localhost:8000", working_dir="workspace"
     )
 
-    with patch.object(workspace, "_execute") as mock_execute:
-        # Mock different results for different operations
-        command_result = CommandResult(
-            command="echo test",
-            exit_code=0,
-            stdout="test\n",
-            stderr="",
-            timeout_occurred=False,
-        )
-        upload_result = FileOperationResult(
-            success=True,
-            source_path="/local/file1.txt",
-            destination_path="/remote/file1.txt",
-            file_size=50,
-        )
-        download_result = FileOperationResult(
-            success=True,
-            source_path="/remote/file2.txt",
-            destination_path="/local/file2.txt",
-            file_size=75,
-        )
+    # Mock different results for different operations
+    command_result = CommandResult(
+        command="echo test",
+        exit_code=0,
+        stdout="test\n",
+        stderr="",
+        timeout_occurred=False,
+    )
+    upload_result = FileOperationResult(
+        success=True,
+        source_path="/local/file1.txt",
+        destination_path="/remote/file1.txt",
+        file_size=50,
+    )
+    download_result = FileOperationResult(
+        success=True,
+        source_path="/remote/file2.txt",
+        destination_path="/local/file2.txt",
+        file_size=75,
+    )
 
-        mock_execute.side_effect = [command_result, upload_result, download_result]
+    with (
+        patch.object(workspace, "_execute_command") as mock_execute_command,
+        patch.object(workspace, "_execute") as mock_execute,
+    ):
+        mock_execute_command.return_value = command_result
+        mock_execute.side_effect = [upload_result, download_result]
 
         # Run operations concurrently
         tasks = [
@@ -376,4 +375,5 @@ async def test_async_concurrent_operations():
         assert results[0] == command_result
         assert results[1] == upload_result
         assert results[2] == download_result
-        assert mock_execute.call_count == 3
+        mock_execute_command.assert_called_once()
+        assert mock_execute.call_count == 2
