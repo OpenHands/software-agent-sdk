@@ -28,4 +28,4 @@ jobs:
               run: uv sync --frozen --group dev
 
             - name: Run pre-commit (all files)
-              run: uv run pre-commit run --all-files
+              run: uv run pre-commit run --all-files --show-diff-on-failure
