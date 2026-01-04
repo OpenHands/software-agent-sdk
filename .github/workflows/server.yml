@@ -145,7 +145,7 @@ jobs:
                   make test-server-schema
 
     build-and-push-image:
-        name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
+        name: Build & Push (${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.arch }})
         # Run on push events and pull requests from the same repository (not forks)
         # Fork PRs cannot push to GHCR and would fail authentication
         if: >
@@ -155,43 +155,96 @@ jobs:
         strategy:
             fail-fast: false
             matrix:
-                # Explicit matrix: 3 variants × 2 architectures = 6 jobs
+                # Explicit matrix: 3 variants × 2 targets × 2 architectures = 12 jobs
                 # Each job specifies exactly what it builds and where it runs
+                # Binary target: Production mode with PyInstaller binary (smaller, faster startup)
+                # Source target: Development mode with Python source (supports custom tools)
                 include:
-                    # Python variant
+                    # Python variant - binary
                     - variant: python
+                      target: binary
                       arch: amd64
                       base_image: nikolaik/python-nodejs:python3.12-nodejs22
                       runner: blacksmith-8vcpu-ubuntu-2404
                       platform: linux/amd64
 
                     - variant: python
+                      target: binary
                       arch: arm64
                       base_image: nikolaik/python-nodejs:python3.12-nodejs22
                       runner: blacksmith-8vcpu-ubuntu-2404-arm
                       platform: linux/arm64
 
-                    # Java variant
+                    # Python variant - source (supports custom tools)
+                    - variant: python
+                      target: source
+                      arch: amd64
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      runner: blacksmith-8vcpu-ubuntu-2404
+                      platform: linux/amd64
+
+                    - variant: python
+                      target: source
+                      arch: arm64
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      platform: linux/arm64
+
+                    # Java variant - binary
                     - variant: java
+                      target: binary
                       arch: amd64
                       base_image: eclipse-temurin:17-jdk
                       runner: blacksmith-8vcpu-ubuntu-2404
                       platform: linux/amd64
 
                     - variant: java
+                      target: binary
                       arch: arm64
                       base_image: eclipse-temurin:17-jdk
                       runner: blacksmith-8vcpu-ubuntu-2404-arm
                       platform: linux/arm64
 
-                    # Golang variant
+                    # Java variant - source (supports custom tools)
+                    - variant: java
+                      target: source
+                      arch: amd64
+                      base_image: eclipse-temurin:17-jdk
+                      runner: blacksmith-8vcpu-ubuntu-2404
+                      platform: linux/amd64
+
+                    - variant: java
+                      target: source
+                      arch: arm64
+                      base_image: eclipse-temurin:17-jdk
+                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      platform: linux/arm64
+
+                    # Golang variant - binary
                     - variant: golang
+                      target: binary
                       arch: amd64
                       base_image: golang:1.21-bookworm
                       runner: blacksmith-8vcpu-ubuntu-2404
                       platform: linux/amd64
 
                     - variant: golang
+                      target: binary
+                      arch: arm64
+                      base_image: golang:1.21-bookworm
+                      runner: blacksmith-8vcpu-ubuntu-2404-arm
+                      platform: linux/arm64
+
+                    # Golang variant - source (supports custom tools)
+                    - variant: golang
+                      target: source
+                      arch: amd64
+                      base_image: golang:1.21-bookworm
+                      runner: blacksmith-8vcpu-ubuntu-2404
+                      platform: linux/amd64
+
+                    - variant: golang
+                      target: source
                       arch: arm64
                       base_image: golang:1.21-bookworm
                       runner: blacksmith-8vcpu-ubuntu-2404-arm
@@ -202,10 +255,11 @@ jobs:
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
             BASE_IMAGE: ${{ inputs.base_image != '' && inputs.base_image || matrix.base_image }}
+            # Use variant as custom tag - build.py handles target suffix (e.g., -source) automatically
             CUSTOM_TAGS: ${{ matrix.variant }}
             VARIANT: ${{ matrix.variant }}
             ARCH: ${{ matrix.arch }}
-            TARGET: binary
+            TARGET: ${{ matrix.target }}
             PLATFORM: ${{ matrix.platform }}
             GITHUB_SHA: ${{ github.sha }}
             GITHUB_REF: ${{ github.ref }}
@@ -285,10 +339,11 @@ jobs:
                       rm -rf "${{ steps.prep.outputs.build_context }}"
                   fi
 
-            - name: Summary (${{ matrix.variant }}-${{ matrix.arch }}) - outputs
+            - name: Summary (${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.arch }}) - outputs
               run: |
                   echo "Image: ${{ env.IMAGE }}"
                   echo "Variant: ${{ env.VARIANT }}"
+                  echo "Target: ${{ env.TARGET }}"
                   echo "Architecture: ${{ env.ARCH }}"
                   echo "Platform: ${{ env.PLATFORM }}"
                   echo "Short SHA: ${{ steps.prep.outputs.short_sha }}"
@@ -298,28 +353,30 @@ jobs:
             - name: Save build info for consolidation
               run: |
                   mkdir -p build-info
-                  cat > "build-info/${{ matrix.variant }}-${{ matrix.arch }}.json" << EOF
+                  cat > "build-info/${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.arch }}.json" << EOF
                   {
                     "variant": "${{ matrix.variant }}",
+                    "target": "${{ matrix.target }}",
                     "arch": "${{ matrix.arch }}",
                     "base_image": "${{ matrix.base_image }}",
                     "image": "${{ env.IMAGE }}",
                     "short_sha": "${{ steps.prep.outputs.short_sha }}",
                     "tags": "${{ steps.prep.outputs.tags }}",
                     "versioned_tags_csv": "${{ steps.prep.outputs.versioned_tags_csv }}",
-                    "platform": "${{ env.PLATFORM }}"
+                    "platform": "${{ env.PLATFORM }}",
+                    "custom_tags": "${{ env.CUSTOM_TAGS }}"
                   }
                   EOF
 
             - name: Upload build info artifact
               uses: actions/upload-artifact@v5
               with:
-                  name: build-info-${{ matrix.variant }}-${{ matrix.arch }}
-                  path: build-info/${{ matrix.variant }}-${{ matrix.arch }}.json
+                  name: build-info-${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.arch }}
+                  path: build-info/${{ matrix.variant }}-${{ matrix.target }}-${{ matrix.arch }}.json
                   retention-days: 1
 
     merge-manifests:
-        name: Merge Multi-Arch Manifests
+        name: Merge Multi-Arch Manifests (${{ matrix.variant }}-${{ matrix.target }})
         needs: build-and-push-image
         if: >
             github.event_name == 'push' ||
@@ -329,6 +386,7 @@ jobs:
         strategy:
             matrix:
                 variant: [python, java, golang]
+                target: [binary, source]
         env:
             IMAGE: ${{ inputs.image != '' && inputs.image || 'ghcr.io/openhands/agent-server' }}
 
@@ -336,15 +394,15 @@ jobs:
             - name: Download build info to extract SHORT_SHA
               uses: actions/download-artifact@v6
               with:
-                  pattern: build-info-${{ matrix.variant }}-*
+                  pattern: build-info-${{ matrix.variant }}-${{ matrix.target }}-*
                   merge-multiple: true
                   path: build-info
 
             - name: Extract SHORT_SHA from build info
               id: get_sha
               run: |
-                  # Get SHORT_SHA from any build info artifact for this variant
-                  SHORT_SHA=$(jq -r '.short_sha' build-info/${{ matrix.variant }}-amd64.json)
+                  # Get SHORT_SHA from any build info artifact for this variant/target
+                  SHORT_SHA=$(jq -r '.short_sha' build-info/${{ matrix.variant }}-${{ matrix.target }}-amd64.json)
                   echo "short_sha=$SHORT_SHA" >> $GITHUB_OUTPUT
                   echo "Using SHORT_SHA: $SHORT_SHA"
 
@@ -358,19 +416,28 @@ jobs:
                   username: ${{ github.actor }}
                   password: ${{ secrets.GITHUB_TOKEN }}
 
-            - name: Create and push multi-arch manifest for ${{ matrix.variant }}
+            - name: Create and push multi-arch manifest for ${{ matrix.variant }}-${{ matrix.target }}
               id: create_manifest
               run: |
                   SHORT_SHA=${{ steps.get_sha.outputs.short_sha }}
                   VARIANT=${{ matrix.variant }}
-                  MANIFEST_TAG="${SHORT_SHA}-${VARIANT}"
+                  TARGET=${{ matrix.target }}
+
+                  # For source builds, append '-source' to the tag
+                  if [ "$TARGET" == "source" ]; then
+                      TAG_SUFFIX="${VARIANT}-source"
+                  else
+                      TAG_SUFFIX="${VARIANT}"
+                  fi
+
+                  MANIFEST_TAG="${SHORT_SHA}-${TAG_SUFFIX}"
 
                   # Create multi-arch manifest combining amd64 and arm64 using buildx imagetools
                   # This properly handles manifest lists from Blacksmith builds
                   echo "Creating multi-arch manifest: ${IMAGE}:${MANIFEST_TAG}"
                   docker buildx imagetools create -t ${IMAGE}:${MANIFEST_TAG} \
-                    ${IMAGE}:${SHORT_SHA}-${VARIANT}-amd64 \
-                    ${IMAGE}:${SHORT_SHA}-${VARIANT}-arm64
+                    ${IMAGE}:${SHORT_SHA}-${TAG_SUFFIX}-amd64 \
+                    ${IMAGE}:${SHORT_SHA}-${TAG_SUFFIX}-arm64
 
                   # Verify the multi-arch manifest
                   echo "Inspecting multi-arch manifest:"
@@ -380,11 +447,11 @@ jobs:
 
                   # Create latest manifest if on main branch
                   if [ "${{ github.ref }}" == "refs/heads/main" ]; then
-                      LATEST_TAG="latest-${VARIANT}"
+                      LATEST_TAG="latest-${TAG_SUFFIX}"
                       echo "Creating latest multi-arch manifest: ${IMAGE}:${LATEST_TAG}"
                       docker buildx imagetools create -t ${IMAGE}:${LATEST_TAG} \
-                        ${IMAGE}:main-${VARIANT}-amd64 \
-                        ${IMAGE}:main-${VARIANT}-arm64
+                        ${IMAGE}:main-${TAG_SUFFIX}-amd64 \
+                        ${IMAGE}:main-${TAG_SUFFIX}-arm64
                       
                       echo "Inspecting latest multi-arch manifest:"
                       docker buildx imagetools inspect ${IMAGE}:${LATEST_TAG}
@@ -395,7 +462,7 @@ jobs:
 
                   # Create versioned manifests if triggered by a git tag
                   # Extract versioned tags from build info (format: "1.2.0-python,1.2.0-java")
-                  VERSIONED_TAGS_CSV=$(jq -r '.versioned_tags_csv' build-info/${VARIANT}-amd64.json)
+                  VERSIONED_TAGS_CSV=$(jq -r '.versioned_tags_csv' build-info/${VARIANT}-${TARGET}-amd64.json)
                   if [ -n "$VERSIONED_TAGS_CSV" ] && [ "$VERSIONED_TAGS_CSV" != "null" ] && [ "$VERSIONED_TAGS_CSV" != "" ]; then
                       echo "Found versioned tags: $VERSIONED_TAGS_CSV"
                       # Split CSV and create manifest for each versioned tag
@@ -418,9 +485,10 @@ jobs:
 
                   # Save manifest info for consolidation
                   mkdir -p manifest-info
-                  cat > "manifest-info/${VARIANT}.json" << EOF
+                  cat > "manifest-info/${VARIANT}-${TARGET}.json" << EOF
                   {
                     "variant": "${VARIANT}",
+                    "target": "${TARGET}",
                     "image": "${IMAGE}",
                     "short_sha": "${SHORT_SHA}",
                     "manifest_tag": "${MANIFEST_TAG}"
@@ -430,8 +498,8 @@ jobs:
             - name: Upload manifest info artifact
               uses: actions/upload-artifact@v5
               with:
-                  name: manifest-info-${{ matrix.variant }}
-                  path: manifest-info/${{ matrix.variant }}.json
+                  name: manifest-info-${{ matrix.variant }}-${{ matrix.target }}
+                  path: manifest-info/${{ matrix.variant }}-${{ matrix.target }}.json
                   retention-days: 1
 
     consolidate-build-info:
@@ -471,8 +539,10 @@ jobs:
                   ALL_TAGS=""
 
                   # Use associative arrays to track variants (bash 4+)
+                  # Key format: "variant-target" (e.g., "python-binary", "python-source")
                   declare -A VARIANT_BASE_IMAGE
                   declare -A VARIANT_ARCHS
+                  declare -A VARIANT_TARGET
 
                   # Process each build info
                   for info_file in build-info/*.json; do
@@ -487,11 +557,13 @@ jobs:
                       
                       # Extract information from JSON
                       VARIANT=$(jq -r '.variant' "$info_file")
+                      TARGET=$(jq -r '.target // "binary"' "$info_file")
                       ARCH=$(jq -r '.arch' "$info_file")
                       BASE_IMAGE=$(jq -r '.base_image' "$info_file")
                       VARIANT_IMAGE=$(jq -r '.image' "$info_file")
                       VARIANT_SHA=$(jq -r '.short_sha' "$info_file")
                       VARIANT_TAGS=$(jq -r '.tags' "$info_file")
+                      CUSTOM_TAGS=$(jq -r '.custom_tags // .variant' "$info_file")
                       
                       # Set common values (same across all builds)
                       if [[ -z "$IMAGE" ]]; then
@@ -499,12 +571,24 @@ jobs:
                           SHORT_SHA="$VARIANT_SHA"
                       fi
                       
-                      # Store variant information
-                      VARIANT_BASE_IMAGE[$VARIANT]=$BASE_IMAGE
-                      if [[ -z "${VARIANT_ARCHS[$VARIANT]}" ]]; then
-                          VARIANT_ARCHS[$VARIANT]=$ARCH
+                      # Construct key from custom_tags and target
+                      # For source builds, append -source suffix to match tag format
+                      if [[ "$TARGET" == "source" ]]; then
+                          KEY="${CUSTOM_TAGS}-source"
                       else
-                          VARIANT_ARCHS[$VARIANT]="${VARIANT_ARCHS[$VARIANT]}, $ARCH"
+                          KEY="$CUSTOM_TAGS"
+                      fi
+                      
+                      # Store variant information
+                      VARIANT_BASE_IMAGE[$KEY]=$BASE_IMAGE
+                      VARIANT_TARGET[$KEY]=$TARGET
+                      if [[ -z "${VARIANT_ARCHS[$KEY]}" ]]; then
+                          VARIANT_ARCHS[$KEY]=$ARCH
+                      else
+                          # Only add if not already present
+                          if [[ ! "${VARIANT_ARCHS[$KEY]}" =~ "$ARCH" ]]; then
+                              VARIANT_ARCHS[$KEY]="${VARIANT_ARCHS[$KEY]}, $ARCH"
+                          fi
                       fi
                       
                       # Collect tags (comma-separated to newline-separated)
@@ -520,16 +604,18 @@ jobs:
 
                   # Build variants JSON array from collected data
                   VARIANTS_JSON="[]"
-                  for VARIANT in "${!VARIANT_BASE_IMAGE[@]}"; do
-                      BASE_IMG="${VARIANT_BASE_IMAGE[$VARIANT]}"
-                      ARCHS="${VARIANT_ARCHS[$VARIANT]}"
+                  for KEY in "${!VARIANT_BASE_IMAGE[@]}"; do
+                      BASE_IMG="${VARIANT_BASE_IMAGE[$KEY]}"
+                      ARCHS="${VARIANT_ARCHS[$KEY]}"
+                      TARGET="${VARIANT_TARGET[$KEY]}"
                       VARIANTS_JSON=$(echo "$VARIANTS_JSON" | jq \
-                          --arg variant "$VARIANT" \
+                          --arg variant "$KEY" \
                           --arg base_image "$BASE_IMG" \
                           --arg archs "$ARCHS" \
-                          '. += [{custom_tags: $variant, base_image: $base_image, architectures: $archs}]')
+                          --arg target "$TARGET" \
+                          '. += [{custom_tags: $variant, base_image: $base_image, architectures: $archs, target: $target}]')
                       
-                      echo "Added variant $VARIANT ($ARCHS), current variants JSON:"
+                      echo "Added variant $KEY (target: $TARGET, archs: $ARCHS), current variants JSON:"
                       echo "$VARIANTS_JSON" | jq .
                   done
 
@@ -642,10 +728,11 @@ jobs:
                       CUSTOM_TAGS=$(echo "$VARIANT_JSON" | jq -r '.custom_tags')
                       BASE_IMAGE=$(echo "$VARIANT_JSON" | jq -r '.base_image')
                       ARCHS=$(echo "$VARIANT_JSON" | jq -r '.architectures // "amd64, arm64"')
+                      TARGET=$(echo "$VARIANT_JSON" | jq -r '.target // "binary"')
                       
-                      echo "DEBUG: Adding variant $CUSTOM_TAGS with base image $BASE_IMAGE (archs: $ARCHS)"
-                      # Add to variants table with architecture info
-                      VARIANTS_TABLE="${VARIANTS_TABLE}| ${CUSTOM_TAGS} | ${ARCHS} | \`${BASE_IMAGE}\` | [Link](https://hub.docker.com/_/${BASE_IMAGE}) |"$'\n'
+                      echo "DEBUG: Adding variant $CUSTOM_TAGS with base image $BASE_IMAGE (archs: $ARCHS, target: $TARGET)"
+                      # Add to variants table with architecture info and target
+                      VARIANTS_TABLE="${VARIANTS_TABLE}| ${CUSTOM_TAGS} | ${TARGET} | ${ARCHS} | \`${BASE_IMAGE}\` |"$'\n'
                   done
 
                   echo "DEBUG: Final variants table:"
@@ -661,14 +748,19 @@ jobs:
                   • **GHCR package:** ${GHCR_URL}
 
                   **Variants & Base Images**
-                  | Variant | Architectures | Base Image | Docs / Tags |
+                  | Variant | Target | Architectures | Base Image |
                   |---|---|---|---|
                   ${VARIANTS_TABLE}
 
+                  > **Note:** \`binary\` targets are production-optimized PyInstaller builds. \`source\` targets support custom tools via dynamic module loading.
+
                   **Pull (multi-arch manifest)**
                   \`\`\`bash
-                  # Each variant is a multi-arch manifest supporting both amd64 and arm64
+                  # Binary variant (production, smaller image)
                   docker pull ${IMAGE}:${SHORT_SHA}-python
+
+                  # Source variant (supports custom tools)
+                  docker pull ${IMAGE}:${SHORT_SHA}-python-source
                   \`\`\`
 
                   **Run**
@@ -688,6 +780,10 @@ jobs:
                   - Each variant tag (e.g., \`${SHORT_SHA}-python\`) is a **multi-arch manifest** supporting both **amd64** and **arm64**
                   - Docker automatically pulls the correct architecture for your platform
                   - Individual architecture tags (e.g., \`${SHORT_SHA}-python-amd64\`) are also available if needed
+
+                  **Binary vs Source Targets**
+                  - **Binary**: Production-optimized PyInstaller builds. Smaller image size, faster startup. Does not support custom tools.
+                  - **Source**: Python source with full interpreter. Larger image size, but supports custom tools via dynamic module loading.
                   <!-- AGENT_SERVER_IMAGES_END -->
                   EOF
                   )

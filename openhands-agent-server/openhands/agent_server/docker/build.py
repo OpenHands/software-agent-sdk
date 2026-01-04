@@ -402,24 +402,25 @@ class BuildOptions(BaseModel):
     def all_tags(self) -> list[str]:
         tags: list[str] = []
         arch_suffix = f"-{self.arch}" if self.arch else ""
+        # Target suffix comes before arch suffix (e.g., python-source-amd64)
+        target_suffix = f"-{self.target}" if self.target != "binary" else ""
 
         # Use git commit SHA for commit-based tags
         for t in self.custom_tag_list:
-            tags.append(f"{self.image}:{self.short_sha}-{t}{arch_suffix}")
+            tags.append(
+                f"{self.image}:{self.short_sha}-{t}{target_suffix}{arch_suffix}"
+            )
 
         if self.git_ref in ("main", "refs/heads/main"):
             for t in self.custom_tag_list:
-                tags.append(f"{self.image}:main-{t}{arch_suffix}")
+                tags.append(f"{self.image}:main-{t}{target_suffix}{arch_suffix}")
 
         if self.include_base_tag:
-            tags.append(f"{self.image}:{self.base_tag}{arch_suffix}")
+            tags.append(f"{self.image}:{self.base_tag}{target_suffix}{arch_suffix}")
         if self.include_versioned_tag:
             for versioned_tag in self.versioned_tags:
-                tags.append(f"{self.image}:{versioned_tag}{arch_suffix}")
+                tags.append(f"{self.image}:{versioned_tag}{target_suffix}{arch_suffix}")
 
-        # Append target suffix for clarity (binary is default, no suffix needed)
-        if self.target != "binary":
-            tags = [f"{t}-{self.target}" for t in tags]
         return tags
 
 
