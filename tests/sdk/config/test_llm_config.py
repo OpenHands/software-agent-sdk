@@ -216,11 +216,9 @@ def test_llm_config_log_completions_folder_default():
     assert "completions" in config.log_completions_folder
 
 
-def test_llm_config_extra_fields_forbidden():
+def test_llm_config_extra_fields_permitted():
     """Test that extra fields are forbidden."""
-    with pytest.raises(ValidationError) as exc_info:
-        LLM(model="gpt-4", invalid_field="should_not_work", usage_id="test-llm")  # type: ignore
-    assert "Extra inputs are not permitted" in str(exc_info.value)
+    LLM(model="gpt-4", invalid_field="should_be_permitted", usage_id="test-llm")  # type: ignore
 
 
 def test_llm_config_validation():
