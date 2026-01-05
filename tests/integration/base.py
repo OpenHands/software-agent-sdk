@@ -2,6 +2,7 @@
 Base classes for agent-sdk integration tests.
 """
 
+import json
 import os
 import sys
 from abc import ABC, abstractmethod
@@ -102,6 +103,11 @@ class BaseIntegrationTest(ABC):
             self.workspace, f"{self.instance_id}_agent_logs.txt"
         )
 
+        # Create LLM messages file path for this test instance
+        self.llm_messages_file_path: str = os.path.join(
+            self.workspace, f"{self.instance_id}_llm_messages.json"
+        )
+
         # Early stopping support - must be initialized BEFORE LocalConversation
         # since the callback may access these attributes
         self.early_stopper: EarlyStopperBase | None = None
@@ -128,6 +134,40 @@ class BaseIntegrationTest(ABC):
                 self.early_stop_result = result
                 self.conversation.pause()  # Trigger graceful stop
 
+    def run_conversation(self) -> None:
+        """
+        Execute the conversation with the agent.
+
+        Override this method to customize the conversation flow (e.g., multiple steps,
+        intermediate verification, or custom message sequences). The default implementation
+        sends a single instruction and runs the conversation to completion.
+
+        You have access to:
+        - self.conversation: LocalConversation instance to send messages and control flow
+        - self.instruction: The instruction string for the test
+        - self.collected_events: Events collected so far (via callback)
+        - self.llm_messages: LLM messages collected so far (via callback)
+
+        Example override for multi-step test:
+            def run_conversation(self) -> None:
+                # Step 1
+                self.conversation.send_message(Message(role="user", content=[TextContent(text="First task")]))
+                self.conversation.run()
+
+                # Intermediate verification
+                assert some_condition()
+
+                # Step 2
+                self.conversation.send_message(Message(role="user", content=[TextContent(text="Second task")]))
+                self.conversation.run()
+        """
+        self.conversation.send_message(
+            message=Message(
+                role="user", content=[TextContent(text=self.instruction)]
+            )
+        )
+        self.conversation.run()
+
     def run_instruction(self) -> TestResult:
         """
         Run user instruction through the agent and verify results.
@@ -149,12 +189,7 @@ class BaseIntegrationTest(ABC):
             stderr_buffer = StringIO()
 
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                self.conversation.send_message(
-                    message=Message(
-                        role="user", content=[TextContent(text=self.instruction)]
-                    )
-                )
-                self.conversation.run()
+                self.run_conversation()
 
             # Save captured output to log file
             captured_output = stdout_buffer.getvalue()
@@ -175,6 +210,22 @@ class BaseIntegrationTest(ABC):
                 print(captured_output, end="")
             if captured_errors:
                 print(captured_errors, file=sys.stderr, end="")
+
+            # Save LLM messages if LLM_MESSAGES_DIR is set
+            llm_messages_dir = os.getenv("LLM_MESSAGES_DIR")
+            if llm_messages_dir:
+                # Create directory if it doesn't exist
+                os.makedirs(llm_messages_dir, exist_ok=True)
+
+                # Save LLM messages to JSON file in the specified directory
+                llm_messages_path = os.path.join(
+                    llm_messages_dir, f"{self.instance_id}_llm_messages.json"
+                )
+                with open(llm_messages_path, "w") as f:
+                    json.dump(self.llm_messages, f, indent=2)
+
+                # Update the file path so it can be accessed by run_infer.py
+                self.llm_messages_file_path = llm_messages_path
 
             # Check if early stopped - skip full verification
             if self.early_stop_result:

@@ -52,6 +52,7 @@ class EvalOutput(BaseModel):
     token_usage: TokenUsageData | None = None
     error_message: str | None = None
     log_file_path: str | None = None
+    llm_messages_file_path: str | None = None
 
     @property
     def required(self) -> bool:
@@ -216,6 +217,35 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
                 permanent_log_path,
             )
 
+        # Copy LLM messages file to a location that will be preserved (if it exists)
+        llm_messages_file_path = None
+        if hasattr(test_instance, "llm_messages_file_path") and os.path.exists(
+            test_instance.llm_messages_file_path
+        ):
+            # Create a permanent logs directory if not already created
+            permanent_logs_dir = os.path.join(os.getcwd(), "integration_test_logs")
+            os.makedirs(permanent_logs_dir, exist_ok=True)
+
+            # Create a unique filename to avoid conflicts
+            permanent_llm_messages_filename = (
+                f"{instance.instance_id}_llm_messages.json"
+            )
+            permanent_llm_messages_path = os.path.join(
+                permanent_logs_dir, permanent_llm_messages_filename
+            )
+
+            # Copy the LLM messages file
+            shutil.copy2(
+                test_instance.llm_messages_file_path, permanent_llm_messages_path
+            )
+            llm_messages_file_path = permanent_llm_messages_path
+
+            logger.info(
+                "Preserved LLM messages file for %s at %s",
+                instance.instance_id,
+                permanent_llm_messages_path,
+            )
+
         return EvalOutput(
             instance_id=instance.instance_id,
             test_result=test_result,
@@ -224,6 +254,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
             cost=llm_cost,
             token_usage=eval_token_usage,
             log_file_path=log_file_path,
+            llm_messages_file_path=llm_messages_file_path,
         )
 
     except SkipTest as e:
@@ -340,6 +371,19 @@ def generate_structured_results(
                 "Log file not found for %s: %s",
                 eval_output.instance_id,
                 eval_output.log_file_path,
+            )
+
+        # Also copy LLM messages file if it exists
+        if eval_output.llm_messages_file_path and os.path.exists(
+            eval_output.llm_messages_file_path
+        ):
+            llm_messages_filename = f"{eval_output.instance_id}_llm_messages.json"
+            dest_path = os.path.join(logs_dir, llm_messages_filename)
+            shutil.copy2(eval_output.llm_messages_file_path, dest_path)
+            logger.info(
+                "Copied LLM messages file for %s to %s",
+                eval_output.instance_id,
+                dest_path,
             )
 
     # Print summary for console output
