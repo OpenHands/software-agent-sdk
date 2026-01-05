@@ -666,12 +666,13 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
     view = View.from_events(events)
 
     # Mock to return HARD requirement but no events to condense
-    with patch.object(
-        LLMSummarizingCondenser,
-        "get_condensation_reasons",
-        return_value={Reason.REQUEST},
-    ), patch.object(
-        condenser, "_get_forgotten_events", return_value=([], 0)
+    with (
+        patch.object(
+            LLMSummarizingCondenser,
+            "get_condensation_reasons",
+            return_value={Reason.REQUEST},
+        ),
+        patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
     ):
         with pytest.raises(NoCondensationAvailableException):
             condenser.condense(view)
@@ -690,12 +691,13 @@ def test_condense_with_soft_requirement_and_no_condensation_available(
     view = View.from_events(events)
 
     # Mock to return SOFT requirement but no events to condense
-    with patch.object(
-        LLMSummarizingCondenser,
-        "get_condensation_reasons",
-        return_value={Reason.EVENTS},
-    ), patch.object(
-        condenser, "_get_forgotten_events", return_value=([], 0)
+    with (
+        patch.object(
+            LLMSummarizingCondenser,
+            "get_condensation_reasons",
+            return_value={Reason.EVENTS},
+        ),
+        patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
     ):
         result = condenser.condense(view)
         assert isinstance(result, View)
