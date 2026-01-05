@@ -459,7 +459,6 @@ def test_conversation_resume_overrides_agent_llm_but_preserves_state_settings():
     - Some conversation *state* settings are persisted and should not be overridden
       on resume (e.g., confirmation_policy, execution_status).
     - Agent/LLM settings should come from the runtime-provided Agent on resume
-      (no reconciliation).
 
     This test covers the common workflow: start a persisted conversation, tweak a
     couple of state settings, then resume with a different LLM configuration.
