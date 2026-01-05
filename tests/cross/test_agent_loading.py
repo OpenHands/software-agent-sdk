@@ -13,6 +13,7 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
 )
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
@@ -454,6 +455,75 @@ def test_conversation_persistence_lifecycle(mock_completion):
         # We expect: original_event_count + 1 (system prompt from init) + 2
         # (user message + agent response)
         assert len(new_conversation.state.events) >= original_event_count + 2
+
+
+def test_conversation_resume_overrides_agent_llm_but_preserves_state_settings():
+    """Test resume behavior when changing runtime Agent/LLM settings.
+
+    Expectations:
+    - Some conversation *state* settings are persisted and should not be overridden
+      on resume (e.g., confirmation_policy, execution_status).
+    - Agent/LLM settings should come from the runtime-provided Agent on resume
+      (no reconciliation).
+
+    This test covers the common workflow: start a persisted conversation, tweak a
+    couple of state settings, then resume with a different LLM configuration.
+    """
+
+    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tools = [Tool(name="TerminalTool")]
+
+        # Initial agent (persisted snapshot contains this agent config, but on resume
+        # we should use the runtime-provided agent).
+        llm1 = LLM(
+            model="gpt-5.1-codex-max",
+            api_key=SecretStr("test-key-1"),
+            usage_id="llm-1",
+            max_input_tokens=100_000,
+        )
+        agent1 = Agent(llm=llm1, tools=tools)
+
+        conversation = LocalConversation(
+            agent=agent1,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+
+        # Persisted state settings (these should be restored from persistence).
+        conversation.state.confirmation_policy = AlwaysConfirm()
+        conversation.state.execution_status = ConversationExecutionStatus.STUCK
+
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Resume with a different runtime Agent + LLM settings.
+        llm2 = LLM(
+            model="gpt-5.2",
+            api_key=SecretStr("test-key-2"),
+            usage_id="llm-2",
+            max_input_tokens=50_000,
+        )
+        agent2 = Agent(llm=llm2, tools=tools)
+
+        resumed = LocalConversation(
+            agent=agent2,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Persisted settings should remain.
+        assert resumed.state.execution_status == ConversationExecutionStatus.STUCK
+        assert resumed.state.confirmation_policy.should_confirm()
+
+        # Runtime agent/LLM settings should override persisted agent snapshot.
+        assert resumed.agent.llm.model == "gpt-5.2"
+        assert resumed.agent.llm.max_input_tokens == 50_000
+        assert resumed.agent.llm.usage_id == "llm-2"
 
 
 def test_conversation_restart_with_different_agent_context():
