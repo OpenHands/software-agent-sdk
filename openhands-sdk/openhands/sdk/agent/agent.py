@@ -27,7 +27,10 @@ from openhands.sdk.event import (
     TokenEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.event.condenser import (
+    Condensation,
+    CondensationRequest,
+)
 from openhands.sdk.llm import (
     LLMResponse,
     Message,
