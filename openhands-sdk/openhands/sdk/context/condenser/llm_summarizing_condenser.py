@@ -92,9 +92,26 @@ class LLMSummarizingCondenser(RollingCondenser):
         self, view: View, agent_llm: LLM | None = None
     ) -> CondensationRequirement | None:
         reasons = self.get_condensation_reasons(view, agent_llm)
-        if reasons != set():
+
+        # No reasons => no condensation needed.
+        if reasons == set():
+            return None
+
+        # If the reasons are for resource constraints, we can treat it as a soft
+        # requirement. We want to condense when we can, but there's still space in the
+        # context window or we'd also see Reason.REQUEST. That means we can delay the
+        # condensation if there isn't one available (based on the view's manipulation
+        # indices).
+        resource_reasons = {Reason.TOKENS, Reason.EVENTS}
+        if reasons.issubset(resource_reasons):
+            return CondensationRequirement.SOFT
+
+        # Requests -- whether they come from the user or the agent -- are always hard
+        # requirements. We need to condense now because:
+        # 1. the user expects it
+        # 2. the agent has no more room in the context window and can't continue
+        if Reason.REQUEST in reasons:
             return CondensationRequirement.HARD
-        return None
 
     def _get_summary_event_content(self, view: View) -> str:
         """Extract the text content from the summary event in the view, if any.
