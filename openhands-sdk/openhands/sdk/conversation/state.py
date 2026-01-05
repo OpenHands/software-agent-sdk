@@ -269,7 +269,7 @@ class ConversationState(OpenHandsModel):
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()
 
-        state._save_base_state(file_store)
+        state._save_base_state(file_store)  # initial snapshot
         state._autosave_enabled = True
         logger.info(
             f"Created new conversation {state.id}\n"
