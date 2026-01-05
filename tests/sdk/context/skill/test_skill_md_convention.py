@@ -8,10 +8,10 @@ from openhands.sdk.context.skills import (
     Skill,
     SkillValidationError,
     load_skills_from_dir,
-    validate_skill_name,
 )
 from openhands.sdk.context.skills.utils import (
     find_skill_md,
+    validate_skill_name,
 )
 
 

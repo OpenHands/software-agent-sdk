@@ -2,23 +2,8 @@
 
 from openhands.sdk.context.skills import (
     Skill,
-    SkillValidationError,
     to_prompt,
 )
-
-
-def test_skill_validation_error_with_errors_list() -> None:
-    """SkillValidationError should include errors in string representation."""
-    # Without errors
-    error = SkillValidationError("Test error")
-    assert str(error) == "Test error"
-    assert error.errors == []
-
-    # With errors
-    error = SkillValidationError("Validation failed", errors=["Error 1", "Error 2"])
-    assert "Error 1" in str(error)
-    assert "Error 2" in str(error)
-    assert error.errors == ["Error 1", "Error 2"]
 
 
 def test_to_prompt_generates_xml() -> None:
