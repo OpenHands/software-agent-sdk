@@ -498,9 +498,7 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
         assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") != state.model_dump(mode="json")
-        loaded_state.stats.register_llm(RegistryEvent(llm=llm))
+        # Test model_dump equality - stats should be preserved on resume
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
 
