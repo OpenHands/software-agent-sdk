@@ -157,7 +157,7 @@ class RestoreConversationTest(DummyRestoreConversationTest):
                 reason="confirmation_policy was not restored from persistence",
             )
 
-        # 2) Runtime agent/LLM should be used (no reconciliation).
+        # 2) Runtime agent/LLM should be used.
         if conv2.agent.llm.model != "gpt-5.2":
             return TestResult(
                 success=False,
