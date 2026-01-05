@@ -50,7 +50,7 @@ VERIFIED_OPENHANDS_MODELS = [
     "gpt-5.1-codex",
     "gpt-5.1",
     "gemini-3-pro-preview",
-    "deekseek-chat",
+    "deepseek-chat",
     "kimi-k2-thinking",
     "devstral-medium-2512",
     "devstral-2512",
