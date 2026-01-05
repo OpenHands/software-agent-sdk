@@ -143,13 +143,21 @@ class RestoreConversationTest(BaseIntegrationTest):
             )
 
         # 1) Persisted state settings should be restored on resume.
-        # NOTE: execution_status can legitimately change once we run the restored
-        # conversation. The key behavioral property we need is that it should not be
-        # the hard-blocking STUCK status.
-        if conv2.state.execution_status == ConversationExecutionStatus.STUCK:
+        if not conv2.state.confirmation_policy.should_confirm():
             return TestResult(
                 success=False,
-                reason="Unexpected execution_status=STUCK on resume",
+                reason="confirmation_policy was not restored from persistence",
+            )
+
+        # The restored conversation should be in a normal resumable state.
+        # We expect it to have reached FINISHED after the initial run.
+        if conv2.state.execution_status != ConversationExecutionStatus.FINISHED:
+            return TestResult(
+                success=False,
+                reason=(
+                    "Expected execution_status=FINISHED after restore, got "
+                    f"{conv2.state.execution_status!r}"
+                ),
             )
 
         # Prove the restored conversation can continue.
@@ -164,12 +172,6 @@ class RestoreConversationTest(BaseIntegrationTest):
                     "Expected restored conversation to make progress after a new "
                     "user message, but execution_status is still ERROR."
                 ),
-            )
-
-        if not conv2.state.confirmation_policy.should_confirm():
-            return TestResult(
-                success=False,
-                reason="confirmation_policy was not restored from persistence",
             )
 
         # 2) Runtime agent/LLM should be used.
