@@ -1,9 +1,7 @@
 from openhands.sdk.context.skills.exceptions import SkillValidationError
 from openhands.sdk.context.skills.skill import (
-    RESOURCE_DIRECTORIES,
     Skill,
     SkillResources,
-    discover_skill_resources,
     load_project_skills,
     load_public_skills,
     load_skills_from_dir,
@@ -15,6 +13,10 @@ from openhands.sdk.context.skills.trigger import (
     TaskTrigger,
 )
 from openhands.sdk.context.skills.types import SkillKnowledge
+from openhands.sdk.context.skills.utils import (
+    RESOURCE_DIRECTORIES,
+    discover_skill_resources,
+)
 
 
 __all__ = [

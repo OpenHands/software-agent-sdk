@@ -14,6 +14,7 @@ from openhands.sdk.context.skills.trigger import (
 )
 from openhands.sdk.context.skills.types import InputMetadata
 from openhands.sdk.context.skills.utils import (
+    discover_skill_resources,
     find_mcp_config,
     find_regular_md_files,
     find_skill_md_directories,
@@ -33,9 +34,6 @@ logger = get_logger(__name__)
 # Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
 # These files are always active, so we want to keep them reasonably sized
 THIRD_PARTY_SKILL_MAX_CHARS = 10_000
-
-# Standard resource directory names per AgentSkills spec
-RESOURCE_DIRECTORIES = ("scripts", "references", "assets")
 
 
 class SkillResources(BaseModel):
@@ -79,56 +77,6 @@ class SkillResources(BaseModel):
         """Get the assets directory path if it exists."""
         assets_dir = Path(self.skill_root) / "assets"
         return assets_dir if assets_dir.is_dir() else None
-
-
-def discover_skill_resources(skill_dir: Path) -> SkillResources:
-    """Discover resource directories in a skill directory.
-
-    Scans for standard AgentSkills resource directories:
-    - scripts/: Executable scripts
-    - references/: Reference documentation
-    - assets/: Static assets
-
-    Args:
-        skill_dir: Path to the skill directory.
-
-    Returns:
-        SkillResources with lists of files in each resource directory.
-    """
-    resources = SkillResources(skill_root=str(skill_dir.resolve()))
-
-    for resource_type in RESOURCE_DIRECTORIES:
-        resource_dir = skill_dir / resource_type
-        if resource_dir.is_dir():
-            files = _list_resource_files(resource_dir, resource_type)
-            setattr(resources, resource_type, files)
-
-    return resources
-
-
-def _list_resource_files(
-    resource_dir: Path,
-    resource_type: str,
-) -> list[str]:
-    """List files in a resource directory.
-
-    Args:
-        resource_dir: Path to the resource directory.
-        resource_type: Type of resource (scripts, references, assets).
-
-    Returns:
-        List of relative file paths within the resource directory.
-    """
-    files: list[str] = []
-    try:
-        for item in resource_dir.rglob("*"):
-            if item.is_file():
-                # Store relative path from resource directory
-                rel_path = item.relative_to(resource_dir)
-                files.append(str(rel_path))
-    except OSError as e:
-        logger.warning(f"Error listing {resource_type} directory: {e}")
-    return sorted(files)
 
 
 # Union type for all trigger types
@@ -216,13 +164,6 @@ class Skill(BaseModel):
         description=(
             "List of pre-approved tools for this skill. "
             "AgentSkills standard field (parsed from space-delimited string)."
-        ),
-    )
-    mcp_config_path: str | None = Field(
-        default=None,
-        description=(
-            "Path to .mcp.json file if MCP config was loaded from file. "
-            "Used to track the source of MCP configuration."
         ),
     )
     resources: SkillResources | None = Field(
@@ -331,24 +272,11 @@ class Skill(BaseModel):
                 f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
             )
 
-        # Load MCP configuration from .mcp.json if present
-        # AgentSkills ONLY use .mcp.json, ignoring mcp_tools from frontmatter
+        # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
         mcp_tools: dict | None = None
-        mcp_config_path: str | None = None
         mcp_json_path = find_mcp_config(skill_root)
         if mcp_json_path:
             mcp_tools = load_mcp_config(mcp_json_path, skill_root)
-            mcp_config_path = str(mcp_json_path)
-            # Log warning if both .mcp.json and mcp_tools frontmatter exist
-            if metadata_dict.get("mcp_tools"):
-                logger.warning(
-                    f"Skill '{agent_name}' has both .mcp.json and mcp_tools "
-                    "frontmatter. Using .mcp.json configuration."
-                )
-
-        # Remove mcp_tools from metadata_dict to prevent fallback in
-        # _create_skill_from_metadata (AgentSkills should ONLY use .mcp.json)
-        metadata_dict.pop("mcp_tools", None)
 
         # Discover resource directories
         resources: SkillResources | None = None
@@ -357,13 +285,7 @@ class Skill(BaseModel):
             resources = discovered_resources
 
         return cls._create_skill_from_metadata(
-            agent_name,
-            content,
-            path,
-            metadata_dict,
-            mcp_tools=mcp_tools,
-            mcp_config_path=mcp_config_path,
-            resources=resources,
+            agent_name, content, path, metadata_dict, mcp_tools, resources=resources
         )
 
     @classmethod
@@ -398,7 +320,14 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use derived name
         agent_name = str(metadata_dict.get("name", skill_name))
 
-        return cls._create_skill_from_metadata(agent_name, content, path, metadata_dict)
+        # Legacy skills ONLY use mcp_tools from frontmatter (not .mcp.json)
+        mcp_tools = metadata_dict.get("mcp_tools")
+        if mcp_tools is not None and not isinstance(mcp_tools, dict):
+            raise SkillValidationError("mcp_tools must be a dictionary or None")
+
+        return cls._create_skill_from_metadata(
+            agent_name, content, path, metadata_dict, mcp_tools
+        )
 
     @classmethod
     def _create_skill_from_metadata(
@@ -408,7 +337,6 @@ class Skill(BaseModel):
         path: Path,
         metadata_dict: dict,
         mcp_tools: dict | None = None,
-        mcp_config_path: str | None = None,
         resources: SkillResources | None = None,
     ) -> "Skill":
         """Create a Skill object from parsed metadata.
@@ -419,7 +347,6 @@ class Skill(BaseModel):
             path: Path to the skill file.
             metadata_dict: Parsed frontmatter metadata.
             mcp_tools: MCP tools configuration (from .mcp.json or frontmatter).
-            mcp_config_path: Path to .mcp.json if loaded from file.
             resources: Discovered resource directories.
         """
         # Extract AgentSkills standard fields (Pydantic validators handle
@@ -444,12 +371,6 @@ class Skill(BaseModel):
         if not isinstance(keywords, list):
             raise SkillValidationError("Triggers must be a list of strings")
 
-        # Fall back to mcp_tools from frontmatter if not provided
-        if mcp_tools is None:
-            mcp_tools = metadata_dict.get("mcp_tools")
-            if mcp_tools is not None and not isinstance(mcp_tools, dict):
-                raise SkillValidationError("mcp_tools must be a dictionary or None")
-
         # Infer the trigger type:
         # 1. If inputs exist -> TaskTrigger
         # 2. If keywords exist -> KeywordTrigger
@@ -472,7 +393,6 @@ class Skill(BaseModel):
                 trigger=TaskTrigger(triggers=keywords),
                 inputs=inputs,
                 mcp_tools=mcp_tools,
-                mcp_config_path=mcp_config_path,
                 resources=resources,
                 **agentskills_fields,
             )
@@ -484,7 +404,6 @@ class Skill(BaseModel):
                 source=str(path),
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
-                mcp_config_path=mcp_config_path,
                 resources=resources,
                 **agentskills_fields,
             )
@@ -496,7 +415,6 @@ class Skill(BaseModel):
                 source=str(path),
                 trigger=None,
                 mcp_tools=mcp_tools,
-                mcp_config_path=mcp_config_path,
                 resources=resources,
                 **agentskills_fields,
             )
