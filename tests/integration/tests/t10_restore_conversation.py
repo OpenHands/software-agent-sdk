@@ -161,6 +161,7 @@ class RestoreConversationTest(BaseIntegrationTest):
             )
 
         # Prove the restored conversation can continue.
+        conv2.state.execution_status = ConversationExecutionStatus.ERROR
         conv2.send_message("are you still there?")
         conv2.run()
 
