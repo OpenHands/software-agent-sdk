@@ -164,6 +164,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
                 cache_read_tokens=token_usage.cache_read_tokens,
                 cache_write_tokens=token_usage.cache_write_tokens,
                 reasoning_tokens=token_usage.reasoning_tokens,
+                context_window=token_usage.context_window,
             )
 
         token_usage_str = ""

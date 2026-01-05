@@ -550,16 +550,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
 
-        # 4) optional request logging context (kept small)
+        # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
-        log_ctx = None
+        # Always pass context_window so metrics are tracked even when logging disabled
+        log_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "messages": formatted_messages[:],  # already simple dicts
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            log_ctx.update(
+                {
+                    "messages": formatted_messages[:],  # already simple dicts
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
             if tools and not use_native_fc:
                 log_ctx["raw_messages"] = original_fncall_msgs
 
@@ -671,17 +673,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self, kwargs, include=include, store=store
         )
 
-        # Optional request logging
+        # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
-        log_ctx = None
+        # Always pass context_window so metrics are tracked even when logging disabled
+        log_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "llm_path": "responses",
-                "input": input_items[:],
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            log_ctx.update(
+                {
+                    "llm_path": "responses",
+                    "input": input_items[:],
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
 
         # Perform call with retries
         @self.retry_decorator(
