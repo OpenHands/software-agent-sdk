@@ -1,12 +1,9 @@
-"""Tests for validation and prompt generation utilities (Issue #1478)."""
-
-from pathlib import Path
+"""Tests for prompt generation utilities (Issue #1478)."""
 
 from openhands.sdk.context.skills import (
     Skill,
     SkillValidationError,
     to_prompt,
-    validate_skill,
 )
 
 
@@ -22,45 +19,6 @@ def test_skill_validation_error_with_errors_list() -> None:
     assert "Error 1" in str(error)
     assert "Error 2" in str(error)
     assert error.errors == ["Error 1", "Error 2"]
-
-
-def test_validate_skill_valid_directory(tmp_path: Path) -> None:
-    """validate_skill() should return empty list for valid skill."""
-    skill_dir = tmp_path / "my-skill"
-    skill_dir.mkdir()
-    (skill_dir / "SKILL.md").write_text(
-        "---\ndescription: Test\n---\n# My Skill\n\nContent."
-    )
-
-    errors = validate_skill(skill_dir)
-    assert errors == []
-
-
-def test_validate_skill_errors(tmp_path: Path) -> None:
-    """validate_skill() should return errors for invalid skills."""
-    # Nonexistent directory
-    errors = validate_skill(tmp_path / "nonexistent")
-    assert any("does not exist" in e for e in errors)
-
-    # Missing SKILL.md
-    empty_dir = tmp_path / "empty"
-    empty_dir.mkdir()
-    errors = validate_skill(empty_dir)
-    assert any("Missing SKILL.md" in e for e in errors)
-
-    # Invalid skill name
-    bad_name = tmp_path / "Invalid_Name"
-    bad_name.mkdir()
-    (bad_name / "SKILL.md").write_text("# Test\n\nContent.")
-    errors = validate_skill(bad_name)
-    assert any("lowercase" in e.lower() for e in errors)
-
-    # Empty content
-    empty_content = tmp_path / "empty-content"
-    empty_content.mkdir()
-    (empty_content / "SKILL.md").write_text("---\ndescription: Test\n---\n")
-    errors = validate_skill(empty_content)
-    assert any("no content" in e.lower() for e in errors)
 
 
 def test_to_prompt_generates_xml() -> None:
