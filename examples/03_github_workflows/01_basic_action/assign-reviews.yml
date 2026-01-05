@@ -50,7 +50,8 @@ jobs:
 
                 # Issues with needs-triage
 
-                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 2 days:
+                Find all open issues that have the "needs-triage" label. For each issue that has been in this state for more than 4 days since the last
+                activity:
                 1. First, check if the issue has already been triaged by verifying it does NOT have:
                    - The "enhancement" label
                    - Any "priority" label (priority:low, priority:medium, priority:high, etc.)
@@ -61,6 +62,7 @@ jobs:
                      * Is it a bug report, feature request, or question?
                      * Does it have enough information to be actionable?
                      * Has a maintainer already commented?
+                     * Is the last comment older than 4 days?
                    - If it needs maintainer attention and no maintainer has commented:
                      * Find an appropriate maintainer based on the issue topic and recent activity
                      * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look when you have

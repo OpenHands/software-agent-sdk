@@ -97,9 +97,11 @@ class TmuxTerminal(TerminalInterface):
         try:
             if hasattr(self, "session"):
                 self.session.kill()
-        except ImportError:
-            # Python is shutting down, let the OS handle cleanup
-            pass
+        except Exception as e:
+            # Session might already be dead/killed externally
+            # (e.g., "can't find session" error from tmux)
+            # Also handles ImportError during Python shutdown
+            logger.debug(f"Error closing tmux session (may already be dead): {e}")
         self._closed: bool = True
 
     def send_keys(self, text: str, enter: bool = True) -> None:
