@@ -107,10 +107,6 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
 
 
 # # Tests for agent tools restriction and LLM flexibility
-def test_conversation_with_different_agent_tools_fails():
-    """Test that using an agent with different tools fails (tools must match)."""
-
-
 # Tests from test_local_conversation_tools_integration.py
 def test_conversation_allows_removing_unused_tools():
     """Test that removing tools that weren't used in history is allowed.
