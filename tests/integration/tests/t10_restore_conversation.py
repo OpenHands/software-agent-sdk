@@ -97,17 +97,35 @@ class RestoreConversationTest(BaseIntegrationTest):
         with open(base_state_path) as f:
             base_state = json.load(f)
 
-        persisted_model = (
-            base_state.get("agent", {}).get("llm", {}).get("model")
-            if isinstance(base_state, dict)
-            else None
-        )
+        persisted_llm = base_state.get("agent", {}).get("llm", {})
+        persisted_model = persisted_llm.get("model")
+        persisted_max_input_tokens = persisted_llm.get("max_input_tokens")
+        persisted_usage_id = persisted_llm.get("usage_id")
+
         if persisted_model != "gpt-5.1-codex-max":
             return TestResult(
                 success=False,
                 reason=(
                     "Expected persisted agent.llm.model to be 'gpt-5.1-codex-max', "
                     f"got {persisted_model!r}"
+                ),
+            )
+
+        if persisted_max_input_tokens != 100_000:
+            return TestResult(
+                success=False,
+                reason=(
+                    "Expected persisted agent.llm.max_input_tokens to be 100000, "
+                    f"got {persisted_max_input_tokens!r}"
+                ),
+            )
+
+        if persisted_usage_id != "restore-test-llm-1":
+            return TestResult(
+                success=False,
+                reason=(
+                    "Expected persisted agent.llm.usage_id to be 'restore-test-llm-1', "
+                    f"got {persisted_usage_id!r}"
                 ),
             )
 
