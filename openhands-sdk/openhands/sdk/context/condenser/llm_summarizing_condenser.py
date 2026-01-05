@@ -5,6 +5,7 @@ from enum import Enum
 from pydantic import Field, model_validator
 
 from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
     NoCondensationAvailableException,
     RollingCondenser,
 )
@@ -87,9 +88,13 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         return reasons
 
-    def should_condense(self, view: View, agent_llm: LLM | None = None) -> bool:
+    def condensation_requirement(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> CondensationRequirement | None:
         reasons = self.get_condensation_reasons(view, agent_llm)
-        return reasons != set()
+        if reasons != set():
+            return CondensationRequirement.HARD
+        return None
 
     def _get_summary_event_content(self, view: View) -> str:
         """Extract the text content from the summary event in the view, if any.

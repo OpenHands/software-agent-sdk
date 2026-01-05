@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 import pytest
 from litellm.types.utils import ModelResponse
 
+from openhands.sdk.context.condenser.base import CondensationRequirement
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
     Reason,
@@ -108,13 +109,16 @@ def test_should_condense(mock_llm: LLM) -> None:
     small_events = [message_event(f"Event {i}") for i in range(max_size)]
     small_view = View.from_events(small_events)
 
-    assert not condenser.should_condense(small_view)
+    assert condenser.condensation_requirement(small_view) is None
 
     # Create events above the threshold
     large_events = [message_event(f"Event {i}") for i in range(max_size + 1)]
     large_view = View.from_events(large_events)
 
-    assert condenser.should_condense(large_view)
+    assert (
+        condenser.condensation_requirement(large_view)
+        == CondensationRequirement.HARD
+    )
 
 
 def test_condense_returns_view_when_no_condensation_needed(mock_llm: LLM) -> None:

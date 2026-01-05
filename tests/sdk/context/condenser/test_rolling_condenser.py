@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
     NoCondensationAvailableException,
     RollingCondenser,
 )
@@ -25,14 +26,16 @@ class MockRollingCondenser(RollingCondenser):
 
     def __init__(
         self,
-        should_condense_value: bool = True,
+        condensation_requirement_value: CondensationRequirement | None = None,
         raise_exception: bool = False,
     ):
-        self._should_condense_value = should_condense_value
+        self._condensation_requirement_value = condensation_requirement_value
         self._raise_exception = raise_exception
 
-    def should_condense(self, view: View, agent_llm: LLM | None = None) -> bool:
-        return self._should_condense_value
+    def condensation_requirement(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> CondensationRequirement | None:
+        return self._condensation_requirement_value
 
     def get_condensation(
         self, view: View, agent_llm: LLM | None = None
@@ -51,10 +54,10 @@ class MockRollingCondenser(RollingCondenser):
 
 
 def test_rolling_condenser_returns_view_when_no_condensation_needed() -> None:
-    """Test that RollingCondenser returns the original view when should_condense returns
-    False.
+    """Test that RollingCondenser returns the original view when
+    condensation_requirement returns None.
     """
-    condenser = MockRollingCondenser(should_condense_value=False)
+    condenser = MockRollingCondenser(condensation_requirement_value=None)
 
     events: list[Event] = [
         message_event("Event 1"),
@@ -70,10 +73,13 @@ def test_rolling_condenser_returns_view_when_no_condensation_needed() -> None:
 
 
 def test_rolling_condenser_returns_condensation_when_needed() -> None:
-    """Test that RollingCondenser returns a Condensation when should_condense returns
-    True.
+    """Test that RollingCondenser returns a Condensation when condensation_requirement
+    returns HARD.
     """
-    condenser = MockRollingCondenser(should_condense_value=True, raise_exception=False)
+    condenser = MockRollingCondenser(
+        condensation_requirement_value=CondensationRequirement.HARD,
+        raise_exception=False,
+    )
 
     events: list[Event] = [
         message_event("Event 1"),
@@ -92,13 +98,16 @@ def test_rolling_condenser_returns_view_on_no_condensation_available_exception()
     None
 ):
     """Test that RollingCondenser returns the original view when
-    NoCondensationAvailableException is raised.
+    NoCondensationAvailableException is raised with SOFT requirement.
 
-    This tests the exception handling added in base.py:105-110 which catches
+    This tests the exception handling for SOFT condensation requirements which catches
     NoCondensationAvailableException from get_condensation() and returns the
     original view as a fallback.
     """
-    condenser = MockRollingCondenser(should_condense_value=True, raise_exception=True)
+    condenser = MockRollingCondenser(
+        condensation_requirement_value=CondensationRequirement.SOFT,
+        raise_exception=True,
+    )
 
     events: list[Event] = [
         message_event("Event 1"),
@@ -107,8 +116,8 @@ def test_rolling_condenser_returns_view_on_no_condensation_available_exception()
     ]
     view = View.from_events(events)
 
-    # Even though should_condense returns True, the exception should be caught
-    # and the original view should be returned
+    # Even though condensation_requirement returns SOFT, the exception should be
+    # caught and the original view should be returned
     result = condenser.condense(view)
 
     assert isinstance(result, View)
@@ -118,7 +127,10 @@ def test_rolling_condenser_returns_view_on_no_condensation_available_exception()
 
 def test_rolling_condenser_with_agent_llm() -> None:
     """Test that RollingCondenser works with optional agent_llm parameter."""
-    condenser = MockRollingCondenser(should_condense_value=True, raise_exception=False)
+    condenser = MockRollingCondenser(
+        condensation_requirement_value=CondensationRequirement.HARD,
+        raise_exception=False,
+    )
 
     events: list[Event] = [
         message_event("Event 1"),
