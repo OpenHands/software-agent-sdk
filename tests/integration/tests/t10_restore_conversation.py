@@ -142,6 +142,10 @@ class RestoreConversationTest(BaseIntegrationTest):
                 ),
             )
 
+        # Prove the restored conversation can continue.
+        conv2.send_message("are you still there?")
+        conv2.run()
+
         # 1) Persisted state settings should be restored.
         if conv2.state.execution_status != ConversationExecutionStatus.STUCK:
             return TestResult(
