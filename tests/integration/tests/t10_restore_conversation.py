@@ -71,6 +71,11 @@ class RestoreConversationTest(BaseIntegrationTest):
         conv1.state.confirmation_policy = AlwaysConfirm()
         conv1.state.execution_status = ConversationExecutionStatus.STUCK
 
+        # Ensure there's at least one user + assistant message pair in history.
+        # This exercises the full create -> persist -> resume path with events.
+        conv1.send_message(INSTRUCTION)
+        conv1.run()
+
         conversation_id = conv1.id
 
         # Read persisted base_state.json and ensure it contains the original model.
