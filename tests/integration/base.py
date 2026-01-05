@@ -134,7 +134,7 @@ class BaseIntegrationTest(ABC):
                 self.early_stop_result = result
                 self.conversation.pause()  # Trigger graceful stop
 
-    def run_conversation(self) -> None:
+    def run_conversation(self, conversation: LocalConversation) -> None:
         """
         Execute the conversation with the agent.
 
@@ -142,31 +142,34 @@ class BaseIntegrationTest(ABC):
         intermediate verification, or custom message sequences). The default implementation
         sends a single instruction and runs the conversation to completion.
 
+        Args:
+            conversation: The LocalConversation instance to send messages and control flow
+
         You have access to:
-        - self.conversation: LocalConversation instance to send messages and control flow
+        - conversation: LocalConversation parameter to send messages and control flow
         - self.instruction: The instruction string for the test
         - self.collected_events: Events collected so far (via callback)
         - self.llm_messages: LLM messages collected so far (via callback)
 
         Example override for multi-step test:
-            def run_conversation(self) -> None:
+            def run_conversation(self, conversation: LocalConversation) -> None:
                 # Step 1
-                self.conversation.send_message(Message(role="user", content=[TextContent(text="First task")]))
-                self.conversation.run()
+                conversation.send_message(Message(role="user", content=[TextContent(text="First task")]))
+                conversation.run()
 
                 # Intermediate verification
                 assert some_condition()
 
                 # Step 2
-                self.conversation.send_message(Message(role="user", content=[TextContent(text="Second task")]))
-                self.conversation.run()
+                conversation.send_message(Message(role="user", content=[TextContent(text="Second task")]))
+                conversation.run()
         """
-        self.conversation.send_message(
+        conversation.send_message(
             message=Message(
                 role="user", content=[TextContent(text=self.instruction)]
             )
         )
-        self.conversation.run()
+        conversation.run()
 
     def run_instruction(self) -> TestResult:
         """
@@ -189,7 +192,7 @@ class BaseIntegrationTest(ABC):
             stderr_buffer = StringIO()
 
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                self.run_conversation()
+                self.run_conversation(self.conversation)
 
             # Save captured output to log file
             captured_output = stdout_buffer.getvalue()
