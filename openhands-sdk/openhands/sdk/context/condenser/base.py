@@ -77,6 +77,7 @@ class NoCondensationAvailableException(Exception):
     the agent will fall back to using the uncondensed view for the next agent step.
     """
 
+
 class CondensationRequirement(Enum):
     """The type of condensation required by a rolling condenser."""
 
@@ -84,9 +85,10 @@ class CondensationRequirement(Enum):
     """Indicates that a condensation is required right now, and the agent cannot proceed
     without it.
     """
-    
+
     SOFT = "soft"
     """Indicates that a condensation is desired but not strictly required."""
+
 
 class RollingCondenser(PipelinableCondenserBase, ABC):
     """Base class for a specialized condenser strategy that applies condensation to a
@@ -106,7 +108,7 @@ class RollingCondenser(PipelinableCondenserBase, ABC):
         self, view: View, agent_llm: LLM | None = None
     ) -> CondensationRequirement | None:
         """Determine how a view should be condensed.
-        
+
         Args:
             view: The current view of the conversation history.
             agent_llm: LLM instance used by the agent. Condensers use this for token

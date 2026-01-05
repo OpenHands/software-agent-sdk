@@ -116,8 +116,7 @@ def test_should_condense(mock_llm: LLM) -> None:
     large_view = View.from_events(large_events)
 
     assert (
-        condenser.condensation_requirement(large_view)
-        == CondensationRequirement.HARD
+        condenser.condensation_requirement(large_view) == CondensationRequirement.HARD
     )
 
 
