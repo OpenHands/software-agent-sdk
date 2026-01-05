@@ -30,7 +30,6 @@ from openhands.sdk.event import (
 from openhands.sdk.event.condenser import (
     Condensation,
     CondensationRequest,
-    CondensationRequestReason,
 )
 from openhands.sdk.llm import (
     LLMResponse,
@@ -204,9 +203,7 @@ class Agent(AgentBase):
                 logger.warning(
                     "LLM raised context window exceeded error, triggering condensation"
                 )
-                on_event(
-                    CondensationRequest(reason=CondensationRequestReason.CONTEXT_LIMIT)
-                )
+                on_event(CondensationRequest())
                 return
             # No condenser available or doesn't handle requests; log helpful warning
             self._log_context_window_exceeded_warning()
