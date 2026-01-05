@@ -8,12 +8,12 @@ from pydantic import BaseModel, Field, field_validator
 
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
-from openhands.sdk.conversation.secret_source import SecretSource
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -97,6 +97,14 @@ class StartConversationRequest(BaseModel):
     secrets: dict[str, SecretSource] = Field(
         default_factory=dict,
         description="Secrets available in the conversation",
+    )
+    tool_module_qualnames: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Mapping of tool names to their module qualnames from the client's "
+            "registry. These modules will be dynamically imported on the server "
+            "to register the tools for this conversation."
+        ),
     )
 
 

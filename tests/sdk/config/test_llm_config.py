@@ -23,7 +23,6 @@ def test_llm_config_defaults():
     assert config.temperature == 0.0
     assert config.top_p == 1.0
     assert config.top_k is None
-    assert config.custom_llm_provider is None
     assert config.max_input_tokens == 8192  # Auto-populated from model info
     assert config.max_output_tokens == 4096  # Auto-populated from model info
     assert config.input_cost_per_token is None
@@ -59,7 +58,6 @@ def test_llm_config_custom_values():
         temperature=0.5,
         top_p=0.9,
         top_k=50,
-        custom_llm_provider="custom",
         max_input_tokens=4000,
         max_output_tokens=1000,
         input_cost_per_token=0.001,
@@ -98,7 +96,6 @@ def test_llm_config_custom_values():
     assert config.temperature == 0.5
     assert config.top_p == 0.9
     assert config.top_k == 50
-    assert config.custom_llm_provider == "custom"
     assert config.max_input_tokens == 4000
     assert config.max_output_tokens == 1000
     assert config.input_cost_per_token == 0.001
@@ -179,6 +176,8 @@ def test_llm_config_post_init_reasoning_effort_default():
     # Test that explicit reasoning_effort is preserved
     config = LLM(model="gpt-4", reasoning_effort="low", usage_id="test-llm")
     assert config.reasoning_effort == "low"
+    config = LLM(model="gpt-4", reasoning_effort="xhigh", usage_id="test-llm")
+    assert config.reasoning_effort == "xhigh"
 
 
 def test_llm_config_post_init_azure_api_version():
@@ -217,11 +216,9 @@ def test_llm_config_log_completions_folder_default():
     assert "completions" in config.log_completions_folder
 
 
-def test_llm_config_extra_fields_forbidden():
+def test_llm_config_extra_fields_permitted():
     """Test that extra fields are forbidden."""
-    with pytest.raises(ValidationError) as exc_info:
-        LLM(model="gpt-4", invalid_field="should_not_work", usage_id="test-llm")  # type: ignore
-    assert "Extra inputs are not permitted" in str(exc_info.value)
+    LLM(model="gpt-4", invalid_field="should_be_permitted", usage_id="test-llm")  # type: ignore
 
 
 def test_llm_config_validation():
@@ -329,7 +326,6 @@ def test_llm_config_optional_fields():
         aws_region_name=None,
         timeout=None,
         top_k=None,
-        custom_llm_provider=None,
         max_input_tokens=None,
         max_output_tokens=None,
         input_cost_per_token=None,
@@ -352,7 +348,6 @@ def test_llm_config_optional_fields():
     assert config.aws_region_name is None
     assert config.timeout is None
     assert config.top_k is None
-    assert config.custom_llm_provider is None
     assert (
         config.max_input_tokens == 8192
     )  # Auto-populated from model info even when set to None
