@@ -353,7 +353,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 if isinstance(event, ActionEvent) and event.tool_name
             }
 
-            # Only require tools that were actually used in history
+            # Only require tools that were actually used in history.
             missing_used_tools = used_tools - runtime_names
             if missing_used_tools:
                 raise ValueError(
@@ -361,16 +361,23 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                     f"are missing from runtime: {sorted(missing_used_tools)}. "
                     f"Available tools: {sorted(runtime_names)}"
                 )
+
             return self
 
+        # No events provided: strict tool name matching.
         missing_in_runtime = persisted_names - runtime_names
         missing_in_persisted = runtime_names - persisted_names
-        error_msg = "Tools don't match between runtime and persisted agents."
+
+        details: list[str] = []
         if missing_in_runtime:
-            error_msg += f" Missing in runtime: {sorted(missing_in_runtime)}."
+            details.append(f"Missing in runtime: {sorted(missing_in_runtime)}")
         if missing_in_persisted:
-            error_msg += f" Missing in persisted: {sorted(missing_in_persisted)}."
-        raise ValueError(error_msg)
+            details.append(f"Missing in persisted: {sorted(missing_in_persisted)}")
+
+        suffix = f" ({'; '.join(details)})" if details else ""
+        raise ValueError(
+            "Tools don't match between runtime and persisted agents." + suffix
+        )
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
