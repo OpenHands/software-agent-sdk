@@ -1,7 +1,7 @@
 """Test conversation restore (resume) behavior.
 
 This integration test exercises the key behavior of PR #1542:
-- On resume, we use the runtime-provided Agent directly (no reconciliation).
+- On resume, we use the runtime-provided Agent.
 - Tool compatibility is verified (tools used in history must still exist).
 - Conversation-state settings are restored from persistence (e.g.
   confirmation_policy, execution_status).
