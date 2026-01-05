@@ -30,16 +30,8 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 INSTRUCTION = "Create a new conversation."  # Not used; we validate restore behavior.
 
 
-class DummyRestoreConversationTest(BaseIntegrationTest):
-    """Dummy BaseIntegrationTest to satisfy integration runner harness.
-
-    The runner always constructs BaseIntegrationTest which creates an LLM and a
-    LocalConversation (and would otherwise attempt a real LLM call).
-
-    This test does *not* use the runner-created conversation. Instead, it
-    exercises the resume/persistence semantics directly using LocalConversation
-    with `visualizer=None` and without calling `.run()`.
-    """
+class RestoreConversationTest(BaseIntegrationTest):
+    """Ensure resume restores persisted state but uses runtime Agent configuration."""
 
     INSTRUCTION: str = INSTRUCTION
 
@@ -49,24 +41,9 @@ class DummyRestoreConversationTest(BaseIntegrationTest):
         return [Tool(name="TerminalTool")]
 
     def setup(self) -> None:
+        # We want persistence in the integration test workspace.
         self.persistence_dir = os.path.join(self.workspace, "persist")
         os.makedirs(self.persistence_dir, exist_ok=True)
-
-    def run_instruction(self) -> TestResult:
-        # Override BaseIntegrationTest.run_instruction to avoid calling
-        # self.conversation.run() (which would hit the LLM).
-        try:
-            self.setup()
-            return self.verify_result()
-        finally:
-            self.teardown()
-
-    def verify_result(self) -> TestResult:
-        raise NotImplementedError
-
-
-class RestoreConversationTest(DummyRestoreConversationTest):
-    """Ensure resume restores persisted state but uses runtime Agent configuration."""
 
     def verify_result(self) -> TestResult:
         # First run: create conversation with agent1
@@ -92,11 +69,10 @@ class RestoreConversationTest(DummyRestoreConversationTest):
 
         conversation_id = conv1.id
 
-        # Read persisted base_state.json and ensure it contains the original model.
-        # LocalConversation persists to:
-        #   <persistence_dir>/<conversation_id.hex>/base_state.json
-        conv_dir = os.path.join(self.persistence_dir, conversation_id.hex)
-        base_state_path = os.path.join(conv_dir, "base_state.json")
+        # Read persisted base_state.json and ensure it contains the original model
+        base_state_path = os.path.join(
+            self.persistence_dir, str(conversation_id), "base_state.json"
+        )
         if not os.path.exists(base_state_path):
             return TestResult(
                 success=False,
