@@ -353,6 +353,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 if isinstance(event, ActionEvent) and event.tool_name
             }
 
+            # Only require tools that were actually used in history
             missing_used_tools = used_tools - runtime_names
             if missing_used_tools:
                 raise ValueError(
