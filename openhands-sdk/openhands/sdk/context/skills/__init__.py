@@ -1,20 +1,13 @@
 from openhands.sdk.context.skills.exceptions import SkillValidationError
 from openhands.sdk.context.skills.skill import (
-    RESOURCE_DIRECTORIES,
     Skill,
     SkillResources,
-    discover_skill_resources,
-    expand_mcp_variables,
-    find_mcp_config,
-    find_skill_md,
-    load_mcp_config,
     load_project_skills,
     load_public_skills,
     load_skills_from_dir,
     load_user_skills,
     to_prompt,
     validate_skill,
-    validate_skill_name,
 )
 from openhands.sdk.context.skills.trigger import (
     BaseTrigger,
@@ -22,6 +15,11 @@ from openhands.sdk.context.skills.trigger import (
     TaskTrigger,
 )
 from openhands.sdk.context.skills.types import SkillKnowledge
+from openhands.sdk.context.skills.utils import (
+    RESOURCE_DIRECTORIES,
+    discover_skill_resources,
+    validate_skill_name,
+)
 
 
 __all__ = [
@@ -36,12 +34,8 @@ __all__ = [
     "load_project_skills",
     "load_public_skills",
     "SkillValidationError",
-    "find_skill_md",
     "validate_skill_name",
     "validate_skill",
-    "find_mcp_config",
-    "load_mcp_config",
-    "expand_mcp_variables",
     "discover_skill_resources",
     "RESOURCE_DIRECTORIES",
     "to_prompt",

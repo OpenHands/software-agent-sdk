@@ -489,9 +489,11 @@ class View(BaseModel):
         # Check for an unhandled condensation request -- these are events closer to the
         # end of the list than any condensation action.
         unhandled_condensation_request = False
+
         for event in reversed(events):
             if isinstance(event, Condensation):
                 break
+
             if isinstance(event, CondensationRequest):
                 unhandled_condensation_request = True
                 break
