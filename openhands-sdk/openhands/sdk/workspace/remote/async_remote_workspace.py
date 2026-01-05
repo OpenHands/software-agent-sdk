@@ -1,9 +1,12 @@
+import asyncio
+import json
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
 
 import httpx
 from pydantic import PrivateAttr
+from websockets import connect
 
 from openhands.sdk.git.models import GitChange, GitDiff
 from openhands.sdk.workspace.models import CommandResult, FileOperationResult
@@ -61,8 +64,8 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
     ) -> CommandResult:
         """Execute a bash command on the remote system.
 
-        This method starts a bash command via the remote agent server API,
-        then polls for the output until the command completes.
+        This method conneccts a websocket client, sends a bash command, and
+        then waits for the output until the command completes.
 
         Args:
             command: The bash command to execute
@@ -72,9 +75,66 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         Returns:
             CommandResult: Result with stdout, stderr, exit_code, and other metadata
         """
-        generator = self._execute_command_generator(command, cwd, timeout)
-        result = await self._execute(generator)
-        return result
+        try:
+            result = await asyncio.wait_for(
+                self._execute_command(command, cwd, timeout), timeout=timeout
+            )
+            return result
+        except TimeoutError:
+            return CommandResult(
+                command=command,
+                exit_code=-1,
+                stdout="",
+                stderr="",
+                timeout_occurred=True,
+            )
+
+    async def _execute_command(
+        self,
+        command: str,
+        cwd: str | Path | None,
+        timeout: float,
+    ):
+        # Convert http(s) scheme to ws(s) for websocket connection
+        ws_host = self.host.replace("https://", "wss://").replace("http://", "ws://")
+        url = f"{ws_host}/sockets/bash-events?session_api_key={self.api_key}"
+        async with connect(url) as websocket:
+            payload = {
+                "command": command,
+                "timeout": int(timeout),
+            }
+            if cwd:
+                payload["cwd"] = str(cwd)
+            await websocket.send(json.dumps(payload))
+            command_id: str | None = None
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            exit_code: int | None = None
+            while exit_code is None:
+                data = await websocket.recv()
+                event = json.loads(data)
+                if event.get("kind") == "BashCommand":
+                    if command_id is None and event.get("command") == command:
+                        command_id = event.get("id")
+                if event.get("kind") == "BashOutput":
+                    if event.get("command_id") == command_id:
+                        if event.get("stdout"):
+                            stdout_parts.append(event.get("stdout"))
+                        if event.get("stderr"):
+                            stderr_parts.append(event.get("stderr"))
+                        exit_code = event.get("exit_code")
+
+            # Combine all output parts
+            stdout = "".join(stdout_parts)
+            stderr = "".join(stderr_parts)
+
+        return CommandResult(
+            command=command,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+            timeout_occurred=exit_code == -1 and "timed out" in stderr,
+        )
 
     async def file_upload(
         self,

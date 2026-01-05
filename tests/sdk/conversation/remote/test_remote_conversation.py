@@ -8,6 +8,7 @@ import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
+from openhands.sdk.conversation.exceptions import ConversationRunError
 from openhands.sdk.conversation.impl.remote_conversation import RemoteConversation
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.visualizer import DefaultConversationVisualizer
@@ -460,6 +461,94 @@ class TestRemoteConversation:
         assert poll_count[0] == 3, (
             f"Should have polled 3 times (2 running + 1 finished), got {poll_count[0]}"
         )
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_error_status_raises(self, mock_ws_client):
+        """Test that error status raises ConversationRunError."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response = Mock()
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": "error",
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        with pytest.raises(ConversationRunError) as exc_info:
+            conversation.run(poll_interval=0.01)
+        assert "error" in str(exc_info.value).lower()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_stuck_status_raises(self, mock_ws_client):
+        """Test that stuck status raises ConversationRunError."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                response = Mock()
+                response.raise_for_status.return_value = None
+                response.json.return_value = {
+                    "id": conversation_id,
+                    "execution_status": "stuck",
+                }
+                return response
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        with pytest.raises(ConversationRunError) as exc_info:
+            conversation.run(poll_interval=0.01)
+        assert "stuck" in str(exc_info.value).lower()
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_run_404_raises(self, mock_ws_client):
+        """Test that 404s during polling raise ConversationRunError."""
+        conversation_id = str(uuid.uuid4())
+        mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
+
+        original_side_effect = mock_client_instance.request.side_effect
+
+        def custom_side_effect(method, url, **kwargs):
+            if method == "GET" and url == f"/api/conversations/{conversation_id}":
+                request = httpx.Request("GET", f"http://localhost{url}")
+                return httpx.Response(404, request=request, text="Not Found")
+            return original_side_effect(method, url, **kwargs)
+
+        mock_client_instance.request.side_effect = custom_side_effect
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+        with pytest.raises(ConversationRunError) as exc_info:
+            conversation.run(poll_interval=0.01)
+        assert "not found" in str(exc_info.value).lower()
 
     @patch(
         "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
