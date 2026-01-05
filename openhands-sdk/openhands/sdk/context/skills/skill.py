@@ -123,6 +123,16 @@ class Skill(BaseModel):
         ),
     )
 
+    @field_validator("description")
+    @classmethod
+    def _validate_description_length(cls, v: str | None) -> str | None:
+        """Validate description length per AgentSkills spec (max 1024 chars)."""
+        if v is not None and len(v) > 1024:
+            raise SkillValidationError(
+                f"Description exceeds 1024 characters ({len(v)} chars)"
+            )
+        return v
+
     @field_validator("allowed_tools", mode="before")
     @classmethod
     def _parse_allowed_tools(cls, v: str | list | None) -> list[str] | None:

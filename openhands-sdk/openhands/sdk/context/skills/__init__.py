@@ -12,6 +12,7 @@ from openhands.sdk.context.skills.trigger import (
     TaskTrigger,
 )
 from openhands.sdk.context.skills.types import SkillKnowledge
+from openhands.sdk.context.skills.utils import validate_skill_name
 
 
 __all__ = [
@@ -25,4 +26,5 @@ __all__ = [
     "load_project_skills",
     "load_public_skills",
     "SkillValidationError",
+    "validate_skill_name",
 ]
