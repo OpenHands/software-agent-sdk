@@ -27,7 +27,7 @@ from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
-INSTRUCTION = "Create a new conversation."  # Not used; we validate restore behavior.
+INSTRUCTION = "Create a new conversation."
 
 
 class RestoreConversationTest(BaseIntegrationTest):
