@@ -264,7 +264,6 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
-        state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
         state.stats = ConversationStats()
