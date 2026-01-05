@@ -15,13 +15,6 @@ from openhands.sdk.context.skills.trigger import (
     TaskTrigger,
 )
 from openhands.sdk.context.skills.types import SkillKnowledge
-from openhands.sdk.context.skills.utils import (
-    expand_mcp_variables,
-    find_mcp_config,
-    find_skill_md,
-    load_mcp_config,
-    validate_skill_name,
-)
 
 
 __all__ = [
@@ -36,11 +29,6 @@ __all__ = [
     "load_project_skills",
     "load_public_skills",
     "SkillValidationError",
-    "find_skill_md",
-    "validate_skill_name",
-    "find_mcp_config",
-    "load_mcp_config",
-    "expand_mcp_variables",
     "discover_skill_resources",
     "RESOURCE_DIRECTORIES",
 ]
