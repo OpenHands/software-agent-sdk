@@ -42,7 +42,11 @@ class RestoreConversationTest(BaseIntegrationTest):
 
     def setup(self) -> None:
         # We want persistence in the integration test workspace.
-        self.persistence_dir = os.path.join(self.workspace, "persist")
+        # Keep persisted conversations somewhere easy to inspect locally.
+        # This is intentionally outside the ephemeral runner workspace.
+        self.persistence_dir = os.path.join(
+            os.getcwd(), "tests", "integration", "outputs", "local_persist_t10"
+        )
         os.makedirs(self.persistence_dir, exist_ok=True)
 
     def verify_result(self) -> TestResult:
@@ -69,9 +73,11 @@ class RestoreConversationTest(BaseIntegrationTest):
 
         conversation_id = conv1.id
 
-        # Read persisted base_state.json and ensure it contains the original model
+        # Read persisted base_state.json and ensure it contains the original model.
+        # LocalConversation persists to:
+        #   <persistence_dir>/<conversation_id.hex>/base_state.json
         base_state_path = os.path.join(
-            self.persistence_dir, str(conversation_id), "base_state.json"
+            self.persistence_dir, conversation_id.hex, "base_state.json"
         )
         if not os.path.exists(base_state_path):
             return TestResult(
