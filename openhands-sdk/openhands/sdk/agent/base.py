@@ -2,7 +2,7 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
@@ -299,50 +299,77 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def verify(self, persisted: "AgentBase") -> "AgentBase":
+    def verify(
+        self,
+        persisted: "AgentBase",
+        events: "Sequence[Any] | None" = None,
+    ) -> "AgentBase":
         """Verify that we can resume this agent from persisted state.
 
-        This method verifies that the tools configuration matches between this
-        agent and the persisted agent. Tools must match because they may have been
-        used in the conversation history.
+        This PR's goal is to *not* reconcile configuration between persisted and
+        runtime Agent instances. Instead, we verify compatibility requirements
+        and then continue with the runtime-provided Agent.
+
+        Compatibility requirements:
+        - Agent class/type must match.
+        - Tools:
+          - If events are provided, only tools that were actually used in history
+            must exist in runtime.
+          - If events are not provided, tool names must match exactly.
 
         All other configuration (LLM, agent_context, condenser, system prompts,
         etc.) can be freely changed between sessions.
 
         Args:
-            persisted: The agent loaded from persisted state
+            persisted: The agent loaded from persisted state.
+            events: Optional event sequence to scan for used tools if tool names
+                don't match.
 
         Returns:
-            This agent (self) if verification passes
+            This runtime agent (self) if verification passes.
 
         Raises:
-            ValueError: If agent class or tools don't match
+            ValueError: If agent class or tools don't match.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
-                f"Cannot load from persisted: persisted agent is of type "
+                "Cannot load from persisted: persisted agent is of type "
                 f"{persisted.__class__.__name__}, but self is of type "
                 f"{self.__class__.__name__}."
             )
 
-        # Check that tool names match - tools may have been used in conversation history
-        runtime_tools_map = {tool.name: tool for tool in self.tools}
-        persisted_tools_map = {tool.name: tool for tool in persisted.tools}
+        runtime_names = {tool.name for tool in self.tools}
+        persisted_names = {tool.name for tool in persisted.tools}
 
-        runtime_names = set(runtime_tools_map.keys())
-        persisted_names = set(persisted_tools_map.keys())
+        if runtime_names == persisted_names:
+            return self
 
-        if runtime_names != persisted_names:
-            missing_in_runtime = persisted_names - runtime_names
-            missing_in_persisted = runtime_names - persisted_names
-            error_msg = "Tools don't match between runtime and persisted agents."
-            if missing_in_runtime:
-                error_msg += f" Missing in runtime: {missing_in_runtime}."
-            if missing_in_persisted:
-                error_msg += f" Missing in persisted: {missing_in_persisted}."
-            raise ValueError(error_msg)
+        if events is not None:
+            from openhands.sdk.event import ActionEvent
 
-        return self
+            used_tools = {
+                event.tool_name
+                for event in events
+                if isinstance(event, ActionEvent) and event.tool_name
+            }
+
+            missing_used_tools = used_tools - runtime_names
+            if missing_used_tools:
+                raise ValueError(
+                    "Cannot resume conversation: tools that were used in history "
+                    f"are missing from runtime: {sorted(missing_used_tools)}. "
+                    f"Available tools: {sorted(runtime_names)}"
+                )
+            return self
+
+        missing_in_runtime = persisted_names - runtime_names
+        missing_in_persisted = runtime_names - persisted_names
+        error_msg = "Tools don't match between runtime and persisted agents."
+        if missing_in_runtime:
+            error_msg += f" Missing in runtime: {sorted(missing_in_runtime)}."
+        if missing_in_persisted:
+            error_msg += f" Missing in persisted: {sorted(missing_in_persisted)}."
+        raise ValueError(error_msg)
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""

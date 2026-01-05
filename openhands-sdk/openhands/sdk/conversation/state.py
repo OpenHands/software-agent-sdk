@@ -136,7 +136,6 @@ class ConversationState(OpenHandsModel):
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
 
-    # ===== Public "events" facade (Sequence[Event]) =====
     @property
     def events(self) -> EventLog:
         return self._events
@@ -228,16 +227,16 @@ class ConversationState(OpenHandsModel):
                     f"but persisted state has {state.id}"
                 )
 
-            # Verify tools match - they may have been used in conversation history.
-            verified_agent = agent.verify(state.agent)
-
-            # Attach runtime handles
+            # Attach event log early so we can read history for tool verification
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
-            state._autosave_enabled = True
 
-            # Override with runtime-provided values
-            state.agent = verified_agent
+            # Verify compatibility (agent class + tools)
+            agent.verify(state.agent, events=state._events)
+
+            # Commit runtime-provided values (may autosave)
+            state._autosave_enabled = True
+            state.agent = agent
             state.workspace = workspace
             state.max_iterations = max_iterations
 
