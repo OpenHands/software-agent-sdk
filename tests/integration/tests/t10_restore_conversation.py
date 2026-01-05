@@ -77,6 +77,8 @@ class RestoreConversationTest(BaseIntegrationTest):
         conv1.run()
 
         conversation_id = conv1.id
+        conv1_event_count = len(conv1.state.events)
+        print(f"[t10] conv1 persisted events: {conv1_event_count}")
 
         # Read persisted base_state.json and ensure it contains the original model.
         # LocalConversation persists to:
@@ -128,6 +130,17 @@ class RestoreConversationTest(BaseIntegrationTest):
             conversation_id=conversation_id,
             visualizer=None,
         )
+
+        conv2_event_count = len(conv2.state.events)
+        print(f"[t10] conv2 loaded events: {conv2_event_count}")
+        if conv2_event_count != conv1_event_count:
+            return TestResult(
+                success=False,
+                reason=(
+                    "Event count mismatch after restore: "
+                    f"before={conv1_event_count} after={conv2_event_count}"
+                ),
+            )
 
         # 1) Persisted state settings should be restored.
         if conv2.state.execution_status != ConversationExecutionStatus.STUCK:
