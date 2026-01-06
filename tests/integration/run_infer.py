@@ -441,6 +441,13 @@ def main():
     # Load all integration tests
     instances = load_integration_tests()
 
+    # Special-case: some integration tests require dedicated CI setup.
+    # Example: t10_restore_conversation needs two real LLM configs.
+    if os.environ.get("SKIP_T10") == "1":
+        instances = [
+            inst for inst in instances if inst.instance_id != "t10_restore_conversation"
+        ]
+
     if args.test_type != "all":
         instances = [inst for inst in instances if inst.test_type == args.test_type]
         logger.info("Filtered to %d %s tests", len(instances), args.test_type)

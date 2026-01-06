@@ -50,13 +50,14 @@ class RestoreConversationTest(BaseIntegrationTest):
         os.makedirs(self.persistence_dir, exist_ok=True)
 
     def verify_result(self) -> TestResult:
-        # First run: create conversation with agent1
+        # First run: create conversation with agent1.
+        # Use the runner-provided LLM config for llm1.
         llm1 = LLM(
-            model="gpt-5.1-codex-max",
+            model=self.llm.model,
             base_url=self.llm.base_url,
             api_key=self.llm.api_key,
             usage_id="restore-test-llm-1",
-            max_input_tokens=100_000,
+            max_input_tokens=self.llm.max_input_tokens,
         )
         agent1 = Agent(llm=llm1, tools=self.tools)
 
@@ -102,21 +103,22 @@ class RestoreConversationTest(BaseIntegrationTest):
         persisted_max_input_tokens = persisted_llm.get("max_input_tokens")
         persisted_usage_id = persisted_llm.get("usage_id")
 
-        if persisted_model != "gpt-5.1-codex-max":
+        if persisted_model != llm1.model:
             return TestResult(
                 success=False,
                 reason=(
-                    "Expected persisted agent.llm.model to be 'gpt-5.1-codex-max', "
-                    f"got {persisted_model!r}"
+                    "Expected persisted agent.llm.model to match runtime llm1.model, "
+                    f"got {persisted_model!r} (expected {llm1.model!r})"
                 ),
             )
 
-        if persisted_max_input_tokens != 100_000:
+        if persisted_max_input_tokens != llm1.max_input_tokens:
             return TestResult(
                 success=False,
                 reason=(
-                    "Expected persisted agent.llm.max_input_tokens to be 100000, "
-                    f"got {persisted_max_input_tokens!r}"
+                    "Expected persisted agent.llm.max_input_tokens to match runtime "
+                    f"llm1.max_input_tokens={llm1.max_input_tokens!r}, got "
+                    f"{persisted_max_input_tokens!r}"
                 ),
             )
 
@@ -132,12 +134,29 @@ class RestoreConversationTest(BaseIntegrationTest):
         del conv1
 
         # Resume: provide a *different* runtime agent/LLM configuration.
+        # We load llm2 config from RESTORE_LLM_CONFIG_2 (JSON string), but always
+        # use the CI-provided base_url/api_key.
+        llm2_config_raw = os.environ.get("RESTORE_LLM_CONFIG_2")
+        if not llm2_config_raw:
+            return TestResult(
+                success=False,
+                reason="RESTORE_LLM_CONFIG_2 is required for t10_restore_conversation",
+            )
+
+        try:
+            llm2_config = json.loads(llm2_config_raw)
+        except json.JSONDecodeError as e:
+            return TestResult(
+                success=False,
+                reason=f"RESTORE_LLM_CONFIG_2 is not valid JSON: {e}",
+            )
+
         llm2 = LLM(
-            model="gpt-5.2",
+            model=llm2_config["model"],
             base_url=self.llm.base_url,
             api_key=self.llm.api_key,
             usage_id="restore-test-llm-2",
-            max_input_tokens=50_000,
+            max_input_tokens=llm2_config.get("max_input_tokens"),
         )
         agent2 = Agent(llm=llm2, tools=self.tools)
 
@@ -194,20 +213,24 @@ class RestoreConversationTest(BaseIntegrationTest):
             )
 
         # 2) Runtime agent/LLM should be used.
-        if conv2.agent.llm.model != "gpt-5.2":
+        if conv2.agent.llm.model != llm2.model:
             return TestResult(
                 success=False,
                 reason=(
-                    "Expected runtime agent llm.model 'gpt-5.2' after resume, "
-                    f"got {conv2.agent.llm.model!r}"
+                    "Expected runtime agent llm.model to match llm2.model after "
+                    f"resume, got {conv2.agent.llm.model!r} (expected {llm2.model!r})"
                 ),
             )
-        if conv2.agent.llm.max_input_tokens != 50_000:
+        if (
+            llm2.max_input_tokens is not None
+            and conv2.agent.llm.max_input_tokens != llm2.max_input_tokens
+        ):
             return TestResult(
                 success=False,
                 reason=(
-                    "Expected runtime max_input_tokens=50000 after resume, "
-                    f"got {conv2.agent.llm.max_input_tokens!r}"
+                    "Expected runtime max_input_tokens to match llm2.max_input_tokens "
+                    f"after resume, got {conv2.agent.llm.max_input_tokens!r} "
+                    f"(expected {llm2.max_input_tokens!r})"
                 ),
             )
 
