@@ -783,12 +783,10 @@ def test_conversation_state_stats_preserved_on_resume():
         assert resumed_combined_metrics.accumulated_cost == 0.05, (
             "Cost should be preserved after resume"
         )
-        assert resumed_combined_metrics.accumulated_cost == 0.05
         assert resumed_combined_metrics.accumulated_token_usage is not None
         assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100, (
             "Prompt tokens should be preserved after resume"
         )
-        assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100
         assert (
             resumed_combined_metrics.accumulated_token_usage.context_window == 128000
         ), "Context window should be preserved after resume"
