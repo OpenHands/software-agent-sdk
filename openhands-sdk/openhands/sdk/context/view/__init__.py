@@ -1,4 +1,4 @@
-from openhands.sdk.context.view.view import View
+from openhands.sdk.context.view.view import EventMappings, View
 
 
-__all__ = ["View"]
+__all__ = ["EventMappings", "View"]

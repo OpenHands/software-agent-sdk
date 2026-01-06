@@ -25,14 +25,15 @@ from openhands.sdk.event.types import ToolCallID
 logger = getLogger(__name__)
 
 
-class ActionBatch(BaseModel):
-    """Represents a batch of ActionEvents grouped by llm_response_id.
+class EventMappings(BaseModel):
+    """Consolidated mappings for all events in a view.
 
-    This is a utility class used to help detect and manage batches of ActionEvents
-    that share the same llm_response_id, which indicates they were generated together
-    by the LLM. This is important for ensuring atomicity when manipulating events
-    in a View, such as during condensation.
+    This utility class builds all necessary mappings in a single scan over events,
+    including action batches, tool call relationships, and index lookups.
     """
+
+    event_id_to_index: dict[EventID, int]
+    """dict mapping any event ID to its index in the event list"""
 
     batches: dict[EventID, list[EventID]]
     """dict mapping llm_response_id to list of ActionEvent IDs"""
@@ -43,27 +44,58 @@ class ActionBatch(BaseModel):
     action_id_to_tool_call_id: dict[EventID, ToolCallID]
     """dict mapping ActionEvent ID to tool_call_id"""
 
+    observation_id_to_tool_call_id: dict[EventID, ToolCallID]
+    """dict mapping ObservationEvent ID to tool_call_id"""
+
+    tool_call_id_to_observation_id: dict[ToolCallID, EventID]
+    """dict mapping tool_call_id to ObservationEvent ID"""
+
+    action_tool_call_ids: set[ToolCallID]
+    """set of all tool_call_ids from ActionEvents"""
+
+    observation_tool_call_ids: set[ToolCallID]
+    """set of all tool_call_ids from ObservationEvents"""
+
     @staticmethod
     def from_events(
         events: Sequence[Event],
-    ) -> ActionBatch:
-        """Build a map of llm_response_id -> list of ActionEvent IDs."""
+    ) -> EventMappings:
+        """Build all mappings in a single scan over events."""
+        event_id_to_index: dict[EventID, int] = {}
         batches: dict[EventID, list[EventID]] = defaultdict(list)
         action_id_to_response_id: dict[EventID, EventID] = {}
         action_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
+        observation_id_to_tool_call_id: dict[EventID, ToolCallID] = {}
+        tool_call_id_to_observation_id: dict[ToolCallID, EventID] = {}
+        action_tool_call_ids: set[ToolCallID] = set()
+        observation_tool_call_ids: set[ToolCallID] = set()
 
-        for event in events:
+        for idx, event in enumerate(events):
+            event_id_to_index[event.id] = idx
+
             if isinstance(event, ActionEvent):
                 llm_response_id = event.llm_response_id
                 batches[llm_response_id].append(event.id)
                 action_id_to_response_id[event.id] = llm_response_id
                 if event.tool_call_id is not None:
                     action_id_to_tool_call_id[event.id] = event.tool_call_id
+                    action_tool_call_ids.add(event.tool_call_id)
 
-        return ActionBatch(
+            elif isinstance(event, ObservationBaseEvent):
+                if event.tool_call_id is not None:
+                    observation_id_to_tool_call_id[event.id] = event.tool_call_id
+                    tool_call_id_to_observation_id[event.tool_call_id] = event.id
+                    observation_tool_call_ids.add(event.tool_call_id)
+
+        return EventMappings(
+            event_id_to_index=event_id_to_index,
             batches=batches,
             action_id_to_response_id=action_id_to_response_id,
             action_id_to_tool_call_id=action_id_to_tool_call_id,
+            observation_id_to_tool_call_id=observation_id_to_tool_call_id,
+            tool_call_id_to_observation_id=tool_call_id_to_observation_id,
+            action_tool_call_ids=action_tool_call_ids,
+            observation_tool_call_ids=observation_tool_call_ids,
         )
 
 
@@ -143,23 +175,14 @@ class View(BaseModel):
         if not self.events:
             return [0]
 
-        # Build mapping of llm_response_id -> list of event indices
-        batches: dict[EventID, list[int]] = {}
-        for idx, event in enumerate(self.events):
-            if isinstance(event, ActionEvent):
-                llm_response_id = event.llm_response_id
-                if llm_response_id not in batches:
-                    batches[llm_response_id] = []
-                batches[llm_response_id].append(idx)
+        mappings = EventMappings.from_events(self.events)
 
-        # Build mapping of tool_call_id -> observation indices
-        observation_indices: dict[ToolCallID, int] = {}
-        for idx, event in enumerate(self.events):
-            if (
-                isinstance(event, ObservationBaseEvent)
-                and event.tool_call_id is not None
-            ):
-                observation_indices[event.tool_call_id] = idx
+        # Build mapping of llm_response_id -> list of event indices using mappings
+        batches: dict[EventID, list[int]] = {}
+        for llm_response_id, action_ids in mappings.batches.items():
+            batches[llm_response_id] = [
+                mappings.event_id_to_index[action_id] for action_id in action_ids
+            ]
 
         # For each batch, find the range of indices that includes all actions
         # and their corresponding observations, and track if batch has thinking blocks
@@ -182,8 +205,11 @@ class View(BaseModel):
                     isinstance(action_event, ActionEvent)
                     and action_event.tool_call_id is not None
                 ):
-                    if action_event.tool_call_id in observation_indices:
-                        obs_idx = observation_indices[action_event.tool_call_id]
+                    obs_id = mappings.tool_call_id_to_observation_id.get(
+                        action_event.tool_call_id
+                    )
+                    if obs_id is not None:
+                        obs_idx = mappings.event_id_to_index[obs_id]
                         max_idx = max(max_idx, obs_idx)
 
             batch_ranges.append((min_idx, max_idx, has_thinking))
@@ -308,14 +334,14 @@ class View(BaseModel):
             Updated set of event IDs that should be removed (including all
             ActionEvents in batches where any ActionEvent was removed)
         """
-        action_batch = ActionBatch.from_events(events)
+        mappings = EventMappings.from_events(events)
 
-        if not action_batch.batches:
+        if not mappings.batches:
             return removed_event_ids
 
         updated_removed_ids = set(removed_event_ids)
 
-        for llm_response_id, batch_event_ids in action_batch.batches.items():
+        for llm_response_id, batch_event_ids in mappings.batches.items():
             # Check if any ActionEvent in this batch is being removed
             if any(event_id in removed_event_ids for event_id in batch_event_ids):
                 # If so, remove all ActionEvents in this batch
@@ -339,17 +365,13 @@ class View(BaseModel):
         ActionEvent in a batch is filtered out, all ActionEvents in that batch
         are also filtered out.
         """
-        action_tool_call_ids = View._get_action_tool_call_ids(events)
-        observation_tool_call_ids = View._get_observation_tool_call_ids(events)
-
-        # Build batch info for batch atomicity enforcement
-        action_batch = ActionBatch.from_events(events)
+        mappings = EventMappings.from_events(events)
 
         # First pass: identify which events would NOT be kept based on matching
         removed_event_ids: set[EventID] = set()
         for event in events:
             if not View._should_keep_event(
-                event, action_tool_call_ids, observation_tool_call_ids
+                event, mappings.action_tool_call_ids, mappings.observation_tool_call_ids
             ):
                 removed_event_ids.add(event.id)
 
@@ -362,9 +384,9 @@ class View(BaseModel):
         # due to batch atomicity
         tool_call_ids_to_remove: set[ToolCallID] = set()
         for action_id in removed_event_ids:
-            if action_id in action_batch.action_id_to_tool_call_id:
+            if action_id in mappings.action_id_to_tool_call_id:
                 tool_call_ids_to_remove.add(
-                    action_batch.action_id_to_tool_call_id[action_id]
+                    mappings.action_id_to_tool_call_id[action_id]
                 )
 
         # Filter out removed events
@@ -378,29 +400,6 @@ class View(BaseModel):
             result.append(event)
 
         return result
-
-    @staticmethod
-    def _get_action_tool_call_ids(events: list[LLMConvertibleEvent]) -> set[ToolCallID]:
-        """Extract tool_call_ids from ActionEvents."""
-        tool_call_ids = set()
-        for event in events:
-            if isinstance(event, ActionEvent) and event.tool_call_id is not None:
-                tool_call_ids.add(event.tool_call_id)
-        return tool_call_ids
-
-    @staticmethod
-    def _get_observation_tool_call_ids(
-        events: list[LLMConvertibleEvent],
-    ) -> set[ToolCallID]:
-        """Extract tool_call_ids from ObservationEvents."""
-        tool_call_ids = set()
-        for event in events:
-            if (
-                isinstance(event, ObservationBaseEvent)
-                and event.tool_call_id is not None
-            ):
-                tool_call_ids.add(event.tool_call_id)
-        return tool_call_ids
 
     @staticmethod
     def _should_keep_event(
