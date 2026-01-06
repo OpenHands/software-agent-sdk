@@ -1,19 +1,20 @@
-"""Test agent reconciliation logic in agent deserialization and conversation restart."""
+"""Test agent loading (conversation restart) behavior."""
 
 import tempfile
 import uuid
 from unittest.mock import patch
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
-from openhands.sdk.agent import AgentBase
 from openhands.sdk.context import AgentContext, Skill
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
 )
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
@@ -23,6 +24,10 @@ from openhands.tools.terminal import TerminalTool
 
 register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
+
+
+class ModuleScopeOtherAgent(Agent):
+    pass
 
 
 # Tests from test_llm_reconciliation.py
@@ -106,7 +111,7 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
     )
 
 
-# Tests from test_local_conversation_tools_integration.py
+# Tests for agent tools restriction and LLM flexibility
 def test_conversation_allows_removing_unused_tools():
     """Test that removing tools that weren't used in history is allowed.
 
@@ -263,8 +268,6 @@ def test_conversation_fails_when_used_tool_is_missing():
         reduced_agent = Agent(llm=llm2, tools=reduced_tools)
 
         # This should raise - TerminalTool was used in history but is now missing
-        import pytest
-
         with pytest.raises(ValueError, match="tools that were used in history"):
             LocalConversation(
                 agent=reduced_agent,
@@ -328,57 +331,86 @@ def test_conversation_with_same_agent_succeeds():
         assert len(new_conversation.state.events) > 0
 
 
-def test_agent_resolve_diff_from_deserialized():
-    """Test agent's resolve_diff_from_deserialized method.
-
-    Includes tolerance for litellm_extra_body differences injected at CLI load time.
-    """
-    with tempfile.TemporaryDirectory():
-        # Create original agent
+def test_conversation_with_different_llm_succeeds():
+    """Test that using an agent with different LLM succeeds (LLM can change)."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Create and save conversation with original agent
         tools = [Tool(name="TerminalTool")]
-        llm = LLM(
+        llm1 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        original_agent = Agent(llm=llm, tools=tools)
+        original_agent = Agent(llm=llm1, tools=tools)
+        conversation = LocalConversation(
+            agent=original_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
 
-        # Serialize and deserialize to simulate persistence
-        serialized = original_agent.model_dump_json()
-        deserialized_agent = AgentBase.model_validate_json(serialized)
+        # Send a message to create some state
+        conversation.send_message(
+            Message(role="user", content=[TextContent(text="test message")])
+        )
 
-        # Create runtime agent with same configuration
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Create new conversation with different LLM - this should succeed
         llm2 = LLM(
-            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+            model="gpt-4o",  # Different model
+            api_key=SecretStr("different-key"),  # Different key
+            usage_id="different-llm",
         )
-        runtime_agent = Agent(llm=llm2, tools=tools)
+        different_agent = Agent(llm=llm2, tools=tools)
 
-        # Should resolve successfully
-        resolved = runtime_agent.resolve_diff_from_deserialized(deserialized_agent)
-        # Test model_dump equality
-        assert resolved.model_dump(mode="json") == runtime_agent.model_dump(mode="json")
-        assert resolved.llm.model == runtime_agent.llm.model
-        assert resolved.__class__ == runtime_agent.__class__
-
-        # Now simulate CLI injecting dynamic litellm_extra_body metadata at load time
-        injected = deserialized_agent.model_copy(
-            update={
-                "llm": deserialized_agent.llm.model_copy(
-                    update={
-                        "litellm_extra_body": {
-                            "metadata": {
-                                "session_id": "sess-123",
-                                "tags": ["app:openhands", "model:gpt-4o-mini"],
-                                "trace_version": "1.2.3",
-                            }
-                        }
-                    }
-                )
-            }
+        # This should succeed - LLM can be freely changed between sessions
+        new_conversation = LocalConversation(
+            agent=different_agent,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
         )
 
-        # Reconcile again: differences in litellm_extra_body should be allowed and
-        # the runtime value should be preferred without raising an error.
-        resolved2 = runtime_agent.resolve_diff_from_deserialized(injected)
-        assert resolved2.llm.litellm_extra_body == runtime_agent.llm.litellm_extra_body
+        # Verify state was loaded and new agent with new LLM is used
+        assert len(new_conversation.state.events) > 0
+        assert new_conversation.agent.llm.model == "gpt-4o"
+        assert new_conversation.agent.llm.usage_id == "different-llm"
+
+
+def test_conversation_fails_when_agent_type_changes():
+    """Test that resuming with a different Agent class fails.
+
+    This is a hard compatibility requirement: we can only resume if the runtime
+    agent is the same class as the persisted agent.
+
+    Note: we define the alternative Agent at module scope to ensure the persisted
+    snapshot can be deserialized; otherwise, Pydantic rejects local classes.
+    """
+
+    tools = [Tool(name="TerminalTool")]
+
+    llm1 = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="llm")
+    llm2 = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="llm")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conversation = LocalConversation(
+            agent=Agent(llm=llm1, tools=tools),
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+        conversation_id = conversation.state.id
+        del conversation
+
+        with pytest.raises(ValueError, match=r"persisted agent is of type"):
+            LocalConversation(
+                agent=ModuleScopeOtherAgent(llm=llm2, tools=tools),
+                workspace=temp_dir,
+                persistence_dir=temp_dir,
+                conversation_id=conversation_id,
+                visualizer=None,
+            )
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -456,6 +488,74 @@ def test_conversation_persistence_lifecycle(mock_completion):
         # We expect: original_event_count + 1 (system prompt from init) + 2
         # (user message + agent response)
         assert len(new_conversation.state.events) >= original_event_count + 2
+
+
+def test_conversation_resume_overrides_agent_llm_but_preserves_state_settings():
+    """Test resume behavior when changing runtime Agent/LLM settings.
+
+    Expectations:
+    - Some conversation *state* settings are persisted and should not be overridden
+      on resume (e.g., confirmation_policy, execution_status).
+    - Agent/LLM settings should come from the runtime-provided Agent on resume
+
+    This test covers the common workflow: start a persisted conversation, tweak a
+    couple of state settings, then resume with a different LLM configuration.
+    """
+
+    from openhands.sdk.security.confirmation_policy import AlwaysConfirm
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        tools = [Tool(name="TerminalTool")]
+
+        # Initial agent (persisted snapshot contains this agent config, but on resume
+        # we should use the runtime-provided agent).
+        llm1 = LLM(
+            model="gpt-5.1-codex-max",
+            api_key=SecretStr("test-key-1"),
+            usage_id="llm-1",
+            max_input_tokens=100_000,
+        )
+        agent1 = Agent(llm=llm1, tools=tools)
+
+        conversation = LocalConversation(
+            agent=agent1,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+
+        # Persisted state settings (these should be restored from persistence).
+        conversation.state.confirmation_policy = AlwaysConfirm()
+        conversation.state.execution_status = ConversationExecutionStatus.STUCK
+
+        conversation_id = conversation.state.id
+        del conversation
+
+        # Resume with a different runtime Agent + LLM settings.
+        llm2 = LLM(
+            model="gpt-5.2",
+            api_key=SecretStr("test-key-2"),
+            usage_id="llm-2",
+            max_input_tokens=50_000,
+        )
+        agent2 = Agent(llm=llm2, tools=tools)
+
+        resumed = LocalConversation(
+            agent=agent2,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Persisted settings should remain.
+        assert resumed.state.execution_status == ConversationExecutionStatus.STUCK
+        assert resumed.state.confirmation_policy.should_confirm()
+
+        # Runtime agent/LLM settings should override persisted agent snapshot.
+        assert resumed.agent.llm.model == "gpt-5.2"
+        assert resumed.agent.llm.max_input_tokens == 50_000
+        assert resumed.agent.llm.usage_id == "llm-2"
 
 
 def test_conversation_restart_with_different_agent_context():
