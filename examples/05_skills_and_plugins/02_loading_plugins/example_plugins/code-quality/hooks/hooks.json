@@ -2,11 +2,11 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "file_editor",
+        "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "echo '[code-quality] File edited: $OPENHANDS_TOOL_NAME'",
+            "command": "echo \"$(date -Iseconds) - PostToolUse hook executed for tool: $OPENHANDS_TOOL_NAME\" >> \"$OPENHANDS_PROJECT_DIR/.hook_log\"",
             "timeout": 5
           }
         ]
