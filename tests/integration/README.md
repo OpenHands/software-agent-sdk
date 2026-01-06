@@ -50,31 +50,7 @@ uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_pr
 
 # Run a specific test
 uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}' --eval-ids t01_fix_simple_typo
-
-# Run with LLM message recording (for debugging)
-LLM_MESSAGES_DIR=./llm_messages uv run python tests/integration/run_infer.py --llm-config '{"model": "litellm_proxy/anthropic/claude-sonnet-4-5-20250929"}'
 ```
-
-### Recording LLM Completions
-
-For debugging and analysis, you can record all LLM request/response messages by setting the `LLM_MESSAGES_DIR` environment variable:
-
-```bash
-# Record LLM messages to a specific directory
-export LLM_MESSAGES_DIR=/path/to/store/messages
-uv run python tests/integration/run_infer.py --llm-config '{"model": "..."}'
-```
-
-When enabled, this feature:
-- Saves all LLM messages from each test to JSON files (`{test_id}_llm_messages.json`)
-- Stores files in the specified directory
-- Copies them to the test output directory alongside logs
-- Does not record anything if the environment variable is not set
-
-This is useful for:
-- Debugging test failures by inspecting exact LLM inputs/outputs
-- Analyzing agent behavior across multiple conversation turns
-- Creating datasets for evaluation or training
 
 ## Automated Testing with GitHub Actions
 
@@ -103,7 +79,6 @@ These tests must pass for releases and verify that the agent can successfully co
 - **t07_interactive_commands** - Tests interactive command handling
 - **t08_image_file_viewing** - Tests image file viewing capabilities
 - **t09_token_condenser** - Tests that token-based condensation works correctly by verifying `get_token_count()` triggers condensation when token limits are exceeded
-- **t10_hard_context_reset** - Tests that the agent can continue working correctly after context condensation. Uses `run_conversation()` override for multi-phase testing
 
 ### Behavior Tests (`b*.py`) - **Optional**
 
@@ -131,38 +106,3 @@ All integration tests inherit from `BaseIntegrationTest` in `base.py`. The base 
 - **`max_iteration_per_run`** (property) - Maximum iterations per conversation (default: `100`)
   - Override to limit LLM calls for faster tests
   - Useful for tests that should complete quickly
-
-### Optional Methods
-
-- **`run_conversation()`** - Execute the conversation with the agent (new in v1.7.5)
-  - Override this method to customize conversation flow for multi-step tests
-  - Default implementation sends a single instruction and runs to completion
-  - Provides access to `self.conversation` for direct manipulation
-  - Example use cases:
-    - Send multiple messages in sequence
-    - Verify intermediate state between conversation phases
-    - Test complex multi-turn interactions
-    - Trigger condensation at specific points
-
-#### Example: Multi-Step Test
-
-```python
-class MultiStepTest(BaseIntegrationTest):
-    def run_conversation(self) -> None:
-        # Step 1: Initial task
-        self.conversation.send_message(
-            Message(role="user", content=[TextContent(text="First, create a file")])
-        )
-        self.conversation.run()
-
-        # Intermediate verification
-        assert os.path.exists(os.path.join(self.workspace, "file.txt"))
-
-        # Step 2: Follow-up task
-        self.conversation.send_message(
-            Message(role="user", content=[TextContent(text="Now modify the file")])
-        )
-        self.conversation.run()
-```
-
-See `t10_hard_context_reset.py` for a real example of overriding `run_conversation()`.
