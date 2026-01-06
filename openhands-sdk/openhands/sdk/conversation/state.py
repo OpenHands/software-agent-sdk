@@ -213,7 +213,8 @@ class ConversationState(OpenHandsModel):
             state._autosave_enabled = True
             state.agent = resolved
 
-            state.stats = ConversationStats()
+            # Note: stats are already deserialized from base_state.json above
+            # Do NOT reset stats here - this would lose accumulated metrics
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
