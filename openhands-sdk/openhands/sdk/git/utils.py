@@ -164,10 +164,6 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
     except GitCommandError:
         logger.debug("Could not get remote information")
 
-    # Add empty tree as fallback for new repositories
-    refs_to_try.append(GIT_EMPTY_TREE_HASH)
-    logger.debug(f"Added empty tree reference: {GIT_EMPTY_TREE_HASH}")
-
     # Find the first valid reference
     for ref in refs_to_try:
         try:
@@ -181,8 +177,9 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
             logger.debug(f"Reference not valid: {ref}")
             continue
 
-    logger.warning("No valid git reference found")
-    return None
+    # Fallback to empty tree hash (always valid, no verification needed)
+    logger.debug(f"Using empty tree reference: {GIT_EMPTY_TREE_HASH}")
+    return GIT_EMPTY_TREE_HASH
 
 
 def validate_git_repository(repo_dir: str | Path) -> Path:
