@@ -840,13 +840,9 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
             description = description + truncation_msg
 
         # Escape XML special characters using standard library
-        description = _escape_xml(description)
-        name = _escape_xml(skill.name)
+        xml_entities = {'"': "&quot;", "'": "&apos;"}
+        description = xml_escape(description, entities=xml_entities)
+        name = xml_escape(skill.name, entities=xml_entities)
         lines.append(f'  <skill name="{name}">{description}</skill>')
     lines.append("</available_skills>")
     return "\n".join(lines)
-
-
-def _escape_xml(text: str) -> str:
-    """Escape XML special characters using standard library."""
-    return xml_escape(text, entities={'"': "&quot;", "'": "&apos;"})
