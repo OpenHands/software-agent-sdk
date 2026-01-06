@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "file_editor",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '[code-quality] File edited: $OPENHANDS_TOOL_NAME'",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
