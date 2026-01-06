@@ -498,9 +498,7 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
         assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") != state.model_dump(mode="json")
-        loaded_state.stats.register_llm(RegistryEvent(llm=llm))
+        # Test model_dump equality - stats should be preserved on resume
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
 
@@ -556,3 +554,86 @@ def test_conversation_with_agent_different_llm_config():
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
 
         assert new_dump == original_state_dump
+
+
+def test_conversation_state_stats_preserved_on_resume():
+    """Test that conversation stats are preserved when resuming a conversation.
+
+    This is a regression test for the issue where stats (including context_window)
+    were being reset to zero when resuming a conversation.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789010")
+        persist_path_for_state = LocalConversation.get_persistence_dir(
+            temp_dir, conv_id
+        )
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path_for_state,
+            agent=agent,
+            id=conv_id,
+        )
+
+        # Register the LLM and add some metrics
+        state.stats.register_llm(RegistryEvent(llm=llm))
+
+        # Add token usage with context_window
+        assert llm.metrics is not None
+        llm.metrics.add_cost(0.05)
+        llm.metrics.add_token_usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=10,
+            cache_write_tokens=5,
+            context_window=128000,
+            response_id="test-response-1",
+        )
+
+        # Verify stats are set correctly before saving
+        combined_metrics = state.stats.get_combined_metrics()
+        assert combined_metrics.accumulated_cost == 0.05
+        assert combined_metrics.accumulated_token_usage is not None
+        assert combined_metrics.accumulated_token_usage.prompt_tokens == 100
+        assert combined_metrics.accumulated_token_usage.context_window == 128000
+
+        # Force save the state
+        state._save_base_state(state._fs)
+
+        # Verify the base_state.json contains the stats
+        base_state_path = Path(persist_path_for_state) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "stats" in base_state_content
+        assert "usage_to_metrics" in base_state_content["stats"]
+        assert "test-llm" in base_state_content["stats"]["usage_to_metrics"]
+
+        # Now resume the conversation with a new agent
+        new_llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        new_agent = Agent(llm=new_llm, tools=[])
+
+        # Resume the conversation
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path_for_state,
+            agent=new_agent,
+            id=conv_id,
+        )
+
+        # Verify stats are preserved after resume
+        resumed_combined_metrics = resumed_state.stats.get_combined_metrics()
+        assert resumed_combined_metrics.accumulated_cost == 0.05, (
+            "Cost should be preserved after resume"
+        )
+        assert resumed_combined_metrics.accumulated_token_usage is not None
+        assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100, (
+            "Prompt tokens should be preserved after resume"
+        )
+        assert (
+            resumed_combined_metrics.accumulated_token_usage.context_window == 128000
+        ), "Context window should be preserved after resume"

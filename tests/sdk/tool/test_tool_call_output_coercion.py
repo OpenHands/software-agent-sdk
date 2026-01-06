@@ -21,6 +21,21 @@ class OCAObs(Observation):
         return [TextContent(text=str(self.value))]
 
 
+# Module-level Observation class to avoid "local class not supported" errors
+# during serialization tests. Local classes (defined inside functions) cannot be
+# deserialized because they may not exist at deserialization time.
+class CoercionTestObs(Observation):
+    """Observation for testing output coercion."""
+
+    value: int
+
+    @property
+    def to_llm_content(self):  # type: ignore[override]
+        from openhands.sdk.llm import TextContent
+
+        return [TextContent(text=str(self.value))]
+
+
 class MockCoercionTool(ToolDefinition[OCAAction, OCAObs]):
     """Concrete mock tool for output coercion testing."""
 
@@ -46,18 +61,9 @@ def test_tool_call_with_observation_none_result_shapes():
     assert isinstance(obs, Observation)
 
     # 2) Observation subclass -> Observation passthrough
-    class MObs(Observation):
-        value: int
-
-        @property
-        def to_llm_content(self):  # type: ignore[override]
-            from openhands.sdk.llm import TextContent
-
-            return [TextContent(text=str(self.value))]
-
-    class E2(ToolExecutor[OCAAction, MObs]):
-        def __call__(self, action: OCAAction, conversation=None) -> MObs:
-            return MObs(value=2)
+    class E2(ToolExecutor[OCAAction, CoercionTestObs]):
+        def __call__(self, action: OCAAction, conversation=None) -> CoercionTestObs:
+            return CoercionTestObs(value=2)
 
     t2 = MockCoercionTool(
         description="d",
@@ -67,7 +73,7 @@ def test_tool_call_with_observation_none_result_shapes():
     )
     obs2 = t2(OCAAction(y=2))
     assert isinstance(obs2, Observation)
-    assert isinstance(obs2, MObs)
+    assert isinstance(obs2, CoercionTestObs)
 
     # 3) invalid type -> raises TypeError
     class E3(ToolExecutor[OCAAction, list[int]]):

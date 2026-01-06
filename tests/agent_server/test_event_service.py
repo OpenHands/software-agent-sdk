@@ -1126,3 +1126,194 @@ class TestEventServiceRun:
 
         # State update should still be published (in finally block)
         event_service._publish_state_update.assert_called()
+
+
+class TestEventServiceStartWithRunningStatus:
+    """Test cases for EventService.start handling of RUNNING execution status."""
+
+    @pytest.mark.asyncio
+    async def test_start_sets_error_status_when_running_from_disk(
+        self, event_service, tmp_path
+    ):
+        """Test that start() sets ERROR status and adds AgentErrorEvent.
+
+        When a conversation is loaded from disk with RUNNING status, it indicates
+        the process crashed or was terminated unexpectedly. The EventService should:
+        1. Set execution_status to ERROR
+        2. Add an AgentErrorEvent for the first unmatched action to inform the agent
+        """
+        from openhands.sdk.event import AgentErrorEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.llm import MessageToolCall, TextContent
+        from openhands.tools.terminal import TerminalAction
+
+        # Setup paths
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Update workspace to use a valid temp directory
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            # Create an unmatched action event (action without observation)
+            unmatched_action = ActionEvent(
+                source="agent",
+                thought=[TextContent(text="I need to run ls command")],
+                action=TerminalAction(command="ls"),
+                tool_name="terminal",
+                tool_call_id="call_1",
+                tool_call=MessageToolCall(
+                    id="call_1",
+                    name="terminal",
+                    arguments='{"command": "ls"}',
+                    origin="completion",
+                ),
+                llm_response_id="response_1",
+            )
+
+            # Set up mock state with RUNNING status and the unmatched action
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [unmatched_action]
+            mock_state.stats = MagicMock()
+
+            # Setup mock agent
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Call start
+            await event_service.start()
+
+            # Verify execution_status was changed to ERROR
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+
+            # Verify AgentErrorEvent was added via _on_event
+            mock_conv._on_event.assert_called()
+            call_args = mock_conv._on_event.call_args_list
+
+            # Find the AgentErrorEvent call
+            error_event_calls = [
+                call for call in call_args if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 1
+
+            error_event = error_event_calls[0][0][0]
+            assert error_event.tool_name == "terminal"
+            assert error_event.tool_call_id == "call_1"
+            assert "restart occurred" in error_event.error
+            assert "fatal memory error" in error_event.error
+
+    @pytest.mark.asyncio
+    async def test_start_does_not_add_error_event_when_no_unmatched_actions(
+        self, event_service, tmp_path
+    ):
+        """Test that start() doesn't add AgentErrorEvent without unmatched actions.
+
+        Even if execution_status is RUNNING, if there are no unmatched actions,
+        no AgentErrorEvent should be added.
+        """
+        from openhands.sdk.event import AgentErrorEvent
+
+        # Setup paths
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Update workspace to use a valid temp directory
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            # Set up mock state with RUNNING status but no events (no unmatched actions)
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+
+            # Setup mock agent
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Call start
+            await event_service.start()
+
+            # Verify execution_status was changed to ERROR
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+
+            # Verify _on_event was NOT called with AgentErrorEvent
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_does_nothing_when_status_not_running(
+        self, event_service, tmp_path
+    ):
+        """Test that start() doesn't modify execution_status when it's not RUNNING."""
+        from openhands.sdk.event import AgentErrorEvent
+
+        # Setup paths
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Update workspace to use a valid temp directory
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            # Set up mock state with IDLE status
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+
+            # Setup mock agent
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Call start
+            await event_service.start()
+
+            # Verify execution_status remains IDLE
+            assert mock_state.execution_status == ConversationExecutionStatus.IDLE
+
+            # Verify _on_event was NOT called with AgentErrorEvent
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 0

@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -406,8 +407,6 @@ class ConversationService:
                 )
                 # Dynamically register tools when resuming persisted conversations
                 if stored.tool_module_qualnames:
-                    import importlib
-
                     for (
                         tool_name,
                         module_qualname,
