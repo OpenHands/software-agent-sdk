@@ -25,6 +25,10 @@ register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
 
 
+class ModuleScopeOtherAgent(Agent):
+    pass
+
+
 # Tests from test_llm_reconciliation.py
 def test_conversation_restart_with_nested_llms(tmp_path):
     """Test conversation restart with agent containing nested LLMs."""
@@ -373,6 +377,42 @@ def test_conversation_with_different_llm_succeeds():
         assert len(new_conversation.state.events) > 0
         assert new_conversation.agent.llm.model == "gpt-4o"
         assert new_conversation.agent.llm.usage_id == "different-llm"
+
+
+def test_conversation_fails_when_agent_type_changes():
+    """Test that resuming with a different Agent class fails.
+
+    This is a hard compatibility requirement: we can only resume if the runtime
+    agent is the same class as the persisted agent.
+
+    Note: we define the alternative Agent at module scope to ensure the persisted
+    snapshot can be deserialized; otherwise, Pydantic rejects local classes.
+    """
+    import pytest
+
+    tools = [Tool(name="TerminalTool")]
+
+    llm1 = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="llm")
+    llm2 = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="llm")
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        conversation = LocalConversation(
+            agent=Agent(llm=llm1, tools=tools),
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            visualizer=None,
+        )
+        conversation_id = conversation.state.id
+        del conversation
+
+        with pytest.raises(ValueError, match=r"persisted agent is of type"):
+            LocalConversation(
+                agent=ModuleScopeOtherAgent(llm=llm2, tools=tools),
+                workspace=temp_dir,
+                persistence_dir=temp_dir,
+                conversation_id=conversation_id,
+                visualizer=None,
+            )
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
