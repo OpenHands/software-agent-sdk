@@ -4,6 +4,7 @@ import tempfile
 import uuid
 from unittest.mock import patch
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk import Agent
@@ -267,8 +268,6 @@ def test_conversation_fails_when_used_tool_is_missing():
         reduced_agent = Agent(llm=llm2, tools=reduced_tools)
 
         # This should raise - TerminalTool was used in history but is now missing
-        import pytest
-
         with pytest.raises(ValueError, match="tools that were used in history"):
             LocalConversation(
                 agent=reduced_agent,
@@ -388,7 +387,6 @@ def test_conversation_fails_when_agent_type_changes():
     Note: we define the alternative Agent at module scope to ensure the persisted
     snapshot can be deserialized; otherwise, Pydantic rejects local classes.
     """
-    import pytest
 
     tools = [Tool(name="TerminalTool")]
 
