@@ -2,6 +2,7 @@ import io
 import re
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
+from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
 from fastmcp.mcp_config import MCPConfig
@@ -805,27 +806,40 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
     for skill in skills:
         # Use description if available, otherwise use first line of content
         description = skill.description
+        content_truncated = 0
         if not description:
-            # Extract first non-empty line from content as fallback
+            # Extract first non-empty, non-header line from content as fallback
+            # Track position to calculate truncated content after the description
+            chars_before_desc = 0
             for line in skill.content.split("\n"):
-                line = line.strip()
+                stripped = line.strip()
                 # Skip markdown headers and empty lines
-                if line and not line.startswith("#"):
-                    description = line
-                    break
+                if not stripped or stripped.startswith("#"):
+                    chars_before_desc += len(line) + 1  # +1 for newline
+                    continue
+                description = stripped
+                # Calculate remaining content after this line as truncated
+                desc_end_pos = chars_before_desc + len(line)
+                content_truncated = max(0, len(skill.content) - desc_end_pos)
+                break
         description = description or ""
 
-        # Truncate if needed and add truncation indicator
+        # Calculate total truncated characters
+        total_truncated = content_truncated
+
+        # Truncate description if needed and add truncation indicator
         if len(description) > max_description_length:
-            truncated_chars = len(description) - max_description_length
+            total_truncated += len(description) - max_description_length
             description = description[:max_description_length]
-            truncation_msg = f"... [{truncated_chars} characters truncated"
+
+        if total_truncated > 0:
+            truncation_msg = f"... [{total_truncated} characters truncated"
             if skill.source:
                 truncation_msg += f". View {skill.source} for complete information"
             truncation_msg += "]"
             description = description + truncation_msg
 
-        # Escape XML special characters
+        # Escape XML special characters using standard library
         description = _escape_xml(description)
         name = _escape_xml(skill.name)
         lines.append(f'  <skill name="{name}">{description}</skill>')
@@ -834,11 +848,5 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
 
 
 def _escape_xml(text: str) -> str:
-    """Escape XML special characters."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
-    )
+    """Escape XML special characters using standard library."""
+    return xml_escape(text, entities={'"': "&quot;", "'": "&apos;"})

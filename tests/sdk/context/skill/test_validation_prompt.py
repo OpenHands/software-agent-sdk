@@ -49,6 +49,20 @@ def test_to_prompt_uses_content_fallback() -> None:
     assert "# Header" not in result
 
 
+def test_to_prompt_content_fallback_counts_remaining_as_truncated() -> None:
+    """to_prompt() should count content after first line as truncated."""
+    # Content with header, description line, and additional content
+    content = "# Header\n\nFirst line used as description.\n\nMore content here."
+    skill = Skill(name="test", content=content, source="/skills/test.md")
+    result = to_prompt([skill])
+
+    # Should use first non-header line as description
+    assert "First line used as description." in result
+    # Should indicate truncation for remaining content
+    assert "characters truncated" in result
+    assert "View /skills/test.md for complete information" in result
+
+
 def test_to_prompt_truncates_long_descriptions() -> None:
     """to_prompt() should truncate long descriptions with indicator."""
     long_desc = "A" * 250  # 250 characters
