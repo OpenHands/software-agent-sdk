@@ -737,6 +737,7 @@ def test_conversation_state_stats_preserved_on_resume():
 
         state.stats.register_llm(RegistryEvent(llm=llm))
 
+        # Add token usage with context_window
         assert llm.metrics is not None
         llm.metrics.add_cost(0.05)
         llm.metrics.add_token_usage(
