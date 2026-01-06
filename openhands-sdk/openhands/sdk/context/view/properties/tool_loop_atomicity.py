@@ -19,9 +19,7 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
     - Terminated by the first non-ActionEvent/ObservationEvent
     """
 
-    def _identify_tool_loops(
-        self, events: list[Event]
-    ) -> list[list[EventID]]:
+    def _identify_tool_loops(self, events: list[Event]) -> list[list[EventID]]:
         """Identify all tool loops in the event sequence.
 
         Returns:

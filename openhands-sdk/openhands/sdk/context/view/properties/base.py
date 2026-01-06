@@ -7,10 +7,10 @@ from openhands.sdk.event.types import EventID
 
 class ViewPropertyBase(ABC):
     """Abstract base class for properties of a view.
-    
+
     Properties define rules that help maintain the integrity and coherence of the events
     in the view. The properties are maintained via two strategies:
-    
+
     1. Enforcing the property by removing events that violate it.
     2. Defining manipulation indices that restrict where the view can be manipulated.
 
@@ -41,7 +41,7 @@ class ViewPropertyBase(ABC):
         self, current_view_events: list[LLMConvertibleEvent], all_events: list[Event]
     ) -> ManipulationIndices:
         """Get manipulation indices for the property on a list of events.
-        
+
         Args:
             current_view_events: A list of events currently in the view.
             all_events: A list of all Event objects in the conversation. Useful for
