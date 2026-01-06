@@ -25,6 +25,7 @@ from openhands.sdk.plugin.types import (
     PluginManifest,
 )
 
+
 logger = get_logger(__name__)
 
 # Directories to check for plugin manifest
@@ -299,16 +300,22 @@ def _parse_agent_md(agent_path: Path) -> AgentDefinition:
     fm = post.metadata
     content = post.content.strip()
 
-    # Extract frontmatter fields
-    name = fm.get("name", agent_path.stem)
-    description = fm.get("description", "")
-    model = fm.get("model", "inherit")
-    color = fm.get("color")
-    tools = fm.get("tools", [])
+    # Extract frontmatter fields with proper type handling
+    name = str(fm.get("name", agent_path.stem))
+    description = str(fm.get("description", ""))
+    model = str(fm.get("model", "inherit"))
+    color_raw = fm.get("color")
+    color: str | None = str(color_raw) if color_raw is not None else None
+    tools_raw = fm.get("tools", [])
 
-    # Ensure tools is a list
-    if isinstance(tools, str):
-        tools = [tools]
+    # Ensure tools is a list of strings
+    tools: list[str]
+    if isinstance(tools_raw, str):
+        tools = [tools_raw]
+    elif isinstance(tools_raw, list):
+        tools = [str(t) for t in tools_raw]
+    else:
+        tools = []
 
     # Extract whenToUse examples from description
     when_to_use_examples = _extract_examples(description)
@@ -369,23 +376,39 @@ def _parse_command_md(command_path: Path) -> CommandDefinition:
     with open(command_path) as f:
         post = frontmatter.load(f)
 
-    # Extract frontmatter fields
+    # Extract frontmatter fields with proper type handling
     fm = post.metadata
     name = command_path.stem  # Command name from filename
-    description = fm.get("description", "")
-    argument_hint = fm.get("argument-hint") or fm.get("argumentHint")
-    allowed_tools = fm.get("allowed-tools") or fm.get("allowedTools") or []
+    description = str(fm.get("description", ""))
+    argument_hint_raw = fm.get("argument-hint") or fm.get("argumentHint")
+    allowed_tools_raw = fm.get("allowed-tools") or fm.get("allowedTools") or []
 
-    # Handle argument_hint as list (join with space)
-    if isinstance(argument_hint, list):
-        argument_hint = " ".join(str(h) for h in argument_hint)
+    # Handle argument_hint as list (join with space) or string
+    argument_hint: str | None
+    if isinstance(argument_hint_raw, list):
+        argument_hint = " ".join(str(h) for h in argument_hint_raw)
+    elif argument_hint_raw is not None:
+        argument_hint = str(argument_hint_raw)
+    else:
+        argument_hint = None
 
-    # Ensure allowed_tools is a list
-    if isinstance(allowed_tools, str):
-        allowed_tools = [allowed_tools]
+    # Ensure allowed_tools is a list of strings
+    allowed_tools: list[str]
+    if isinstance(allowed_tools_raw, str):
+        allowed_tools = [allowed_tools_raw]
+    elif isinstance(allowed_tools_raw, list):
+        allowed_tools = [str(t) for t in allowed_tools_raw]
+    else:
+        allowed_tools = []
 
     # Remove known fields from metadata to get extras
-    known_fields = {"description", "argument-hint", "argumentHint", "allowed-tools", "allowedTools"}
+    known_fields = {
+        "description",
+        "argument-hint",
+        "argumentHint",
+        "allowed-tools",
+        "allowedTools",
+    }
     metadata = {k: v for k, v in fm.items() if k not in known_fields}
 
     return CommandDefinition(

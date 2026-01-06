@@ -12,6 +12,7 @@ from openhands.sdk.plugin.types import (
     PluginManifest,
 )
 
+
 __all__ = [
     "Plugin",
     "PluginManifest",
