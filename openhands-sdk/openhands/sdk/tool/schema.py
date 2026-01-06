@@ -121,9 +121,12 @@ class Schema(DiscriminatedUnionMixin):
         # so it is fully compatible with MCP tool schema
         result = _process_schema_node(full_schema, full_schema.get("$defs", {}))
 
-        # Remove 'kind' from properties if present (discriminator field, not for LLM)
-        EXCLUDE_FIELDS = DiscriminatedUnionMixin.model_fields.keys()
-        for f in EXCLUDE_FIELDS:
+        # Remove discriminator fields from properties (not for LLM)
+        # Need to exclude both regular fields and computed fields (like 'kind')
+        exclude_fields = set(DiscriminatedUnionMixin.model_fields.keys()) | set(
+            DiscriminatedUnionMixin.model_computed_fields.keys()
+        )
+        for f in exclude_fields:
             if "properties" in result and f in result["properties"]:
                 result["properties"].pop(f)
                 # Also remove from required if present

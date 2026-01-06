@@ -40,7 +40,7 @@ class TokenCondenserTest(BaseIntegrationTest):
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking variables."""
-        self.condensation_count = 0
+        self.condensations: list[Condensation] = []
         super().__init__(*args, **kwargs)
 
         # Some models explicitly disallow long, repetitive tool loops for cost/safety.
@@ -87,25 +87,26 @@ class TokenCondenserTest(BaseIntegrationTest):
         super().conversation_callback(event)
 
         if isinstance(event, Condensation):
-            if self.condensation_count >= 1:
+            if len(self.condensations) >= 1:
                 logger.info("2nd condensation detected! Stopping test early.")
                 self.conversation.pause()
             # We allow the first condensation request to test if
             # thinking block + condensation will work together
-            self.condensation_count += 1
+            self.condensations.append(event)
 
     def setup(self) -> None:
         logger.info(f"Token condenser test: max_tokens={self.condenser.max_tokens}")
 
     def verify_result(self) -> TestResult:
         """Verify that condensation was triggered based on token count."""
-        if self.condensation_count == 0:
+        if len(self.condensations) == 0:
             return TestResult(
                 success=False,
                 reason="Condensation not triggered. Token counting may not work.",
             )
 
+        events_summarized = len(self.condensations[0].forgotten_event_ids)
         return TestResult(
             success=True,
-            reason="Condensation triggered. Token counting works correctly.",
+            reason=f"Condensation triggered, summarizing {events_summarized} events.",
         )
