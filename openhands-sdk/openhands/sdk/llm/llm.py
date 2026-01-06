@@ -28,8 +28,6 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
 
-from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
-
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
@@ -322,19 +320,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         exclude=True,
     )
     _metrics: Metrics | None = PrivateAttr(default=None)
-    # ===== Plain class vars (NOT Fields) =====
-    # When serializing, these fields (SecretStr) will be dump to "****"
-    # When deserializing, these fields will be ignored and we will override
-    # them from the LLM instance provided at runtime.
-    OVERRIDE_ON_SERIALIZE: tuple[str, ...] = (
-        "api_key",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        # Dynamic runtime metadata for telemetry/routing that can differ across sessions
-        # and should not cause resume-time diffs. Always prefer the runtime value.
-        "litellm_extra_body",
-    )
-
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
@@ -1101,39 +1086,3 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if v is not None:
                 data[field_name] = v
         return cls(**data)
-
-    def resolve_diff_from_deserialized(self, persisted: LLM) -> LLM:
-        """Resolve differences between a deserialized LLM and the current instance.
-
-        This is due to fields like api_key being serialized to "****" in dumps,
-        and we want to ensure that when loading from a file, we still use the
-        runtime-provided api_key in the self instance.
-
-        Return a new LLM instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key) taken from `self`.
-        """
-        if persisted.__class__ is not self.__class__:
-            raise ValueError(
-                f"Cannot resolve_diff_from_deserialized between {self.__class__} "
-                f"and {persisted.__class__}"
-            )
-
-        # Copy allowed fields from runtime llm into the persisted llm
-        llm_updates = {}
-        persisted_dump = persisted.model_dump(context={"expose_secrets": True})
-        for field in self.OVERRIDE_ON_SERIALIZE:
-            if field in persisted_dump.keys():
-                llm_updates[field] = getattr(self, field)
-        if llm_updates:
-            reconciled = persisted.model_copy(update=llm_updates)
-        else:
-            reconciled = persisted
-
-        dump = self.model_dump(context={"expose_secrets": True})
-        reconciled_dump = reconciled.model_dump(context={"expose_secrets": True})
-        if dump != reconciled_dump:
-            raise ValueError(
-                "The LLM provided is different from the one in persisted state.\n"
-                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-            )
-        return reconciled
