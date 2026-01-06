@@ -755,12 +755,17 @@ def test_conversation_state_stats_preserved_on_resume():
         assert combined_metrics.accumulated_token_usage.prompt_tokens == 100
         assert combined_metrics.accumulated_token_usage.context_window == 128000
 
+        # Force save the state
         state._save_base_state(state._fs)
 
+        # Verify the base_state.json contains the stats
         base_state_path = Path(persist_path_for_state) / "base_state.json"
         base_state_content = json.loads(base_state_path.read_text())
+        assert "stats" in base_state_content
+        assert "usage_to_metrics" in base_state_content["stats"]
         assert "test-llm" in base_state_content["stats"]["usage_to_metrics"]
 
+        # Now resume the conversation with a new agent
         new_llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
