@@ -190,16 +190,14 @@ class BaseIntegrationTest(ABC):
             self.teardown()
 
     def run_instructions(self, conversation: LocalConversation) -> None:
-        """Feed user instructions to the agent and manage the conversation."""        
+        """Feed user instructions to the agent and manage the conversation."""
         conversation.send_message(message=self.instruction_message)
         conversation.run()
 
     @property
     def instruction_message(self) -> Message:
         """The initial instruction message for the agent."""
-        return Message(
-            role="user", content=[TextContent(text=self.instruction)]
-        )
+        return Message(role="user", content=[TextContent(text=self.instruction)])
 
     @property
     @abstractmethod
