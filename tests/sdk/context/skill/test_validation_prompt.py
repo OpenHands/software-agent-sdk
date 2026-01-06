@@ -8,8 +8,11 @@ from openhands.sdk.context.skills import (
 
 def test_to_prompt_generates_xml() -> None:
     """to_prompt() should generate valid XML for skills."""
-    # Empty list
-    assert to_prompt([]) == "<available_skills>\n</available_skills>"
+    # Empty list shows "no available skills"
+    assert (
+        to_prompt([])
+        == "<available_skills>\n  no available skills\n</available_skills>"
+    )
 
     # Single skill with description
     skill = Skill(name="pdf-tools", content="# PDF", description="Process PDFs.")
@@ -44,3 +47,30 @@ def test_to_prompt_uses_content_fallback() -> None:
     result = to_prompt([skill])
     assert "Actual content here." in result
     assert "# Header" not in result
+
+
+def test_to_prompt_truncates_long_descriptions() -> None:
+    """to_prompt() should truncate long descriptions with indicator."""
+    long_desc = "A" * 250  # 250 characters
+    skill = Skill(name="test", content="# Test", description=long_desc)
+    result = to_prompt([skill])
+
+    # Should contain truncation indicator
+    assert "... [50 characters truncated]" in result
+    # Should contain first 200 chars
+    assert "A" * 200 in result
+
+
+def test_to_prompt_truncation_includes_source() -> None:
+    """to_prompt() should include source path in truncation message."""
+    long_desc = "B" * 250
+    skill = Skill(
+        name="test",
+        content="# Test",
+        description=long_desc,
+        source="/path/to/skill.md",
+    )
+    result = to_prompt([skill])
+
+    assert "... [50 characters truncated" in result
+    assert "View /path/to/skill.md for complete information]" in result

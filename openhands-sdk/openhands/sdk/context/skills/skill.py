@@ -778,7 +778,7 @@ def load_public_skills(
     return all_skills
 
 
-def to_prompt(skills: list[Skill]) -> str:
+def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
     """Generate XML prompt block for available skills.
 
     Creates an `<available_skills>` XML block suitable for inclusion
@@ -786,6 +786,7 @@ def to_prompt(skills: list[Skill]) -> str:
 
     Args:
         skills: List of skills to include in the prompt
+        max_description_length: Maximum length for descriptions (default 200)
 
     Returns:
         XML string in AgentSkills format
@@ -798,7 +799,7 @@ def to_prompt(skills: list[Skill]) -> str:
         </available_skills>
     """  # noqa: E501
     if not skills:
-        return "<available_skills>\n</available_skills>"
+        return "<available_skills>\n  no available skills\n</available_skills>"
 
     lines = ["<available_skills>"]
     for skill in skills:
@@ -810,9 +811,20 @@ def to_prompt(skills: list[Skill]) -> str:
                 line = line.strip()
                 # Skip markdown headers and empty lines
                 if line and not line.startswith("#"):
-                    description = line[:200]  # Limit to 200 chars
+                    description = line
                     break
         description = description or ""
+
+        # Truncate if needed and add truncation indicator
+        if len(description) > max_description_length:
+            truncated_chars = len(description) - max_description_length
+            description = description[:max_description_length]
+            truncation_msg = f"... [{truncated_chars} characters truncated"
+            if skill.source:
+                truncation_msg += f". View {skill.source} for complete information"
+            truncation_msg += "]"
+            description = description + truncation_msg
+
         # Escape XML special characters
         description = _escape_xml(description)
         name = _escape_xml(skill.name)
