@@ -748,6 +748,7 @@ def test_conversation_state_stats_preserved_on_resume():
             response_id="test-response-1",
         )
 
+        # Verify stats are set correctly before saving
         combined_metrics = state.stats.get_combined_metrics()
         assert combined_metrics.accumulated_cost == 0.05
         assert combined_metrics.accumulated_token_usage is not None
