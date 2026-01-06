@@ -89,13 +89,20 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
                         # Tool loop ends here
                         break
 
-                # Also collect any observation events after the last batch in the loop
-                for idx in range(max_idx + 1, min(loop_end + 1, len(events))):
-                    event = events[idx]
+                # Collect any trailing observation events after the last batch
+                scan_idx = loop_end + 1
+                while scan_idx < len(events):
+                    event = events[scan_idx]
                     if isinstance(event, ObservationBaseEvent):
-                        if event.id not in loop_event_ids:
-                            loop_event_ids.append(event.id)
-                    elif not isinstance(event, ActionEvent):
+                        loop_event_ids.append(event.id)
+                        loop_end = scan_idx
+                        scan_idx += 1
+                    elif isinstance(event, ActionEvent):
+                        # Another action batch - shouldn't happen as we already
+                        # processed all batches above
+                        break
+                    else:
+                        # Non-action/observation terminates the loop
                         break
 
                 tool_loops.append(loop_event_ids)
@@ -211,6 +218,21 @@ class ToolLoopAtomicityProperty(ViewPropertyBase):
                         j += 1
                     else:
                         # Tool loop ends here
+                        break
+
+                # Scan forward to include any trailing observations
+                scan_idx = loop_end + 1
+                while scan_idx < len(current_view_events):
+                    event = current_view_events[scan_idx]
+                    if isinstance(event, ObservationBaseEvent):
+                        loop_end = scan_idx
+                        scan_idx += 1
+                    elif isinstance(event, ActionEvent):
+                        # Another action - should have been caught by batch
+                        # processing above
+                        break
+                    else:
+                        # Non-action/observation terminates the loop
                         break
 
                 tool_loop_ranges.append((loop_start, loop_end))
