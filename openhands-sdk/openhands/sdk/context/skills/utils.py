@@ -17,9 +17,12 @@ from openhands.sdk.logger import get_logger
 
 
 if TYPE_CHECKING:
-    from openhands.sdk.context.skills.skill import Skill
+    from openhands.sdk.context.skills.skill import Skill, SkillResources
 
 logger = get_logger(__name__)
+
+# Standard resource directory names per AgentSkills spec
+RESOURCE_DIRECTORIES = ("scripts", "references", "assets")
 
 # Regex pattern for valid AgentSkills names
 # - 1-64 characters
@@ -384,3 +387,56 @@ def update_skills_repository(
     except Exception as e:
         logger.warning(f"Error managing skills repository: {str(e)}")
         return None
+
+
+def discover_skill_resources(skill_dir: Path) -> SkillResources:
+    """Discover resource directories in a skill directory.
+
+    Scans for standard AgentSkills resource directories:
+    - scripts/: Executable scripts
+    - references/: Reference documentation
+    - assets/: Static assets
+
+    Args:
+        skill_dir: Path to the skill directory.
+
+    Returns:
+        SkillResources with lists of files in each resource directory.
+    """
+    # Import here to avoid circular dependency
+    from openhands.sdk.context.skills.skill import SkillResources
+
+    resources = SkillResources(skill_root=str(skill_dir.resolve()))
+
+    for resource_type in RESOURCE_DIRECTORIES:
+        resource_dir = skill_dir / resource_type
+        if resource_dir.is_dir():
+            files = _list_resource_files(resource_dir, resource_type)
+            setattr(resources, resource_type, files)
+
+    return resources
+
+
+def _list_resource_files(
+    resource_dir: Path,
+    resource_type: str,
+) -> list[str]:
+    """List files in a resource directory.
+
+    Args:
+        resource_dir: Path to the resource directory.
+        resource_type: Type of resource (scripts, references, assets).
+
+    Returns:
+        List of relative file paths within the resource directory.
+    """
+    files: list[str] = []
+    try:
+        for item in resource_dir.rglob("*"):
+            if item.is_file():
+                # Store relative path from resource directory
+                rel_path = item.relative_to(resource_dir)
+                files.append(str(rel_path))
+    except OSError as e:
+        logger.warning(f"Error listing {resource_type} directory: {e}")
+    return sorted(files)
