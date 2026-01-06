@@ -200,9 +200,8 @@ def _load_manifest(plugin_dir: Path) -> PluginManifest:
 def _load_skills(plugin_dir: Path) -> list[Skill]:
     """Load skills from the skills/ directory.
 
-    Note: Plugin skills are loaded with relaxed validation compared to
-    AgentSkills standard. This allows loading Claude Code plugins which
-    may use different naming conventions.
+    Note: Plugin skills are loaded with relaxed validation (strict=False)
+    to support Claude Code plugins which may use different naming conventions.
     """
     skills_dir = plugin_dir / "skills"
     if not skills_dir.is_dir():
@@ -214,7 +213,9 @@ def _load_skills(plugin_dir: Path) -> list[Skill]:
             skill_md = find_skill_md(item)
             if skill_md:
                 try:
-                    skill = _load_skill_relaxed(skill_md, skills_dir, item)
+                    skill = Skill.load(skill_md, skills_dir, strict=False)
+                    # Discover and attach resources
+                    skill.resources = discover_skill_resources(item)
                     skills.append(skill)
                     logger.debug(f"Loaded skill: {skill.name} from {skill_md}")
                 except Exception as e:
@@ -222,50 +223,13 @@ def _load_skills(plugin_dir: Path) -> list[Skill]:
         elif item.suffix == ".md" and item.name.lower() != "readme.md":
             # Also support single .md files in skills/ directory
             try:
-                skill = _load_skill_relaxed(item, skills_dir)
+                skill = Skill.load(item, skills_dir, strict=False)
                 skills.append(skill)
                 logger.debug(f"Loaded skill: {skill.name} from {item}")
             except Exception as e:
                 logger.warning(f"Failed to load skill from {item}: {e}")
 
     return skills
-
-
-def _load_skill_relaxed(
-    skill_path: Path, skills_dir: Path, skill_dir: Path | None = None
-) -> Skill:
-    """Load a skill with relaxed validation for plugin compatibility.
-
-    This bypasses strict AgentSkills name validation to support
-    Claude Code plugins which may use different naming conventions.
-    """
-    with open(skill_path) as f:
-        post = frontmatter.load(f)
-
-    fm = post.metadata
-    content = post.content.strip()
-
-    # Use name from frontmatter, or derive from path
-    name = fm.get("name")
-    if not name:
-        if skill_path.name.lower() == "skill.md" and skill_path.parent != skills_dir:
-            name = skill_path.parent.name
-        else:
-            name = skill_path.stem
-
-    # Build skill with minimal validation
-    skill = Skill(
-        name=name,
-        content=content,
-        source=str(skill_path),
-        trigger=None,  # Plugin skills are typically always-active
-    )
-
-    # Attach resources if skill_dir provided
-    if skill_dir:
-        skill.resources = discover_skill_resources(skill_dir)
-
-    return skill
 
 
 def _load_hooks(plugin_dir: Path) -> HookConfig | None:
@@ -329,15 +293,11 @@ def _parse_agent_md(agent_path: Path) -> AgentDefinition:
 
     The body of the markdown is the system prompt.
     """
-    try:
-        with open(agent_path) as f:
-            post = frontmatter.load(f)
-        fm = post.metadata
-        content = post.content.strip()
-    except Exception:
-        # If frontmatter parsing fails (e.g., due to colons in description),
-        # try manual parsing
-        fm, content = _parse_frontmatter_manual(agent_path)
+    with open(agent_path) as f:
+        post = frontmatter.load(f)
+
+    fm = post.metadata
+    content = post.content.strip()
 
     # Extract frontmatter fields
     name = fm.get("name", agent_path.stem)
@@ -368,97 +328,6 @@ def _parse_agent_md(agent_path: Path) -> AgentDefinition:
         when_to_use_examples=when_to_use_examples,
         metadata=metadata,
     )
-
-
-def _parse_frontmatter_manual(file_path: Path) -> tuple[dict[str, Any], str]:
-    """Manually parse frontmatter when standard parsing fails.
-
-    This handles cases where YAML parsing fails due to special characters
-    like colons in values that aren't properly quoted.
-    """
-    with open(file_path) as f:
-        text = f.read()
-
-    # Check for frontmatter delimiters
-    if not text.startswith("---"):
-        return {}, text
-
-    # Find the end of frontmatter
-    end_match = text.find("\n---", 3)
-    if end_match == -1:
-        return {}, text
-
-    frontmatter_text = text[4:end_match]
-    content = text[end_match + 4:].strip()
-
-    # Parse frontmatter line by line
-    fm: dict[str, Any] = {}
-    current_key = None
-    current_value_lines: list[str] = []
-
-    for line in frontmatter_text.split("\n"):
-        # Check if this is a new key-value pair
-        if line and not line.startswith(" ") and not line.startswith("\t"):
-            # Save previous key-value if exists
-            if current_key:
-                fm[current_key] = _parse_value("\n".join(current_value_lines))
-
-            # Parse new key
-            colon_idx = line.find(":")
-            if colon_idx > 0:
-                current_key = line[:colon_idx].strip()
-                value_part = line[colon_idx + 1:].strip()
-                current_value_lines = [value_part] if value_part else []
-            else:
-                current_key = None
-                current_value_lines = []
-        elif current_key:
-            # Continuation of previous value
-            current_value_lines.append(line)
-
-    # Save last key-value
-    if current_key:
-        fm[current_key] = _parse_value("\n".join(current_value_lines))
-
-    return fm, content
-
-
-def _parse_value(value: str) -> Any:
-    """Parse a YAML-like value string."""
-    value = value.strip()
-
-    # Handle arrays
-    if value.startswith("[") and value.endswith("]"):
-        # Simple array parsing
-        inner = value[1:-1]
-        items = []
-        for item in inner.split(","):
-            item = item.strip().strip('"').strip("'")
-            if item:
-                items.append(item)
-        return items
-
-    # Handle quoted strings
-    if (value.startswith('"') and value.endswith('"')) or (
-        value.startswith("'") and value.endswith("'")
-    ):
-        return value[1:-1]
-
-    # Handle booleans
-    if value.lower() == "true":
-        return True
-    if value.lower() == "false":
-        return False
-
-    # Handle numbers
-    try:
-        if "." in value:
-            return float(value)
-        return int(value)
-    except ValueError:
-        pass
-
-    return value
 
 
 def _extract_examples(description: str) -> list[str]:
