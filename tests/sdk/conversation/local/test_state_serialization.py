@@ -789,7 +789,9 @@ def test_conversation_state_stats_preserved_on_resume():
             "Prompt tokens should be preserved after resume"
         )
         assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100
-        assert resumed_combined_metrics.accumulated_token_usage.context_window == 128000
+        assert (
+            resumed_combined_metrics.accumulated_token_usage.context_window == 128000
+        ), "Context window should be preserved after resume"
 
 
 def test_resume_with_conversation_id_mismatch_raises_error():
