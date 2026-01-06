@@ -778,9 +778,16 @@ def test_conversation_state_stats_preserved_on_resume():
             id=conv_id,
         )
 
+        # Verify stats are preserved after resume
         resumed_combined_metrics = resumed_state.stats.get_combined_metrics()
+        assert resumed_combined_metrics.accumulated_cost == 0.05, (
+            "Cost should be preserved after resume"
+        )
         assert resumed_combined_metrics.accumulated_cost == 0.05
         assert resumed_combined_metrics.accumulated_token_usage is not None
+        assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100, (
+            "Prompt tokens should be preserved after resume"
+        )
         assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100
         assert resumed_combined_metrics.accumulated_token_usage.context_window == 128000
 
