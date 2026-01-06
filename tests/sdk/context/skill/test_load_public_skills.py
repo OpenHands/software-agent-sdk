@@ -11,6 +11,7 @@ from openhands.sdk.context.skills import (
     Skill,
     load_public_skills,
 )
+from openhands.sdk.context.skills.utils import update_skills_repository
 
 
 @pytest.fixture
@@ -66,11 +67,11 @@ def test_load_public_skills_success(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -97,11 +98,11 @@ def test_load_public_skills_repo_update_fails(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -120,11 +121,11 @@ def test_load_public_skills_no_skills_directory(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -154,11 +155,11 @@ def test_load_public_skills_with_invalid_skill(tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -170,16 +171,16 @@ def test_load_public_skills_with_invalid_skill(tmp_path):
 
 def test_update_skills_repository_clone_new(tmp_path):
     """Test cloning a new repository."""
-    from openhands.sdk.context.skills.skill import _update_skills_repository
-
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
 
     mock_result = MagicMock()
     mock_result.returncode = 0
 
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        repo_path = _update_skills_repository(
+    with patch(
+        "openhands.sdk.context.skills.utils.subprocess.run", return_value=mock_result
+    ) as mock_run:
+        repo_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
             "main",
             cache_dir,
@@ -197,8 +198,6 @@ def test_update_skills_repository_clone_new(tmp_path):
 
 def test_update_skills_repository_update_existing(tmp_path):
     """Test updating an existing repository."""
-    from openhands.sdk.context.skills.skill import _update_skills_repository
-
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
 
@@ -211,8 +210,10 @@ def test_update_skills_repository_update_existing(tmp_path):
     mock_result = MagicMock()
     mock_result.returncode = 0
 
-    with patch("subprocess.run", return_value=mock_result) as mock_run:
-        result_path = _update_skills_repository(
+    with patch(
+        "openhands.sdk.context.skills.utils.subprocess.run", return_value=mock_result
+    ) as mock_run:
+        result_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
             "main",
             cache_dir,
@@ -229,15 +230,14 @@ def test_update_skills_repository_update_existing(tmp_path):
 
 def test_update_skills_repository_clone_timeout(tmp_path):
     """Test handling of timeout during clone."""
-    from openhands.sdk.context.skills.skill import _update_skills_repository
-
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
 
     with patch(
-        "subprocess.run", side_effect=subprocess.TimeoutExpired("git", 60)
+        "openhands.sdk.context.skills.utils.subprocess.run",
+        side_effect=subprocess.TimeoutExpired("git", 60),
     ) as mock_run:
-        repo_path = _update_skills_repository(
+        repo_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
             "main",
             cache_dir,
@@ -249,8 +249,6 @@ def test_update_skills_repository_clone_timeout(tmp_path):
 
 def test_update_skills_repository_update_fails_uses_cache(tmp_path):
     """Test that existing cache is used when update fails."""
-    from openhands.sdk.context.skills.skill import _update_skills_repository
-
     cache_dir = tmp_path / "cache"
     cache_dir.mkdir()
 
@@ -262,10 +260,10 @@ def test_update_skills_repository_update_fails_uses_cache(tmp_path):
 
     # Mock fetch to fail, reset to fail
     with patch(
-        "subprocess.run",
+        "openhands.sdk.context.skills.utils.subprocess.run",
         side_effect=subprocess.CalledProcessError(1, "git", stderr=b"Error"),
     ):
-        result_path = _update_skills_repository(
+        result_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
             "main",
             cache_dir,
@@ -283,11 +281,11 @@ def test_agent_context_loads_public_skills(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -319,11 +317,11 @@ def test_agent_context_merges_explicit_and_public_skills(mock_repo_dir, tmp_path
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -349,11 +347,11 @@ def test_agent_context_explicit_skill_takes_precedence(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -374,11 +372,11 @@ def test_load_public_skills_custom_repo(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):
@@ -397,11 +395,11 @@ def test_load_public_skills_custom_branch(mock_repo_dir, tmp_path):
 
     with (
         patch(
-            "openhands.sdk.context.skills.skill._update_skills_repository",
+            "openhands.sdk.context.skills.skill.update_skills_repository",
             side_effect=mock_update_repo,
         ),
         patch(
-            "openhands.sdk.context.skills.skill._get_skills_cache_dir",
+            "openhands.sdk.context.skills.skill.get_skills_cache_dir",
             return_value=tmp_path,
         ),
     ):

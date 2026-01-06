@@ -564,9 +564,7 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
         assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") != state.model_dump(mode="json")
-        loaded_state.stats.register_llm(RegistryEvent(llm=llm))
+        # Test model_dump equality - stats should be preserved on resume
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
 
@@ -634,7 +632,6 @@ def test_resume_uses_runtime_workspace_and_max_iterations():
         conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789007")
         persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
 
-        # Create with initial values
         original_workspace = LocalWorkspace(working_dir="/original/path")
         state = ConversationState.create(
             workspace=original_workspace,
@@ -645,17 +642,15 @@ def test_resume_uses_runtime_workspace_and_max_iterations():
         )
         assert state.max_iterations == 100
 
-        # Resume with different runtime values
         new_workspace = LocalWorkspace(working_dir="/new/path")
         resumed_state = ConversationState.create(
             workspace=new_workspace,
             persistence_dir=persist_path,
             agent=agent,
             id=conv_id,
-            max_iterations=200,  # Different value
+            max_iterations=200,
         )
 
-        # Runtime values should be used
         assert resumed_state.workspace.working_dir == "/new/path"
         assert resumed_state.max_iterations == 200
 
@@ -670,28 +665,25 @@ def test_resume_preserves_persisted_execution_status_and_stuck_detection():
         conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789008")
         persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
 
-        # Create with specific values
         state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
             persistence_dir=persist_path,
             agent=agent,
             id=conv_id,
-            stuck_detection=False,  # Non-default value
+            stuck_detection=False,
         )
         state.execution_status = ConversationExecutionStatus.PAUSED
 
-        # Resume - these should come from persisted state
         resumed_state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
             persistence_dir=persist_path,
             agent=agent,
             id=conv_id,
-            stuck_detection=True,  # Try to override - should be ignored
+            stuck_detection=True,
         )
 
-        # Persisted values should be preserved
         assert resumed_state.execution_status == ConversationExecutionStatus.PAUSED
-        assert resumed_state.stuck_detection is False  # From persisted, not runtime
+        assert resumed_state.stuck_detection is False
 
 
 def test_resume_preserves_blocked_actions_and_messages():
@@ -704,7 +696,6 @@ def test_resume_preserves_blocked_actions_and_messages():
         conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789009")
         persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
 
-        # Create and add blocked items
         state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
             persistence_dir=persist_path,
@@ -714,7 +705,6 @@ def test_resume_preserves_blocked_actions_and_messages():
         state.block_action("action-1", "dangerous action")
         state.block_message("msg-1", "inappropriate content")
 
-        # Resume
         resumed_state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
             persistence_dir=persist_path,
@@ -722,43 +712,71 @@ def test_resume_preserves_blocked_actions_and_messages():
             id=conv_id,
         )
 
-        # Blocked items should be preserved
-        assert "action-1" in resumed_state.blocked_actions
         assert resumed_state.blocked_actions["action-1"] == "dangerous action"
-        assert "msg-1" in resumed_state.blocked_messages
         assert resumed_state.blocked_messages["msg-1"] == "inappropriate content"
 
 
-def test_resume_resets_stats():
-    """Test that stats are reset on resume (fresh session)."""
+def test_conversation_state_stats_preserved_on_resume():
+    """Regression: stats should not be reset when resuming a conversation."""
     with tempfile.TemporaryDirectory() as temp_dir:
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         agent = Agent(llm=llm, tools=[])
-        conv_id = uuid.UUID("12345678-1234-5678-9abc-12345678900a")
-        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
 
-        # Create and register LLM in stats
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789010")
+        persist_path_for_state = LocalConversation.get_persistence_dir(
+            temp_dir, conv_id
+        )
         state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
-            persistence_dir=persist_path,
+            persistence_dir=persist_path_for_state,
             agent=agent,
             id=conv_id,
         )
-        state.stats.register_llm(RegistryEvent(llm=llm))
-        assert len(state.stats.usage_to_metrics) == 1
 
-        # Resume - stats should be fresh
+        state.stats.register_llm(RegistryEvent(llm=llm))
+
+        assert llm.metrics is not None
+        llm.metrics.add_cost(0.05)
+        llm.metrics.add_token_usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=10,
+            cache_write_tokens=5,
+            context_window=128000,
+            response_id="test-response-1",
+        )
+
+        combined_metrics = state.stats.get_combined_metrics()
+        assert combined_metrics.accumulated_cost == 0.05
+        assert combined_metrics.accumulated_token_usage is not None
+        assert combined_metrics.accumulated_token_usage.prompt_tokens == 100
+        assert combined_metrics.accumulated_token_usage.context_window == 128000
+
+        state._save_base_state(state._fs)
+
+        base_state_path = Path(persist_path_for_state) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "test-llm" in base_state_content["stats"]["usage_to_metrics"]
+
+        new_llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        new_agent = Agent(llm=new_llm, tools=[])
+
         resumed_state = ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
-            persistence_dir=persist_path,
-            agent=agent,
+            persistence_dir=persist_path_for_state,
+            agent=new_agent,
             id=conv_id,
         )
 
-        # Stats should be reset (empty usage_to_metrics)
-        assert len(resumed_state.stats.usage_to_metrics) == 0
+        resumed_combined_metrics = resumed_state.stats.get_combined_metrics()
+        assert resumed_combined_metrics.accumulated_cost == 0.05
+        assert resumed_combined_metrics.accumulated_token_usage is not None
+        assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100
+        assert resumed_combined_metrics.accumulated_token_usage.context_window == 128000
 
 
 def test_resume_with_conversation_id_mismatch_raises_error():
@@ -772,7 +790,6 @@ def test_resume_with_conversation_id_mismatch_raises_error():
         different_id = uuid.UUID("12345678-1234-5678-9abc-12345678900c")
         persist_path = LocalConversation.get_persistence_dir(temp_dir, original_id)
 
-        # Create with original ID
         ConversationState.create(
             workspace=LocalWorkspace(working_dir="/tmp"),
             persistence_dir=persist_path,
@@ -780,7 +797,6 @@ def test_resume_with_conversation_id_mismatch_raises_error():
             id=original_id,
         )
 
-        # Try to resume with different ID - should fail
         with pytest.raises(ValueError, match="Conversation ID mismatch"):
             ConversationState.create(
                 workspace=LocalWorkspace(working_dir="/tmp"),

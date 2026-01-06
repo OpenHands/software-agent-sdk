@@ -240,8 +240,8 @@ class ConversationState(OpenHandsModel):
             state.workspace = workspace
             state.max_iterations = max_iterations
 
-            # Reset stats for this session
-            state.stats = ConversationStats()
+            # Note: stats are already deserialized from base_state.json above.
+            # Do NOT reset stats here - this would lose accumulated metrics.
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
