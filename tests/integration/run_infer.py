@@ -148,7 +148,7 @@ def process_instance(instance: TestInstance, llm_config: dict[str, Any]) -> Eval
 
         # Run the test
         start_time = time.time()
-        test_result = test_instance.run_instruction()
+        test_result = test_instance.run_integration_test()
         end_time = time.time()
 
         # Access accumulated_cost from the metrics object where it's properly validated
