@@ -1,6 +1,18 @@
 from openhands.sdk.context.view.properties.base import ViewPropertyBase
+from openhands.sdk.context.view.properties.batch_atomicity import (
+    BatchAtomicityProperty,
+)
+from openhands.sdk.context.view.properties.tool_call_matching import (
+    ToolCallMatchingProperty,
+)
+from openhands.sdk.context.view.properties.tool_loop_atomicity import (
+    ToolLoopAtomicityProperty,
+)
 
 
 __all__ = [
     "ViewPropertyBase",
+    "BatchAtomicityProperty",
+    "ToolCallMatchingProperty",
+    "ToolLoopAtomicityProperty",
 ]
