@@ -79,7 +79,7 @@ class DockerWorkspace(RemoteWorkspace):
 
     # Docker-specific configuration
     server_image: str | None = Field(
-        default=None,
+        default="ghcr.io/openhands/agent-server:latest-python",
         description="Pre-built agent server image to use.",
     )
     host_port: int | None = Field(
@@ -90,9 +90,9 @@ class DockerWorkspace(RemoteWorkspace):
         default_factory=lambda: ["DEBUG"],
         description="Environment variables to forward to the container.",
     )
-    mount_dir: str | None = Field(
-        default=None,
-        description="Optional host directory to mount into the container.",
+    volumes: list[str] = Field(
+        default_factory=list,
+        description="Additional volume mounts for the Docker container.",
     )
     detach_logs: bool = Field(
         default=True, description="Whether to stream Docker logs in background."
@@ -192,12 +192,9 @@ class DockerWorkspace(RemoteWorkspace):
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
-        if self.mount_dir:
-            mount_path = "/workspace"
-            flags += ["-v", f"{self.mount_dir}:{mount_path}"]
-            logger.info(
-                f"Mounting host dir {self.mount_dir} to container path {mount_path}"
-            )
+        for volume in self.volumes:
+            flags += ["-v", volume]
+            logger.info(f"Adding volume mount: {volume}")
 
         ports = ["-p", f"{self.host_port}:8000"]
         if self.extra_ports:
