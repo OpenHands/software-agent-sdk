@@ -495,7 +495,7 @@ class RemoteConversation(BaseConversation):
             resp = _send_request(
                 self._client,
                 "GET",
-                f"/api/conversations/{conversation_id}",
+                f"/api/conversations/{conversation_id.hex}",
                 acceptable_status_codes={404},
             )
             if resp.status_code == 404:
