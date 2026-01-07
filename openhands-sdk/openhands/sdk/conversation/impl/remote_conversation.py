@@ -984,6 +984,14 @@ class RemoteConversation(BaseConversation):
         if self._hook_processor is not None:
             self._hook_processor.run_session_end()
         try:
+            # trigger server-side delete_conversation to release resources
+            # like tmux sessions
+            _send_request(
+                self._client,
+                "DELETE",
+                f"/api/conversations/{self.id}",
+                acceptable_status_codes={200, 204},
+            )
             # Stop WebSocket client if it exists
             if self._ws_client:
                 self._ws_client.stop()

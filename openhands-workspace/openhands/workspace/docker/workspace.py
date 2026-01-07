@@ -221,6 +221,8 @@ class DockerWorkspace(RemoteWorkspace):
             "--platform",
             self.platform,
             "--rm",
+            "--ulimit",
+            "nofile=65536:65536",  # prevent "too many open files" errors
             "--name",
             f"agent-server-{uuid.uuid4()}",
             *flags,
