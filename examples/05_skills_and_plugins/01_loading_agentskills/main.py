@@ -42,9 +42,9 @@ def main():
     print(f"Loading skills from: {example_skills_dir}")
 
     # Discover resources in the skill directory
-    skill_subdir = example_skills_dir / "my-custom-skill"
+    skill_subdir = example_skills_dir / "rot13-encryption"
     resources = discover_skill_resources(skill_subdir)
-    print("\nDiscovered resources in my-custom-skill/:")
+    print("\nDiscovered resources in rot13-encryption/:")
     print(f"  - scripts: {resources.scripts}")
     print(f"  - references: {resources.references}")
     print(f"  - assets: {resources.assets}")
