@@ -710,7 +710,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                         all_skills.append(skill)
                         seen_names.add(name)
                     else:
-                        logger.debug(
+                        logger.warning(
                             f"Skipping duplicate skill '{name}' from "
                             f"{project_skills_dir}"
                         )
