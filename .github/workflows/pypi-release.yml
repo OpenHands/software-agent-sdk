@@ -163,12 +163,12 @@ jobs:
 
                   # 2. Generate poetry.lock in root
                   echo "🔒 Running poetry lock in root..."
-                  poetry lock --no-update
+                  poetry lock
 
                   # 3. Generate poetry.lock in enterprise directory
                   echo "🔒 Running poetry lock in enterprise/..."
                   cd enterprise
-                  poetry lock --no-update
+                  poetry lock
                   cd ..
 
                   # 4. Update the hash in sandbox_spec_service.py
