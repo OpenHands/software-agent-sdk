@@ -226,7 +226,7 @@ def _base_slug(image: str, max_len: int = 64) -> str:
 
     # Parse components from the slug form
     if "_tag_" in base_slug:
-        # Use rsplit to handle registries with ports (e.g., localhost:5000) so we
+        # Use rsplit to handle registries with ports (e.g., ghcr.io:443) so we
         # only treat the last ":" as the tag separator.
         left, tag = base_slug.rsplit("_tag_", 1)
     else:
