@@ -68,11 +68,6 @@ MODELS = {
         "display_name": "Gemini 3 Flash",
         "llm_config": {"model": "litellm_proxy/gemini/gemini-3-flash-preview"},
     },
-    "gpt-5.2-high-reasoning": {
-        "id": "gpt-5.2-high-reasoning",
-        "display_name": "GPT-5.2 High Reasoning",
-        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-pro-2025-12-11"},
-    },
     "gpt-5.2": {
         "id": "gpt-5.2",
         "display_name": "GPT-5.2",
