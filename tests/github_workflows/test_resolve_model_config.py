@@ -6,10 +6,12 @@ from unittest.mock import patch
 
 import pytest
 
+
 # Import the functions from resolve_model_config.py
 run_eval_path = Path(__file__).parent.parent.parent / ".github" / "run-eval"
 sys.path.append(str(run_eval_path))
 from resolve_model_config import (  # noqa: E402  # type: ignore[import-not-found]
+    MODELS,
     find_models_by_id,
 )
 
@@ -65,7 +67,6 @@ def test_find_models_by_id_preserves_order():
 
 def test_find_models_by_id_missing_model_exits():
     """Test that missing model ID causes exit."""
-    import pytest
 
     mock_models = {
         "gpt-4": {"id": "gpt-4", "display_name": "GPT-4", "llm_config": {}},
@@ -126,7 +127,6 @@ EXPECTED_MODELS = [
     "claude-sonnet-4-5-20250929",
     "gemini-3-pro",
     "gemini-3-flash",
-    "gpt-5.2-high-reasoning",
     "gpt-5.2",
     "kimi-k2-thinking",
     "minimax-m2",
