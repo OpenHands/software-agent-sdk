@@ -64,6 +64,7 @@ def get_required_env(key: str) -> str:
     value = os.environ.get(key)
     if not value:
         error_exit(f"{key} not set")
+        raise SystemExit(1)  # for type checkers; error_exit already exits
     return value
 
 
