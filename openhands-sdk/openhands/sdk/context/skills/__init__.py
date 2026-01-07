@@ -16,6 +16,7 @@ from openhands.sdk.context.skills.types import SkillKnowledge
 from openhands.sdk.context.skills.utils import (
     RESOURCE_DIRECTORIES,
     discover_skill_resources,
+    validate_skill_name,
 )
 
 
@@ -33,4 +34,5 @@ __all__ = [
     "SkillValidationError",
     "discover_skill_resources",
     "RESOURCE_DIRECTORIES",
+    "validate_skill_name",
 ]
