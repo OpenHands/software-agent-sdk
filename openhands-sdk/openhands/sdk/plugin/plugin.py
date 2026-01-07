@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import json
-import re
 from pathlib import Path
 from typing import Any
 
-import frontmatter
 from pydantic import BaseModel, Field
 
 from openhands.sdk.context.skills import Skill
@@ -273,75 +271,13 @@ def _load_agents(plugin_dir: Path) -> list[AgentDefinition]:
     for item in agents_dir.iterdir():
         if item.suffix == ".md" and item.name.lower() != "readme.md":
             try:
-                agent = _parse_agent_md(item)
+                agent = AgentDefinition.load(item)
                 agents.append(agent)
                 logger.debug(f"Loaded agent: {agent.name} from {item}")
             except Exception as e:
                 logger.warning(f"Failed to load agent from {item}: {e}")
 
     return agents
-
-
-def _parse_agent_md(agent_path: Path) -> AgentDefinition:
-    """Parse an agent definition from a markdown file.
-
-    Agent markdown files have YAML frontmatter with:
-    - name: Agent name
-    - description: Description with optional <example> tags for triggering
-    - model: Model to use (default: 'inherit')
-    - color: Display color
-    - tools: List of allowed tools
-
-    The body of the markdown is the system prompt.
-    """
-    with open(agent_path) as f:
-        post = frontmatter.load(f)
-
-    fm = post.metadata
-    content = post.content.strip()
-
-    # Extract frontmatter fields with proper type handling
-    name = str(fm.get("name", agent_path.stem))
-    description = str(fm.get("description", ""))
-    model = str(fm.get("model", "inherit"))
-    color_raw = fm.get("color")
-    color: str | None = str(color_raw) if color_raw is not None else None
-    tools_raw = fm.get("tools", [])
-
-    # Ensure tools is a list of strings
-    tools: list[str]
-    if isinstance(tools_raw, str):
-        tools = [tools_raw]
-    elif isinstance(tools_raw, list):
-        tools = [str(t) for t in tools_raw]
-    else:
-        tools = []
-
-    # Extract whenToUse examples from description
-    when_to_use_examples = _extract_examples(description)
-
-    # Remove known fields from metadata to get extras
-    known_fields = {"name", "description", "model", "color", "tools"}
-    metadata = {k: v for k, v in fm.items() if k not in known_fields}
-
-    return AgentDefinition(
-        name=name,
-        description=description,
-        model=model,
-        color=color,
-        tools=tools,
-        system_prompt=content,
-        source=str(agent_path),
-        when_to_use_examples=when_to_use_examples,
-        metadata=metadata,
-    )
-
-
-def _extract_examples(description: str) -> list[str]:
-    """Extract <example> tags from description for agent triggering."""
-    pattern = r"<example>(.*?)</example>"
-    matches = re.findall(pattern, description, re.DOTALL | re.IGNORECASE)
-    return [m.strip() for m in matches if m.strip()]
 
 
 def _load_commands(plugin_dir: Path) -> list[CommandDefinition]:
@@ -354,69 +290,10 @@ def _load_commands(plugin_dir: Path) -> list[CommandDefinition]:
     for item in commands_dir.iterdir():
         if item.suffix == ".md" and item.name.lower() != "readme.md":
             try:
-                command = _parse_command_md(item)
+                command = CommandDefinition.load(item)
                 commands.append(command)
                 logger.debug(f"Loaded command: {command.name} from {item}")
             except Exception as e:
                 logger.warning(f"Failed to load command from {item}: {e}")
 
     return commands
-
-
-def _parse_command_md(command_path: Path) -> CommandDefinition:
-    """Parse a command definition from a markdown file.
-
-    Command markdown files have YAML frontmatter with:
-    - description: Command description
-    - argument-hint: Hint for command arguments (string or list)
-    - allowed-tools: List of allowed tools
-
-    The body of the markdown is the command instructions.
-    """
-    with open(command_path) as f:
-        post = frontmatter.load(f)
-
-    # Extract frontmatter fields with proper type handling
-    fm = post.metadata
-    name = command_path.stem  # Command name from filename
-    description = str(fm.get("description", ""))
-    argument_hint_raw = fm.get("argument-hint") or fm.get("argumentHint")
-    allowed_tools_raw = fm.get("allowed-tools") or fm.get("allowedTools") or []
-
-    # Handle argument_hint as list (join with space) or string
-    argument_hint: str | None
-    if isinstance(argument_hint_raw, list):
-        argument_hint = " ".join(str(h) for h in argument_hint_raw)
-    elif argument_hint_raw is not None:
-        argument_hint = str(argument_hint_raw)
-    else:
-        argument_hint = None
-
-    # Ensure allowed_tools is a list of strings
-    allowed_tools: list[str]
-    if isinstance(allowed_tools_raw, str):
-        allowed_tools = [allowed_tools_raw]
-    elif isinstance(allowed_tools_raw, list):
-        allowed_tools = [str(t) for t in allowed_tools_raw]
-    else:
-        allowed_tools = []
-
-    # Remove known fields from metadata to get extras
-    known_fields = {
-        "description",
-        "argument-hint",
-        "argumentHint",
-        "allowed-tools",
-        "allowedTools",
-    }
-    metadata = {k: v for k, v in fm.items() if k not in known_fields}
-
-    return CommandDefinition(
-        name=name,
-        description=description,
-        argument_hint=argument_hint,
-        allowed_tools=allowed_tools,
-        content=post.content.strip(),
-        source=str(command_path),
-        metadata=metadata,
-    )
