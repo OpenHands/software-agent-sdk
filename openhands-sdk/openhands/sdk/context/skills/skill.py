@@ -222,6 +222,7 @@ class Skill(BaseModel):
         cls,
         path: str | Path,
         skill_base_dir: Path | None = None,
+        strict: bool = True,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
@@ -234,6 +235,8 @@ class Skill(BaseModel):
         Args:
             path: Path to the skill file.
             skill_base_dir: Base directory for skills (used to derive relative names).
+            strict: If True, enforce strict AgentSkills name validation.
+                If False, allow relaxed naming (e.g., for plugin compatibility).
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -241,17 +244,20 @@ class Skill(BaseModel):
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
-            return cls._load_agentskills_skill(path, file_content)
+            return cls._load_agentskills_skill(path, file_content, strict=strict)
         else:
             return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
 
     @classmethod
-    def _load_agentskills_skill(cls, path: Path, file_content: str) -> "Skill":
+    def _load_agentskills_skill(
+        cls, path: Path, file_content: str, strict: bool = True
+    ) -> "Skill":
         """Load a skill from an AgentSkills-format SKILL.md file.
 
         Args:
             path: Path to the SKILL.md file.
             file_content: Content of the file.
+            strict: If True, enforce strict AgentSkills name validation.
         """
         # For SKILL.md files, use parent directory name as the skill name
         directory_name = path.parent.name
@@ -265,12 +271,13 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use directory name
         agent_name = str(metadata_dict.get("name", directory_name))
 
-        # Validate skill name
-        name_errors = validate_skill_name(agent_name, directory_name)
-        if name_errors:
-            raise SkillValidationError(
-                f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
-            )
+        # Validate skill name (only in strict mode)
+        if strict:
+            name_errors = validate_skill_name(agent_name, directory_name)
+            if name_errors:
+                raise SkillValidationError(
+                    f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
+                )
 
         # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
         mcp_tools: dict | None = None
