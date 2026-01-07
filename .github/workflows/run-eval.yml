@@ -1,5 +1,6 @@
 ---
 name: Run Eval
+run-name: Run Eval (${{ inputs.benchmark || 'swebench' }}) ${{ inputs.reason || github.event.label.name || 'release' }}
 
 on:
     pull_request_target:
