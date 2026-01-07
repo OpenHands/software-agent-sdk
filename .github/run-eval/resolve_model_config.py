@@ -50,6 +50,44 @@ MODELS = {
         "display_name": "Kimi K2 Thinking",
         "llm_config": {"model": "litellm_proxy/moonshot/kimi-k2-thinking"},
     },
+    "claude-4.5-opus": {
+        "id": "claude-4.5-opus",
+        "display_name": "Claude 4.5 Opus",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-5-20251101",
+            "temperature": 0.0,
+        },
+    },
+    "gemini-3-pro": {
+        "id": "gemini-3-pro",
+        "display_name": "Gemini 3 Pro",
+        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-pro-preview"},
+    },
+    "gemini-3-flash": {
+        "id": "gemini-3-flash",
+        "display_name": "Gemini 3 Flash",
+        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-flash-preview"},
+    },
+    "gpt-5.2": {
+        "id": "gpt-5.2",
+        "display_name": "GPT-5.2",
+        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
+    },
+    "minimax-m2": {
+        "id": "minimax-m2",
+        "display_name": "MiniMax M2",
+        "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
+    },
+    "deepseek-v3.2-reasoner": {
+        "id": "deepseek-v3.2-reasoner",
+        "display_name": "DeepSeek V3.2 Reasoner",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v3.2"},
+    },
+    "qwen-3-coder": {
+        "id": "qwen-3-coder",
+        "display_name": "Qwen 3 Coder",
+        "llm_config": {"model": "litellm_proxy/qwen/qwen3-coder"},
+    },
 }
 
 
