@@ -49,7 +49,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if client is None:
             # Configure reasonable timeouts for HTTP requests
             # - connect: 10 seconds to establish connection
-            # - read: 60 seconds to read response (for LLM operations)
+            # - read: 600 seconds to read response (for LLM operations)
             # - write: 10 seconds to send request
             # - pool: 10 seconds to get connection from pool
             timeout = httpx.Timeout(connect=10.0, read=600.0, write=10.0, pool=10.0)
