@@ -6,6 +6,7 @@ from openhands.sdk.context.skills.skill import (
     load_public_skills,
     load_skills_from_dir,
     load_user_skills,
+    to_prompt,
 )
 from openhands.sdk.context.skills.trigger import (
     BaseTrigger,
@@ -34,5 +35,6 @@ __all__ = [
     "SkillValidationError",
     "discover_skill_resources",
     "RESOURCE_DIRECTORIES",
+    "to_prompt",
     "validate_skill_name",
 ]

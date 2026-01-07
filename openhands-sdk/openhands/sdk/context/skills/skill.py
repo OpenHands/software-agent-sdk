@@ -2,6 +2,7 @@ import io
 import re
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
+from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
 from fastmcp.mcp_config import MCPConfig
@@ -793,3 +794,72 @@ def load_public_skills(
         f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
     )
     return all_skills
+
+
+def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
+    """Generate XML prompt block for available skills.
+
+    Creates an `<available_skills>` XML block suitable for inclusion
+    in system prompts, following the AgentSkills format.
+
+    Args:
+        skills: List of skills to include in the prompt
+        max_description_length: Maximum length for descriptions (default 200)
+
+    Returns:
+        XML string in AgentSkills format
+
+    Example:
+        >>> skills = [Skill(name="pdf-tools", content="...", description="...")]
+        >>> print(to_prompt(skills))
+        <available_skills>
+          <skill name="pdf-tools">Extract text from PDF files.</skill>
+        </available_skills>
+    """  # noqa: E501
+    if not skills:
+        return "<available_skills>\n  no available skills\n</available_skills>"
+
+    lines = ["<available_skills>"]
+    for skill in skills:
+        # Use description if available, otherwise use first line of content
+        description = skill.description
+        content_truncated = 0
+        if not description:
+            # Extract first non-empty, non-header line from content as fallback
+            # Track position to calculate truncated content after the description
+            chars_before_desc = 0
+            for line in skill.content.split("\n"):
+                stripped = line.strip()
+                # Skip markdown headers and empty lines
+                if not stripped or stripped.startswith("#"):
+                    chars_before_desc += len(line) + 1  # +1 for newline
+                    continue
+                description = stripped
+                # Calculate remaining content after this line as truncated
+                desc_end_pos = chars_before_desc + len(line)
+                content_truncated = max(0, len(skill.content) - desc_end_pos)
+                break
+        description = description or ""
+
+        # Calculate total truncated characters
+        total_truncated = content_truncated
+
+        # Truncate description if needed and add truncation indicator
+        if len(description) > max_description_length:
+            total_truncated += len(description) - max_description_length
+            description = description[:max_description_length]
+
+        if total_truncated > 0:
+            truncation_msg = f"... [{total_truncated} characters truncated"
+            if skill.source:
+                truncation_msg += f". View {skill.source} for complete information"
+            truncation_msg += "]"
+            description = description + truncation_msg
+
+        # Escape XML special characters using standard library
+        xml_entities = {'"': "&quot;", "'": "&apos;"}
+        description = xml_escape(description, entities=xml_entities)
+        name = xml_escape(skill.name, entities=xml_entities)
+        lines.append(f'  <skill name="{name}">{description}</skill>')
+    lines.append("</available_skills>")
+    return "\n".join(lines)
