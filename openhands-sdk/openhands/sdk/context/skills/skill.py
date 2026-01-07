@@ -653,8 +653,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     duplicate names.
 
     Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
-    directly from the work directory, even if the skills directories
-    don't exist.
+    directly from the work directory.
 
     Args:
         work_dir: Path to the project/working directory.
