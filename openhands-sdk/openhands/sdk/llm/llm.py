@@ -538,9 +538,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
-        log_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
+        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx.update(
+            telemetry_ctx.update(
                 {
                     "messages": formatted_messages[:],  # already simple dicts
                     "tools": tools,
@@ -548,7 +548,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 }
             )
             if tools and not use_native_fc:
-                log_ctx["raw_messages"] = original_fncall_msgs
+                telemetry_ctx["raw_messages"] = original_fncall_msgs
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -561,7 +561,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
-            self._telemetry.on_request(log_ctx=log_ctx)
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(
@@ -661,9 +661,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
         # Always pass context_window so metrics are tracked even when logging disabled
-        log_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
+        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx.update(
+            telemetry_ctx.update(
                 {
                     "llm_path": "responses",
                     "input": input_items[:],
@@ -683,7 +683,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
             assert self._telemetry is not None
-            self._telemetry.on_request(log_ctx=log_ctx)
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
