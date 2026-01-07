@@ -14,13 +14,15 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 - **Automatic Trigger**: Reviews are triggered when:
   - The `review-this` label is added to a PR, OR
   - openhands-agent is requested as a reviewer
+- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
+  - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
+  - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
 - **Comprehensive Analysis**: Analyzes code changes in context of the entire repository
 - **Detailed Feedback**: Provides structured review comments covering:
   - Overall assessment of changes
   - Code quality and best practices
   - Potential issues and security concerns
   - Specific improvement suggestions
-  - Positive feedback on good practices
 - **GitHub Integration**: Posts review comments directly to the PR
 
 ## Setup
@@ -52,6 +54,10 @@ env:
     LLM_MODEL: openhands/claude-sonnet-4-5-20250929
     # Optional: Use a custom LLM base URL
     # LLM_BASE_URL: 'https://custom-api.example.com'
+    # Optional: Choose review style ('standard' or 'roasted')
+    # - 'standard': Pragmatic, constructive feedback (default)
+    # - 'roasted': Linus Torvalds style brutally honest review
+    REVIEW_STYLE: standard
 ```
 
 ### 4. Create the review label

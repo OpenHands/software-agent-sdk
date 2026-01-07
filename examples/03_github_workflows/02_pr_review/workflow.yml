@@ -29,6 +29,8 @@ jobs:
             # Configuration (modify these values as needed)
             LLM_MODEL: <YOUR_LLM_MODEL>
             LLM_BASE_URL: <YOUR_LLM_BASE_URL>
+            # Review style: 'standard' for pragmatic review, 'roasted' for Linus-style
+            REVIEW_STYLE: standard
             # PR context will be automatically provided by the agent script
             PR_NUMBER: ${{ github.event.pull_request.number }}
             PR_TITLE: ${{ github.event.pull_request.title }}
