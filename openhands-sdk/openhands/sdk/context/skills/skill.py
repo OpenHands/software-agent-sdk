@@ -659,6 +659,10 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     directories are merged, with skills/ taking precedence for
     duplicate names.
 
+    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
+    directly from the work directory, even if the skills directories
+    don't exist.
+
     Args:
         work_dir: Path to the project/working directory.
 
@@ -670,7 +674,22 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         work_dir = Path(work_dir)
 
     all_skills = []
-    seen_names = set()
+    seen_names: set[str] = set()
+
+    # First, load third-party skill files directly from work directory
+    # This ensures they are loaded even if .openhands/skills doesn't exist
+    third_party_files = find_third_party_files(
+        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    for path in third_party_files:
+        try:
+            skill = Skill.load(path)
+            if skill.name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(skill.name)
+                logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
+        except Exception as e:
+            logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .openhands/skills and legacy microagents
     project_skills_dirs = [
@@ -691,14 +710,14 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                 project_skills_dir
             )
 
-            # Merge all skill categories
+            # Merge all skill categories (skip duplicates including third-party)
             for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
                 for name, skill in skills_dict.items():
                     if name not in seen_names:
                         all_skills.append(skill)
                         seen_names.add(name)
                     else:
-                        logger.warning(
+                        logger.debug(
                             f"Skipping duplicate skill '{name}' from "
                             f"{project_skills_dir}"
                         )
