@@ -6,7 +6,6 @@ from typing import overload
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context.view.event_mappings import EventMappings
 from openhands.sdk.context.view.manipulation_indices import ManipulationIndices
 from openhands.sdk.context.view.properties.batch_atomicity import (
     BatchAtomicityProperty,
@@ -115,106 +114,6 @@ class View(BaseModel):
         else:
             raise ValueError(f"Invalid key type: {type(key)}")
 
-    @staticmethod
-    def _enforce_batch_atomicity(
-        events: Sequence[Event],
-        removed_event_ids: set[EventID],
-    ) -> set[EventID]:
-        """Ensure that if any ActionEvent in a batch is removed, all ActionEvents
-        in that batch are removed.
-
-        This prevents partial batches from being sent to the LLM, which can cause
-        API errors when thinking blocks are separated from their tool calls.
-
-        Args:
-            events: The original list of events
-            removed_event_ids: Set of event IDs that are being removed
-
-        Returns:
-            Updated set of event IDs that should be removed (including all
-            ActionEvents in batches where any ActionEvent was removed)
-        """
-        mappings = EventMappings.from_events(events)
-
-        if not mappings.batches:
-            return removed_event_ids
-
-        updated_removed_ids = set(removed_event_ids)
-
-        for llm_response_id, batch_event_ids in mappings.batches.items():
-            # Check if any ActionEvent in this batch is being removed
-            if any(event_id in removed_event_ids for event_id in batch_event_ids):
-                # If so, remove all ActionEvents in this batch
-                updated_removed_ids.update(batch_event_ids)
-                logger.debug(
-                    f"Enforcing batch atomicity: removing entire batch "
-                    f"with llm_response_id={llm_response_id} "
-                    f"({len(batch_event_ids)} events)"
-                )
-
-        return updated_removed_ids
-
-    @staticmethod
-    def filter_unmatched_tool_calls(
-        events: list[LLMConvertibleEvent],
-    ) -> list[LLMConvertibleEvent]:
-        """Filter out unmatched tool call events.
-
-        Removes ActionEvents and ObservationEvents that have tool_call_ids
-        but don't have matching pairs. Also enforces batch atomicity - if any
-        ActionEvent in a batch is filtered out, all ActionEvents in that batch
-        are also filtered out.
-        """
-        mappings = EventMappings.from_events(events)
-
-        # First pass: identify which events would NOT be kept based on matching
-        removed_event_ids: set[EventID] = set()
-        for event in events:
-            if not View._should_keep_event(
-                event, mappings.action_tool_call_ids, mappings.observation_tool_call_ids
-            ):
-                removed_event_ids.add(event.id)
-
-        # Second pass: enforce batch atomicity for ActionEvents
-        # If any ActionEvent in a batch is removed, all ActionEvents in that
-        # batch should also be removed
-        removed_event_ids = View._enforce_batch_atomicity(events, removed_event_ids)
-
-        # Third pass: also remove ObservationEvents whose ActionEvents were removed
-        # due to batch atomicity
-        tool_call_ids_to_remove: set[ToolCallID] = set()
-        for action_id in removed_event_ids:
-            if action_id in mappings.action_id_to_tool_call_id:
-                tool_call_ids_to_remove.add(
-                    mappings.action_id_to_tool_call_id[action_id]
-                )
-
-        # Filter out removed events
-        result = []
-        for event in events:
-            if event.id in removed_event_ids:
-                continue
-            if isinstance(event, ObservationBaseEvent):
-                if event.tool_call_id in tool_call_ids_to_remove:
-                    continue
-            result.append(event)
-
-        return result
-
-    @staticmethod
-    def _should_keep_event(
-        event: LLMConvertibleEvent,
-        action_tool_call_ids: set[ToolCallID],
-        observation_tool_call_ids: set[ToolCallID],
-    ) -> bool:
-        """Determine if an event should be kept based on tool call matching."""
-        if isinstance(event, ObservationBaseEvent):
-            return event.tool_call_id in action_tool_call_ids
-        elif isinstance(event, ActionEvent):
-            return event.tool_call_id in observation_tool_call_ids
-        else:
-            return True
-
     def find_next_manipulation_index(self, threshold: int, strict: bool = False) -> int:
         """Find the smallest manipulation index greater than (or equal to) a threshold.
 
@@ -246,11 +145,6 @@ class View(BaseModel):
                 forgotten_event_ids.add(event.id)
             if isinstance(event, CondensationRequest):
                 forgotten_event_ids.add(event.id)
-
-        # Enforce batch atomicity: if any event in a multi-action batch is forgotten,
-        # forget all events in that batch to prevent partial batches with thinking
-        # blocks separated from their tool calls
-        forgotten_event_ids = View._enforce_batch_atomicity(events, forgotten_event_ids)
 
         kept_events = [
             event
@@ -290,16 +184,52 @@ class View(BaseModel):
                 unhandled_condensation_request = True
                 break
 
-        # Filter unmatched tool calls to get the final view events
-        view_events = View.filter_unmatched_tool_calls(kept_events)
-
-        # Calculate manipulation_indices using properties
-        # Instantiate the three properties
+        # Apply property enforcement iteratively
+        # Properties are checked in order, and we restart from the first property
+        # whenever any property removes events (to handle cascading effects)
+        tool_call_matching = ToolCallMatchingProperty()
         batch_atomicity = BatchAtomicityProperty()
         tool_loop_atomicity = ToolLoopAtomicityProperty()
-        tool_call_matching = ToolCallMatchingProperty()
 
-        # Call manipulation_indices() on each property
+        properties = [
+            tool_call_matching,  # Match actions/observations first
+            batch_atomicity,  # Then ensure batch atomicity
+            tool_loop_atomicity,  # Finally ensure tool loop atomicity
+        ]
+
+        view_events = kept_events
+        max_iterations = 10  # Safety limit to prevent infinite loops
+
+        for iteration in range(max_iterations):
+            events_removed_this_iteration: set[EventID] = set()
+
+            for prop in properties:
+                events_to_remove = prop.enforce(view_events, events)
+                if events_to_remove:
+                    logger.debug(
+                        f"Iteration {iteration + 1}: {prop.__class__.__name__} "
+                        f"removing {len(events_to_remove)} events"
+                    )
+                    events_removed_this_iteration.update(events_to_remove)
+                    # Exit inner loop and restart from first property
+                    break
+
+            if not events_removed_this_iteration:
+                # No events removed by any property - enforcement complete
+                break
+
+            # Remove events and continue iterating
+            view_events = [
+                e for e in view_events if e.id not in events_removed_this_iteration
+            ]
+        else:
+            # Hit max_iterations - log warning
+            logger.warning(
+                f"Property enforcement loop reached max iterations ({max_iterations}). "
+                f"This may indicate cascading enforcement issues."
+            )
+
+        # Calculate manipulation_indices using the same property instances
         # For empty views, return {0} as the single manipulation index
         if not view_events:
             final_indices = ManipulationIndices({0})
