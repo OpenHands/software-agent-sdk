@@ -94,18 +94,17 @@ class LocalConversation(BaseConversation):
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             hook_config: Optional hook configuration to auto-wire session hooks
             max_iteration_per_run: Maximum number of iterations per run
-            stuck_detection: Whether to enable stuck detection
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
                          (default: ConversationVisualizer)
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
+            stuck_detection: Whether to enable stuck detection
             stuck_detection_thresholds: Optional configuration for stuck detection
                       thresholds. Can be a StuckDetectionThresholds instance or
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
-            secrets: Optional mapping of secret names to values
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
