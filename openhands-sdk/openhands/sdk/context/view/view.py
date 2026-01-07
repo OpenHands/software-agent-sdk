@@ -131,6 +131,79 @@ class View(BaseModel):
         return self.manipulation_indices.find_next(threshold, strict)
 
     @staticmethod
+    def _enforce_properties(
+        view_events: list[LLMConvertibleEvent],
+        all_events: Sequence[Event],
+        properties: list,
+    ) -> list[LLMConvertibleEvent]:
+        """Enforce properties iteratively until no violations remain.
+
+        Properties are checked in order, and we restart from the first property
+        whenever any property removes events (to handle cascading effects).
+
+        Args:
+            view_events: Initial list of events in the view
+            all_events: Complete list of all events in the conversation
+            properties: List of property instances to enforce
+
+        Returns:
+            Filtered list of events with all property violations resolved
+        """
+        current_events = view_events
+
+        while True:
+            events_removed_this_iteration: set[EventID] = set()
+
+            for prop in properties:
+                events_to_remove = prop.enforce(current_events, all_events)
+                if events_to_remove:
+                    logger.debug(
+                        f"{prop.__class__.__name__} removing "
+                        f"{len(events_to_remove)} events"
+                    )
+                    events_removed_this_iteration.update(events_to_remove)
+                    # Exit inner loop and restart from first property
+                    break
+
+            if not events_removed_this_iteration:
+                # No events removed by any property - enforcement complete
+                break
+
+            # Remove events and continue iterating
+            current_events = [
+                e for e in current_events if e.id not in events_removed_this_iteration
+            ]
+
+        return current_events
+
+    @staticmethod
+    def _calculate_manipulation_indices(
+        view_events: list[LLMConvertibleEvent],
+        all_events: Sequence[Event],
+        properties: list,
+    ) -> ManipulationIndices:
+        """Calculate manipulation indices by intersecting all property indices.
+
+        Args:
+            view_events: Events in the view
+            all_events: Complete list of all events in the conversation
+            properties: List of property instances
+
+        Returns:
+            ManipulationIndices representing safe boundaries for event manipulation
+        """
+        if not view_events:
+            return ManipulationIndices({0})
+
+        # Get manipulation indices from each property and intersect them
+        all_indices = [
+            prop.manipulation_indices(view_events, all_events) for prop in properties
+        ]
+        return ManipulationIndices(
+            set.intersection(*all_indices) if all_indices else set()
+        )
+
+    @staticmethod
     def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
@@ -185,62 +258,23 @@ class View(BaseModel):
                 break
 
         # Define view properties for enforcement and manipulation indices
-        # Properties are checked in order, and we restart from the first property
-        # whenever any property removes events (to handle cascading effects)
         properties = [
             ToolCallMatchingProperty(),  # Match actions/observations first
             BatchAtomicityProperty(),  # Then ensure batch atomicity
             ToolLoopAtomicityProperty(),  # Finally ensure tool loop atomicity
         ]
 
-        # Apply property enforcement iteratively
-        view_events = kept_events
-        max_iterations = 10  # Safety limit to prevent infinite loops
-
-        for iteration in range(max_iterations):
-            events_removed_this_iteration: set[EventID] = set()
-
-            for prop in properties:
-                events_to_remove = prop.enforce(view_events, events)
-                if events_to_remove:
-                    logger.debug(
-                        f"Iteration {iteration + 1}: {prop.__class__.__name__} "
-                        f"removing {len(events_to_remove)} events"
-                    )
-                    events_removed_this_iteration.update(events_to_remove)
-                    # Exit inner loop and restart from first property
-                    break
-
-            if not events_removed_this_iteration:
-                # No events removed by any property - enforcement complete
-                break
-
-            # Remove events and continue iterating
-            view_events = [
-                e for e in view_events if e.id not in events_removed_this_iteration
-            ]
-        else:
-            # Hit max_iterations - log warning
-            logger.warning(
-                f"Property enforcement loop reached max iterations ({max_iterations}). "
-                f"This may indicate cascading enforcement issues."
-            )
+        # Apply property enforcement to remove violations
+        view_events = View._enforce_properties(kept_events, events, properties)
 
         # Calculate manipulation_indices by taking intersection of all properties
-        if not view_events:
-            final_indices = ManipulationIndices({0})
-        else:
-            # Get manipulation indices from each property and intersect them
-            all_indices = [
-                prop.manipulation_indices(view_events, events) for prop in properties
-            ]
-            final_indices = ManipulationIndices(
-                set.intersection(*all_indices) if all_indices else set()
-            )
+        manipulation_indices = View._calculate_manipulation_indices(
+            view_events, events, properties
+        )
 
         return View(
             events=view_events,
             unhandled_condensation_request=unhandled_condensation_request,
             condensations=condensations,
-            manipulation_indices=final_indices,
+            manipulation_indices=manipulation_indices,
         )
