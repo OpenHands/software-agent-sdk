@@ -12,6 +12,7 @@ Outputs to GITHUB_OUTPUT:
 import json
 import os
 import sys
+from typing import NoReturn
 
 
 # Model configurations dictionary
@@ -53,7 +54,7 @@ MODELS = {
 }
 
 
-def error_exit(msg: str, exit_code: int = 1) -> None:
+def error_exit(msg: str, exit_code: int = 1) -> NoReturn:
     """Print error message and exit."""
     print(f"ERROR: {msg}", file=sys.stderr)
     sys.exit(exit_code)

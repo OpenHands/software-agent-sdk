@@ -226,8 +226,9 @@ def _base_slug(image: str, max_len: int = 64) -> str:
 
     # Parse components from the slug form
     if "_tag_" in base_slug:
-        # Ports also become "_tag_" (e.g., "ghcr.io:443/repo:tag" -> "ghcr.io_tag_443_s_repo_tag_tag").
-        # Use rsplit so we split on the real image tag (the last _tag_), not the port.
+        # Ports also become "_tag_" (e.g., "ghcr.io:443/repo:tag"
+        # -> "ghcr.io_tag_443_s_repo_tag_tag"). Use rsplit so we split on the real
+        # image tag (the last _tag_), not the port.
         left, tag = base_slug.rsplit("_tag_", 1)
     else:
         left, tag = base_slug, ""
