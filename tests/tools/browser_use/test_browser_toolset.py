@@ -32,7 +32,7 @@ def test_browser_toolset_create_returns_list():
         tools = BrowserToolSet.create(conv_state=conv_state)
 
         assert isinstance(tools, list)
-        assert len(tools) == 10  # All browser tools
+        assert len(tools) == 12  # All browser tools
 
         # Verify all items are Tool instances
         for tool in tools:
@@ -60,6 +60,8 @@ def test_browser_toolset_create_includes_all_browser_tools():
             "browser_list_tabs",
             "browser_switch_tab",
             "browser_close_tab",
+            "browser_get_storage",
+            "browser_set_storage",
         ]
 
         # Verify all expected tools are present

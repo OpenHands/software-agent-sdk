@@ -1,5 +1,6 @@
 ---
 name: Run Eval
+run-name: Run Eval (${{ inputs.benchmark || 'swebench' }}) ${{ inputs.reason || github.event.label.name || 'release' }}
 
 on:
     pull_request_target:
@@ -56,6 +57,26 @@ on:
                 description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
                 required: false
                 default: ''
+            num_infer_workers:
+                description: Number of inference workers (optional, overrides benchmark default)
+                required: false
+                default: ''
+                type: string
+            num_eval_workers:
+                description: Number of evaluation workers (optional, overrides benchmark default)
+                required: false
+                default: ''
+                type: string
+            runtime_resource_factor:
+                description: 'Resource multiplier for remote runtimes (optional: 1,2,4,8)'
+                required: false
+                default: ''
+                type: string
+            push_to_index:
+                description: 'Push results to openhands-index-results (default: false)'
+                required: false
+                default: 'false'
+                type: string
 
 
 env:
@@ -200,6 +221,10 @@ jobs:
                   TRIGGER_REASON: ${{ github.event.inputs.reason }}
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
                   INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
+                  NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
+                  NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
+                  PUSH_TO_INDEX: ${{ github.event.inputs.push_to_index || 'false' }}
+                  RUNTIME_RESOURCE_FACTOR: ${{ github.event.inputs.runtime_resource_factor || '' }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -212,7 +237,11 @@ jobs:
                     --arg benchmarks "$BENCHMARKS_BRANCH" \
                     --arg benchmark "$BENCHMARK" \
                     --arg instance_ids "$INSTANCE_IDS" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids}}')
+                    --arg num_infer_workers "$NUM_INFER_WORKERS" \
+                    --arg num_eval_workers "$NUM_EVAL_WORKERS" \
+                    --arg push_to_index "$PUSH_TO_INDEX" \
+                    --arg runtime_resource_factor "$RUNTIME_RESOURCE_FACTOR" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, push_to_index: $push_to_index, runtime_resource_factor: $runtime_resource_factor}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
@@ -227,7 +256,7 @@ jobs:
             - name: Comment on PR
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
+                  SDK_SHA: ${{ steps.params.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
                   TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}

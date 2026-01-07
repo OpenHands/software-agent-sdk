@@ -55,9 +55,22 @@ Once the release is published, the **pypi-release.yml** workflow will automatica
 
 You can monitor the progress in the [Actions tab](https://github.com/OpenHands/software-agent-sdk/actions/workflows/pypi-release.yml).
 
-### Step 5: Post-Release Tasks
+### Step 5: Version Bump PRs (Automated)
+
+After successful PyPI publication, the workflow will automatically create PRs to update SDK versions in downstream repositories:
+
+- **[OpenHands](https://github.com/All-Hands-AI/OpenHands)** - Updates `openhands-sdk`, `openhands-tools`, and `openhands-agent-server` versions
+- **[OpenHands-CLI](https://github.com/All-Hands-AI/openhands-cli)** - Updates `openhands-sdk` and `openhands-tools` versions
+
+These PRs will:
+- Be created automatically with branch name `bump-sdk-X.Y.Z`
+- Include links back to the SDK release
+- Need to be reviewed and merged by the respective repository maintainers
+
+### Step 6: Post-Release Tasks
 
 - [ ] Merge the release PR to main
+- [ ] Review and merge the auto-created version bump PRs in OpenHands and OpenHands-CLI
 - [ ] Run evaluation on OpenHands Index (manual step)
 - [ ] Announce the release
 

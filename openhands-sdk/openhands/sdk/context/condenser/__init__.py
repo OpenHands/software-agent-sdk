@@ -1,5 +1,6 @@
 from openhands.sdk.context.condenser.base import (
     CondenserBase,
+    NoCondensationAvailableException,
     RollingCondenser,
 )
 from openhands.sdk.context.condenser.llm_summarizing_condenser import (
@@ -15,4 +16,5 @@ __all__ = [
     "NoOpCondenser",
     "PipelineCondenser",
     "LLMSummarizingCondenser",
+    "NoCondensationAvailableException",
 ]

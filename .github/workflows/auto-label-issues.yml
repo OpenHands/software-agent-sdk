@@ -15,6 +15,7 @@ jobs:
             - name: Add needs-triage label
               uses: actions/github-script@v7
               with:
+                  github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
                   script: |
                       // Get the issue details
                       const issue = context.payload.issue;
