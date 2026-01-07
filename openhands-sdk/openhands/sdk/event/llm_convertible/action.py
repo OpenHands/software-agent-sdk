@@ -65,6 +65,20 @@ class ActionEvent(LLMConvertibleEvent):
         description="The LLM's assessment of the safety risk of this action.",
     )
 
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "A concise summary (approximately 10 words) of what this action does, "
+            "provided by the LLM for explainability and debugging. "
+            "Examples of good summaries: "
+            "'editing configuration file for deployment settings' | "
+            "'searching codebase for authentication function definitions' | "
+            "'installing required dependencies from package manifest' | "
+            "'running tests to verify bug fix' | "
+            "'viewing directory structure to locate source files'"
+        ),
+    )
+
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of this action event."""
@@ -72,6 +86,12 @@ class ActionEvent(LLMConvertibleEvent):
 
         if self.security_risk != risk.SecurityRisk.UNKNOWN:
             content.append(self.security_risk.visualize)
+
+        # Display summary if available
+        if self.summary:
+            content.append("Summary: ", style="bold cyan")
+            content.append(self.summary)
+            content.append("\n\n")
 
         # Display reasoning content first if available
         if self.reasoning_content:
