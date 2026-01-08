@@ -135,6 +135,10 @@ These tests stress test the condensation system's interaction with LLM APIs to e
   - Hard requirements (explicit condense() calls) raise NoCondensationAvailableException when no valid range exists
   - Soft requirements (resource limits) gracefully continue when condensation is unavailable
   - Condensation succeeds once multiple atomic units make it available
+- **c04_size_condenser** - Tests that size-based condensation works correctly. Verifies that:
+  - An agent can be configured with LLMSummarizingCondenser using max_size
+  - The condenser correctly counts events to measure conversation size
+  - Condensation is triggered when event count limit is exceeded
 
 ## Writing Integration Tests
 
