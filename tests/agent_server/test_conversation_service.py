@@ -1371,3 +1371,215 @@ class TestSafeRmtree:
             result = _safe_rmtree(str(test_dir), "test directory")
             assert result is True
             assert not test_dir.exists()
+
+
+class TestPluginLoading:
+    """Test cases for plugin loading in ConversationService."""
+
+    @pytest.fixture
+    def mock_plugin(self):
+        """Create a mock Plugin for testing."""
+        from openhands.sdk.context.skills import Skill
+        from openhands.sdk.plugin import Plugin
+        from openhands.sdk.plugin.types import PluginManifest
+
+        return Plugin(
+            manifest=PluginManifest(
+                name="test-plugin",
+                version="1.0.0",
+                description="A test plugin",
+            ),
+            path="/tmp/test-plugin",
+            skills=[
+                Skill(name="plugin-skill-1", content="Plugin skill 1 content"),
+                Skill(name="plugin-skill-2", content="Plugin skill 2 content"),
+            ],
+            hooks=None,
+            mcp_config={"test-mcp": {"command": "test"}},
+            agents=[],
+            commands=[],
+        )
+
+    def test_merge_plugin_into_request_with_skills(
+        self, conversation_service, mock_plugin
+    ):
+        """Test merging plugin skills into a request without existing context."""
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+        )
+
+        result = conversation_service._merge_plugin_into_request(request, mock_plugin)
+
+        # Verify skills were added
+        assert result.agent.agent_context is not None
+        assert len(result.agent.agent_context.skills) == 2
+        skill_names = [s.name for s in result.agent.agent_context.skills]
+        assert "plugin-skill-1" in skill_names
+        assert "plugin-skill-2" in skill_names
+
+    def test_merge_plugin_into_request_with_existing_skills(
+        self, conversation_service, mock_plugin
+    ):
+        """Test merging plugin skills with existing agent skills."""
+        from openhands.sdk import AgentContext
+        from openhands.sdk.context.skills import Skill
+
+        existing_skills = [
+            Skill(name="existing-skill", content="Existing skill content"),
+            Skill(
+                name="plugin-skill-1", content="Original content"
+            ),  # Will be overridden
+        ]
+
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                tools=[],
+                agent_context=AgentContext(skills=existing_skills),
+            ),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+        )
+
+        result = conversation_service._merge_plugin_into_request(request, mock_plugin)
+
+        # Verify skills were merged correctly
+        assert result.agent.agent_context is not None
+        assert len(result.agent.agent_context.skills) == 3  # existing + 2 plugin (1 override)
+
+        # Verify plugin skill overrode existing skill with same name
+        skill_by_name = {s.name: s for s in result.agent.agent_context.skills}
+        assert skill_by_name["plugin-skill-1"].content == "Plugin skill 1 content"
+        assert "existing-skill" in skill_by_name
+        assert "plugin-skill-2" in skill_by_name
+
+    def test_merge_plugin_into_request_with_mcp_config(
+        self, conversation_service, mock_plugin
+    ):
+        """Test merging plugin MCP config."""
+        request = StartConversationRequest(
+            agent=Agent(
+                llm=LLM(model="gpt-4", usage_id="test-llm"),
+                tools=[],
+                mcp_config={"existing-mcp": {"command": "existing"}},
+            ),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+        )
+
+        result = conversation_service._merge_plugin_into_request(request, mock_plugin)
+
+        # Verify MCP config was merged
+        assert result.agent.mcp_config is not None
+        assert "existing-mcp" in result.agent.mcp_config
+        assert "test-mcp" in result.agent.mcp_config
+
+    def test_merge_plugin_into_request_empty_plugin(self, conversation_service):
+        """Test merging a plugin with no skills or MCP config."""
+        from openhands.sdk.plugin import Plugin
+        from openhands.sdk.plugin.types import PluginManifest
+
+        empty_plugin = Plugin(
+            manifest=PluginManifest(
+                name="empty-plugin",
+                version="1.0.0",
+                description="An empty plugin",
+            ),
+            path="/tmp/empty-plugin",
+            skills=[],
+            hooks=None,
+            mcp_config=None,
+            agents=[],
+            commands=[],
+        )
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+        )
+
+        result = conversation_service._merge_plugin_into_request(request, empty_plugin)
+
+        # Request should be unchanged - agent_context stays None
+        assert result.agent.agent_context is None
+        # mcp_config may default to {} in Agent, so check it wasn't modified from plugin
+        # The key point is no plugin content was added
+
+    @patch("openhands.agent_server.conversation_service.Plugin")
+    def test_load_and_merge_plugin_success(
+        self, mock_plugin_class, conversation_service, mock_plugin
+    ):
+        """Test successful plugin loading."""
+        mock_plugin_class.fetch.return_value = Path("/tmp/test-plugin")
+        mock_plugin_class.load.return_value = mock_plugin
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:test/plugin",
+            plugin_ref="v1.0.0",
+        )
+
+        result = conversation_service._load_and_merge_plugin(request)
+
+        # Verify Plugin.fetch was called with correct args
+        mock_plugin_class.fetch.assert_called_once_with(
+            source="github:test/plugin",
+            ref="v1.0.0",
+        )
+
+        # Verify Plugin.load was called
+        mock_plugin_class.load.assert_called_once_with(Path("/tmp/test-plugin"))
+
+        # Verify skills were merged
+        assert result.agent.agent_context is not None
+        assert len(result.agent.agent_context.skills) == 2
+
+    @patch("openhands.agent_server.conversation_service.Plugin")
+    def test_load_and_merge_plugin_fetch_error(
+        self, mock_plugin_class, conversation_service
+    ):
+        """Test plugin loading when fetch fails."""
+        from openhands.sdk.plugin import PluginFetchError
+
+        mock_plugin_class.fetch.side_effect = PluginFetchError("Repository not found")
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:nonexistent/plugin",
+        )
+
+        with pytest.raises(PluginFetchError, match="Repository not found"):
+            conversation_service._load_and_merge_plugin(request)
+
+    @patch("openhands.agent_server.conversation_service.Plugin")
+    def test_load_and_merge_plugin_load_error(
+        self, mock_plugin_class, conversation_service
+    ):
+        """Test plugin loading when load fails."""
+        from openhands.sdk.plugin import PluginFetchError
+
+        mock_plugin_class.fetch.return_value = Path("/tmp/test-plugin")
+        mock_plugin_class.load.side_effect = ValueError("Invalid plugin manifest")
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:test/invalid-plugin",
+        )
+
+        with pytest.raises(PluginFetchError, match="Failed to load plugin"):
+            conversation_service._load_and_merge_plugin(request)
+
+    def test_load_and_merge_plugin_no_source(self, conversation_service):
+        """Test that plugin loading is skipped when no source is provided."""
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source=None,
+        )
+
+        result = conversation_service._load_and_merge_plugin(request)
+
+        # Request should be unchanged
+        assert result is request

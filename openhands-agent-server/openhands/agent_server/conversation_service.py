@@ -20,11 +20,12 @@ from openhands.agent_server.models import (
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
-from openhands.sdk import LLM, Event, Message
+from openhands.sdk import LLM, Agent, AgentContext, Event, Message
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.plugin import Plugin, PluginFetchError
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -191,6 +192,132 @@ class ConversationService:
         # Create task to run in background without awaiting
         asyncio.create_task(_notify_and_log_errors())
 
+    # Plugin Loading
+
+    def _load_and_merge_plugin(
+        self, request: StartConversationRequest
+    ) -> StartConversationRequest:
+        """Fetch and load a plugin, merging its content into the request.
+
+        This method:
+        1. Fetches the plugin from the specified source (caching locally)
+        2. Loads the plugin's skills, hooks, and MCP configuration
+        3. Merges plugin content into the agent's context
+
+        Args:
+            request: The original start conversation request with plugin_source set
+
+        Returns:
+            Updated request with plugin content merged into the agent
+
+        Raises:
+            PluginFetchError: If the plugin cannot be fetched or loaded
+        """
+        if not request.plugin_source:
+            return request
+
+        try:
+            # Fetch the plugin (handles caching internally)
+            logger.info(f"Fetching plugin from: {request.plugin_source}")
+            plugin_path = Plugin.fetch(
+                source=request.plugin_source,
+                ref=request.plugin_ref,
+            )
+
+            # Load the plugin
+            logger.info(f"Loading plugin from: {plugin_path}")
+            plugin = Plugin.load(plugin_path)
+
+            logger.info(
+                f"Loaded plugin '{plugin.name}' with "
+                f"{len(plugin.skills)} skills, "
+                f"hooks={'yes' if plugin.hooks else 'no'}, "
+                f"mcp_config={'yes' if plugin.mcp_config else 'no'}"
+            )
+
+            # Merge plugin into the request
+            return self._merge_plugin_into_request(request, plugin)
+
+        except PluginFetchError:
+            # Re-raise fetch errors as-is
+            raise
+        except Exception as e:
+            # Wrap other errors in PluginFetchError
+            raise PluginFetchError(
+                f"Failed to load plugin from {request.plugin_source}: {e}"
+            ) from e
+
+    def _merge_plugin_into_request(
+        self, request: StartConversationRequest, plugin: Plugin
+    ) -> StartConversationRequest:
+        """Merge plugin skills, hooks, and MCP config into the request.
+
+        Args:
+            request: The original start conversation request
+            plugin: The loaded plugin
+
+        Returns:
+            Updated request with plugin content merged
+        """
+        agent = request.agent
+        updates: dict = {}
+
+        # Merge skills into agent context
+        if plugin.skills:
+            existing_context = agent.agent_context
+            existing_skills = existing_context.skills if existing_context else []
+
+            # Plugin skills are added with highest precedence (at the end)
+            # Build a dict to deduplicate by name, with plugin skills winning
+            skills_by_name = {s.name: s for s in existing_skills}
+            for plugin_skill in plugin.skills:
+                if plugin_skill.name in skills_by_name:
+                    logger.debug(
+                        f"Plugin skill '{plugin_skill.name}' overrides existing skill"
+                    )
+                skills_by_name[plugin_skill.name] = plugin_skill
+
+            merged_skills = list(skills_by_name.values())
+
+            if existing_context:
+                new_context = existing_context.model_copy(
+                    update={"skills": merged_skills}
+                )
+            else:
+                new_context = AgentContext(skills=merged_skills)
+
+            updates["agent_context"] = new_context
+            logger.info(
+                f"Merged {len(plugin.skills)} plugin skills into agent context "
+                f"(total: {len(merged_skills)})"
+            )
+
+        # Merge MCP config
+        if plugin.mcp_config:
+            existing_mcp = agent.mcp_config or {}
+            # Plugin MCP config is merged, with plugin values taking precedence
+            merged_mcp = {**existing_mcp, **plugin.mcp_config}
+            updates["mcp_config"] = merged_mcp
+            logger.info(
+                f"Merged plugin MCP config ({len(plugin.mcp_config)} entries)"
+            )
+
+        # TODO: Handle plugin.hooks registration
+        # Hooks require integration with the event service, which is more complex.
+        # For now, we log a warning if hooks are present but not applied.
+        if plugin.hooks:
+            logger.warning(
+                f"Plugin '{plugin.name}' has hooks configured, but hook "
+                "registration is not yet implemented. Hooks will be ignored."
+            )
+
+        # Create updated agent if there are changes
+        if updates:
+            updated_agent = agent.model_copy(update=updates)
+            return request.model_copy(update={"agent": updated_agent})
+
+        return request
+
     # Write Methods
 
     async def start_conversation(
@@ -234,6 +361,10 @@ class ConversationService:
                     f"tools for conversation {conversation_id}: "
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
+
+        # Load plugin if specified
+        if request.plugin_source:
+            request = self._load_and_merge_plugin(request)
 
         stored = StoredConversation(id=conversation_id, **request.model_dump())
         event_service = await self._start_event_service(stored)
