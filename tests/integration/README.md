@@ -100,7 +100,6 @@ These tests must pass for releases and verify that the agent can successfully co
 - **t06_github_pr_browsing** - Tests GitHub PR browsing
 - **t07_interactive_commands** - Tests interactive command handling
 - **t08_image_file_viewing** - Tests image file viewing capabilities
-- **t09_token_condenser** - Tests that token-based condensation works correctly by verifying `get_token_count()` triggers condensation when token limits are exceeded
 
 ### Behavior Tests (`b*.py`) - **Optional**
 
@@ -128,6 +127,10 @@ These tests stress test the condensation system's interaction with LLM APIs to e
   - The first thinking block is forgotten during condensation
   - Later thinking blocks are preserved after condensation
   - No malformed signature errors occur when condensed history is sent to the API
+- **c02_token_condenser** - Tests that token-based condensation works correctly. Verifies that:
+  - An agent can be configured with LLMSummarizingCondenser using max_tokens
+  - The condenser correctly uses get_token_count to measure conversation size
+  - Condensation is triggered when token limit is exceeded
 
 ## Writing Integration Tests
 
@@ -143,7 +146,7 @@ All integration tests inherit from `BaseIntegrationTest` in `base.py`. The base 
 
 - **`condenser`** (property) - Optional condenser configuration for the agent (default: `None`)
   - Override to test condensation or manage long conversations
-  - Example: `t09_token_condenser` uses this to verify token counting
+  - Example: `c02_token_condenser` uses this to verify token counting
 - **`max_iteration_per_run`** (property) - Maximum iterations per conversation (default: `100`)
   - Override to limit LLM calls for faster tests
   - Useful for tests that should complete quickly
