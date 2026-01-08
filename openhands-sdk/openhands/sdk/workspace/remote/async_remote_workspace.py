@@ -147,3 +147,20 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         generator = self._git_diff_generator(path)
         result = await self._execute(generator)
         return result
+
+    async def alive(self, timeout: float = 5.0) -> bool:
+        """Check if the remote workspace is alive by querying the health endpoint.
+
+        Args:
+            timeout: Timeout in seconds for the health check request.
+
+        Returns:
+            True if the health endpoint returns a successful response, False otherwise.
+        """
+        try:
+            health_url = f"{self.host}/health"
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(health_url)
+                return 200 <= response.status_code < 300
+        except Exception:
+            return False
