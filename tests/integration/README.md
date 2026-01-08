@@ -127,14 +127,14 @@ These tests stress test the condensation system's interaction with LLM APIs to e
   - The first thinking block is forgotten during condensation
   - Later thinking blocks are preserved after condensation
   - No malformed signature errors occur when condensed history is sent to the API
-- **c02_token_condenser** - Tests that token-based condensation works correctly. Verifies that:
-  - An agent can be configured with LLMSummarizingCondenser using max_tokens
-  - The condenser correctly uses get_token_count to measure conversation size
-  - Condensation is triggered when token limit is exceeded
-- **c03_condensation_availability** - Tests hard/soft requirement behavior when condensation is unavailable. Verifies that:
+- **c02_condensation_availability** - Tests hard/soft requirement behavior when condensation is unavailable. Verifies that:
   - Hard requirements (explicit condense() calls) raise NoCondensationAvailableException when no valid range exists
   - Soft requirements (resource limits) gracefully continue when condensation is unavailable
   - Condensation succeeds once multiple atomic units make it available
+- **c03_token_condenser** - Tests that token-based condensation works correctly. Verifies that:
+  - An agent can be configured with LLMSummarizingCondenser using max_tokens
+  - The condenser correctly uses get_token_count to measure conversation size
+  - Condensation is triggered when token limit is exceeded
 - **c04_size_condenser** - Tests that size-based condensation works correctly. Verifies that:
   - An agent can be configured with LLMSummarizingCondenser using max_size
   - The condenser correctly counts events to measure conversation size
@@ -154,7 +154,7 @@ All integration tests inherit from `BaseIntegrationTest` in `base.py`. The base 
 
 - **`condenser`** (property) - Optional condenser configuration for the agent (default: `None`)
   - Override to test condensation or manage long conversations
-  - Example: `c02_token_condenser` uses this to verify token counting
+  - Example: `c03_token_condenser` uses this to verify token counting
 - **`max_iteration_per_run`** (property) - Maximum iterations per conversation (default: `100`)
   - Override to limit LLM calls for faster tests
   - Useful for tests that should complete quickly
