@@ -12,6 +12,7 @@ from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, SkipTest
+from tests.integration.early_stopper import EarlyStopperBase
 
 
 logger = get_logger(__name__)
@@ -124,8 +125,18 @@ class SoftwareAgentSDKBehaviorTest(BaseIntegrationTest):
     def tools(self) -> list[Tool]:
         return default_behavior_tools()
 
+    def get_early_stopper(self) -> EarlyStopperBase | None:
+        """Override in subclasses to provide an early stopper for this test.
+
+        Returns:
+            An EarlyStopperBase instance, or None to disable early stopping.
+        """
+        return None
+
     def setup(self) -> None:
         self.repo_dir = clone_pinned_software_agent_repo(self.workspace)
+        # Configure early stopper if provided by subclass
+        self.early_stopper = self.get_early_stopper()
         self.after_workspace_setup()
 
     def after_workspace_setup(self) -> None:

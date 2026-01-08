@@ -25,6 +25,7 @@ from openhands.sdk.event.llm_convertible import (
     MessageEvent,
 )
 from openhands.sdk.tool import Tool
+from tests.integration.early_stopper import EarlyStopperBase, EarlyStopResult
 
 
 class SkipTest(Exception):
@@ -101,6 +102,11 @@ class BaseIntegrationTest(ABC):
             self.workspace, f"{self.instance_id}_agent_logs.txt"
         )
 
+        # Early stopping support - must be initialized BEFORE LocalConversation
+        # since the callback may access these attributes
+        self.early_stopper: EarlyStopperBase | None = None
+        self.early_stop_result: EarlyStopResult | None = None
+
         self.conversation: LocalConversation = LocalConversation(
             agent=self.agent,
             workspace=self.workspace,
@@ -115,7 +121,14 @@ class BaseIntegrationTest(ABC):
         if isinstance(event, MessageEvent):
             self.llm_messages.append(event.llm_message.model_dump())
 
-    def run_instruction(self) -> TestResult:
+        # Check early stopping condition
+        if self.early_stopper and not self.early_stop_result:
+            result = self.early_stopper.check(self.collected_events)
+            if result.should_stop:
+                self.early_stop_result = result
+                self.conversation.pause()  # Trigger graceful stop
+
+    def run_integration_test(self) -> TestResult:
         """
         Run user instruction through the agent and verify results.
 
@@ -136,12 +149,7 @@ class BaseIntegrationTest(ABC):
             stderr_buffer = StringIO()
 
             with redirect_stdout(stdout_buffer), redirect_stderr(stderr_buffer):
-                self.conversation.send_message(
-                    message=Message(
-                        role="user", content=[TextContent(text=self.instruction)]
-                    )
-                )
-                self.conversation.run()
+                self.run_instructions(self.conversation)
 
             # Save captured output to log file
             captured_output = stdout_buffer.getvalue()
@@ -163,6 +171,13 @@ class BaseIntegrationTest(ABC):
             if captured_errors:
                 print(captured_errors, file=sys.stderr, end="")
 
+            # Check if early stopped - skip full verification
+            if self.early_stop_result:
+                return TestResult(
+                    success=False,
+                    reason=f"Early stopped: {self.early_stop_result.reason}",
+                )
+
             # Verify results
             result = self.verify_result()
 
@@ -173,6 +188,16 @@ class BaseIntegrationTest(ABC):
 
         finally:
             self.teardown()
+
+    def run_instructions(self, conversation: LocalConversation) -> None:
+        """Feed user instructions to the agent and manage the conversation."""
+        conversation.send_message(message=self.instruction_message)
+        conversation.run()
+
+    @property
+    def instruction_message(self) -> Message:
+        """The initial instruction message for the agent."""
+        return Message(role="user", content=[TextContent(text=self.instruction)])
 
     @property
     @abstractmethod

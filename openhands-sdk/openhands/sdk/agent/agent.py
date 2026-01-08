@@ -27,7 +27,10 @@ from openhands.sdk.event import (
     TokenEvent,
     UserRejectObservation,
 )
-from openhands.sdk.event.condenser import Condensation, CondensationRequest
+from openhands.sdk.event.condenser import (
+    Condensation,
+    CondensationRequest,
+)
 from openhands.sdk.llm import (
     LLMResponse,
     Message,
@@ -359,6 +362,30 @@ class Agent(AgentBase):
         security_risk = risk.SecurityRisk(raw)
         return security_risk
 
+    def _extract_summary(self, tool_name: str, arguments: dict) -> str:
+        """Extract and validate the summary field from tool arguments.
+
+        Summary field is always requested but optional - if LLM doesn't provide
+        it or provides invalid data, we generate a default summary using the
+        tool name and arguments.
+
+        Args:
+            tool_name: Name of the tool being called
+            arguments: Dictionary of tool arguments from LLM
+
+        Returns:
+            The summary string - either from LLM or a default generated one
+        """
+        summary = arguments.pop("summary", None)
+
+        # If valid summary provided by LLM, use it
+        if summary is not None and isinstance(summary, str) and summary.strip():
+            return summary
+
+        # Generate default summary: {tool_name}: {arguments}
+        args_str = json.dumps(arguments)
+        return f"{tool_name}: {args_str}"
+
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
@@ -420,6 +447,8 @@ class Agent(AgentBase):
                 "Unexpected 'security_risk' key found in tool arguments"
             )
 
+            summary = self._extract_summary(tool.name, arguments)
+
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
             err = (
@@ -459,6 +488,7 @@ class Agent(AgentBase):
             tool_call=tool_call,
             llm_response_id=llm_response_id,
             security_risk=security_risk,
+            summary=summary,
         )
         on_event(action_event)
         return action_event
@@ -502,16 +532,29 @@ class Agent(AgentBase):
             )
 
         # Execute actions!
-        if should_enable_observability():
-            tool_name = extract_action_name(action_event)
-            observation: Observation = observe(name=tool_name, span_type="TOOL")(tool)(
-                action_event.action, conversation
+        try:
+            if should_enable_observability():
+                tool_name = extract_action_name(action_event)
+                observation: Observation = observe(name=tool_name, span_type="TOOL")(
+                    tool
+                )(action_event.action, conversation)
+            else:
+                observation = tool(action_event.action, conversation)
+            assert isinstance(observation, Observation), (
+                f"Tool '{tool.name}' executor must return an Observation"
             )
-        else:
-            observation = tool(action_event.action, conversation)
-        assert isinstance(observation, Observation), (
-            f"Tool '{tool.name}' executor must return an Observation"
-        )
+        except ValueError as e:
+            # Tool execution raised a ValueError (e.g., invalid argument combination)
+            # Convert to AgentErrorEvent so the agent can correct itself
+            err = f"Error executing tool '{tool.name}': {e}"
+            logger.warning(err)
+            error_event = AgentErrorEvent(
+                error=err,
+                tool_name=tool.name,
+                tool_call_id=action_event.tool_call.id,
+            )
+            on_event(error_event)
+            return error_event
 
         obs_event = ObservationEvent(
             observation=observation,

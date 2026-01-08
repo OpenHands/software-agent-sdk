@@ -209,6 +209,9 @@ def make_llm_completion(
         configured. This allows weaker models to omit risk field and bypass
         validation requirements when analyzer is disabled. For detailed logic,
         see `_extract_security_risk` method in agent.py.
+
+        Summary field is always added to tool schemas for transparency and
+        explainability of agent actions.
     """
     if llm.uses_responses_api():
         return llm.responses(

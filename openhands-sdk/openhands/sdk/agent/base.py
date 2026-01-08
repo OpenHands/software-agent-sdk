@@ -2,14 +2,14 @@ import os
 import re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
+from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
@@ -17,7 +17,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
 if TYPE_CHECKING:
@@ -300,71 +299,85 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
-        """
-        Return a new AgentBase instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key) taken from `self`.
+    def verify(
+        self,
+        persisted: "AgentBase",
+        events: "Sequence[Any] | None" = None,
+    ) -> "AgentBase":
+        """Verify that we can resume this agent from persisted state.
+
+        This PR's goal is to *not* reconcile configuration between persisted and
+        runtime Agent instances. Instead, we verify compatibility requirements
+        and then continue with the runtime-provided Agent.
+
+        Compatibility requirements:
+        - Agent class/type must match.
+        - Tools:
+          - If events are provided, only tools that were actually used in history
+            must exist in runtime.
+          - If events are not provided, tool names must match exactly.
+
+        All other configuration (LLM, agent_context, condenser, system prompts,
+        etc.) can be freely changed between sessions.
+
+        Args:
+            persisted: The agent loaded from persisted state.
+            events: Optional event sequence to scan for used tools if tool names
+                don't match.
+
+        Returns:
+            This runtime agent (self) if verification passes.
+
+        Raises:
+            ValueError: If agent class or tools don't match.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
-                f"Cannot resolve from deserialized: persisted agent is of type "
+                "Cannot load from persisted: persisted agent is of type "
                 f"{persisted.__class__.__name__}, but self is of type "
                 f"{self.__class__.__name__}."
             )
 
-        # Get all LLMs from both self and persisted to reconcile them
-        new_llm = self.llm.resolve_diff_from_deserialized(persisted.llm)
-        updates: dict[str, Any] = {"llm": new_llm}
+        runtime_names = {tool.name for tool in self.tools}
+        persisted_names = {tool.name for tool in persisted.tools}
 
-        # Reconcile the condenser's LLM if it exists
-        if self.condenser is not None and persisted.condenser is not None:
-            # Check if both condensers are LLMSummarizingCondenser
-            # (which has an llm field)
+        if runtime_names == persisted_names:
+            return self
 
-            if isinstance(self.condenser, LLMSummarizingCondenser) and isinstance(
-                persisted.condenser, LLMSummarizingCondenser
-            ):
-                new_condenser_llm = self.condenser.llm.resolve_diff_from_deserialized(
-                    persisted.condenser.llm
+        if events is not None:
+            from openhands.sdk.event import ActionEvent
+
+            used_tools = {
+                event.tool_name
+                for event in events
+                if isinstance(event, ActionEvent) and event.tool_name
+            }
+
+            # Only require tools that were actually used in history.
+            missing_used_tools = used_tools - runtime_names
+            if missing_used_tools:
+                raise ValueError(
+                    "Cannot resume conversation: tools that were used in history "
+                    f"are missing from runtime: {sorted(missing_used_tools)}. "
+                    f"Available tools: {sorted(runtime_names)}"
                 )
-                new_condenser = persisted.condenser.model_copy(
-                    update={"llm": new_condenser_llm}
-                )
-                updates["condenser"] = new_condenser
 
-        # Reconcile agent_context - always use the current environment's agent_context
-        # This allows resuming conversations from different directories and handles
-        # cases where skills, working directory, or other context has changed
-        if self.agent_context is not None:
-            updates["agent_context"] = self.agent_context
+            return self
 
-        # Create maps by tool name for easy lookup
-        runtime_tools_map = {tool.name: tool for tool in self.tools}
-        persisted_tools_map = {tool.name: tool for tool in persisted.tools}
+        # No events provided: strict tool name matching.
+        missing_in_runtime = persisted_names - runtime_names
+        missing_in_persisted = runtime_names - persisted_names
 
-        # Check that tool names match
-        runtime_names = set(runtime_tools_map.keys())
-        persisted_names = set(persisted_tools_map.keys())
+        details: list[str] = []
+        if missing_in_runtime:
+            details.append(f"Missing in runtime: {sorted(missing_in_runtime)}")
+        if missing_in_persisted:
+            details.append(f"Missing in persisted: {sorted(missing_in_persisted)}")
 
-        if runtime_names != persisted_names:
-            missing_in_runtime = persisted_names - runtime_names
-            missing_in_persisted = runtime_names - persisted_names
-            error_msg = "Tools don't match between runtime and persisted agents."
-            if missing_in_runtime:
-                error_msg += f" Missing in runtime: {missing_in_runtime}."
-            if missing_in_persisted:
-                error_msg += f" Missing in persisted: {missing_in_persisted}."
-            raise ValueError(error_msg)
-
-        reconciled = persisted.model_copy(update=updates)
-        if self.model_dump(exclude_none=True) != reconciled.model_dump(
-            exclude_none=True
-        ):
-            raise ValueError(
-                "The Agent provided is different from the one in persisted state.\n"
-                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-            )
-        return reconciled
+        suffix = f" ({'; '.join(details)})" if details else ""
+        raise ValueError(
+            "Tools don't match between runtime and persisted agents." + suffix
+        )
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""

@@ -245,6 +245,7 @@ class AgentContext(BaseModel):
                         name=skill.name,
                         trigger=trigger,
                         content=skill.content,
+                        location=skill.source,
                     )
                 )
         if recalled_knowledge:

@@ -1178,6 +1178,112 @@ def test_generate_conversation_title_invalid_params(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_with_tool_module_qualnames(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """Test start_conversation endpoint with tool_module_qualnames field."""
+
+    # Mock the service response
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    # Override the dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [
+                    {"name": "glob"},
+                    {"name": "grep"},
+                    {"name": "planning_file_editor"},
+                ],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "tool_module_qualnames": {
+                "glob": "openhands.tools.glob.definition",
+                "grep": "openhands.tools.grep.definition",
+                "planning_file_editor": (
+                    "openhands.tools.planning_file_editor.definition"
+                ),
+            },
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+
+        # Verify service was called
+        mock_conversation_service.start_conversation.assert_called_once()
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert hasattr(request_arg, "tool_module_qualnames")
+        assert request_arg.tool_module_qualnames == {
+            "glob": "openhands.tools.glob.definition",
+            "grep": "openhands.tools.grep.definition",
+            "planning_file_editor": ("openhands.tools.planning_file_editor.definition"),
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_without_tool_module_qualnames(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """Test start_conversation endpoint without tool_module_qualnames field."""
+
+    # Mock the service response
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    # Override the dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+
+        # Verify service was called
+        mock_conversation_service.start_conversation.assert_called_once()
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert hasattr(request_arg, "tool_module_qualnames")
+        # Should default to empty dict
+        assert request_arg.tool_module_qualnames == {}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_set_conversation_security_analyzer_success(
     client,
     sample_conversation_id,
