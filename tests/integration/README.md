@@ -131,6 +131,10 @@ These tests stress test the condensation system's interaction with LLM APIs to e
   - An agent can be configured with LLMSummarizingCondenser using max_tokens
   - The condenser correctly uses get_token_count to measure conversation size
   - Condensation is triggered when token limit is exceeded
+- **c03_condensation_availability** - Tests hard/soft requirement behavior when condensation is unavailable. Verifies that:
+  - Hard requirements (explicit condense() calls) raise NoCondensationAvailableException when no valid range exists
+  - Soft requirements (resource limits) gracefully continue when condensation is unavailable
+  - Condensation succeeds once multiple atomic units make it available
 
 ## Writing Integration Tests
 
