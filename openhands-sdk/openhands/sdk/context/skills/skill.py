@@ -8,7 +8,7 @@ import frontmatter
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from openhands.sdk.context.skills.exceptions import SkillValidationError
+from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.context.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
@@ -562,20 +562,13 @@ def load_skills_from_dir(
     agent_skills: dict[str, Skill] = {}
     logger.debug(f"Loading agents from {skill_dir}")
 
-    # Discover all skill files
-    repo_root = skill_dir.parent.parent
-    third_party_files = find_third_party_files(
-        repo_root, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
-    )
+    # Discover skill files in the skills directory
+    # Note: Third-party files (AGENTS.md, etc.) are loaded separately by
+    # load_project_skills() to ensure they're loaded even when this directory
+    # doesn't exist.
     skill_md_files = find_skill_md_directories(skill_dir)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
     regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
-
-    # Load third-party files
-    for path in third_party_files:
-        load_and_categorize(
-            path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     for skill_md_path in skill_md_files:
@@ -659,6 +652,9 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     directories are merged, with skills/ taking precedence for
     duplicate names.
 
+    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
+    directly from the work directory.
+
     Args:
         work_dir: Path to the project/working directory.
 
@@ -670,7 +666,22 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         work_dir = Path(work_dir)
 
     all_skills = []
-    seen_names = set()
+    seen_names: set[str] = set()
+
+    # First, load third-party skill files directly from work directory
+    # This ensures they are loaded even if .openhands/skills doesn't exist
+    third_party_files = find_third_party_files(
+        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    for path in third_party_files:
+        try:
+            skill = Skill.load(path)
+            if skill.name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(skill.name)
+                logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .openhands/skills and legacy microagents
     project_skills_dirs = [
@@ -691,7 +702,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                 project_skills_dir
             )
 
-            # Merge all skill categories
+            # Merge all skill categories (skip duplicates including third-party)
             for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
                 for name, skill in skills_dict.items():
                     if name not in seen_names:

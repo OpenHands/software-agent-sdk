@@ -9,6 +9,7 @@ from openhands.sdk.context import (
     KeywordTrigger,
     Skill,
     SkillValidationError,
+    load_project_skills,
     load_skills_from_dir,
 )
 
@@ -337,17 +338,17 @@ Repository-specific test instructions.
 
 def test_load_skills_with_cursorrules(temp_skills_dir_with_cursorrules):
     """Test loading skills when .cursorrules file exists."""
-    skills_dir = temp_skills_dir_with_cursorrules / ".openhands" / "skills"
-
-    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
+    # Third-party files are loaded by load_project_skills(), not load_skills_from_dir()
+    skills = load_project_skills(temp_skills_dir_with_cursorrules)
+    skills_by_name = {s.name: s for s in skills}
 
     # Verify that .cursorrules file was loaded as a RepoSkill
-    assert len(repo_agents) == 2  # repo.md + .cursorrules
-    assert "repo" in repo_agents
-    assert "cursorrules" in repo_agents
+    assert len(skills_by_name) == 2  # repo.md + .cursorrules
+    assert "repo" in skills_by_name
+    assert "cursorrules" in skills_by_name
 
     # Check .cursorrules agent
-    cursorrules_agent = repo_agents["cursorrules"]
+    cursorrules_agent = skills_by_name["cursorrules"]
     assert cursorrules_agent.trigger is None
     assert cursorrules_agent.name == "cursorrules"
     assert "Always use TypeScript for new files" in cursorrules_agent.content
@@ -394,25 +395,25 @@ Repository-specific test instructions.
 
 def test_load_skills_with_claude_gemini(temp_skills_dir_with_context_files):
     """Test loading skills when claude.md and gemini.md files exist."""
-    skills_dir = temp_skills_dir_with_context_files / ".openhands" / "skills"
-
-    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
+    # Third-party files are loaded by load_project_skills(), not load_skills_from_dir()
+    skills = load_project_skills(temp_skills_dir_with_context_files)
+    skills_by_name = {s.name: s for s in skills}
 
     # Verify that claude.md and gemini.md files were loaded as RepoSkills
-    assert len(repo_agents) == 3  # repo.md + claude.md + gemini.md
-    assert "repo" in repo_agents
-    assert "claude" in repo_agents
-    assert "gemini" in repo_agents
+    assert len(skills_by_name) == 3  # repo.md + claude.md + gemini.md
+    assert "repo" in skills_by_name
+    assert "claude" in skills_by_name
+    assert "gemini" in skills_by_name
 
     # Check CLAUDE.md agent
-    claude_agent = repo_agents["claude"]
+    claude_agent = skills_by_name["claude"]
     assert claude_agent.trigger is None
     assert claude_agent.name == "claude"
     assert "Claude-Specific Instructions" in claude_agent.content
     assert claude_agent.trigger is None
 
     # Check GEMINI.md agent
-    gemini_agent = repo_agents["gemini"]
+    gemini_agent = skills_by_name["gemini"]
     assert gemini_agent.trigger is None
     assert gemini_agent.name == "gemini"
     assert "Gemini-Specific Instructions" in gemini_agent.content
@@ -461,24 +462,24 @@ def test_load_skills_with_uppercase_claude_gemini(
     temp_skills_dir_with_uppercase_context_files,
 ):
     """Test loading skills when CLAUDE.MD and GEMINI.MD files exist (uppercase)."""
-    skills_dir = temp_skills_dir_with_uppercase_context_files / ".openhands" / "skills"
-
-    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
+    # Third-party files are loaded by load_project_skills(), not load_skills_from_dir()
+    skills = load_project_skills(temp_skills_dir_with_uppercase_context_files)
+    skills_by_name = {s.name: s for s in skills}
 
     # Verify that CLAUDE.MD and GEMINI.MD files were loaded as RepoSkills
-    assert len(repo_agents) == 3  # repo.md + CLAUDE.MD + GEMINI.MD
-    assert "repo" in repo_agents
-    assert "claude" in repo_agents
-    assert "gemini" in repo_agents
+    assert len(skills_by_name) == 3  # repo.md + CLAUDE.MD + GEMINI.MD
+    assert "repo" in skills_by_name
+    assert "claude" in skills_by_name
+    assert "gemini" in skills_by_name
 
     # Check CLAUDE.MD agent
-    claude_agent = repo_agents["claude"]
+    claude_agent = skills_by_name["claude"]
     assert claude_agent.trigger is None
     assert claude_agent.name == "claude"
     assert "Claude-Specific Instructions" in claude_agent.content
 
     # Check GEMINI.MD agent
-    gemini_agent = repo_agents["gemini"]
+    gemini_agent = skills_by_name["gemini"]
     assert gemini_agent.trigger is None
     assert gemini_agent.name == "gemini"
     assert "Gemini-Specific Instructions" in gemini_agent.content
@@ -527,16 +528,17 @@ def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_contex
     from openhands.sdk.context.skills.skill import THIRD_PARTY_SKILL_MAX_CHARS
 
     root, original_size = temp_skills_dir_with_large_context_file
-    skills_dir = root / ".openhands" / "skills"
 
-    repo_agents, knowledge_agents, _ = load_skills_from_dir(skills_dir)
+    # Third-party files are loaded by load_project_skills(), not load_skills_from_dir()
+    skills = load_project_skills(root)
+    skills_by_name = {s.name: s for s in skills}
 
     # Verify that CLAUDE.md file was loaded but truncated
-    assert len(repo_agents) == 2  # repo.md + claude.md
-    assert "claude" in repo_agents
+    assert len(skills_by_name) == 2  # repo.md + claude.md
+    assert "claude" in skills_by_name
 
     # Check that content was truncated
-    claude_agent = repo_agents["claude"]
+    claude_agent = skills_by_name["claude"]
     assert claude_agent.trigger is None
     assert claude_agent.name == "claude"
 
