@@ -98,6 +98,7 @@ def main():
         usage_id="skills-demo",
         model=model,
         api_key=SecretStr(api_key),
+        base_url=os.getenv("LLM_BASE_URL"),
     )
 
     # Create agent context with loaded skills
