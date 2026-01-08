@@ -68,7 +68,7 @@ class SizeCondenserTest(BaseIntegrationTest):
         condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
         return LLMSummarizingCondenser(
             llm=condenser_llm,
-            max_size=20,  # Low event limit to ensure condensation triggers
+            max_size=10,  # Low event limit to ensure condensation triggers
             max_tokens=None,  # Don't use token limit
             keep_first=1,  # Keep only initial user message
         )

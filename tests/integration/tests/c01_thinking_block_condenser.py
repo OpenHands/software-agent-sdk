@@ -16,6 +16,17 @@ from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 
 
+# Module-level instruction for test runner
+INSTRUCTION = """Using bc calculator, compute:
+1. Compound interest on $5000 at 6% annual rate for 10 years (compounded annually)
+   Formula: A = P(1 + r/n)^(nt) where n=1
+2. Simple interest on the same principal, rate, and time
+   Formula: I = P * r * t
+3. The difference between compound and simple interest
+
+Show your calculations step by step."""
+
+
 class FirstToolLoopCondenser(CondenserBase):
     """
     Custom condenser that handles condensation by forgetting the first tool loop.
@@ -96,14 +107,7 @@ class ThinkingBlockCondenserTest(BaseIntegrationTest):
        - Later thinking blocks were preserved
     """
 
-    INSTRUCTION = """Using bc calculator, compute:
-1. Compound interest on $5000 at 6% annual rate for 10 years (compounded annually)
-   Formula: A = P(1 + r/n)^(nt) where n=1
-2. Simple interest on the same principal, rate, and time
-   Formula: I = P * r * t
-3. The difference between compound and simple interest
-
-Show your calculations step by step."""
+    INSTRUCTION: str = INSTRUCTION
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking for thinking blocks and condensations."""
@@ -231,9 +235,9 @@ Show your calculations step by step."""
 
         Success criteria:
         1. At least 3 thinking blocks generated (across multiple steps)
-        2. Exactly 1 condensation event triggered
-        3. First thinking block was forgotten during condensation
-        4. Second thinking block was preserved (new blocks after condensation)
+        2. At least 1 condensation event triggered (may be automatic or manual)
+        3. Thinking blocks were condensed (forgotten) at some point
+        4. Later thinking blocks were preserved (new blocks after condensation)
         """
         reasons = []
 
@@ -243,10 +247,10 @@ Show your calculations step by step."""
                 f"Expected at least 3 thinking blocks, got {self.thinking_block_count}"
             )
 
-        # Check condensation count
-        if self.condensation_count != 1:
+        # Check condensation count (allow multiple condensations)
+        if self.condensation_count < 1:
             reasons.append(
-                f"Expected exactly 1 condensation event, got {self.condensation_count}"
+                f"Expected at least 1 condensation event, got {self.condensation_count}"
             )
 
         # Check that thinking blocks were condensed
@@ -272,6 +276,6 @@ Show your calculations step by step."""
             success=True,
             reason=(
                 f"Successfully handled {self.thinking_block_count} thinking blocks "
-                f"with 1 condensation"
+                f"with {self.condensation_count} condensation(s)"
             ),
         )

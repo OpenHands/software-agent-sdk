@@ -18,11 +18,15 @@ from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
+# Module-level instruction for test runner
+INSTRUCTION = """Using the echo command, print the numbers 1 through 3.
+Use exactly 3 separate echo commands, one for each number."""
+
+
 class CondensationAvailabilityTest(BaseIntegrationTest):
     """Test condensation availability with hard and soft requirements."""
 
-    INSTRUCTION = """Using the echo command, print the numbers 1 through 3.
-Use exactly 3 separate echo commands, one for each number."""
+    INSTRUCTION: str = INSTRUCTION
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking for condensation attempts."""
@@ -67,24 +71,23 @@ Use exactly 3 separate echo commands, one for each number."""
         """Execute test flow with hard and soft condensation requirements.
 
         Steps:
-        1. Initial task (creates a single tool loop - no condensation available)
-        2. Try explicit condense() - should fail with NoCondensationAvailableException
-        3. Add more user messages to create multiple atomic units
-        4. Let soft requirement trigger naturally - should succeed
+        1. Send initial message (creates user message event)
+        2. Try explicit condense() immediately - should fail (only 1 event)
+        3. Complete the task to create multiple atomic units
+        4. Add more messages and let soft requirement trigger naturally
         """
-        # Step 1: Initial instruction creates a tool loop
+        # Step 1: Send initial message but DON'T run yet
         conversation.send_message(message=self.instruction_message)
-        conversation.run()
 
-        # At this point we likely have a single tool loop (thinking blocks + actions)
-        # No valid condensation range exists yet
+        # At this point we have only 1 event (the user message)
+        # No valid condensation range exists yet (need at least 2 atomic units)
 
         # Step 2: Try to explicitly condense - should raise exception
         try:
             conversation.condense()
-            # If we get here, condensation was available (unexpected but not a failure)
+            # If we get here, condensation was available (shouldn't happen)
         except NoCondensationAvailableException:
-            # Expected: no condensation available yet
+            # Expected: no condensation available with just 1 event
             self.hard_requirement_failed = True
         except ValueError as e:
             # Could also get ValueError if condenser doesn't handle requests
@@ -95,7 +98,10 @@ Use exactly 3 separate echo commands, one for each number."""
                 )
             raise
 
-        # Step 3: Add more messages to create atomic unit boundaries
+        # Step 3: Now run to complete the first task
+        conversation.run()
+
+        # Step 4: Add more messages to create atomic unit boundaries
         # This gives us multiple units so condensation becomes available
         conversation.send_message(
             message=Message(
@@ -105,7 +111,7 @@ Use exactly 3 separate echo commands, one for each number."""
         )
         conversation.run()
 
-        # Step 4: Add one more message to push past max_size (soft requirement)
+        # Step 5: Add one more message to push past max_size (soft requirement)
         # At this point we have multiple atomic units, so condensation should succeed
         conversation.send_message(
             message=Message(
