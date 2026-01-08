@@ -136,7 +136,9 @@ Show your calculations step by step."""
         if "opus" in model.lower() and not has_extended_thinking:
             self.llm_config["extended_thinking"] = True
             # Recreate LLM with updated config
-            self.llm = self.llm.__class__(**{**self.llm.model_dump(), **self.llm_config})
+            self.llm = self.llm.__class__(
+                **{**self.llm.model_dump(), **self.llm_config}
+            )
             self.agent.llm = self.llm
 
         # Skip test if model doesn't support thinking blocks
@@ -160,11 +162,18 @@ Show your calculations step by step."""
             # Check if condensation removed thinking blocks
             if event.forgotten_events:
                 for forgotten_event in event.forgotten_events:
-                    if isinstance(forgotten_event, ActionEvent) and forgotten_event.thinking_blocks:
+                    if (
+                        isinstance(forgotten_event, ActionEvent)
+                        and forgotten_event.thinking_blocks
+                    ):
                         self.condensed_thinking_blocks = True
 
         # After condensation, check if new thinking blocks appear
-        if self.condensation_count > 0 and isinstance(event, ActionEvent) and event.thinking_blocks:
+        if (
+            self.condensation_count > 0
+            and isinstance(event, ActionEvent)
+            and event.thinking_blocks
+        ):
             self.preserved_thinking_blocks = True
 
     def run_instructions(self, conversation: LocalConversation) -> None:
@@ -235,7 +244,9 @@ Show your calculations step by step."""
 
         # Check that thinking blocks were condensed
         if not self.condensed_thinking_blocks:
-            reasons.append("Expected first thinking block to be forgotten during condensation")
+            reasons.append(
+                "Expected first thinking block to be forgotten during condensation"
+            )
 
         # Check that later thinking blocks were preserved
         if not self.preserved_thinking_blocks:
@@ -244,10 +255,10 @@ Show your calculations step by step."""
         if reasons:
             return TestResult(
                 success=False,
-                reason=f"Thinking block handling validation failed: {'; '.join(reasons)}"
+                reason=f"Thinking block handling validation failed: {'; '.join(reasons)}",
             )
 
         return TestResult(
             success=True,
-            reason=f"Successfully handled {self.thinking_block_count} thinking blocks with 1 condensation"
+            reason=f"Successfully handled {self.thinking_block_count} thinking blocks with 1 condensation",
         )

@@ -37,7 +37,7 @@ class TestInstance(BaseModel):
 
     @property
     def required(self) -> bool:
-        """Whether the test is required (integration) or optional (behavior/condenser)."""
+        """Whether the test is required (integration) or optional (everything else)."""
         return self.test_type == "integration"
 
 
@@ -55,18 +55,20 @@ class EvalOutput(BaseModel):
 
     @property
     def required(self) -> bool:
-        """Whether the test is required (integration) or optional (behavior/condenser)."""
+        """Whether the test is required (integration) or optional (everything else)."""
         return self.test_type == "integration"
 
 
 def load_integration_tests() -> list[TestInstance]:
     """Load tests from python files under ./tests/integration"""
     test_dir = Path(__file__).parent / "tests"
-    # Load task completion tests (t*.py), behavior tests (b*.py), and condenser tests (c*.py)
+    # Load task completion tests (t*.py), behavior tests (b*.py), and condenser tests 
+    # (c*.py)
     test_files = [
         f
         for f in test_dir.glob("[tbc]*.py")
-        if (f.name.startswith("t") or f.name.startswith("b") or f.name.startswith("c")) and f.name.endswith(".py")
+        if (f.name.startswith("t") or f.name.startswith("b") or f.name.startswith("c"))
+        and f.name.endswith(".py")
     ]
 
     instances = []
@@ -419,7 +421,10 @@ def main():
         "--test-type",
         choices=["all", "integration", "behavior", "condenser"],
         default="all",
-        help="Restrict execution to integration tests, behavior tests, condenser tests, or all",
+        help=(
+            "Restrict execution to integration tests, behavior tests, condenser tests, "
+            "or all"
+        ),
     )
     parser.add_argument(
         "--output-dir",
