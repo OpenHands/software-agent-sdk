@@ -73,6 +73,28 @@ def run_git_command(args: list[str], cwd: str | Path) -> str:
         ) from e
 
 
+def _repo_has_commits(repo_dir: str | Path) -> bool:
+    """Check if a git repository has any commits.
+
+    Uses 'git rev-list --count --all' which returns "0" for empty repos
+    without failing, avoiding ERROR logs for expected conditions.
+
+    Args:
+        repo_dir: Path to the git repository
+
+    Returns:
+        True if the repository has at least one commit, False otherwise
+    """
+    try:
+        count = run_git_command(
+            ["git", "--no-pager", "rev-list", "--count", "--all"], repo_dir
+        )
+        return count.strip() != "0"
+    except GitCommandError:
+        logger.debug("Could not check commit count")
+        return False
+
+
 def get_valid_ref(repo_dir: str | Path) -> str | None:
     """Get a valid git reference to compare against.
 
@@ -89,6 +111,12 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
         Valid git reference hash, or None if no valid reference found
     """
     refs_to_try = []
+
+    # Check if repo has any commits first. Empty repos (created with git init)
+    # won't have commits or remotes, so we can skip directly to the empty tree fallback.
+    if not _repo_has_commits(repo_dir):
+        logger.debug("Repository has no commits yet, using empty tree reference")
+        return GIT_EMPTY_TREE_HASH
 
     # Try current branch's origin
     try:
@@ -136,10 +164,6 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
     except GitCommandError:
         logger.debug("Could not get remote information")
 
-    # Add empty tree as fallback for new repositories
-    refs_to_try.append(GIT_EMPTY_TREE_HASH)
-    logger.debug(f"Added empty tree reference: {GIT_EMPTY_TREE_HASH}")
-
     # Find the first valid reference
     for ref in refs_to_try:
         try:
@@ -153,8 +177,9 @@ def get_valid_ref(repo_dir: str | Path) -> str | None:
             logger.debug(f"Reference not valid: {ref}")
             continue
 
-    logger.warning("No valid git reference found")
-    return None
+    # Fallback to empty tree hash (always valid, no verification needed)
+    logger.debug(f"Using empty tree reference: {GIT_EMPTY_TREE_HASH}")
+    return GIT_EMPTY_TREE_HASH
 
 
 def validate_git_repository(repo_dir: str | Path) -> Path:

@@ -6,18 +6,28 @@ from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+)
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
+from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
+from openhands.sdk.tool import (
+    BUILT_IN_TOOL_CLASSES,
+    BUILT_IN_TOOLS,
+    Tool,
+    ToolDefinition,
+    resolve_tool,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
 if TYPE_CHECKING:
@@ -80,6 +90,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         " This is applied after any tools provided in `tools` and any MCP tools are"
         " added.",
         examples=["^(?!repomix)(.*)|^repomix.*pack_codebase.*$"],
+    )
+    include_default_tools: list[str] = Field(
+        default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
+        description=(
+            "List of default tool class names to include. By default, the agent "
+            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
+            "all default tools, or provide a subset to include only specific ones. "
+            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
+            "or include_default_tools=[] to disable all default tools."
+        ),
+        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
     )
     agent_context: AgentContext | None = Field(
         default=None,
@@ -155,6 +176,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
+    _initialized: bool = PrivateAttr(default=False)
 
     @property
     def prompt_dir(self) -> str:
@@ -219,7 +241,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def _initialize(self, state: "ConversationState"):
         """Create an AgentBase instance from an AgentSpec."""
 
-        if self._tools:
+        if self._initialized:
             logger.warning("Agent already initialized; skipping re-initialization.")
             return
 
@@ -255,10 +277,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{[tool.name for tool in tools]}",
             )
 
-        # Always include built-in tools; not subject to filtering
-        # Instantiate built-in tools using their .create() method
-        for tool_class in BUILT_IN_TOOLS:
-            tools.extend(tool_class.create(state))
+        # Include default tools from include_default_tools; not subject to regex
+        # filtering. Use explicit mapping to resolve tool class names.
+        for tool_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
+            if tool_class is None:
+                raise ValueError(
+                    f"Unknown built-in tool class: '{tool_name}'. "
+                    f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
+                )
+            tool_instances = tool_class.create(state)
+            tools.extend(tool_instances)
 
         # Check tool types
         for tool in tools:
@@ -276,6 +305,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
+        self._initialized = True
 
     @abstractmethod
     def step(
@@ -300,64 +330,52 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def resolve_diff_from_deserialized(
+    def verify(
         self,
         persisted: "AgentBase",
         events: "Sequence[Any] | None" = None,
     ) -> "AgentBase":
-        """
-        Return a new AgentBase instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key) taken from `self`.
+        """Verify that we can resume this agent from persisted state.
+
+        This PR's goal is to *not* reconcile configuration between persisted and
+        runtime Agent instances. Instead, we verify compatibility requirements
+        and then continue with the runtime-provided Agent.
+
+        Compatibility requirements:
+        - Agent class/type must match.
+        - Tools:
+          - If events are provided, only tools that were actually used in history
+            must exist in runtime.
+          - If events are not provided, tool names must match exactly.
+
+        All other configuration (LLM, agent_context, condenser, system prompts,
+        etc.) can be freely changed between sessions.
 
         Args:
-            persisted: The persisted agent from the conversation state.
-            events: Optional event sequence to scan for used tools if tool
-                names don't match. Only scanned when needed (O(n) fallback).
+            persisted: The agent loaded from persisted state.
+            events: Optional event sequence to scan for used tools if tool names
+                don't match.
+
+        Returns:
+            This runtime agent (self) if verification passes.
+
+        Raises:
+            ValueError: If agent class or tools don't match.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
-                f"Cannot resolve from deserialized: persisted agent is of type "
+                "Cannot load from persisted: persisted agent is of type "
                 f"{persisted.__class__.__name__}, but self is of type "
                 f"{self.__class__.__name__}."
             )
 
-        # Get all LLMs from both self and persisted to reconcile them
-        new_llm = self.llm.resolve_diff_from_deserialized(persisted.llm)
-        updates: dict[str, Any] = {"llm": new_llm}
-
-        # Reconcile the condenser's LLM if it exists
-        if self.condenser is not None and persisted.condenser is not None:
-            # Check if both condensers are LLMSummarizingCondenser
-            # (which has an llm field)
-
-            if isinstance(self.condenser, LLMSummarizingCondenser) and isinstance(
-                persisted.condenser, LLMSummarizingCondenser
-            ):
-                new_condenser_llm = self.condenser.llm.resolve_diff_from_deserialized(
-                    persisted.condenser.llm
-                )
-                new_condenser = persisted.condenser.model_copy(
-                    update={"llm": new_condenser_llm}
-                )
-                updates["condenser"] = new_condenser
-
-        # Reconcile agent_context - always use the current environment's agent_context
-        # This allows resuming conversations from different directories and handles
-        # cases where skills, working directory, or other context has changed
-        if self.agent_context is not None:
-            updates["agent_context"] = self.agent_context
-
-        # Get tool names for comparison
         runtime_names = {tool.name for tool in self.tools}
         persisted_names = {tool.name for tool in persisted.tools}
 
-        # If tool names match exactly, no need to check event history
         if runtime_names == persisted_names:
-            # Tools unchanged, proceed normally
-            pass
-        elif events is not None:
-            # Tool names differ - scan events to find which tools were actually used
-            # This is O(n) but only happens when tools change
+            return self
+
+        if events is not None:
             from openhands.sdk.event import ActionEvent
 
             used_tools = {
@@ -366,43 +384,31 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 if isinstance(event, ActionEvent) and event.tool_name
             }
 
-            # Only require tools that were actually used in history
+            # Only require tools that were actually used in history.
             missing_used_tools = used_tools - runtime_names
             if missing_used_tools:
                 raise ValueError(
-                    f"Cannot resume conversation: tools that were used in history "
+                    "Cannot resume conversation: tools that were used in history "
                     f"are missing from runtime: {sorted(missing_used_tools)}. "
                     f"Available tools: {sorted(runtime_names)}"
                 )
-            # Update tools to match runtime (allows new tools to be added)
-            updates["tools"] = self.tools
-        else:
-            # No events provided - strict matching (legacy behavior)
-            missing_in_runtime = persisted_names - runtime_names
-            missing_in_persisted = runtime_names - persisted_names
-            error_msg = "Tools don't match between runtime and persisted agents."
-            if missing_in_runtime:
-                error_msg += f" Missing in runtime: {sorted(missing_in_runtime)}."
-            if missing_in_persisted:
-                error_msg += f" Missing in persisted: {sorted(missing_in_persisted)}."
-            raise ValueError(error_msg)
 
-        reconciled = persisted.model_copy(update=updates)
+            return self
 
-        # Validate agent equality - exclude tools from comparison since we
-        # already validated tool requirements above
-        exclude_fields = {"tools"} if events is not None else set()
-        self_dump = self.model_dump(exclude_none=True, exclude=exclude_fields)
-        reconciled_dump = reconciled.model_dump(
-            exclude_none=True, exclude=exclude_fields
+        # No events provided: strict tool name matching.
+        missing_in_runtime = persisted_names - runtime_names
+        missing_in_persisted = runtime_names - persisted_names
+
+        details: list[str] = []
+        if missing_in_runtime:
+            details.append(f"Missing in runtime: {sorted(missing_in_runtime)}")
+        if missing_in_persisted:
+            details.append(f"Missing in persisted: {sorted(missing_in_persisted)}")
+
+        suffix = f" ({'; '.join(details)})" if details else ""
+        raise ValueError(
+            "Tools don't match between runtime and persisted agents." + suffix
         )
-
-        if self_dump != reconciled_dump:
-            raise ValueError(
-                "The Agent provided is different from the one in persisted state.\n"
-                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-            )
-        return reconciled
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
@@ -490,6 +496,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Raises:
             RuntimeError: If the agent has not been initialized.
         """
-        if not self._tools:
+        if not self._initialized:
             raise RuntimeError("Agent not initialized; call initialize() before use")
         return self._tools

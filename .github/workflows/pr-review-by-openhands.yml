@@ -38,11 +38,11 @@ jobs:
             PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
             REPO_NAME: ${{ github.repository }}
         steps:
-            - name: Checkout agent-sdk repository
+            - name: Checkout software-agent-sdk repository
               uses: actions/checkout@v5
               with:
-                  repository: OpenHands/agent-sdk
-                  path: agent-sdk
+                  repository: OpenHands/software-agent-sdk
+                  path: software-agent-sdk
 
             - name: Checkout PR repository
               uses: actions/checkout@v5
@@ -74,9 +74,8 @@ jobs:
 
             - name: Install OpenHands dependencies
               run: |
-                  # Install OpenHands SDK and tools from git repository
-                  uv pip install --system "openhands-sdk @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-sdk"
-                  uv pip install --system "openhands-tools @ git+https://github.com/OpenHands/agent-sdk.git@main#subdirectory=openhands-tools"
+                  # Install OpenHands SDK and tools from local checkout
+                  uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools
 
             - name: Check required configuration
               env:
@@ -103,8 +102,8 @@ jobs:
                   # Change to the PR repository directory so agent can analyze the code
                   cd pr-repo
 
-                  # Run the PR review script from the agent-sdk checkout
-                  uv run python ../agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
+                  # Run the PR review script from the software-agent-sdk checkout
+                  uv run python ../software-agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
 
             - name: Upload logs as artifact
               uses: actions/upload-artifact@v5

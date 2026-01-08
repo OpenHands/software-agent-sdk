@@ -59,6 +59,18 @@ class RouterLLM(LLM):
         """
         This method intercepts completion calls and routes them to the appropriate
         underlying LLM based on the routing logic implemented in select_llm().
+
+        Args:
+            messages: List of conversation messages
+            tools: Optional list of tools available to the model
+            return_metrics: Whether to return usage metrics
+            add_security_risk_prediction: Add security_risk field to tool schemas
+            on_token: Optional callback for streaming tokens
+            **kwargs: Additional arguments passed to the LLM API
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
         """
         # Select appropriate LLM
         selected_model = self.select_llm(messages)
