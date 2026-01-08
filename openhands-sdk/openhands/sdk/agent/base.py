@@ -22,23 +22,13 @@ from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.tool import (
+    BUILT_IN_TOOL_CLASSES,
     BUILT_IN_TOOLS,
-    FinishTool,
-    ThinkTool,
     Tool,
     ToolDefinition,
     resolve_tool,
 )
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-
-
-# Explicit mapping of built-in tool class names to their classes.
-# This is more reliable than using resolve_kind() which depends on
-# subclass discovery and may fail if classes haven't been imported.
-BUILT_IN_TOOL_CLASSES: dict[str, type[ToolDefinition]] = {
-    "FinishTool": FinishTool,
-    "ThinkTool": ThinkTool,
-}
 
 
 if TYPE_CHECKING:
