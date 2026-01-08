@@ -62,7 +62,7 @@ class EvalOutput(BaseModel):
 def load_integration_tests() -> list[TestInstance]:
     """Load tests from python files under ./tests/integration"""
     test_dir = Path(__file__).parent / "tests"
-    # Load task completion tests (t*.py), behavior tests (b*.py), and condenser tests 
+    # Load task completion tests (t*.py), behavior tests (b*.py), and condenser tests
     # (c*.py)
     test_files = [
         f
