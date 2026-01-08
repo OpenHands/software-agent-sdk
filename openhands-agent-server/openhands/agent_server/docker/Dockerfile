@@ -230,10 +230,14 @@ ARG USERNAME
 
 COPY --chown=${USERNAME}:${USERNAME} --from=binary-builder /agent-server/dist/openhands-agent-server /usr/local/bin/openhands-agent-server
 RUN chmod +x /usr/local/bin/openhands-agent-server
+# Fix library path to use system GCC libraries instead of bundled ones
+ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 ENTRYPOINT ["/usr/local/bin/openhands-agent-server"]
 
 FROM base-image-minimal AS binary-minimal
 ARG USERNAME
 COPY --chown=${USERNAME}:${USERNAME} --from=binary-builder /agent-server/dist/openhands-agent-server /usr/local/bin/openhands-agent-server
 RUN chmod +x /usr/local/bin/openhands-agent-server
+# Fix library path to use system GCC libraries instead of bundled ones
+ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu:/usr/lib:/usr/lib/x86_64-linux-gnu:$LD_LIBRARY_PATH
 ENTRYPOINT ["/usr/local/bin/openhands-agent-server"]

@@ -24,9 +24,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
     UpdateSecretsRequest,
 )
-from openhands.sdk import LLM, Agent, TextContent, Tool
+from openhands.sdk import LLM, Agent, TextContent
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.workspace import LocalWorkspace
+from openhands.tools.preset.default import get_default_tools
 
 
 conversation_router = APIRouter(prefix="/conversations", tags=["Conversations"])
@@ -41,17 +42,13 @@ START_CONVERSATION_EXAMPLES = [
                 model="your-model-provider/your-model-name",
                 api_key=SecretStr("your-api-key-here"),
             ),
-            tools=[
-                Tool(name="TerminalTool"),
-                Tool(name="FileEditorTool"),
-                Tool(name="TaskTrackerTool"),
-            ],
+            tools=get_default_tools(enable_browser=True),
         ),
         workspace=LocalWorkspace(working_dir="workspace/project"),
         initial_message=SendMessageRequest(
             role="user", content=[TextContent(text="Flip a coin!")]
         ),
-    ).model_dump(exclude_defaults=True)
+    ).model_dump(exclude_defaults=True, mode="json")
 ]
 
 
@@ -307,3 +304,18 @@ async def ask_agent(
     if response is None:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
     return AskAgentResponse(response=response)
+
+
+@conversation_router.post(
+    "/{conversation_id}/condense",
+    responses={404: {"description": "Item not found"}},
+)
+async def condense_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Force condensation of the conversation history."""
+    success = await conversation_service.condense(conversation_id)
+    if not success:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return Success()

@@ -90,6 +90,10 @@ print("\n" + "=" * 80)
 print("Tom agent consultation example completed!")
 print("=" * 80)
 
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
+
 
 # Optional: Index this conversation for Tom's user modeling
 # This builds user preferences and patterns from conversation history

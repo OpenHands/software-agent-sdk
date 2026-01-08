@@ -506,7 +506,7 @@ class OpenHandsWebChat {
         if (!this.currentConversationId) return;
         
         try {
-            await this.apiRequest(`/conversations/${this.currentConversationId}/resume`, {
+            await this.apiRequest(`/conversations/${this.currentConversationId}/run`, {
                 method: 'POST'
             });
             this.updateConversationStatus('RUNNING');
@@ -604,10 +604,15 @@ class OpenHandsWebChat {
                     api_key: "secret"
                 },
                 tools: [
-                    { name: "TerminalTool", params: { } },
-                    { name: "FileEditorTool", params: { } },
-                    { name: "TaskTrackerTool", params: { } }
+                    { "name": "terminal" },
+                    { "name": "file_editor" },
+                    { "name": "task_tracker" },
+                    { "name": "browser_tool_set" }
                 ]
+            },
+            workspace: {
+                kind: "LocalWorkspace",
+                working_dir: "workspace/project"
             }
         }, null, 2);
     }

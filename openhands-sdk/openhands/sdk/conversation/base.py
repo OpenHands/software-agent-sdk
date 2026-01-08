@@ -245,6 +245,23 @@ class BaseConversation(ABC):
         """
         ...
 
+    @abstractmethod
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method uses the existing condensation request pattern to trigger
+        condensation. It adds a CondensationRequest event to the conversation
+        and forces the agent to take a single step to process it.
+
+        The condensation will be applied immediately and will modify the conversation
+        state by adding a condensation event to the history.
+
+        Raises:
+            ValueError: If no condenser is configured or the condenser doesn't
+                       handle condensation requests.
+        """
+        ...
+
     @staticmethod
     def compose_callbacks(callbacks: Iterable[CallbackType]) -> CallbackType:
         """Compose multiple callbacks into a single callback function.

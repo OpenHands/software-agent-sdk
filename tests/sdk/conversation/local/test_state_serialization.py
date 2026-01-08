@@ -6,18 +6,13 @@ import uuid
 from pathlib import Path
 
 import pytest
-from pydantic import SecretStr
+from pydantic import SecretStr, ValidationError
 
 from openhands.sdk import Agent, Conversation
-from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
-)
-from openhands.sdk.conversation.types import (
-    ConversationCallbackType,
-    ConversationTokenCallbackType,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
@@ -303,7 +298,7 @@ def test_conversation_state_corrupted_event_handling():
         )
 
         # Load conversation - EventLog will fail on corrupted files
-        with pytest.raises(json.JSONDecodeError):
+        with pytest.raises(ValidationError):
             Conversation(
                 agent=agent,
                 workspace=LocalWorkspace(working_dir="/tmp"),
@@ -427,8 +422,79 @@ def test_conversation_state_thread_safety():
     assert not state.owned()
 
 
-def test_agent_resolve_diff_different_class_raises_error():
-    """Test that resolve_diff_from_deserialized raises error for different agent classes."""  # noqa: E501
+def test_agent_pydantic_validation_on_creation():
+    """Test that Pydantic validation happens when creating agents."""
+    # Valid agent creation - Pydantic validates
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[])
+    assert agent.llm.model == "gpt-4o-mini"
+
+    # Invalid LLM creation should fail Pydantic validation
+    with pytest.raises(ValueError, match="model must be specified"):
+        LLM(model="", api_key=SecretStr("test-key"), usage_id="test-llm")
+
+
+def test_agent_verify_validates_tools_match():
+    """Test that agent.verify() validates tools match between runtime and persisted."""
+    from openhands.sdk.agent import AgentBase
+    from openhands.sdk.tool import Tool
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+
+    # Create original agent with two tools
+    original_agent = Agent(
+        llm=llm, tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+    )
+
+    # Serialize and deserialize to simulate persistence
+    serialized = original_agent.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    # Runtime agent with same tools should succeed
+    same_tools_agent = Agent(
+        llm=llm, tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+    )
+    result = same_tools_agent.verify(persisted_agent)
+    assert result is same_tools_agent
+
+    # Runtime agent with different tools should fail
+    different_tools_agent = Agent(llm=llm, tools=[Tool(name="TerminalTool")])
+    with pytest.raises(
+        ValueError, match="Tools don't match between runtime and persisted agents"
+    ):
+        different_tools_agent.verify(persisted_agent)
+
+
+def test_agent_verify_allows_different_llm():
+    """Test that agent.verify() allows different LLM configuration."""
+    from openhands.sdk.agent import AgentBase
+    from openhands.sdk.tool import Tool
+
+    tools = [Tool(name="TerminalTool")]
+
+    # Create original agent
+    llm1 = LLM(model="gpt-4o-mini", api_key=SecretStr("key1"), usage_id="llm1")
+    original_agent = Agent(llm=llm1, tools=tools)
+
+    # Serialize and deserialize
+    serialized = original_agent.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    # Runtime agent with different LLM should succeed (LLM can change freely)
+    llm2 = LLM(model="gpt-4o", api_key=SecretStr("key2"), usage_id="llm2")
+    different_llm_agent = Agent(llm=llm2, tools=tools)
+    result = different_llm_agent.verify(persisted_agent)
+    assert result is different_llm_agent
+    assert result.llm.model == "gpt-4o"
+
+
+def test_agent_verify_different_class_raises_error():
+    """Test that agent.verify() raises error for different agent classes."""
+    from openhands.sdk.agent.base import AgentBase
+    from openhands.sdk.conversation.types import (
+        ConversationCallbackType,
+        ConversationTokenCallbackType,
+    )
 
     class DifferentAgent(AgentBase):
         def __init__(self):
@@ -454,8 +520,8 @@ def test_agent_resolve_diff_different_class_raises_error():
     original_agent = Agent(llm=llm, tools=[])
     different_agent = DifferentAgent()
 
-    with pytest.raises(ValueError, match="Cannot resolve from deserialized"):
-        original_agent.resolve_diff_from_deserialized(different_agent)
+    with pytest.raises(ValueError, match="Cannot load from persisted"):
+        original_agent.verify(different_agent)
 
 
 def test_conversation_state_flags_persistence():
@@ -498,9 +564,7 @@ def test_conversation_state_flags_persistence():
         assert loaded_state.execution_status == ConversationExecutionStatus.FINISHED
         assert loaded_state.confirmation_policy == AlwaysConfirm()
         assert loaded_state.activated_knowledge_skills == ["agent1", "agent2"]
-        # Test model_dump equality
-        assert loaded_state.model_dump(mode="json") != state.model_dump(mode="json")
-        loaded_state.stats.register_llm(RegistryEvent(llm=llm))
+        # Test model_dump equality - stats should be preserved on resume
         assert loaded_state.model_dump(mode="json") == state.model_dump(mode="json")
 
 
@@ -556,3 +620,201 @@ def test_conversation_with_agent_different_llm_config():
         new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
 
         assert new_dump == original_state_dump
+
+
+def test_resume_uses_runtime_workspace_and_max_iterations():
+    """Test that resume uses runtime-provided workspace and max_iterations."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789007")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        original_workspace = LocalWorkspace(working_dir="/original/path")
+        state = ConversationState.create(
+            workspace=original_workspace,
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            max_iterations=100,
+        )
+        assert state.max_iterations == 100
+
+        new_workspace = LocalWorkspace(working_dir="/new/path")
+        resumed_state = ConversationState.create(
+            workspace=new_workspace,
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            max_iterations=200,
+        )
+
+        assert resumed_state.workspace.working_dir == "/new/path"
+        assert resumed_state.max_iterations == 200
+
+
+def test_resume_preserves_persisted_execution_status_and_stuck_detection():
+    """Test that resume preserves execution_status and stuck_detection."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789008")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            stuck_detection=False,
+        )
+        state.execution_status = ConversationExecutionStatus.PAUSED
+
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            stuck_detection=True,
+        )
+
+        assert resumed_state.execution_status == ConversationExecutionStatus.PAUSED
+        assert resumed_state.stuck_detection is False
+
+
+def test_resume_preserves_blocked_actions_and_messages():
+    """Test that resume preserves blocked_actions and blocked_messages."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789009")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+        state.block_action("action-1", "dangerous action")
+        state.block_message("msg-1", "inappropriate content")
+
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+
+        assert resumed_state.blocked_actions["action-1"] == "dangerous action"
+        assert resumed_state.blocked_messages["msg-1"] == "inappropriate content"
+
+
+def test_conversation_state_stats_preserved_on_resume():
+    """Regression: stats should not be reset when resuming a conversation."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789010")
+        persist_path_for_state = LocalConversation.get_persistence_dir(
+            temp_dir, conv_id
+        )
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path_for_state,
+            agent=agent,
+            id=conv_id,
+        )
+
+        state.stats.register_llm(RegistryEvent(llm=llm))
+
+        # Add token usage with context_window
+        assert llm.metrics is not None
+        llm.metrics.add_cost(0.05)
+        llm.metrics.add_token_usage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cache_read_tokens=10,
+            cache_write_tokens=5,
+            context_window=128000,
+            response_id="test-response-1",
+        )
+
+        # Verify stats are set correctly before saving
+        combined_metrics = state.stats.get_combined_metrics()
+        assert combined_metrics.accumulated_cost == 0.05
+        assert combined_metrics.accumulated_token_usage is not None
+        assert combined_metrics.accumulated_token_usage.prompt_tokens == 100
+        assert combined_metrics.accumulated_token_usage.context_window == 128000
+
+        # Force save the state
+        state._save_base_state(state._fs)
+
+        # Verify the base_state.json contains the stats
+        base_state_path = Path(persist_path_for_state) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "stats" in base_state_content
+        assert "usage_to_metrics" in base_state_content["stats"]
+        assert "test-llm" in base_state_content["stats"]["usage_to_metrics"]
+
+        # Now resume the conversation with a new agent
+        new_llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        new_agent = Agent(llm=new_llm, tools=[])
+
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path_for_state,
+            agent=new_agent,
+            id=conv_id,
+        )
+
+        # Verify stats are preserved after resume
+        resumed_combined_metrics = resumed_state.stats.get_combined_metrics()
+        assert resumed_combined_metrics.accumulated_cost == 0.05, (
+            "Cost should be preserved after resume"
+        )
+        assert resumed_combined_metrics.accumulated_token_usage is not None
+        assert resumed_combined_metrics.accumulated_token_usage.prompt_tokens == 100, (
+            "Prompt tokens should be preserved after resume"
+        )
+        assert (
+            resumed_combined_metrics.accumulated_token_usage.context_window == 128000
+        ), "Context window should be preserved after resume"
+
+
+def test_resume_with_conversation_id_mismatch_raises_error():
+    """Test that resuming with mismatched conversation ID raises error."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        original_id = uuid.UUID("12345678-1234-5678-9abc-12345678900b")
+        different_id = uuid.UUID("12345678-1234-5678-9abc-12345678900c")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, original_id)
+
+        ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=original_id,
+        )
+
+        with pytest.raises(ValueError, match="Conversation ID mismatch"):
+            ConversationState.create(
+                workspace=LocalWorkspace(working_dir="/tmp"),
+                persistence_dir=persist_path,
+                agent=agent,
+                id=different_id,
+            )

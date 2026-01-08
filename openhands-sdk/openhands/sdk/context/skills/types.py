@@ -16,6 +16,10 @@ class SkillKnowledge(BaseModel):
     name: str = Field(description="The name of the skill that was triggered")
     trigger: str = Field(description="The word that triggered this skill")
     content: str = Field(description="The actual content/knowledge from the skill")
+    location: str | None = Field(
+        default=None,
+        description="Path to the SKILL.md file (for resolving relative resource paths)",
+    )
 
 
 class SkillResponse(BaseModel):
