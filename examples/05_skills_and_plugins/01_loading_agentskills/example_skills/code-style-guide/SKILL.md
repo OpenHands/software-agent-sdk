@@ -7,7 +7,6 @@ license: MIT
 metadata:
   author: openhands
   version: "1.0"
-# No triggers - this skill is always active
 ---
 
 # Code Style Guide
