@@ -1,0 +1,11 @@
+{
+  "name": "code-quality",
+  "version": "1.0.0",
+  "description": "A plugin for code quality checks including linting and formatting",
+  "author": {
+    "name": "OpenHands",
+    "email": "openhands@openhands.dev"
+  },
+  "license": "MIT",
+  "repository": "https://github.com/OpenHands/software-agent-sdk"
+}

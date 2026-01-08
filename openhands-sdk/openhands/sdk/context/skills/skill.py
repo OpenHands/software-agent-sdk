@@ -2,12 +2,13 @@ import io
 import re
 from pathlib import Path
 from typing import Annotated, ClassVar, Union
+from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
 from fastmcp.mcp_config import MCPConfig
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from openhands.sdk.context.skills.exceptions import SkillValidationError
+from openhands.sdk.context.skills.exceptions import SkillError, SkillValidationError
 from openhands.sdk.context.skills.trigger import (
     KeywordTrigger,
     TaskTrigger,
@@ -174,6 +175,16 @@ class Skill(BaseModel):
         ),
     )
 
+    @field_validator("description")
+    @classmethod
+    def _validate_description_length(cls, v: str | None) -> str | None:
+        """Validate description length per AgentSkills spec (max 1024 chars)."""
+        if v is not None and len(v) > 1024:
+            raise SkillValidationError(
+                f"Description exceeds 1024 characters ({len(v)} chars)"
+            )
+        return v
+
     @field_validator("allowed_tools", mode="before")
     @classmethod
     def _parse_allowed_tools(cls, v: str | list | None) -> list[str] | None:
@@ -222,6 +233,7 @@ class Skill(BaseModel):
         cls,
         path: str | Path,
         skill_base_dir: Path | None = None,
+        strict: bool = True,
     ) -> "Skill":
         """Load a skill from a markdown file with frontmatter.
 
@@ -234,6 +246,8 @@ class Skill(BaseModel):
         Args:
             path: Path to the skill file.
             skill_base_dir: Base directory for skills (used to derive relative names).
+            strict: If True, enforce strict AgentSkills name validation.
+                If False, allow relaxed naming (e.g., for plugin compatibility).
         """
         path = Path(path) if isinstance(path, str) else path
 
@@ -241,17 +255,20 @@ class Skill(BaseModel):
             file_content = f.read()
 
         if path.name.lower() == "skill.md":
-            return cls._load_agentskills_skill(path, file_content)
+            return cls._load_agentskills_skill(path, file_content, strict=strict)
         else:
             return cls._load_legacy_openhands_skill(path, file_content, skill_base_dir)
 
     @classmethod
-    def _load_agentskills_skill(cls, path: Path, file_content: str) -> "Skill":
+    def _load_agentskills_skill(
+        cls, path: Path, file_content: str, strict: bool = True
+    ) -> "Skill":
         """Load a skill from an AgentSkills-format SKILL.md file.
 
         Args:
             path: Path to the SKILL.md file.
             file_content: Content of the file.
+            strict: If True, enforce strict AgentSkills name validation.
         """
         # For SKILL.md files, use parent directory name as the skill name
         directory_name = path.parent.name
@@ -265,12 +282,13 @@ class Skill(BaseModel):
         # Use name from frontmatter if provided, otherwise use directory name
         agent_name = str(metadata_dict.get("name", directory_name))
 
-        # Validate skill name
-        name_errors = validate_skill_name(agent_name, directory_name)
-        if name_errors:
-            raise SkillValidationError(
-                f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
-            )
+        # Validate skill name (only in strict mode)
+        if strict:
+            name_errors = validate_skill_name(agent_name, directory_name)
+            if name_errors:
+                raise SkillValidationError(
+                    f"Invalid skill name '{agent_name}': {'; '.join(name_errors)}"
+                )
 
         # Load MCP configuration from .mcp.json (agent_skills ONLY use .mcp.json)
         mcp_tools: dict | None = None
@@ -544,20 +562,13 @@ def load_skills_from_dir(
     agent_skills: dict[str, Skill] = {}
     logger.debug(f"Loading agents from {skill_dir}")
 
-    # Discover all skill files
-    repo_root = skill_dir.parent.parent
-    third_party_files = find_third_party_files(
-        repo_root, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
-    )
+    # Discover skill files in the skills directory
+    # Note: Third-party files (AGENTS.md, etc.) are loaded separately by
+    # load_project_skills() to ensure they're loaded even when this directory
+    # doesn't exist.
     skill_md_files = find_skill_md_directories(skill_dir)
     skill_md_dirs = {skill_md.parent for skill_md in skill_md_files}
     regular_md_files = find_regular_md_files(skill_dir, skill_md_dirs)
-
-    # Load third-party files
-    for path in third_party_files:
-        load_and_categorize(
-            path, skill_dir, repo_skills, knowledge_skills, agent_skills
-        )
 
     # Load SKILL.md files (auto-detected and validated in Skill.load)
     for skill_md_path in skill_md_files:
@@ -641,6 +652,9 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
     directories are merged, with skills/ taking precedence for
     duplicate names.
 
+    Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
+    directly from the work directory.
+
     Args:
         work_dir: Path to the project/working directory.
 
@@ -652,7 +666,22 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         work_dir = Path(work_dir)
 
     all_skills = []
-    seen_names = set()
+    seen_names: set[str] = set()
+
+    # First, load third-party skill files directly from work directory
+    # This ensures they are loaded even if .openhands/skills doesn't exist
+    third_party_files = find_third_party_files(
+        work_dir, Skill.PATH_TO_THIRD_PARTY_SKILL_NAME
+    )
+    for path in third_party_files:
+        try:
+            skill = Skill.load(path)
+            if skill.name not in seen_names:
+                all_skills.append(skill)
+                seen_names.add(skill.name)
+                logger.debug(f"Loaded third-party skill: {skill.name} from {path}")
+        except (SkillError, OSError) as e:
+            logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
     # Load project-specific skills from .openhands/skills and legacy microagents
     project_skills_dirs = [
@@ -673,7 +702,7 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
                 project_skills_dir
             )
 
-            # Merge all skill categories
+            # Merge all skill categories (skip duplicates including third-party)
             for skills_dict in [repo_skills, knowledge_skills, agent_skills]:
                 for name, skill in skills_dict.items():
                     if name not in seen_names:
@@ -776,3 +805,72 @@ def load_public_skills(
         f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"
     )
     return all_skills
+
+
+def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
+    """Generate XML prompt block for available skills.
+
+    Creates an `<available_skills>` XML block suitable for inclusion
+    in system prompts, following the AgentSkills format.
+
+    Args:
+        skills: List of skills to include in the prompt
+        max_description_length: Maximum length for descriptions (default 200)
+
+    Returns:
+        XML string in AgentSkills format
+
+    Example:
+        >>> skills = [Skill(name="pdf-tools", content="...", description="...")]
+        >>> print(to_prompt(skills))
+        <available_skills>
+          <skill name="pdf-tools">Extract text from PDF files.</skill>
+        </available_skills>
+    """  # noqa: E501
+    if not skills:
+        return "<available_skills>\n  no available skills\n</available_skills>"
+
+    lines = ["<available_skills>"]
+    for skill in skills:
+        # Use description if available, otherwise use first line of content
+        description = skill.description
+        content_truncated = 0
+        if not description:
+            # Extract first non-empty, non-header line from content as fallback
+            # Track position to calculate truncated content after the description
+            chars_before_desc = 0
+            for line in skill.content.split("\n"):
+                stripped = line.strip()
+                # Skip markdown headers and empty lines
+                if not stripped or stripped.startswith("#"):
+                    chars_before_desc += len(line) + 1  # +1 for newline
+                    continue
+                description = stripped
+                # Calculate remaining content after this line as truncated
+                desc_end_pos = chars_before_desc + len(line)
+                content_truncated = max(0, len(skill.content) - desc_end_pos)
+                break
+        description = description or ""
+
+        # Calculate total truncated characters
+        total_truncated = content_truncated
+
+        # Truncate description if needed and add truncation indicator
+        if len(description) > max_description_length:
+            total_truncated += len(description) - max_description_length
+            description = description[:max_description_length]
+
+        if total_truncated > 0:
+            truncation_msg = f"... [{total_truncated} characters truncated"
+            if skill.source:
+                truncation_msg += f". View {skill.source} for complete information"
+            truncation_msg += "]"
+            description = description + truncation_msg
+
+        # Escape XML special characters using standard library
+        xml_entities = {'"': "&quot;", "'": "&apos;"}
+        description = xml_escape(description, entities=xml_entities)
+        name = xml_escape(skill.name, entities=xml_entities)
+        lines.append(f'  <skill name="{name}">{description}</skill>')
+    lines.append("</available_skills>")
+    return "\n".join(lines)

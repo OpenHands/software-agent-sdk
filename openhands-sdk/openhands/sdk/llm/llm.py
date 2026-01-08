@@ -483,8 +483,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         This is the method for getting responses from the model via Completion API.
         It handles message formatting, tool calling, and response processing.
 
+        Args:
+            messages: List of conversation messages
+            tools: Optional list of tools available to the model
+            _return_metrics: Whether to return usage metrics
+            add_security_risk_prediction: Add security_risk field to tool schemas
+            on_token: Optional callback for streaming tokens
+            **kwargs: Additional arguments passed to the LLM API
+
         Returns:
             LLMResponse containing the model's response and metadata.
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
 
         Raises:
             ValueError: If streaming is requested (not supported).
@@ -513,7 +525,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if tools:
             cc_tools = [
                 t.to_openai_tool(
-                    add_security_risk_prediction=add_security_risk_prediction
+                    add_security_risk_prediction=add_security_risk_prediction,
                 )
                 for t in tools
             ]
@@ -535,18 +547,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
 
-        # 4) optional request logging context (kept small)
+        # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
-        log_ctx = None
+        # Always pass context_window so metrics are tracked even when logging disabled
+        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "messages": formatted_messages[:],  # already simple dicts
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            telemetry_ctx.update(
+                {
+                    "messages": formatted_messages[:],  # already simple dicts
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
             if tools and not use_native_fc:
-                log_ctx["raw_messages"] = original_fncall_msgs
+                telemetry_ctx["raw_messages"] = original_fncall_msgs
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -559,7 +573,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
-            self._telemetry.on_request(log_ctx=log_ctx)
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(
@@ -630,6 +644,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
 
         Maps Message[] -> (instructions, input[]) and returns LLMResponse.
+
+        Args:
+            messages: List of conversation messages
+            tools: Optional list of tools available to the model
+            include: Optional list of fields to include in response
+            store: Whether to store the conversation
+            _return_metrics: Whether to return usage metrics
+            add_security_risk_prediction: Add security_risk field to tool schemas
+            on_token: Optional callback for streaming tokens (not yet supported)
+            **kwargs: Additional arguments passed to the API
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
         """
         # Streaming not yet supported
         if kwargs.get("stream", False) or self.stream or on_token is not None:
@@ -643,7 +671,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         resp_tools = (
             [
                 t.to_responses_tool(
-                    add_security_risk_prediction=add_security_risk_prediction
+                    add_security_risk_prediction=add_security_risk_prediction,
                 )
                 for t in tools
             ]
@@ -656,17 +684,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self, kwargs, include=include, store=store
         )
 
-        # Optional request logging
+        # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
-        log_ctx = None
+        # Always pass context_window so metrics are tracked even when logging disabled
+        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "llm_path": "responses",
-                "input": input_items[:],
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            telemetry_ctx.update(
+                {
+                    "llm_path": "responses",
+                    "input": input_items[:],
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
 
         # Perform call with retries
         @self.retry_decorator(
@@ -679,7 +709,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
             assert self._telemetry is not None
-            self._telemetry.on_request(log_ctx=log_ctx)
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
