@@ -34,10 +34,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from openhands.sdk import LLM, AgentContext, Conversation, get_logger
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.utils.github import sanitize_openhands_mentions
-from openhands.tools.preset.default import get_default_agent
+from openhands.tools.preset.default import get_default_condenser, get_default_tools
 
 
 # Add the script directory to Python path so we can import prompt.py
@@ -169,12 +169,16 @@ def main():
         )
 
         # Create agent with default tools and agent context
-        agent = get_default_agent(
+        # Note: agent_context must be passed at initialization since Agent is frozen
+        agent = Agent(
             llm=llm,
-            cli_mode=True,
+            tools=get_default_tools(enable_browser=False),  # CLI mode - no browser
+            agent_context=agent_context,
+            system_prompt_kwargs={"cli_mode": True},
+            condenser=get_default_condenser(
+                llm=llm.model_copy(update={"usage_id": "condenser"})
+            ),
         )
-        # Set agent_context on the agent
-        agent.agent_context = agent_context
 
         # Create conversation
         conversation = Conversation(
