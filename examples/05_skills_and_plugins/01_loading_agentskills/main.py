@@ -9,7 +9,9 @@ AgentSkills standard which includes:
 - SKILL.md file with frontmatter metadata (name, description, triggers)
 - Optional resource directories: scripts/, references/, assets/
 
-See the example_skills/ directory for a complete skill structure.
+The example_skills/ directory contains two skills demonstrating different modes:
+- rot13-encryption: Has triggers (encrypt, decrypt) - listed in <SKILLS> section
+- code-style-guide: No triggers - always active, full content in system prompt
 """
 
 import os
@@ -59,11 +61,19 @@ def main():
     print(f"  - Knowledge skills: {list(knowledge_skills.keys())}")
     print(f"  - Agent skills (SKILL.md): {list(agent_skills.keys())}")
 
+    # Show how skills are categorized by trigger type
+    print("\nSkill trigger types:")
+    for name, skill in agent_skills.items():
+        if skill.trigger is None:
+            print(f"  - {name}: Always active (full content in system prompt)")
+        else:
+            print(f"  - {name}: Triggered by keywords {skill.trigger}")
+
     # Access the loaded skill and show all AgentSkills standard fields
     if agent_skills:
         skill_name = list(agent_skills.keys())[0]
         loaded_skill = agent_skills[skill_name]
-        print("\nLoaded skill details (AgentSkills standard fields):")
+        print(f"\nDetails for '{skill_name}' (AgentSkills standard fields):")
         print(f"  - Name: {loaded_skill.name}")
         desc = loaded_skill.description or ""
         print(f"  - Description: {desc[:70]}...")
