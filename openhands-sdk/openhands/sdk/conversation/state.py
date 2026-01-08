@@ -42,6 +42,7 @@ class ConversationExecutionStatus(str, Enum):
     FINISHED = "finished"  # Conversation has completed the current task
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
+    DELETING = "deleting"  # Conversation is in the process of being deleted
 
 
 class ConversationState(OpenHandsModel):
@@ -91,6 +92,18 @@ class ConversationState(OpenHandsModel):
     activated_knowledge_skills: list[str] = Field(
         default_factory=list,
         description="List of activated knowledge skills name",
+    )
+
+    # Hook-blocked actions: action_id -> blocking reason
+    blocked_actions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Actions blocked by PreToolUse hooks, keyed by action ID",
+    )
+
+    # Hook-blocked messages: message_id -> blocking reason
+    blocked_messages: dict[str, str] = Field(
+        default_factory=dict,
+        description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
     )
 
     # Conversation statistics for LLM usage tracking
@@ -166,7 +179,9 @@ class ConversationState(OpenHandsModel):
         Else: create fresh (agent required), persist base, and return.
         """
         file_store = (
-            LocalFileStore(persistence_dir) if persistence_dir else InMemoryFileStore()
+            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
+            if persistence_dir
+            else InMemoryFileStore()
         )
 
         try:
@@ -274,6 +289,32 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def block_action(self, action_id: str, reason: str) -> None:
+        """Persistently record a hook-blocked action."""
+        self.blocked_actions = {**self.blocked_actions, action_id: reason}
+
+    def pop_blocked_action(self, action_id: str) -> str | None:
+        """Remove and return a hook-blocked action reason, if present."""
+        if action_id not in self.blocked_actions:
+            return None
+        updated = dict(self.blocked_actions)
+        reason = updated.pop(action_id)
+        self.blocked_actions = updated
+        return reason
+
+    def block_message(self, message_id: str, reason: str) -> None:
+        """Persistently record a hook-blocked user message."""
+        self.blocked_messages = {**self.blocked_messages, message_id: reason}
+
+    def pop_blocked_message(self, message_id: str) -> str | None:
+        """Remove and return a hook-blocked message reason, if present."""
+        if message_id not in self.blocked_messages:
+            return None
+        updated = dict(self.blocked_messages)
+        reason = updated.pop(message_id)
+        self.blocked_messages = updated
+        return reason
 
     @staticmethod
     def get_unmatched_actions(events: Sequence[Event]) -> list[ActionEvent]:

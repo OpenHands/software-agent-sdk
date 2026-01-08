@@ -304,3 +304,18 @@ async def ask_agent(
     if response is None:
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR)
     return AskAgentResponse(response=response)
+
+
+@conversation_router.post(
+    "/{conversation_id}/condense",
+    responses={404: {"description": "Item not found"}},
+)
+async def condense_conversation(
+    conversation_id: UUID,
+    conversation_service: ConversationService = Depends(get_conversation_service),
+) -> Success:
+    """Force condensation of the conversation history."""
+    success = await conversation_service.condense(conversation_id)
+    if not success:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    return Success()

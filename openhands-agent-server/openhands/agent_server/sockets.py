@@ -26,6 +26,7 @@ from openhands.agent_server.conversation_service import (
 from openhands.agent_server.models import BashEventBase, ExecuteBashRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event, Message
+from openhands.sdk.utils.paging import page_iterator
 
 
 sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
@@ -65,14 +66,8 @@ async def events_socket(
         # Resend all existing events if requested
         if resend_all:
             logger.info(f"Resending events: {conversation_id}")
-            page_id = None
-            while True:
-                page = await event_service.search_events(page_id=page_id)
-                for event in page.items:
-                    await _send_event(event, websocket)
-                page_id = page.next_page_id
-                if not page_id:
-                    break
+            async for event in page_iterator(event_service.search_events):
+                await _send_event(event, websocket)
 
         # Listen for messages over the socket
         while True:
@@ -118,14 +113,8 @@ async def bash_events_socket(
         # Resend all existing events if requested
         if resend_all:
             logger.info("Resending bash events")
-            page_id = None
-            while True:
-                page = await bash_event_service.search_bash_events(page_id=page_id)
-                for event in page.items:
-                    await _send_bash_event(event, websocket)
-                page_id = page.next_page_id
-                if not page_id:
-                    break
+            async for event in page_iterator(bash_event_service.search_bash_events):
+                await _send_bash_event(event, websocket)
 
         while True:
             try:

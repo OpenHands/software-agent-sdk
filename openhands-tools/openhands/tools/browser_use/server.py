@@ -1,17 +1,107 @@
 from browser_use.dom.markdown_extractor import extract_clean_markdown
-from browser_use.mcp.server import BrowserUseServer
 
 from openhands.sdk import get_logger
+from openhands.tools.browser_use.logging_fix import LogSafeBrowserUseServer
 
 
 logger = get_logger(__name__)
 
 
-class CustomBrowserUseServer(BrowserUseServer):
+class CustomBrowserUseServer(LogSafeBrowserUseServer):
     """
     Custom BrowserUseServer with a new tool for extracting web
     page's content in markdown.
     """
+
+    async def _get_storage(self) -> str:
+        """Get browser storage (cookies, local storage, session storage)."""
+        import json
+
+        if not self.browser_session:
+            return "Error: No browser session active"
+
+        try:
+            # Use the private method from BrowserSession to get storage state
+            # This returns a dict with 'cookies' and 'origins'
+            # (localStorage/sessionStorage)
+            storage_state = await self.browser_session._cdp_get_storage_state()
+            return json.dumps(storage_state, indent=2)
+        except Exception as e:
+            logger.exception("Error getting storage state", exc_info=e)
+            return f"Error getting storage state: {str(e)}"
+
+    async def _set_storage(self, storage_state: dict) -> str:
+        """Set browser storage (cookies, local storage, session storage)."""
+        if not self.browser_session:
+            return "Error: No browser session active"
+
+        try:
+            # 1. Set cookies
+            cookies = storage_state.get("cookies", [])
+            if cookies:
+                await self.browser_session._cdp_set_cookies(cookies)
+
+            # 2. Set local/session storage
+            origins = storage_state.get("origins", [])
+            if origins:
+                cdp_session = await self.browser_session.get_or_create_cdp_session()
+
+                # Enable DOMStorage
+                await cdp_session.cdp_client.send.DOMStorage.enable(
+                    session_id=cdp_session.session_id
+                )
+
+                try:
+                    for origin_data in origins:
+                        origin = origin_data.get("origin")
+                        if not origin:
+                            continue
+
+                        dom_storage = cdp_session.cdp_client.send.DOMStorage
+
+                        # Set localStorage
+                        for item in origin_data.get("localStorage", []):
+                            key = item.get("key") or item.get("name")
+                            if not key:
+                                continue
+                            await dom_storage.setDOMStorageItem(
+                                params={
+                                    "storageId": {
+                                        "securityOrigin": origin,
+                                        "isLocalStorage": True,
+                                    },
+                                    "key": key,
+                                    "value": item["value"],
+                                },
+                                session_id=cdp_session.session_id,
+                            )
+
+                        # Set sessionStorage
+                        for item in origin_data.get("sessionStorage", []):
+                            key = item.get("key") or item.get("name")
+                            if not key:
+                                continue
+                            await dom_storage.setDOMStorageItem(
+                                params={
+                                    "storageId": {
+                                        "securityOrigin": origin,
+                                        "isLocalStorage": False,
+                                    },
+                                    "key": key,
+                                    "value": item["value"],
+                                },
+                                session_id=cdp_session.session_id,
+                            )
+                finally:
+                    # Disable DOMStorage
+                    await cdp_session.cdp_client.send.DOMStorage.disable(
+                        session_id=cdp_session.session_id
+                    )
+
+            return "Storage set successfully"
+        except Exception as e:
+            logger.exception("Error setting storage state", exc_info=e)
+            return f"Error setting storage state: {str(e)}"
 
     async def _get_content(self, extract_links=False, start_from_char: int = 0) -> str:
         MAX_CHAR_LIMIT = 30000
