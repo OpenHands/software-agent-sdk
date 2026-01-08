@@ -2,7 +2,7 @@ import tempfile
 from pathlib import Path
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.skills import load_skills_from_dir
+from openhands.sdk.context.skills import load_project_skills
 
 
 def _write_repo_with_vendor_files(root: Path):
@@ -24,9 +24,9 @@ def _write_repo_with_vendor_files(root: Path):
 def test_context_gates_claude_vendor_file():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _, _ = load_skills_from_dir(skills_dir)
-        ac = AgentContext(skills=list(repo_skills.values()))
+        _write_repo_with_vendor_files(root)
+        skills = load_project_skills(root)
+        ac = AgentContext(skills=skills)
         suffix = ac.get_system_message_suffix(
             llm_model="litellm_proxy/anthropic/claude-sonnet-4"
         )
@@ -39,9 +39,9 @@ def test_context_gates_claude_vendor_file():
 def test_context_gates_gemini_vendor_file():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _, _ = load_skills_from_dir(skills_dir)
-        ac = AgentContext(skills=list(repo_skills.values()))
+        _write_repo_with_vendor_files(root)
+        skills = load_project_skills(root)
+        ac = AgentContext(skills=skills)
         suffix = ac.get_system_message_suffix(llm_model="gemini-2.5-pro")
         assert suffix is not None
         assert "Repo baseline" in suffix
@@ -52,9 +52,9 @@ def test_context_gates_gemini_vendor_file():
 def test_context_excludes_both_for_other_models():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _, _ = load_skills_from_dir(skills_dir)
-        ac = AgentContext(skills=list(repo_skills.values()))
+        _write_repo_with_vendor_files(root)
+        skills = load_project_skills(root)
+        ac = AgentContext(skills=skills)
         suffix = ac.get_system_message_suffix(llm_model="openai/gpt-4o")
         assert suffix is not None
         assert "Repo baseline" in suffix
@@ -65,9 +65,9 @@ def test_context_excludes_both_for_other_models():
 def test_context_uses_canonical_name_for_vendor_match():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _, _ = load_skills_from_dir(skills_dir)
-        ac = AgentContext(skills=list(repo_skills.values()))
+        _write_repo_with_vendor_files(root)
+        skills = load_project_skills(root)
+        ac = AgentContext(skills=skills)
         # Non-matching "proxy" model, but canonical matches Anthropic/Claude
         suffix = ac.get_system_message_suffix(
             llm_model="proxy/test-model",
@@ -82,9 +82,9 @@ def test_context_uses_canonical_name_for_vendor_match():
 def test_context_includes_all_when_model_unknown():
     with tempfile.TemporaryDirectory() as d:
         root = Path(d)
-        skills_dir = _write_repo_with_vendor_files(root)
-        repo_skills, _, _ = load_skills_from_dir(skills_dir)
-        ac = AgentContext(skills=list(repo_skills.values()))
+        _write_repo_with_vendor_files(root)
+        skills = load_project_skills(root)
+        ac = AgentContext(skills=skills)
         # No model info provided -> backward-compatible include-all behavior
         suffix = ac.get_system_message_suffix()
         assert suffix is not None

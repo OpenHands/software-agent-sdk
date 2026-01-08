@@ -187,9 +187,14 @@ defined in user's repository.\n"
 
         expected_output = (
             "<EXTRA_INFO>\n"
-            'The following information has been included based on a keyword match \
-for "python".\n'
+            "The following information has been included based on a keyword match "
+            'for "python".\n'
             "It may or may not be relevant to the user's request.\n"
+            "\n"
+            "Skill location: python-tips.md\n"
+            "(Use this path to resolve relative file references in the skill "
+            "content below)\n"
+            "\n"
             "\n"
             "Use list comprehensions for better performance.\n"
             "</EXTRA_INFO>"
@@ -230,20 +235,30 @@ parametrization.",
 
         expected_output = (
             "<EXTRA_INFO>\n"
-            'The following information has been included based on a keyword match \
-for "python".\n'
+            "The following information has been included based on a keyword match "
+            'for "python".\n'
             "It may or may not be relevant to the user's request.\n"
+            "\n"
+            "Skill location: python-best-practices.md\n"
+            "(Use this path to resolve relative file references in the skill "
+            "content below)\n"
+            "\n"
             "\n"
             "Follow PEP 8 and use type hints for better code quality.\n"
             "</EXTRA_INFO>\n"
             "\n"
             "<EXTRA_INFO>\n"
-            'The following information has been included based on a keyword match \
-for "testing".\n'
+            "The following information has been included based on a keyword match "
+            'for "testing".\n'
             "It may or may not be relevant to the user's request.\n"
             "\n"
-            "Use pytest for comprehensive testing with fixtures and \
-parametrization.\n"
+            "Skill location: testing-framework.md\n"
+            "(Use this path to resolve relative file references in the skill "
+            "content below)\n"
+            "\n"
+            "\n"
+            "Use pytest for comprehensive testing with fixtures and "
+            "parametrization.\n"
             "</EXTRA_INFO>"
         )
 
@@ -298,6 +313,11 @@ attacks.",
             'for "database".\n'
             "It may or may not be relevant to the user's request.\n"
             "\n"
+            "Skill location: database-tips.md\n"
+            "(Use this path to resolve relative file references in the skill "
+            "content below)\n"
+            "\n"
+            "\n"
             "Always use parameterized queries to prevent SQL injection attacks.\n"
             "</EXTRA_INFO>"
         )
@@ -351,9 +371,14 @@ defined in user's repository.\n"
 
         expected_user_output = (
             "<EXTRA_INFO>\n"
-            'The following information has been included based on a keyword match \
-for "git".\n'
+            "The following information has been included based on a keyword match "
+            'for "git".\n'
             "It may or may not be relevant to the user's request.\n"
+            "\n"
+            "Skill location: git-tips.md\n"
+            "(Use this path to resolve relative file references in the skill "
+            "content below)\n"
+            "\n"
             "\n"
             "Use conventional commits for better history.\n"
             "</EXTRA_INFO>"
@@ -383,9 +408,14 @@ for "git".\n'
 
         expected_output = (
             "<EXTRA_INFO>\n"
-            'The following information has been included based on a keyword match \
-for "docker".\n'
+            "The following information has been included based on a keyword match "
+            'for "docker".\n'
             "It may or may not be relevant to the user's request.\n"
+            "\n"
+            "Skill location: docker-tips.md\n"
+            "(Use this path to resolve relative file references in the skill "
+            "content below)\n"
+            "\n"
             "\n"
             "Use multi-stage builds to reduce image size.\n"
             "</EXTRA_INFO>"

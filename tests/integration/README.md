@@ -106,3 +106,9 @@ All integration tests inherit from `BaseIntegrationTest` in `base.py`. The base 
 - **`max_iteration_per_run`** (property) - Maximum iterations per conversation (default: `100`)
   - Override to limit LLM calls for faster tests
   - Useful for tests that should complete quickly
+
+### Conversation Control
+
+The standard way to define an integration test is to set the `INSTRUCTION` class variable. These instructions are sent to the agent as the first user message.
+
+However, if the functionality being tested requires multiple instructions or accessing the conversation object mid-test then the test can instead be defined by overriding the `run_instructions` method. This method provides a `LocalConversation` object that can be manipulated directly by sending messages, triggering condensations, and the like.

@@ -102,6 +102,27 @@ class ApptainerWorkspace(RemoteWorkspace):
             "Set to False if fakeroot is not supported in your environment."
         ),
     )
+    disable_mount_hostfs: bool = Field(
+        default=True,
+        description=(
+            "Whether to over-ride the `mount hostfs = yes` setting in apptainer.conf"
+            "Set to False if you want to disable --no-mount hostfs"
+        ),
+    )
+    disable_mount_bind_path: bool = Field(
+        default=True,
+        description=(
+            "Whether to ignore the custom bind path entries in apptainer.conf"
+            "Set to False if you want to disable --no-mount bind-paths"
+        ),
+    )
+    enable_containall: bool = Field(
+        default=True,
+        description=(
+            "Whether to use --containall for maximum container isolation."
+            "Set to False if you do not want to start the apptainer with --containall"
+        ),
+    )
 
     _instance_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
@@ -242,6 +263,12 @@ class ApptainerWorkspace(RemoteWorkspace):
         # Add fakeroot for consistent file ownership (user appears as root)
         if self.use_fakeroot:
             container_opts.append("--fakeroot")
+        if self.disable_mount_hostfs:
+            container_opts += ["--no-mount", "hostfs"]  # Disable hostfs mount
+        if self.disable_mount_bind_path:
+            container_opts += ["--no-mount", "bind-paths"]  # Disable custom bind paths
+        if self.enable_containall:
+            container_opts.append("--containall")  # Maximum isolation
 
         # Run the agent server using apptainer run to respect the image's entrypoint
         # This works with both 'source' and 'binary' build targets
