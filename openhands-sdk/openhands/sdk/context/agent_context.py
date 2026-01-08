@@ -171,20 +171,21 @@ class AgentContext(BaseModel):
         - Available skills list (for AgentSkills-format and triggered skills)
 
         Skill categorization:
-        - AgentSkills-format skills (SKILL.md): Always listed in <available_skills>
-          following the progressive disclosure model from the AgentSkills standard.
-        - Legacy OpenHands skills with trigger=None: Full content in <REPO_CONTEXT>
-        - Legacy OpenHands skills with triggers: Listed in <available_skills>
+        - AgentSkills-format (SKILL.md): Always in <available_skills> (progressive
+          disclosure). If has triggers, content is ALSO auto-injected on trigger.
+        - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
+        - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
-        # Categorize skills based on format and trigger
-        # AgentSkills-format: always use progressive disclosure
-        # Legacy format: use trigger to determine behavior
+        # Categorize skills based on format and trigger:
+        # - AgentSkills-format: always in available_skills (progressive disclosure)
+        # - Legacy: trigger=None -> REPO_CONTEXT, else -> available_skills
         repo_skills: list[Skill] = []
         available_skills: list[Skill] = []
 
         for s in self.skills:
             if s.is_agentskills_format:
-                # AgentSkills standard: always use progressive disclosure
+                # AgentSkills: always list (triggers also auto-inject via
+                # get_user_message_suffix)
                 available_skills.append(s)
             elif s.trigger is None:
                 # Legacy OpenHands: no trigger = full content in REPO_CONTEXT

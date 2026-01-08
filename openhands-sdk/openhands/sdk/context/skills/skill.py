@@ -90,10 +90,16 @@ TriggerType = Annotated[
 class Skill(BaseModel):
     """A skill provides specialized knowledge or functionality.
 
-    Skills use triggers to determine when they should be activated:
-    - None: Always active, for repository-specific guidelines
-    - KeywordTrigger: Activated when keywords appear in user messages
-    - TaskTrigger: Activated for specific tasks, may require user input
+    Skill behavior depends on format (is_agentskills_format) and trigger:
+
+    AgentSkills format (SKILL.md files):
+    - Always listed in <available_skills> with name, description, location
+    - Agent reads full content on demand (progressive disclosure)
+    - If has triggers: content is ALSO auto-injected when triggered
+
+    Legacy OpenHands format:
+    - With triggers: Listed in <available_skills>, content injected on trigger
+    - Without triggers (None): Full content in <REPO_CONTEXT>, always active
 
     This model supports both OpenHands-specific fields and AgentSkills standard
     fields (https://agentskills.io/specification) for cross-platform compatibility.
@@ -104,11 +110,11 @@ class Skill(BaseModel):
     trigger: TriggerType | None = Field(
         default=None,
         description=(
-            "Skills use triggers to determine when they should be activated. "
-            "None implies skill is always active. "
-            "Other implementations include KeywordTrigger (activated by a "
-            "keyword in a Message) and TaskTrigger (activated by specific tasks "
-            "and may require user input)"
+            "Trigger determines when skill content is auto-injected. "
+            "None = no auto-injection (for AgentSkills: agent reads on demand; "
+            "for legacy: full content always in system prompt). "
+            "KeywordTrigger = auto-inject when keywords appear in user messages. "
+            "TaskTrigger = auto-inject for specific tasks, may require user input."
         ),
     )
     source: str | None = Field(
@@ -135,8 +141,9 @@ class Skill(BaseModel):
         description=(
             "Whether this skill was loaded from a SKILL.md file following the "
             "AgentSkills standard. AgentSkills-format skills use progressive "
-            "disclosure: they are listed in <available_skills> with name, "
-            "description, and location, and the agent reads full content on demand."
+            "disclosure: always listed in <available_skills> with name, "
+            "description, and location. If the skill also has triggers, content "
+            "is auto-injected when triggered AND agent can read file anytime."
         ),
     )
 
