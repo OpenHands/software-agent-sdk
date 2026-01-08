@@ -67,15 +67,6 @@ def main():
     print(f"  - Knowledge skills: {list(knowledge_skills.keys())}")
     print(f"  - Agent skills (SKILL.md): {list(agent_skills.keys())}")
 
-    # Show how skills are categorized
-    print("\nSkill categorization (AgentSkills progressive disclosure):")
-    for name, skill in agent_skills.items():
-        format_info = "AgentSkills" if skill.is_agentskills_format else "Legacy"
-        if skill.trigger is None:
-            print(f"  - {name} [{format_info}]: Listed in <available_skills>")
-        else:
-            print(f"  - {name} [{format_info}]: Triggered by {skill.trigger}")
-
     # Access the loaded skill and show all AgentSkills standard fields
     if agent_skills:
         skill_name = list(agent_skills.keys())[0]
