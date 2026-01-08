@@ -170,8 +170,10 @@ jobs:
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
                     # Convert ref to SHA for manual dispatch
-                    # Try with origin/ prefix first for remote branches, then without prefix, then use as-is
-                    SDK_SHA=$(git rev-parse "origin/$SDK_REF" 2>/dev/null || git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
+                    # Resolve SHA robustly for both branch refs and raw SHAs (avoid double-prefix issues)
+                    SDK_SHA=$(git rev-parse --verify "$SDK_REF^{commit}" 2>/dev/null || \
+                              git rev-parse --verify "origin/$SDK_REF^{commit}" 2>/dev/null || \
+                              echo "$SDK_REF")
                     PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
