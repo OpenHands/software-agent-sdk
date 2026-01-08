@@ -3,7 +3,7 @@ import operator
 from collections.abc import Iterator
 from typing import SupportsIndex, overload
 
-from filelock import BaseFileLock, FileLock
+from filelock import BaseFileLock, FileLock, Timeout
 
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
@@ -19,9 +19,22 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 LOCK_FILE_NAME = ".eventlog.lock"
+LOCK_TIMEOUT_SECONDS = 30
 
 
 class EventLog(EventsListBase):
+    """Persistent event log with file-based locking for concurrent writes.
+
+    This class provides thread-safe and process-safe event storage using
+    file-based locking (flock). Events are persisted to disk and can be
+    accessed by index or event ID.
+
+    Note:
+        File locking via flock() does NOT work reliably on NFS mounts or
+        network filesystems. Users deploying with shared storage should
+        use alternative coordination mechanisms.
+    """
+
     _fs: FileStore
     _dir: str
     _length: int
@@ -87,32 +100,50 @@ class EventLog(EventsListBase):
             yield evt
 
     def append(self, event: Event) -> None:
-        """Append an event with file-based locking for thread/process safety."""
+        """Append an event with file-based locking for thread/process safety.
+
+        Raises:
+            Timeout: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
+            ValueError: If an event with the same ID already exists.
+        """
         evt_id = event.id
 
-        with self._lock:
-            # Sync with disk in case another process wrote while we waited
-            disk_length = self._count_events_on_disk()
-            if disk_length > self._length:
-                self._sync_from_disk(disk_length)
+        try:
+            with self._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+                # Sync with disk in case another process wrote while we waited
+                disk_length = self._count_events_on_disk()
+                if disk_length > self._length:
+                    self._sync_from_disk(disk_length)
 
-            if evt_id in self._id_to_idx:
-                existing_idx = self._id_to_idx[evt_id]
-                raise ValueError(
-                    f"Event with ID '{evt_id}' already exists at index {existing_idx}"
-                )
+                if evt_id in self._id_to_idx:
+                    existing_idx = self._id_to_idx[evt_id]
+                    raise ValueError(
+                        f"Event with ID '{evt_id}' already exists at index "
+                        f"{existing_idx}"
+                    )
 
-            target_path = self._path(self._length, event_id=evt_id)
-            self._fs.write(target_path, event.model_dump_json(exclude_none=True))
-            self._idx_to_id[self._length] = evt_id
-            self._id_to_idx[evt_id] = self._length
-            self._length += 1
+                target_path = self._path(self._length, event_id=evt_id)
+                self._fs.write(target_path, event.model_dump_json(exclude_none=True))
+                self._idx_to_id[self._length] = evt_id
+                self._id_to_idx[evt_id] = self._length
+                self._length += 1
+        except Timeout:
+            logger.error(
+                "Failed to acquire EventLog lock within %ds for event %s",
+                LOCK_TIMEOUT_SECONDS,
+                evt_id,
+            )
+            raise
 
     def _count_events_on_disk(self) -> int:
         """Count event files on disk."""
         try:
             paths = self._fs.list(self._dir)
-        except Exception:
+        except FileNotFoundError:
+            # Directory doesn't exist yet - expected for new event logs
+            return 0
+        except Exception as e:
+            logger.warning("Error listing event directory %s: %s", self._dir, e)
             return 0
         return sum(
             1
@@ -135,8 +166,10 @@ class EventLog(EventsListBase):
                             self._idx_to_id[idx] = evt_id
                             self._id_to_idx.setdefault(evt_id, idx)
                         break
-            except Exception:
-                pass
+            except FileNotFoundError:
+                pass  # Directory doesn't exist - skip
+            except Exception as e:
+                logger.warning("Error syncing event at index %d: %s", idx, e)
         self._length = disk_length
 
     def __len__(self) -> int:

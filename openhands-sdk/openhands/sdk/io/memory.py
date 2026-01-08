@@ -1,4 +1,5 @@
 import os
+import uuid
 
 from openhands.sdk.io.base import FileStore
 from openhands.sdk.logger import get_logger
@@ -9,9 +10,11 @@ logger = get_logger(__name__)
 
 class InMemoryFileStore(FileStore):
     files: dict[str, str]
+    _instance_id: str
 
     def __init__(self, files: dict[str, str] | None = None) -> None:
         self.files = {}
+        self._instance_id = str(uuid.uuid4())
         if files is not None:
             self.files = files
 
@@ -49,9 +52,9 @@ class InMemoryFileStore(FileStore):
             keys_to_delete = [key for key in self.files.keys() if key.startswith(path)]
             for key in keys_to_delete:
                 del self.files[key]
-            logger.debug(f"Cleared in-memory file store: {path}")
+            logger.debug("Cleared in-memory file store: %s", path)
         except Exception as e:
-            logger.error(f"Error clearing in-memory file store: {str(e)}")
+            logger.error("Error clearing in-memory file store: %s", str(e))
 
     def exists(self, path: str) -> bool:
         """Check if a file exists."""
@@ -60,7 +63,9 @@ class InMemoryFileStore(FileStore):
         return any(f.startswith(path + "/") for f in self.files)
 
     def get_absolute_path(self, path: str) -> str:
-        """Get absolute filesystem path (uses temp dir for lock files)."""
+        """Get absolute path (uses temp dir with unique instance ID)."""
         import tempfile
 
-        return os.path.join(tempfile.gettempdir(), "openhands_inmemory", path)
+        return os.path.join(
+            tempfile.gettempdir(), f"openhands_inmemory_{self._instance_id}", path
+        )
