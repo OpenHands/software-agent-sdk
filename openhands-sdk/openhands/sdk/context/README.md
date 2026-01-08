@@ -25,7 +25,7 @@ agent_context = AgentContext(
         Skill(
             name="repo-guidelines",
             content="Repository-wide coding standards and best practices.",
-            source="repo.md",
+            source="AGENTS.md",
             trigger=None,  # Always-active skill
         ),
         Skill(
