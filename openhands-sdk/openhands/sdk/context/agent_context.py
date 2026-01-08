@@ -172,7 +172,8 @@ class AgentContext(BaseModel):
 
         Skill categorization:
         - AgentSkills-format (SKILL.md): Always in <available_skills> (progressive
-          disclosure). If has triggers, content is ALSO auto-injected on trigger.
+          disclosure). If has triggers, content is ALSO auto-injected on trigger
+          in user prompts.
         - Legacy with trigger=None: Full content in <REPO_CONTEXT> (always active)
         - Legacy with triggers: Listed in <available_skills>, injected on trigger
         """
