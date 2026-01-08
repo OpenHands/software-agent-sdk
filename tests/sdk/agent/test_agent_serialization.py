@@ -13,7 +13,6 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.tool import MCPToolDefinition
-from openhands.sdk.tool import FinishTool
 from openhands.sdk.tool.tool import ToolDefinition
 from openhands.sdk.utils.models import OpenHandsModel
 
@@ -327,35 +326,3 @@ def test_include_default_tools_deserialization_from_dict() -> None:
     # Should have ThinkTool
     assert isinstance(agent, Agent)
     assert agent.include_default_tools == ["ThinkTool"]
-
-
-def test_include_default_tools_invalid_tool_name() -> None:
-    """Test that include_default_tools raises error for invalid tool name."""
-    agent_dict = {
-        "llm": {"model": "test-model", "usage_id": "test-llm"},
-        "tools": [],
-        "include_default_tools": ["InvalidTool"],
-        "kind": "Agent",
-    }
-
-    # Should raise ValueError
-    with pytest.raises(ValueError, match="Unknown built-in tool class: 'InvalidTool'"):
-        AgentBase.model_validate(agent_dict)
-
-
-def test_include_default_tools_accepts_tool_class_via_validator() -> None:
-    """Test that include_default_tools validator converts tool classes to strings."""
-    # The validator accepts tool classes and converts them to strings
-    # This is tested via model_validate to bypass type checking
-    agent_dict = {
-        "llm": {"model": "test-model", "usage_id": "test-llm"},
-        "tools": [],
-        "include_default_tools": [FinishTool],  # Pass class, not string
-        "kind": "Agent",
-    }
-
-    agent = AgentBase.model_validate(agent_dict)
-
-    # Should be converted to string
-    assert isinstance(agent, Agent)
-    assert agent.include_default_tools == ["FinishTool"]

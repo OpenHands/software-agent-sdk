@@ -11,7 +11,6 @@ from pydantic import (
     ConfigDict,
     Field,
     PrivateAttr,
-    field_validator,
 )
 
 from openhands.sdk.context.agent_context import AgentContext
@@ -178,33 +177,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
-
-    @field_validator("include_default_tools", mode="before")
-    @classmethod
-    def _val_include_default_tools(cls, v: Any) -> list[str]:
-        """Convert tool classes to their class names and validate them.
-
-        Accepts both strings and tool classes for backward compatibility.
-        """
-        if not v:
-            return []
-        result: list[str] = []
-        for item in v:
-            if isinstance(item, str):
-                name = item
-            elif isinstance(item, type):
-                # It's a tool class - convert to name
-                name = item.__name__
-            else:
-                raise ValueError(f"Invalid item type: {type(item)}")
-            # Validate that the tool name is a known built-in tool
-            if name not in BUILT_IN_TOOL_CLASSES:
-                raise ValueError(
-                    f"Unknown built-in tool class: '{name}'. "
-                    f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
-                )
-            result.append(name)
-        return result
 
     @property
     def prompt_dir(self) -> str:
