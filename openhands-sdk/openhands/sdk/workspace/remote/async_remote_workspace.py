@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 import httpx
 from pydantic import PrivateAttr
@@ -148,19 +149,17 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         result = await self._execute(generator)
         return result
 
-    async def alive(self, timeout: float = 5.0) -> bool:
+    @property
+    def alive(self) -> bool:
         """Check if the remote workspace is alive by querying the health endpoint.
-
-        Args:
-            timeout: Timeout in seconds for the health check request.
 
         Returns:
             True if the health endpoint returns a successful response, False otherwise.
         """
         try:
             health_url = f"{self.host}/health"
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(health_url)
-                return 200 <= response.status_code < 300
+            with urlopen(health_url, timeout=5.0) as resp:
+                status = getattr(resp, "status", 200)
+                return 200 <= status < 300
         except Exception:
             return False

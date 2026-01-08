@@ -164,18 +164,16 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         result = self._execute(generator)
         return result
 
-    def alive(self, timeout: float = 5.0) -> bool:
+    @property
+    def alive(self) -> bool:
         """Check if the remote workspace is alive by querying the health endpoint.
-
-        Args:
-            timeout: Timeout in seconds for the health check request.
 
         Returns:
             True if the health endpoint returns a successful response, False otherwise.
         """
         try:
             health_url = f"{self.host}/health"
-            with urlopen(health_url, timeout=timeout) as resp:
+            with urlopen(health_url, timeout=5.0) as resp:
                 status = getattr(resp, "status", 200)
                 return 200 <= status < 300
         except Exception:
