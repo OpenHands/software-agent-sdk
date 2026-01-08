@@ -80,9 +80,7 @@ class FirstToolLoopCondenser(CondenserBase):
         )
 
         # Get event IDs to forget
-        forgotten_event_ids = [
-            event.id for event in view.events[start_idx:end_idx]
-        ]
+        forgotten_event_ids = [event.id for event in view.events[start_idx:end_idx]]
 
         # Create condensation event
         return Condensation(
@@ -267,8 +265,7 @@ class ThinkingBlockCondenserTest(BaseIntegrationTest):
             return TestResult(
                 success=False,
                 reason=(
-                    f"Thinking block handling validation failed: "
-                    f"{'; '.join(reasons)}"
+                    f"Thinking block handling validation failed: {'; '.join(reasons)}"
                 ),
             )
 
