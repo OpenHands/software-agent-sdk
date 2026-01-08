@@ -7,7 +7,7 @@ from openhands.sdk.context.skills import (
 
 
 def test_to_prompt_generates_xml() -> None:
-    """to_prompt() should generate valid XML for skills."""
+    """to_prompt() should generate valid XML for skills in AgentSkills format."""
     # Empty list shows "no available skills"
     assert (
         to_prompt([])
@@ -17,8 +17,9 @@ def test_to_prompt_generates_xml() -> None:
     # Single skill with description
     skill = Skill(name="pdf-tools", content="# PDF", description="Process PDFs.")
     result = to_prompt([skill])
-    assert '<skill name="pdf-tools">' in result
-    assert "Process PDFs." in result
+    assert "<skill>" in result
+    assert "<name>pdf-tools</name>" in result
+    assert "<description>Process PDFs.</description>" in result
     assert "<available_skills>" in result
 
     # Multiple skills
@@ -27,7 +28,26 @@ def test_to_prompt_generates_xml() -> None:
         Skill(name="code-review", content="# Code", description="Review code."),
     ]
     result = to_prompt(skills)
-    assert result.count("<skill") == 2
+    assert result.count("<skill>") == 2
+
+
+def test_to_prompt_includes_source_as_location() -> None:
+    """to_prompt() should include source as location element."""
+    skill = Skill(
+        name="pdf-tools",
+        content="# PDF",
+        description="Process PDFs.",
+        source="/path/to/skill.md",
+    )
+    result = to_prompt([skill])
+    assert "<location>/path/to/skill.md</location>" in result
+
+
+def test_to_prompt_omits_location_when_no_source() -> None:
+    """to_prompt() should omit location element when source is None."""
+    skill = Skill(name="pdf-tools", content="# PDF", description="Process PDFs.")
+    result = to_prompt([skill])
+    assert "<location>" not in result
 
 
 def test_to_prompt_escapes_xml() -> None:
@@ -38,7 +58,8 @@ def test_to_prompt_escapes_xml() -> None:
     result = to_prompt([skill])
     assert "&lt;tags&gt;" in result
     assert "&amp;" in result
-    assert "&quot;quotes&quot;" in result
+    # Quotes don't need escaping in XML element content (only in attributes)
+    assert '"quotes"' in result
 
 
 def test_to_prompt_uses_content_fallback() -> None:

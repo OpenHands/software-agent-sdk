@@ -811,22 +811,28 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
     """Generate XML prompt block for available skills.
 
     Creates an `<available_skills>` XML block suitable for inclusion
-    in system prompts, following the AgentSkills format.
+    in system prompts, following the AgentSkills format from skills-ref.
 
     Args:
         skills: List of skills to include in the prompt
         max_description_length: Maximum length for descriptions (default 200)
 
     Returns:
-        XML string in AgentSkills format
+        XML string in AgentSkills format with name, description, and location
 
     Example:
-        >>> skills = [Skill(name="pdf-tools", content="...", description="...")]
+        >>> skills = [Skill(name="pdf-tools", content="...",
+        ...                 description="Extract text from PDF files.",
+        ...                 source="/path/to/skill")]
         >>> print(to_prompt(skills))
         <available_skills>
-          <skill name="pdf-tools">Extract text from PDF files.</skill>
+          <skill>
+            <name>pdf-tools</name>
+            <description>Extract text from PDF files.</description>
+            <location>/path/to/skill</location>
+          </skill>
         </available_skills>
-    """  # noqa: E501
+    """
     if not skills:
         return "<available_skills>\n  no available skills\n</available_skills>"
 
@@ -868,9 +874,17 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
             description = description + truncation_msg
 
         # Escape XML special characters using standard library
-        xml_entities = {'"': "&quot;", "'": "&apos;"}
-        description = xml_escape(description, entities=xml_entities)
-        name = xml_escape(skill.name, entities=xml_entities)
-        lines.append(f'  <skill name="{name}">{description}</skill>')
+        description = xml_escape(description.strip())
+        name = xml_escape(skill.name.strip())
+
+        # Build skill element following AgentSkills format from skills-ref
+        lines.append("  <skill>")
+        lines.append(f"    <name>{name}</name>")
+        lines.append(f"    <description>{description}</description>")
+        if skill.source:
+            source = xml_escape(skill.source.strip())
+            lines.append(f"    <location>{source}</location>")
+        lines.append("  </skill>")
+
     lines.append("</available_skills>")
     return "\n".join(lines)
