@@ -68,8 +68,12 @@ class TestLLMTimeoutPassthrough:
     @patch("openhands.sdk.llm.llm.litellm_completion")
     def test_default_timeout_passed_to_litellm(self, mock_completion):
         """Test that the default timeout is passed to litellm completion calls."""
-        from litellm.types.utils import Choices, ModelResponse, Usage
-        from litellm.types.utils import Message as LiteLLMMessage
+        from litellm.types.utils import (
+            Choices,
+            Message as LiteLLMMessage,
+            ModelResponse,
+            Usage,
+        )
 
         # Create a proper mock response
         mock_response = ModelResponse(
@@ -103,15 +107,19 @@ class TestLLMTimeoutPassthrough:
 
         assert "timeout" in call_kwargs, "timeout should be passed to litellm"
         assert call_kwargs["timeout"] == DEFAULT_LLM_TIMEOUT_SECONDS, (
-            f"Expected timeout of {DEFAULT_LLM_TIMEOUT_SECONDS}s to be passed to litellm, "
-            f"but got {call_kwargs['timeout']}"
+            f"Expected timeout of {DEFAULT_LLM_TIMEOUT_SECONDS}s to be passed "
+            f"to litellm, but got {call_kwargs['timeout']}"
         )
 
     @patch("openhands.sdk.llm.llm.litellm_completion")
     def test_custom_timeout_passed_to_litellm(self, mock_completion):
         """Test that a custom timeout is passed to litellm completion calls."""
-        from litellm.types.utils import Choices, ModelResponse, Usage
-        from litellm.types.utils import Message as LiteLLMMessage
+        from litellm.types.utils import (
+            Choices,
+            Message as LiteLLMMessage,
+            ModelResponse,
+            Usage,
+        )
 
         mock_response = ModelResponse(
             id="test-id",
@@ -148,8 +156,12 @@ class TestLLMTimeoutPassthrough:
     @patch("openhands.sdk.llm.llm.litellm_completion")
     def test_none_timeout_passed_to_litellm(self, mock_completion):
         """Test that None timeout is passed to litellm (no timeout)."""
-        from litellm.types.utils import Choices, ModelResponse, Usage
-        from litellm.types.utils import Message as LiteLLMMessage
+        from litellm.types.utils import (
+            Choices,
+            Message as LiteLLMMessage,
+            ModelResponse,
+            Usage,
+        )
 
         mock_response = ModelResponse(
             id="test-id",
