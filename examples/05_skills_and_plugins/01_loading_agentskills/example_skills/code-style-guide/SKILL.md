@@ -4,9 +4,6 @@ description: >
   Project coding standards and style guidelines. Always follow these
   conventions when writing or reviewing code.
 license: MIT
-metadata:
-  author: openhands
-  version: "1.0"
 ---
 
 # Code Style Guide
