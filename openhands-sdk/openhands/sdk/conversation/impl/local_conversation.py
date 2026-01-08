@@ -140,19 +140,7 @@ class LocalConversation(BaseConversation):
         def _default_callback(e):
             self._state.events.append(e)
 
-        self._hook_processor = None
-        hook_callback = None
-        if hook_config is not None:
-            self._hook_processor, hook_callback = create_hook_callback(
-                hook_config=hook_config,
-                working_dir=str(self.workspace.working_dir),
-                session_id=str(desired_id),
-            )
-
         callback_list = list(callbacks) if callbacks else []
-        if hook_callback is not None:
-            callback_list.insert(0, hook_callback)
-
         composed_list = callback_list + [_default_callback]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
@@ -175,7 +163,20 @@ class LocalConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        self._on_event = BaseConversation.compose_callbacks(composed_list)
+        # Compose the base callback chain (visualizer -> user callbacks -> default)
+        base_callback = BaseConversation.compose_callbacks(composed_list)
+
+        # If hooks configured, wrap with hook processor that forwards to base chain
+        self._hook_processor = None
+        if hook_config is not None:
+            self._hook_processor, self._on_event = create_hook_callback(
+                hook_config=hook_config,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(desired_id),
+                original_callback=base_callback,
+            )
+        else:
+            self._on_event = base_callback
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -335,10 +336,37 @@ class LocalConversation(BaseConversation):
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
                     if self._state.execution_status in [
-                        ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
                     ]:
+                        break
+
+                    # Handle stop hooks on FINISHED
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        if self._hook_processor is not None:
+                            should_stop, feedback = self._hook_processor.run_stop(
+                                reason="agent_finished"
+                            )
+                            if not should_stop:
+                                logger.info("Stop hook denied agent stopping")
+                                if feedback:
+                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    feedback_msg = MessageEvent(
+                                        source="user",
+                                        llm_message=Message(
+                                            role="user",
+                                            content=[TextContent(text=prefixed)],
+                                        ),
+                                    )
+                                    self._on_event(feedback_msg)
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.RUNNING
+                                )
+                                continue
+                        # No hooks or hooks allowed stopping
                         break
 
                     # Check for stuck patterns if enabled

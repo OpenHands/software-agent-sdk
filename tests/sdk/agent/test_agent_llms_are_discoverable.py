@@ -9,6 +9,15 @@ def check_usage_id_exists(usage_id: str, llms: list[LLM]):
     return usage_id in usage_ids
 
 
+# Define CustomAgent at module level to avoid "local class not supported" error
+# during serialization tests. Local classes (defined inside functions) cannot be
+# deserialized because they may not exist at deserialization time.
+class CustomAgentWithRouters(Agent):
+    """Custom agent with additional LLM routers for testing LLM discovery."""
+
+    model_routers: list[LLM] = Field(default_factory=list)
+
+
 def test_automatic_llm_discovery():
     llm_usage_id = "main-agent"
     agent = Agent(llm=LLM(model="test-model", usage_id=llm_usage_id))
@@ -37,9 +46,6 @@ def test_automatic_llm_discovery_for_multiple_llms():
 
 
 def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
-    class CustomAgent(Agent):
-        model_routers: list[LLM] = Field(default_factory=list)
-
     llm_usage_id = "main-agent"
     router_usage_id = "secondary_llm"
     router_usage_id_2 = "tertiary_llm"
@@ -53,7 +59,7 @@ def test_automatic_llm_discovery_for_custom_agent_with_duplicates():
     router_llm = LLM(model="test-model", usage_id=router_usage_id)
     router_llm_2 = LLM(model="test-model", usage_id=router_usage_id_2)
 
-    agent = CustomAgent(
+    agent = CustomAgentWithRouters(
         llm=agent_llm,
         condenser=condenser,
         model_routers=[agent_llm, router_llm, router_llm_2],

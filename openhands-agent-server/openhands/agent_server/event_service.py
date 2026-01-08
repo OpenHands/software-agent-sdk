@@ -19,6 +19,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -438,6 +439,26 @@ class EventService:
 
         # Setup stats streaming for remote execution
         self._setup_stats_streaming(self._conversation.agent)
+
+        # If the execution_status was "running" while serialized, then the
+        # conversation can't possibly be running - something is wrong
+        state = self._conversation.state
+        if state.execution_status == ConversationExecutionStatus.RUNNING:
+            state.execution_status = ConversationExecutionStatus.ERROR
+            # Add error event for the first unmatched action to inform the agent
+            unmatched_actions = ConversationState.get_unmatched_actions(state.events)
+            if unmatched_actions:
+                first_action = unmatched_actions[0]
+                error_event = AgentErrorEvent(
+                    tool_name=first_action.tool_name,
+                    tool_call_id=first_action.tool_call_id,
+                    error=(
+                        "A restart occurred while this tool was in progress. "
+                        "This may indicate a fatal memory error or system crash. "
+                        "The tool execution was interrupted and did not complete."
+                    ),
+                )
+                self._conversation._on_event(error_event)
 
         # Publish initial state update
         await self._publish_state_update()

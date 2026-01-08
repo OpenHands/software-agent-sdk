@@ -4,7 +4,11 @@ from enum import Enum
 
 from pydantic import Field, model_validator
 
-from openhands.sdk.context.condenser.base import RollingCondenser
+from openhands.sdk.context.condenser.base import (
+    CondensationRequirement,
+    NoCondensationAvailableException,
+    RollingCondenser,
+)
 from openhands.sdk.context.condenser.utils import (
     get_suffix_length_for_token_reduction,
     get_total_token_count,
@@ -84,9 +88,30 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         return reasons
 
-    def should_condense(self, view: View, agent_llm: LLM | None = None) -> bool:
+    def condensation_requirement(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> CondensationRequirement | None:
         reasons = self.get_condensation_reasons(view, agent_llm)
-        return reasons != set()
+
+        # No reasons => no condensation needed.
+        if reasons == set():
+            return None
+
+        # If the reasons are for resource constraints, we can treat it as a soft
+        # requirement. We want to condense when we can, but there's still space in the
+        # context window or we'd also see Reason.REQUEST. That means we can delay the
+        # condensation if there isn't one available (based on the view's manipulation
+        # indices).
+        resource_reasons = {Reason.TOKENS, Reason.EVENTS}
+        if reasons.issubset(resource_reasons):
+            return CondensationRequirement.SOFT
+
+        # Requests -- whether they come from the user or the agent -- are always hard
+        # requirements. We need to condense now because:
+        # 1. the user expects it
+        # 2. the agent has no more room in the context window and can't continue
+        if Reason.REQUEST in reasons:
+            return CondensationRequirement.HARD
 
     def _get_summary_event_content(self, view: View) -> str:
         """Extract the text content from the summary event in the view, if any.
@@ -124,12 +149,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         Raises:
             ValueError: If forgotten_events is empty (0 events to condense).
         """
-        if len(forgotten_events) == 0:
-            raise ValueError(
-                "Cannot condense 0 events. This typically occurs when a tool loop "
-                "spans almost the entire view, leaving no valid range for forgetting "
-                "events. Consider adjusting keep_first or max_size parameters."
-            )
+        assert len(forgotten_events) > 0, "No events to condense."
 
         # Convert events to strings for the template
         event_strings = [str(forgotten_event) for forgotten_event in forgotten_events]
@@ -236,10 +256,18 @@ class LLMSummarizingCondenser(RollingCondenser):
     ) -> Condensation:
         # The condensation is dependent on the events we want to drop and the previous
         # summary.
-        summary_event_content = self._get_summary_event_content(view)
         forgotten_events, summary_offset = self._get_forgotten_events(
             view, agent_llm=agent_llm
         )
+
+        if not forgotten_events:
+            raise NoCondensationAvailableException(
+                "Cannot condense 0 events. This typically occurs when a tool loop "
+                "spans almost the entire view, leaving no valid range for forgetting "
+                "events. Consider adjusting keep_first or max_size parameters."
+            )
+
+        summary_event_content = self._get_summary_event_content(view)
 
         return self._generate_condensation(
             summary_event_content=summary_event_content,

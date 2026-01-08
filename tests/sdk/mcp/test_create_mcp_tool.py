@@ -217,7 +217,8 @@ def test_real_create_mcp_tools_dict_config():
         "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     }
 
-    tools = create_mcp_tools(mcp_config)
+    # Use longer timeout for CI environments where uvx may need to download packages
+    tools = create_mcp_tools(mcp_config, timeout=120.0)
     assert len(tools) == 1
     assert tools[0].name == "fetch"
 
@@ -248,7 +249,10 @@ def test_real_create_mcp_tools_dict_config():
     assert set(mcp_schema["required"]) == set(input_schema["required"])
 
     # Check that all properties from input_schema exist in mcp_schema
+    # (excluding meta fields like 'summary' which are for LLM, not tool interface)
     for prop_name, prop_def in input_schema["properties"].items():
+        if prop_name == "summary":
+            continue  # summary is a meta field for LLM, not part of tool interface
         assert prop_name in mcp_schema["properties"]
         assert mcp_schema["properties"][prop_name]["type"] == prop_def["type"]
         assert (
