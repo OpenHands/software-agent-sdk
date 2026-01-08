@@ -204,7 +204,13 @@ class AgentContext(BaseModel):
 
         # Build the workspace context information
         secret_infos = self.get_secret_infos()
-        if repo_skills or self.system_message_suffix or secret_infos or available_skills_prompt:
+        has_content = (
+            repo_skills
+            or self.system_message_suffix
+            or secret_infos
+            or available_skills_prompt
+        )
+        if has_content:
             formatted_text = render_template(
                 prompt_dir=str(PROMPT_DIR),
                 template_name="system_message_suffix.j2",

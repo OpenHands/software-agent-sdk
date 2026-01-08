@@ -58,7 +58,8 @@ def test_to_prompt_escapes_xml() -> None:
     result = to_prompt([skill])
     assert "&lt;tags&gt;" in result
     assert "&amp;" in result
-    assert "&quot;quotes&quot;" in result
+    # Quotes don't need escaping in XML element content (only in attributes)
+    assert '"quotes"' in result
 
 
 def test_to_prompt_uses_content_fallback() -> None:

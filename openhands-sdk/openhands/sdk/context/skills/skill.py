@@ -874,16 +874,16 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
             description = description + truncation_msg
 
         # Escape XML special characters using standard library
-        xml_entities = {'"': "&quot;", "'": "&apos;"}
-        description = xml_escape(description.strip(), entities=xml_entities)
-        name = xml_escape(skill.name.strip(), entities=xml_entities)
+        description = xml_escape(description.strip())
+        name = xml_escape(skill.name.strip())
 
         # Build skill element following AgentSkills format from skills-ref
         lines.append("  <skill>")
         lines.append(f"    <name>{name}</name>")
         lines.append(f"    <description>{description}</description>")
         if skill.source:
-            lines.append(f"    <location>{skill.source.strip()}</location>")
+            source = xml_escape(skill.source.strip())
+            lines.append(f"    <location>{source}</location>")
         lines.append("  </skill>")
 
     lines.append("</available_skills>")
