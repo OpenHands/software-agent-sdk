@@ -52,49 +52,50 @@ Do NOT output a giant comment - instead, post individual inline comments on spec
 Use the GitHub API to create a review with inline comments. The `GITHUB_TOKEN` environment variable
 is already available for authentication.
 
-**Step 1: Create a review with inline comments using `gh api`:**
+**Use curl to post a review with inline comments:**
 
 ```bash
-gh api \\
-  -X POST \\
-  /repos/{repo_name}/pulls/{pr_number}/reviews \\
-  -f commit_id="{commit_id}" \\
-  -f body="Brief overall summary of the review" \\
-  -f event="COMMENT" \\
-  --input - << 'EOF'
-{{
-  "commit_id": "{commit_id}",
-  "body": "Brief overall summary of the review",
-  "event": "COMMENT",
-  "comments": [
-    {{
-      "path": "path/to/file.py",
-      "line": 42,
-      "side": "RIGHT",
-      "body": "Your specific comment about this line."
-    }},
-    {{
-      "path": "path/to/another_file.js",
-      "line": 15,
-      "side": "RIGHT",
-      "body": "Another specific comment."
-    }}
-  ]
-}}
-EOF
+curl -X POST \\
+  -H "Authorization: token $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "X-GitHub-Api-Version: 2022-11-28" \\
+  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/reviews" \\
+  -d '{{
+    "commit_id": "{commit_id}",
+    "body": "Brief overall summary of the review",
+    "event": "COMMENT",
+    "comments": [
+      {{
+        "path": "path/to/file.py",
+        "line": 42,
+        "side": "RIGHT",
+        "body": "Your specific comment about this line."
+      }},
+      {{
+        "path": "path/to/another_file.js",
+        "line": 15,
+        "side": "RIGHT",
+        "body": "Another specific comment."
+      }}
+    ]
+  }}'
 ```
 
-**Alternative: Post comments one at a time (if you have few comments):**
+**Alternative: Post a single inline comment:**
 
 ```bash
-gh api \\
-  -X POST \\
-  /repos/{repo_name}/pulls/{pr_number}/comments \\
-  -f commit_id="{commit_id}" \\
-  -f path="path/to/file.py" \\
-  -f line=42 \\
-  -f side="RIGHT" \\
-  -f body="Your specific comment about this line."
+curl -X POST \\
+  -H "Authorization: token $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "X-GitHub-Api-Version: 2022-11-28" \\
+  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/comments" \\
+  -d '{{
+    "commit_id": "{commit_id}",
+    "path": "path/to/file.py",
+    "line": 42,
+    "side": "RIGHT",
+    "body": "Your specific comment about this line."
+  }}'
 ```
 
 ### Important Guidelines for Inline Comments:
