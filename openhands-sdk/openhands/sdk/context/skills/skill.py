@@ -130,6 +130,15 @@ class Skill(BaseModel):
         default_factory=list,
         description="Input metadata for the skill (task skills only)",
     )
+    is_agentskills_format: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill was loaded from a SKILL.md file following the "
+            "AgentSkills standard. AgentSkills-format skills use progressive "
+            "disclosure: they are listed in <available_skills> with name, "
+            "description, and location, and the agent reads full content on demand."
+        ),
+    )
 
     # AgentSkills standard fields (https://agentskills.io/specification)
     description: str | None = Field(
@@ -303,7 +312,13 @@ class Skill(BaseModel):
             resources = discovered_resources
 
         return cls._create_skill_from_metadata(
-            agent_name, content, path, metadata_dict, mcp_tools, resources=resources
+            agent_name,
+            content,
+            path,
+            metadata_dict,
+            mcp_tools,
+            resources=resources,
+            is_agentskills_format=True,
         )
 
     @classmethod
@@ -356,6 +371,7 @@ class Skill(BaseModel):
         metadata_dict: dict,
         mcp_tools: dict | None = None,
         resources: SkillResources | None = None,
+        is_agentskills_format: bool = False,
     ) -> "Skill":
         """Create a Skill object from parsed metadata.
 
@@ -366,6 +382,7 @@ class Skill(BaseModel):
             metadata_dict: Parsed frontmatter metadata.
             mcp_tools: MCP tools configuration (from .mcp.json or frontmatter).
             resources: Discovered resource directories.
+            is_agentskills_format: Whether this skill follows the AgentSkills standard.
         """
         # Extract AgentSkills standard fields (Pydantic validators handle
         # transformation). Handle "allowed-tools" to "allowed_tools" key mapping.
@@ -412,6 +429,7 @@ class Skill(BaseModel):
                 inputs=inputs,
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
 
@@ -423,6 +441,7 @@ class Skill(BaseModel):
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
         else:
@@ -434,6 +453,7 @@ class Skill(BaseModel):
                 trigger=None,
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
 

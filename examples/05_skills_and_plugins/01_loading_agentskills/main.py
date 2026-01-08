@@ -9,9 +9,13 @@ AgentSkills standard which includes:
 - SKILL.md file with frontmatter metadata (name, description, triggers)
 - Optional resource directories: scripts/, references/, assets/
 
-The example_skills/ directory contains two skills demonstrating different modes:
-- rot13-encryption: Has triggers (encrypt, decrypt) - listed in <SKILLS> section
-- code-style-guide: No triggers - always active, full content in system prompt
+The example_skills/ directory contains two skills:
+- rot13-encryption: Has triggers (encrypt, decrypt) - content injected on trigger
+- code-style-guide: No triggers - listed in <available_skills> for on-demand access
+
+All SKILL.md files follow the AgentSkills progressive disclosure model:
+they are listed in <available_skills> with name, description, and location.
+The agent reads the full content on demand by accessing the file path.
 """
 
 import os
@@ -61,13 +65,14 @@ def main():
     print(f"  - Knowledge skills: {list(knowledge_skills.keys())}")
     print(f"  - Agent skills (SKILL.md): {list(agent_skills.keys())}")
 
-    # Show how skills are categorized by trigger type
-    print("\nSkill trigger types:")
+    # Show how skills are categorized
+    print("\nSkill categorization (AgentSkills progressive disclosure):")
     for name, skill in agent_skills.items():
+        format_info = "AgentSkills" if skill.is_agentskills_format else "Legacy"
         if skill.trigger is None:
-            print(f"  - {name}: Always active (full content in system prompt)")
+            print(f"  - {name} [{format_info}]: Listed in <available_skills>")
         else:
-            print(f"  - {name}: Triggered by keywords {skill.trigger}")
+            print(f"  - {name} [{format_info}]: Triggered by {skill.trigger}")
 
     # Access the loaded skill and show all AgentSkills standard fields
     if agent_skills:

@@ -168,10 +168,30 @@ class AgentContext(BaseModel):
         - Runtime information (e.g., available hosts, current date)
         - Conversation instructions (e.g., user preferences, task details)
         - Repository-specific instructions (collected from repo skills)
-        - Available skills list (for skills with triggers)
+        - Available skills list (for AgentSkills-format and triggered skills)
+
+        Skill categorization:
+        - AgentSkills-format skills (SKILL.md): Always listed in <available_skills>
+          following the progressive disclosure model from the AgentSkills standard.
+        - Legacy OpenHands skills with trigger=None: Full content in <REPO_CONTEXT>
+        - Legacy OpenHands skills with triggers: Listed in <available_skills>
         """
-        repo_skills = [s for s in self.skills if s.trigger is None]
-        triggered_skills = [s for s in self.skills if s.trigger is not None]
+        # Categorize skills based on format and trigger
+        # AgentSkills-format: always use progressive disclosure
+        # Legacy format: use trigger to determine behavior
+        repo_skills: list[Skill] = []
+        available_skills: list[Skill] = []
+
+        for s in self.skills:
+            if s.is_agentskills_format:
+                # AgentSkills standard: always use progressive disclosure
+                available_skills.append(s)
+            elif s.trigger is None:
+                # Legacy OpenHands: no trigger = full content in REPO_CONTEXT
+                repo_skills.append(s)
+            else:
+                # Legacy OpenHands: has trigger = list in available_skills
+                available_skills.append(s)
 
         # Gate vendor-specific repo skills based on model family.
         if llm_model or llm_model_canonical:
@@ -192,14 +212,14 @@ class AgentContext(BaseModel):
                     filtered.append(s)
                 repo_skills = filtered
 
-        logger.debug(f"Triggered {len(repo_skills)} repository skills: {repo_skills}")
+        logger.debug(f"Loaded {len(repo_skills)} repository skills: {repo_skills}")
 
-        # Generate available skills prompt for triggered skills
+        # Generate available skills prompt
         available_skills_prompt = ""
-        if triggered_skills:
-            available_skills_prompt = to_prompt(triggered_skills)
+        if available_skills:
+            available_skills_prompt = to_prompt(available_skills)
             logger.debug(
-                f"Generated available skills prompt for {len(triggered_skills)} skills"
+                f"Generated available skills prompt for {len(available_skills)} skills"
             )
 
         # Build the workspace context information
