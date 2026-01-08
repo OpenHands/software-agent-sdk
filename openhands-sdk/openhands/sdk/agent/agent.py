@@ -248,7 +248,7 @@ class Agent(AgentBase):
                 action_events.append(action_event)
 
             # Handle confirmation mode - exit early if actions need access_confirm
-            if self._security_service.access_confirm(action_events).access_confirm:  # type: ignore
+            if self._security_service.access_confirm(action_events).access_confirm:
                 state.execution_status = (
                     ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
                 )
@@ -332,7 +332,7 @@ class Agent(AgentBase):
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
-            security_risk = self._security_service.extract_security_risk(  # type: ignore
+            security_risk = self._security_service.extract_security_risk(
                 arguments,
                 tool.name,
                 tool.annotations.readOnlyHint if tool.annotations else False,

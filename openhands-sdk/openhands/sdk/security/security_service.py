@@ -1,12 +1,11 @@
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from pydantic import BaseModel
 
 
 if TYPE_CHECKING:
     from openhands.sdk.conversation.state import ConversationState
-from groq import BaseModel
 
 from openhands.sdk.event.llm_convertible.action import ActionEvent
 from openhands.sdk.security import risk
@@ -20,7 +19,7 @@ class AccessConfirmRes(BaseModel):
     security_level: risk.SecurityRisk | None = None
 
 
-class SecurityServiceBase(DiscriminatedUnionMixin, ABC):
+class SecurityServiceBase(ABC):
     """
     Security service interface defining core security-related methods.
     """
@@ -64,10 +63,8 @@ class DefaultSecurityService(SecurityServiceBase):
         # If there are no actions there is nothing to confirm
         if len(action_events) == 0:
             return AccessConfirmRes(access_confirm=False)
-
-        if all(
-            isinstance(action_event.action, (FinishAction, ThinkAction))
-            for action_event in action_events
+        if len(action_events) == 1 and isinstance(
+            action_events[0].action, (FinishAction, ThinkAction)
         ):
             return AccessConfirmRes(access_confirm=False)
         # If a security analyzer is registered, use it to grab the risks of the actions
