@@ -195,11 +195,18 @@ jobs:
                     fi
                   done
 
-                  echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
-                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
-                  echo "models=$MODELS" >> "$GITHUB_OUTPUT"
-                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-                  echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
+                  # Sanitize values to avoid GITHUB_OUTPUT parse errors (e.g., raw SHAs)
+                  SDK_SHA=$(printf '%s' "$SDK_SHA" | tr -d '\n\r')
+                  EVAL_LIMIT=$(printf '%s' "$EVAL_LIMIT" | tr -d '\n\r')
+                  PR_NUMBER=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
+                  MODELS=$(printf '%s' "$MODELS" | tr -d '\n\r')
+                  TRIGGER_DESCRIPTION=$(printf '%s' "$TRIGGER_DESCRIPTION" | tr -d '\n\r')
+
+                  printf 'eval_limit=%s\n' "$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
+                  printf 'sdk_sha=%s\n' "$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  printf 'models=%s\n' "$MODELS" >> "$GITHUB_OUTPUT"
+                  printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
             - name: Resolve model configurations
               id: resolve-models
