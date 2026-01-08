@@ -44,17 +44,18 @@ class TokenCondenserTest(BaseIntegrationTest):
         super().__init__(*args, **kwargs)
 
         # Some models explicitly disallow long, repetitive tool loops for cost/safety.
-        # GPT-5.1 Codex Max often refuses the 1..1000 echo prompt and may disable
-        # extended tool usage. In such cases, token-count-based condensation cannot be
-        # reliably exercised. Skip this test for that model to avoid spurious failures.
+        # GPT-5.1 Codex Max and GPT-4o often refuse the 1..1000 echo prompt and may
+        # disable extended tool usage. In such cases, token-count-based condensation
+        # cannot be reliably exercised. Skip this test for those models to avoid
+        # spurious failures.
         model_name = self.llm.model
         canonical = self.llm.model_info.get("model") if self.llm.model_info else None
         name = (canonical or model_name or "").split("/")[-1]
-        if name == "gpt-5.1-codex-max":
+        if name in ("gpt-5.1-codex-max", "gpt-4o"):
             raise SkipTest(
-                "This test stresses long repetitive tool loops to trigger token-based "
-                "condensation. GPT-5.1 Codex Max often declines such requests for "
-                "efficiency/safety reasons."
+                f"This test stresses long repetitive tool loops to trigger token-based "
+                f"condensation. {name} often declines such requests for "
+                f"efficiency/safety reasons."
             )
 
     @property

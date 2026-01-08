@@ -43,7 +43,7 @@ class SoftCondensationRequirementTest(BaseIntegrationTest):
         condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
         return LLMSummarizingCondenser(
             llm=condenser_llm,
-            max_size=8,  # Low enough to trigger with efficient agent batching
+            max_size=6,  # Low enough to trigger even with very efficient agents
             keep_first=1,
         )
 
