@@ -63,7 +63,7 @@ class TestAgentContext:
         assert result is not None
         assert "<SKILLS>" in result
         assert "<available_skills>" in result
-        assert 'name="test_knowledge"' in result
+        assert "<name>test_knowledge</name>" in result
 
     def test_get_system_message_suffix_available_skills_auto_added(self):
         """Test that available skills are automatically added to system prompt."""
@@ -90,10 +90,13 @@ class TestAgentContext:
         assert "<SKILLS>" in result
         assert "The following skills are available" in result
         assert "<available_skills>" in result
-        assert 'name="pdf-tools"' in result
-        assert 'name="image-resize"' in result
+        assert "<name>pdf-tools</name>" in result
+        assert "<name>image-resize</name>" in result
         assert "Extract text from PDF files." in result
         assert "Resize and convert images." in result
+        # Verify source is included as location
+        assert "<location>pdf-tools.md</location>" in result
+        assert "<location>image-resize.md</location>" in result
 
     def test_get_system_message_suffix_with_repo_skills(self):
         """Test system message suffix rendering with repo skills."""
@@ -149,6 +152,7 @@ defined in user's repository.\n"
         result = context.get_system_message_suffix()
 
         # Verify key components are present
+        assert result is not None
         assert "<REPO_CONTEXT>" in result
         assert "[BEGIN context from [security_rules]]" in result
         assert "Always validate user input and sanitize data." in result
@@ -365,6 +369,7 @@ attacks.",
 
         # Test system message suffix (includes repo skills and available skills)
         system_result = context.get_system_message_suffix()
+        assert system_result is not None
         # Should include repo context
         assert "<REPO_CONTEXT>" in system_result
         assert "[BEGIN context from [repo_standards]]" in system_result
@@ -372,7 +377,7 @@ attacks.",
         # Should also include available skills for triggered skills
         assert "<SKILLS>" in system_result
         assert "<available_skills>" in system_result
-        assert 'name="git_tips"' in system_result
+        assert "<name>git_tips</name>" in system_result
 
         # Test user message suffix (should only include knowledge skills)
         user_message = Message(
@@ -521,7 +526,7 @@ defined in user's repository.\n"
         assert "Custom system instructions without repo context." in result
         # Also includes available skills for triggered skills
         assert "<SKILLS>" in result
-        assert 'name="test_knowledge"' in result
+        assert "<name>test_knowledge</name>" in result
 
     def test_get_user_message_suffix_empty_query_with_suffix(self):
         """Test user message suffix with empty query but custom user_message_suffix.
