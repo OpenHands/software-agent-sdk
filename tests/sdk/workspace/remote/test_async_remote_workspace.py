@@ -497,7 +497,7 @@ def test_async_alive_constructs_correct_health_url(mock_urlopen):
 
 @patch("openhands.sdk.workspace.remote.async_remote_workspace.urlopen")
 def test_async_alive_with_normalized_host(mock_urlopen):
-    """Test alive property works correctly when host was normalized (trailing slash removed)."""
+    """Test alive property works correctly when host was normalized."""
     # Host with trailing slash gets normalized in model_post_init
     workspace = AsyncRemoteWorkspace(
         host="http://localhost:8000/", working_dir="workspace"

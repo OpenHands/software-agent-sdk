@@ -1,7 +1,5 @@
 """Unit tests for RemoteWorkspace class."""
 
-from http.client import HTTPResponse
-from io import BytesIO
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
 
@@ -388,7 +386,7 @@ def test_alive_constructs_correct_health_url(mock_urlopen):
 
 @patch("openhands.sdk.workspace.remote.base.urlopen")
 def test_alive_with_normalized_host(mock_urlopen):
-    """Test alive property works correctly when host was normalized (trailing slash removed)."""
+    """Test alive property works correctly when host was normalized."""
     # Host with trailing slash gets normalized in model_post_init
     workspace = RemoteWorkspace(host="http://localhost:8000/", working_dir="/tmp")
 
