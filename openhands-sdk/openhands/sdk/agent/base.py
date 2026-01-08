@@ -110,7 +110,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             {
                 "skills": [
                     {
-                        "name": "repo.md",
+                        "name": "AGENTS.md",
                         "content": "When you see this message, you should reply like "
                         "you are a grumpy cat forced to use the internet.",
                         "type": "repo",
