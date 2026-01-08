@@ -137,7 +137,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     retry_min_wait: int = Field(default=8, ge=0)
     retry_max_wait: int = Field(default=64, ge=0)
 
-    timeout: int | None = Field(default=None, ge=0, description="HTTP timeout (s).")
+    timeout: int | None = Field(
+        default=300,
+        ge=0,
+        description="HTTP timeout in seconds. Default is 300s (5 minutes). "
+        "Set to None to disable timeout (not recommended for production).",
+    )
 
     max_message_chars: int = Field(
         default=30_000,
