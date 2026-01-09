@@ -42,13 +42,18 @@ additional context if needed (e.g., to see the full file content or related code
 
 Analyze the changes and identify specific issues that need attention.
 
-## CRITICAL: Post Inline Review Comments (use `gh` or HTTP API)
+## CRITICAL: Post ONE Single Review with All Comments
 
-After completing your analysis, you MUST post your review comments as *inline comments*
-on the PR.
-Do NOT output a giant comment in this chat.
+After completing your analysis, you MUST post your review as a **single API call** that
+includes both the summary AND all inline comments together.
 
-### How to Post Inline Review Comments
+**IMPORTANT - Avoid Duplication:**
+- Do NOT post individual inline comments separately and then a summary review
+- Do NOT make multiple API calls - use ONE call with all comments bundled
+- The summary in the review body should be brief (1-3 sentences) since details are in
+  inline comments
+
+### How to Post Your Review (Single API Call)
 
 Use the GitHub CLI (`gh`) because it handles authentication and JSON payloads
 more reliably.
@@ -56,7 +61,7 @@ The `GITHUB_TOKEN` environment variable is already available, and `gh` will use 
 automatically.
 You can install it if it's not already available in your environment.
 
-**Post a review with multiple inline comments (recommended):**
+**Post a review with multiple inline comments (REQUIRED approach):**
 
 ```bash
 gh api \\
@@ -64,7 +69,7 @@ gh api \\
   repos/{repo_name}/pulls/{pr_number}/reviews \\
   -f commit_id='{commit_id}' \\
   -f event='COMMENT' \\
-  -f body='Brief overall summary of the review' \\
+  -f body='Brief 1-3 sentence summary. Details are in inline comments below.' \\
   -f comments[][path]='path/to/file.py' \\
   -F comments[][line]=42 \\
   -f comments[][side]='RIGHT' \\
@@ -75,24 +80,26 @@ gh api \\
   -f comments[][body]='Another specific comment.'
 ```
 
-**Alternative: Post a single inline comment:**
+**Only if you have a single comment to make:**
 
 ```bash
 gh api \\
   -X POST \\
-  repos/{repo_name}/pulls/{pr_number}/comments \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
   -f commit_id='{commit_id}' \\
-  -f path='path/to/file.py' \\
-  -F line=42 \\
-  -f side='RIGHT' \\
-  -f body='Your specific comment about this line.'
+  -f event='COMMENT' \\
+  -f body='Brief summary.' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][line]=42 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Your specific comment about this line.'
 ```
 
-### Fallback / Alternative: Use GitHub HTTP API via `curl`
+### Fallback: Use GitHub HTTP API via `curl`
 
-If `gh` is unavailable, fails, or you need finer control, use `curl`.
+If `gh` is unavailable or fails, use `curl`. Remember: ONE API call with all comments.
 
-**Post a review with inline comments:**
+**Post a review with all inline comments (single call):**
 
 ```bash
 curl -X POST \\
@@ -102,7 +109,7 @@ curl -X POST \\
   "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/reviews" \\
   -d '{{
     "commit_id": "{commit_id}",
-    "body": "Brief overall summary of the review",
+    "body": "Brief 1-3 sentence summary. Details are in inline comments.",
     "event": "COMMENT",
     "comments": [
       {{
@@ -118,23 +125,6 @@ curl -X POST \\
         "body": "Another specific comment."
       }}
     ]
-  }}'
-```
-
-**Alternative: Post a single inline comment:**
-
-```bash
-curl -X POST \\
-  -H "Authorization: token $GITHUB_TOKEN" \\
-  -H "Accept: application/vnd.github+json" \\
-  -H "X-GitHub-Api-Version: 2022-11-28" \\
-  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/comments" \\
-  -d '{{
-    "commit_id": "{commit_id}",
-    "path": "path/to/file.py",
-    "line": 42,
-    "side": "RIGHT",
-    "body": "Your specific comment about this line."
   }}'
 ```
 
@@ -170,17 +160,22 @@ def improved_function():
 ```
 ~~~
 
-**Example: Posting a comment with a suggestion:**
+**Example: Including a suggestion in your review:**
+
+Include the suggestion syntax in the `body` field of your inline comment within
+the review:
 
 ```bash
 gh api \\
   -X POST \\
-  repos/{repo_name}/pulls/{pr_number}/comments \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
   -f commit_id='{commit_id}' \\
-  -f path='path/to/file.py' \\
-  -F line=42 \\
-  -f side='RIGHT' \\
-  -f body='Consider using a more descriptive variable name:
+  -f event='COMMENT' \\
+  -f body='Found one issue with variable naming.' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][line]=42 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Consider using a more descriptive variable name:
 
 ```suggestion
 user_count = len(users)
@@ -192,6 +187,9 @@ user_count = len(users)
 - Fixing typos or formatting issues
 - Small refactors (1-5 lines)
 - Adding missing type hints or docstrings
+- Fixing misleading or outdated comments
+- Updating documentation or README content
+- Correcting comments in configuration files (YAML, JSON, etc.)
 
 **When NOT to use suggestions:**
 - Large refactors requiring multiple file changes
@@ -203,14 +201,17 @@ user_count = len(users)
 - Only post comments for actual issues or important suggestions
 - Use the suggestion syntax for small, concrete code changes
 - Be constructive and specific about what should be changed
-- If there are no issues, post a single approval comment summarizing the review
+- If there are no issues, post a single review with an approval message (no inline
+  comments needed)
 
 ### Your Task:
 1. Analyze the diff and code carefully
-2. Identify specific issues on specific lines
-3. Use the GitHub API to post inline comments on those lines
-4. End with a brief summary comment if needed
+2. Identify ALL specific issues on specific lines
+3. Post ONE single review using the GitHub API that includes:
+   - A brief summary in the review body (1-3 sentences)
+   - ALL inline comments bundled in the same API call
+4. Do NOT make multiple API calls or post comments separately
 
-Remember: Post your comments using the GitHub API commands above.
-Do NOT just output text - actually execute the API calls to post the comments.
+**CRITICAL**: Make exactly ONE API call to post your complete review.
+Do NOT post individual comments first and then a summary - this creates duplication.
 """
