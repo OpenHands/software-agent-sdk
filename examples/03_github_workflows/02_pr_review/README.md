@@ -14,14 +14,24 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 - **Automatic Trigger**: Reviews are triggered when:
   - The `review-this` label is added to a PR, OR
   - openhands-agent is requested as a reviewer
+- **Inline Review Comments**: Posts review comments directly on specific lines of code in the PR diff, rather than a single giant comment. This makes it easier to:
+  - See exactly which lines the feedback refers to
+  - Address issues one by one
+  - Have focused discussions on specific code sections
+- **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
+  - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
+  - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
+- **Complete Diff Upfront**: The agent receives the complete git diff in the initial message for efficient review
+  - Large file diffs are automatically truncated to 10,000 characters per file
+  - Total diff is capped at 100,000 characters
+  - The agent can still access the repository for additional context if needed
 - **Comprehensive Analysis**: Analyzes code changes in context of the entire repository
 - **Detailed Feedback**: Provides structured review comments covering:
   - Overall assessment of changes
   - Code quality and best practices
   - Potential issues and security concerns
   - Specific improvement suggestions
-  - Positive feedback on good practices
-- **GitHub Integration**: Posts review comments directly to the PR
+- **GitHub API Integration**: Uses the GitHub API to post inline review comments directly on specific lines of code
 
 ## Setup
 
@@ -52,6 +62,10 @@ env:
     LLM_MODEL: openhands/claude-sonnet-4-5-20250929
     # Optional: Use a custom LLM base URL
     # LLM_BASE_URL: 'https://custom-api.example.com'
+    # Optional: Choose review style ('standard' or 'roasted')
+    # - 'standard': Pragmatic, constructive feedback (default)
+    # - 'roasted': Linus Torvalds style brutally honest review
+    REVIEW_STYLE: standard
 ```
 
 ### 4. Create the review label

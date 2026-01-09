@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import AliasChoices, Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -119,8 +119,6 @@ class ConversationState(OpenHandsModel):
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",
-        validation_alias=AliasChoices("secret_registry", "secrets_manager"),
-        serialization_alias="secret_registry",
     )
 
     # ===== Private attrs (NOT Fields) =====
@@ -135,6 +133,14 @@ class ConversationState(OpenHandsModel):
     _lock: FIFOLock = PrivateAttr(
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
+        """Handle legacy 'secrets_manager' field name for backward compatibility."""
+        if isinstance(data, dict) and "secrets_manager" in data:
+            data["secret_registry"] = data.pop("secrets_manager")
+        return data
 
     @property
     def events(self) -> EventLog:

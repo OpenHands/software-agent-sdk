@@ -72,6 +72,11 @@ on:
                 required: false
                 default: 'false'
                 type: string
+            max_retries:
+                description: Max retries per instance (passed to benchmarks)
+                required: false
+                default: '3'
+                type: string
 
 
 env:
@@ -165,8 +170,10 @@ jobs:
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
                     # Convert ref to SHA for manual dispatch
-                    # Try with origin/ prefix first for remote branches, then without prefix, then use as-is
-                    SDK_SHA=$(git rev-parse "origin/$SDK_REF" 2>/dev/null || git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
+                    # Resolve SHA robustly for both branch refs and raw SHAs (avoid double-prefix issues)
+                    SDK_SHA=$(git rev-parse --verify "$SDK_REF^{commit}" 2>/dev/null || \
+                              git rev-parse --verify "origin/$SDK_REF^{commit}" 2>/dev/null || \
+                              echo "$SDK_REF")
                     PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
@@ -190,11 +197,18 @@ jobs:
                     fi
                   done
 
-                  echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
-                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
-                  echo "models=$MODELS" >> "$GITHUB_OUTPUT"
-                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-                  echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
+                  # Sanitize values to avoid GITHUB_OUTPUT parse errors (e.g., raw SHAs)
+                  SDK_SHA=$(printf '%s' "$SDK_SHA" | tr -d '\n\r')
+                  EVAL_LIMIT=$(printf '%s' "$EVAL_LIMIT" | tr -d '\n\r')
+                  PR_NUMBER=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
+                  MODELS=$(printf '%s' "$MODELS" | tr -d '\n\r')
+                  TRIGGER_DESCRIPTION=$(printf '%s' "$TRIGGER_DESCRIPTION" | tr -d '\n\r')
+
+                  printf 'eval_limit=%s\n' "$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
+                  printf 'sdk_sha=%s\n' "$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  printf 'models=%s\n' "$MODELS" >> "$GITHUB_OUTPUT"
+                  printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
             - name: Resolve model configurations
               id: resolve-models
@@ -219,6 +233,7 @@ jobs:
                   NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
                   NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
                   PUSH_TO_INDEX: ${{ github.event.inputs.push_to_index || 'false' }}
+                  MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -234,7 +249,8 @@ jobs:
                     --arg num_infer_workers "$NUM_INFER_WORKERS" \
                     --arg num_eval_workers "$NUM_EVAL_WORKERS" \
                     --arg push_to_index "$PUSH_TO_INDEX" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, push_to_index: $push_to_index}}')
+                    --arg max_retries "$MAX_RETRIES" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, push_to_index: $push_to_index, max_retries: $max_retries}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \

@@ -58,8 +58,11 @@ jobs:
                   for PKG in "${PACKAGES[@]}"; do
                     echo "===== $PKG ====="
                     uv build --package "$PKG"
-                    done
-                  uv publish --token "$UV_PUBLISH_TOKEN"
+                  done
+
+                  # Use --check-url to skip files that already exist on PyPI
+                  # This allows re-running the workflow after partial failures
+                  uv publish --token "$UV_PUBLISH_TOKEN" --check-url https://pypi.org/simple/
                   echo "✅ All packages built and published successfully!"
 
     create-version-bump-prs:
@@ -163,12 +166,12 @@ jobs:
 
                   # 2. Generate poetry.lock in root
                   echo "🔒 Running poetry lock in root..."
-                  poetry lock --no-update
+                  poetry lock
 
                   # 3. Generate poetry.lock in enterprise directory
                   echo "🔒 Running poetry lock in enterprise/..."
                   cd enterprise
-                  poetry lock --no-update
+                  poetry lock
                   cd ..
 
                   # 4. Update the hash in sandbox_spec_service.py

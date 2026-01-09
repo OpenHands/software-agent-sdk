@@ -101,11 +101,11 @@ class TestTelemetryLifecycle:
         assert basic_telemetry._req_ctx == {}
 
     def test_on_request_with_context(self, basic_telemetry):
-        """Test on_request method with log context."""
-        log_ctx = {"context_window": 4096, "user_id": "test-user"}
-        basic_telemetry.on_request(log_ctx)
+        """Test on_request method with telemetry context."""
+        telemetry_ctx = {"context_window": 4096, "user_id": "test-user"}
+        basic_telemetry.on_request(telemetry_ctx)
 
-        assert basic_telemetry._req_ctx == log_ctx
+        assert basic_telemetry._req_ctx == telemetry_ctx
 
     def test_on_error_stub(self, basic_telemetry):
         """Test on_error method (currently a stub)."""
@@ -529,8 +529,8 @@ class TestTelemetryIntegration:
             )
 
             # Start request
-            log_ctx = {"user_id": "test-user", "context_window": 4096}
-            telemetry.on_request(log_ctx)
+            telemetry_ctx = {"user_id": "test-user", "context_window": 4096}
+            telemetry.on_request(telemetry_ctx)
 
             # Create response with usage (ModelResponse format)
             response = ModelResponse(
