@@ -191,11 +191,9 @@ curl -X POST \\
       {{
         "path": "path/to/file.py",
         "start_line": 10,
-        "line": 12,
+        "line": 11,
         "side": "RIGHT",
-        "body": "Consider this improvement:\\n\\n```suggestion\\n
-first_line = \\"improved\\"\\nsecond_line = \\"code\\"\\n
-third_line = \\"here\\"\\n```"
+        "body": "Suggestion:\\n\\n```suggestion\\nx = 1\\ny = 2\\n```"
       }}
     ]
   }}'
