@@ -2,6 +2,10 @@
 name: Run Condenser Tests
 
 on:
+    # Temporary push trigger for testing before merge to main
+    push:
+        branches:
+            - feat/condenser-integration-tests
     # Use pull_request_target to access secrets even on fork PRs
     # This is safe because we only run when the 'condenser-test' label is added by a maintainer
     pull_request_target:
