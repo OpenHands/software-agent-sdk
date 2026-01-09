@@ -385,7 +385,7 @@ def main():
         conversation = Conversation(
             agent=agent,
             workspace=cwd,
-            secrets=secrets if secrets else None,
+            secrets=secrets,
         )
 
         logger.info("Starting PR review analysis...")
