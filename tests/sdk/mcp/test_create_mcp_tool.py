@@ -5,6 +5,7 @@ import socket
 import threading
 import time
 from collections.abc import Generator
+from typing import Literal
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -12,6 +13,9 @@ from fastmcp import FastMCP
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
+
+
+MCPTransport = Literal["http", "streamable-http", "sse"]
 
 
 def _find_free_port() -> int:
@@ -33,7 +37,7 @@ class MCPTestServer:
         """Add a tool to the server."""
         return self.mcp.tool()(func)
 
-    def start(self, transport: str = "http") -> int:
+    def start(self, transport: MCPTransport = "http") -> int:
         """Start the server and return the port."""
         self.port = _find_free_port()
         path = "/sse" if transport == "sse" else "/mcp"
@@ -200,7 +204,7 @@ def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer)
     add_tool = next(t for t in tools if t.name == "add_numbers")
 
     openai_schema = add_tool.to_openai_tool()
-    params = openai_schema["function"]["parameters"]
+    params = openai_schema["function"].get("parameters", {})
     assert params["properties"]["a"]["type"] == "integer"
     assert params["properties"]["b"]["type"] == "integer"
     assert "a" in params["required"]
