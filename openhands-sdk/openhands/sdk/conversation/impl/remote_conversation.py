@@ -439,6 +439,7 @@ class RemoteConversation(BaseConversation):
     _client: httpx.Client
     _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
+    stop_agent_on_close: bool = False
 
     def __init__(
         self,
@@ -456,6 +457,7 @@ class RemoteConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        stop_agent_on_close: bool = False,
         **_: object,
     ) -> None:
         """Remote conversation proxy that talks to an agent server.
@@ -623,6 +625,7 @@ class RemoteConversation(BaseConversation):
             )
             self._hook_processor = HookEventProcessor(hook_manager=hook_manager)
             self._hook_processor.run_session_start()
+        self.stop_agent_on_close = stop_agent_on_close
 
     def _create_llm_completion_log_callback(self) -> ConversationCallbackType:
         """Create a callback that writes LLM completion logs to client filesystem."""
@@ -984,14 +987,6 @@ class RemoteConversation(BaseConversation):
         if self._hook_processor is not None:
             self._hook_processor.run_session_end()
         try:
-            # trigger server-side delete_conversation to release resources
-            # like tmux sessions
-            _send_request(
-                self._client,
-                "DELETE",
-                f"/api/conversations/{self.id}",
-                acceptable_status_codes={200, 204},
-            )
             # Stop WebSocket client if it exists
             if self._ws_client:
                 self._ws_client.stop()
@@ -1000,6 +995,13 @@ class RemoteConversation(BaseConversation):
             pass
 
         self._end_observability_span()
+        if self.stop_agent_on_close:
+            try:
+                # trigger server-side delete_conversation to release resources
+                # like tmux sessions
+                _send_request(self._client, "DELETE", f"/api/conversations/{self.id}")
+            except Exception:
+                pass
 
     def __del__(self) -> None:
         try:

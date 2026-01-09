@@ -58,6 +58,7 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
+    stop_agent_on_close: bool = False
 
     def __init__(
         self,
@@ -77,6 +78,7 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        stop_agent_on_close: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -222,6 +224,7 @@ class LocalConversation(BaseConversation):
 
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
+        self.stop_agent_on_close = stop_agent_on_close
 
     @property
     def id(self) -> ConversationID:
@@ -535,20 +538,23 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        try:
-            tools_map = self.agent.tools_map
-        except (AttributeError, RuntimeError):
-            # Agent not initialized or partially constructed
-            return
-        for tool in tools_map.values():
+        if self.stop_agent_on_close:
             try:
-                executable_tool = tool.as_executable()
-                executable_tool.executor.close()
-            except NotImplementedError:
-                # Tool has no executor, skip it without erroring
-                continue
-            except Exception as e:
-                logger.warning(f"Error closing executor for tool '{tool.name}': {e}")
+                tools_map = self.agent.tools_map
+            except (AttributeError, RuntimeError):
+                # Agent not initialized or partially constructed
+                return
+            for tool in tools_map.values():
+                try:
+                    executable_tool = tool.as_executable()
+                    executable_tool.executor.close()
+                except NotImplementedError:
+                    # Tool has no executor, skip it without erroring
+                    continue
+                except Exception as e:
+                    logger.warning(
+                        f"Error closing executor for tool '{tool.name}': {e}"
+                    )
 
     def ask_agent(self, question: str) -> str:
         """Ask the agent a simple, stateless question and get a direct LLM response.
