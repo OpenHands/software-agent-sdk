@@ -157,9 +157,51 @@ curl -X POST \\
 - Use `grep -n "pattern" filename` to find exact line numbers in the current file
 - Use `head -n LINE filename | tail -1` to verify the line content
 
+### Using Suggestions for Small Code Changes:
+
+For small, concrete code changes, use GitHub's suggestion feature. This allows the PR
+author to apply your suggested change with one click. Format suggestions in the comment
+body using the special markdown syntax:
+
+~~~
+```suggestion
+def improved_function():
+    return "better code here"
+```
+~~~
+
+**Example: Posting a comment with a suggestion:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/comments \\
+  -f commit_id='{commit_id}' \\
+  -f path='path/to/file.py' \\
+  -F line=42 \\
+  -f side='RIGHT' \\
+  -f body='Consider using a more descriptive variable name:
+
+```suggestion
+user_count = len(users)
+```'
+```
+
+**When to use suggestions:**
+- Renaming variables or functions for clarity
+- Fixing typos or formatting issues
+- Small refactors (1-5 lines)
+- Adding missing type hints or docstrings
+
+**When NOT to use suggestions:**
+- Large refactors requiring multiple file changes
+- Architectural changes that need discussion
+- Changes where multiple valid approaches exist
+
 ### What to Review:
 - Focus on bugs, security issues, performance problems, and code quality
 - Only post comments for actual issues or important suggestions
+- Use the suggestion syntax for small, concrete code changes
 - Be constructive and specific about what should be changed
 - If there are no issues, post a single approval comment summarizing the review
 
