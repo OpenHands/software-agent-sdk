@@ -42,17 +42,56 @@ additional context if needed (e.g., to see the full file content or related code
 
 Analyze the changes and identify specific issues that need attention.
 
-## CRITICAL: Post Inline Review Comments via `gh` or GitHub API
+## CRITICAL: Post Inline Review Comments (use `gh` first; HTTP API fallback)
 
-After completing your analysis, you MUST post your review comments directly using the GitHub API.
-Do NOT output a giant comment - instead, post individual inline comments on specific lines of code.
+After completing your analysis, you MUST post your review comments as *inline comments*
+on the PR.
+Do NOT output a giant comment in this chat.
 
-### How to Post Inline Review Comments
+### Preferred: Use `gh api`
 
-Use the GitHub API to create a review with inline comments. The `GITHUB_TOKEN` environment variable
-is already available for authentication.
+Use the GitHub CLI (`gh`) because it handles authentication and JSON payloads
+more reliably.
+The `GITHUB_TOKEN` environment variable is already available, and `gh` will use it
+automatically.
 
-**Use curl to post a review with inline comments:**
+**Post a review with multiple inline comments (recommended):**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
+  -f commit_id='{commit_id}' \\
+  -f event='COMMENT' \\
+  -f body='Brief overall summary of the review' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][line]=42 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Your specific comment about this line.' \\
+  -f comments[][path]='path/to/another_file.js' \\
+  -F comments[][line]=15 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Another specific comment.'
+```
+
+**Alternative: Post a single inline comment:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/comments \\
+  -f commit_id='{commit_id}' \\
+  -f path='path/to/file.py' \\
+  -F line=42 \\
+  -f side='RIGHT' \\
+  -f body='Your specific comment about this line.'
+```
+
+### Fallback / Alternative: Use GitHub HTTP API via `curl`
+
+If `gh` is unavailable, fails, or you need finer control, use `curl`.
+
+**Post a review with inline comments:**
 
 ```bash
 curl -X POST \\
@@ -101,11 +140,13 @@ curl -X POST \\
 ### Important Guidelines for Inline Comments:
 
 1. **path**: Use the exact file path as shown in the diff (e.g., "src/utils/helper.py")
-2. **line**: Use the line number in the NEW version of the file (the right side of the diff)
+2. **line**: Use the line number in the NEW version of the file (right side of the diff)
    - For added lines (starting with +), use the line number shown in the diff header
    - You can use `grep -n` or examine the file directly to find the correct line number
-3. **side**: Use "RIGHT" for commenting on new/added lines (most common), "LEFT" for deleted lines
-4. **body**: Provide a clear, actionable comment. Be specific about what should be changed.
+3. **side**: Use "RIGHT" for commenting on new/added lines (most common).
+   Use "LEFT" for deleted lines.
+4. **body**: Provide a clear, actionable comment.
+   Be specific about what should be changed.
 
 ### Tips for Finding Line Numbers:
 - The diff header shows line ranges: `@@ -old_start,old_count +new_start,new_count @@`
@@ -125,5 +166,6 @@ curl -X POST \\
 3. Use the GitHub API to post inline comments on those lines
 4. End with a brief summary comment if needed
 
-Remember: Post your comments using the GitHub API commands above. Do NOT just output text - actually execute the API calls to post the review comments.
+Remember: Post your comments using the commands above.
+Do NOT just output text - actually execute the API calls to post the review comments.
 """
