@@ -192,11 +192,32 @@ user_count = len(users)
 - Fixing typos or formatting issues
 - Small refactors (1-5 lines)
 - Adding missing type hints or docstrings
+- Fixing misleading or outdated comments
+- Updating documentation or README content
+- Correcting comments in configuration files (YAML, JSON, etc.)
 
 **When NOT to use suggestions:**
 - Large refactors requiring multiple file changes
 - Architectural changes that need discussion
 - Changes where multiple valid approaches exist
+
+**Example: Suggesting a comment fix:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/comments \\
+  -f commit_id='{commit_id}' \\
+  -f path='.github/workflows/example.yml' \\
+  -F line=11 \\
+  -f side='RIGHT' \\
+  -f body='This comment is misleading. Consider updating it:
+
+```suggestion
+# Note: Auto-triggers (opened/ready_for_review) run for any user.
+# Label and reviewer triggers require write access for security.
+```'
+```
 
 ### What to Review:
 - Focus on bugs, security issues, performance problems, and code quality
