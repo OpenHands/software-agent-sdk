@@ -451,10 +451,11 @@ class Agent(AgentBase):
 
             action: Action = tool.action_from_arguments(arguments)
         except (json.JSONDecodeError, ValidationError, ValueError) as e:
-            err = (
-                f"Error validating args {tool_call.arguments} for tool "
-                f"'{tool.name}': {e}"
-            )
+            err_tool_args = tool_call.arguments
+            if isinstance(e, ValueError) and "security_risk" in str(e):
+                err_tool_args = "<omitted>"
+
+            err = f"Error validating args {err_tool_args} for tool '{tool.name}': {e}"
             # Persist assistant function_call so next turn has matching call_id
             tc_event = ActionEvent(
                 source="agent",

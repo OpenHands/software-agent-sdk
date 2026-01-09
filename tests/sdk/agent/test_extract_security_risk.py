@@ -97,7 +97,12 @@ def test_extract_security_risk(
     tool_name = "test_tool"
 
     if should_raise:
-        with pytest.raises(ValueError):
+        if security_risk_value is None:
+            match = "security_risk"
+        else:
+            match = "SecurityRisk"
+
+        with pytest.raises(ValueError, match=match):
             agent._extract_security_risk(arguments, tool_name, False, security_analyzer)
     else:
         result = agent._extract_security_risk(
