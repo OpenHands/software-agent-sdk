@@ -14,6 +14,10 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 - **Automatic Trigger**: Reviews are triggered when:
   - The `review-this` label is added to a PR, OR
   - openhands-agent is requested as a reviewer
+- **Inline Review Comments**: Posts review comments directly on specific lines of code in the PR diff, rather than a single giant comment. This makes it easier to:
+  - See exactly which lines the feedback refers to
+  - Address issues one by one
+  - Have focused discussions on specific code sections
 - **Skills-Based Review**: Uses public skills from <https://github.com/OpenHands/skills>:
   - **`/codereview`**: Standard pragmatic code review focusing on simplicity, type safety, and backward compatibility
   - **`/codereview-roasted`**: Linus Torvalds style brutally honest review with emphasis on "good taste" and data structures
@@ -27,7 +31,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
   - Code quality and best practices
   - Potential issues and security concerns
   - Specific improvement suggestions
-- **GitHub Integration**: Posts review comments directly to the PR
+- **GitHub API Integration**: Uses the GitHub API to post inline review comments directly on specific lines of code
 
 ## Setup
 
