@@ -46,8 +46,8 @@ def test_organize_models_and_providers():
 
 def test_unverified_models_fallback_when_no_provider_list():
     models = [
-        "openai/gpt-4o",  # verified -> excluded
-        "anthropic/claude-sonnet-4-20250514",  # verified -> excluded
+        "openai/gpt-4o",  # treated as unverified (provider validation disabled)
+        "anthropic/claude-sonnet-4-20250514",  # treated as unverified
         "o3",  # openhands model -> excluded
         "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
         "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # invalid provider prefix
@@ -60,16 +60,17 @@ def test_unverified_models_fallback_when_no_provider_list():
             return_value=models,
         ),
         patch(
-            "openhands.sdk.llm.utils.unverified_models._get_litellm_provider_names",
-            return_value=set(),
+            "openhands.sdk.llm.utils.unverified_models._LITELLM_PROVIDER_NAMES",
+            set(),
         ),
     ):
         result = get_unverified_models()
 
     assert "openai" not in result
     assert "anthropic" not in result
-    assert "other" in result
-    assert result["other"] == models[3:]
+    assert result == {
+        "other": ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"] + models[3:]
+    }
 
 
 def test_list_bedrock_models_without_boto3(monkeypatch):

@@ -96,14 +96,14 @@ def _get_litellm_provider_names() -> set[str]:
 
     result: set[str] = set()
 
-    # LiteLLM exports this as a list of enum members (litellm.types.utils.LlmProviders)
-    # whose `.value` is the provider name.
+    # In LiteLLM 1.80.10, this is `list(LlmProviders)` i.e. enum members.
     for p in provider_list:
         if isinstance(p, str):
             if p:
                 result.add(p)
-        else:
-            result.add(p.value)
+            continue
+
+        result.add(p.value)
 
     return result
 
@@ -147,7 +147,7 @@ def _extract_model_and_provider(model: str) -> tuple[str, str, str]:
     provider = split[0]
     model_id = separator.join(split[1:])
 
-    if _LITELLM_PROVIDER_NAMES and provider not in _LITELLM_PROVIDER_NAMES:
+    if provider not in _LITELLM_PROVIDER_NAMES:
         return "", model, ""
 
     return provider, model_id, separator
