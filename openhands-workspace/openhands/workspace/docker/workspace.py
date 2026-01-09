@@ -13,6 +13,7 @@ from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
@@ -90,6 +91,10 @@ class DockerWorkspace(RemoteWorkspace):
         default_factory=lambda: ["DEBUG"],
         description="Environment variables to forward to the container.",
     )
+    mount_dir: str | None = Field(
+        default=None,
+        description="Optional host directory to mount into the container.",
+    )
     volumes: list[str] = Field(
         default_factory=list,
         description="Additional volume mounts for the Docker container.",
@@ -123,6 +128,18 @@ class DockerWorkspace(RemoteWorkspace):
         """Ensure server_image is set when using DockerWorkspace directly."""
         if self.__class__ is DockerWorkspace and self.server_image is None:
             raise ValueError("server_image must be provided")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mount_dir(self):
+        if self.__class__ is DockerWorkspace and self.mount_dir:
+            warn_deprecated(
+                "DockerWorkspace.mount_dir",
+                deprecated_in="1.9.0",
+                removed_in=None,
+                details="Use DockerWorkspace.volumes instead",
+            )
+            self.volumes.append(f"{self.mount_dir}:/workspace")
         return self
 
     def model_post_init(self, context: Any) -> None:
