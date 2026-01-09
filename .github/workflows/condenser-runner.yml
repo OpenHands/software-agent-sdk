@@ -177,9 +177,8 @@ jobs:
             - name: Checkout repository
               uses: actions/checkout@v5
               with:
-                  # For pull_request_target: checkout fork PR code (requires explicit repository)
-                  # For other events: fallback to current repository and ref
-                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  # When using pull_request_target, explicitly checkout the PR branch
+                  # This ensures we use the scripts from the actual PR code
                   ref: ${{ github.event.pull_request.head.sha || github.ref }}
 
             - name: Install uv
