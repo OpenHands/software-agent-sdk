@@ -88,15 +88,41 @@ def _split_is_actually_version(split: list[str]) -> bool:
     )
 
 
+def _get_litellm_provider_names() -> set[str]:
+    try:
+        provider_list = litellm.provider_list
+    except Exception:
+        return set()
+
+    result: set[str] = set()
+    for p in provider_list:
+        value = getattr(p, "value", None)
+        if isinstance(value, str) and value:
+            result.add(value)
+        elif isinstance(p, str) and p:
+            result.add(p)
+
+    return result
+
+
+_LITELLM_PROVIDER_NAMES = _get_litellm_provider_names()
+
+
 def _extract_model_and_provider(model: str) -> tuple[str, str, str]:
+    """Extract provider and model information from a model identifier.
+
+    This is intentionally conservative:
+    - Only treat the prefix as a provider if it is a known LiteLLM provider.
+    - Otherwise, return empty provider (caller will bucket it under "other").
+
+    This prevents bogus providers like "us", "eu", "low", "1024-x-1024" from
+    leaking into downstream UIs.
     """
-    Extract provider and model information from a model identifier.
-    """
+
     separator = "/"
     split = model.split(separator)
 
     if len(split) == 1:
-        # no "/" separator found, try with "."
         separator = "."
         split = model.split(separator)
         if _split_is_actually_version(split):
@@ -116,6 +142,10 @@ def _extract_model_and_provider(model: str) -> tuple[str, str, str]:
 
     provider = split[0]
     model_id = separator.join(split[1:])
+
+    if _LITELLM_PROVIDER_NAMES and provider not in _LITELLM_PROVIDER_NAMES:
+        return "", model, ""
+
     return provider, model_id, separator
 
 
