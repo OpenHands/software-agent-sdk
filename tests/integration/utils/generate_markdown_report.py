@@ -54,12 +54,8 @@ def generate_model_summary_table(model_results: list[ModelTestResults]) -> str:
     """Generate a summary table for all models."""
 
     table_lines = [
-        (
-            "| Model | Overall | Tests Passed | Skipped | Total | Cost | Tokens |"
-        ),
-        (
-            "|-------|---------|--------------|---------|-------|------|--------|"
-        ),
+        ("| Model | Overall | Tests Passed | Skipped | Total | Cost | Tokens |"),
+        ("|-------|---------|--------------|---------|-------|------|--------|"),
     ]
 
     for result in model_results:
@@ -141,9 +137,7 @@ def generate_detailed_results(model_results: list[ModelTestResults]) -> str:
             for test in failed_tests:
                 reason = test.test_result.reason or "No reason provided"
                 cost = format_cost(test.cost)
-                section_lines.append(
-                    f"- `{test.instance_id}`: {reason} (Cost: {cost})"
-                )
+                section_lines.append(f"- `{test.instance_id}`: {reason} (Cost: {cost})")
 
             section_lines.append("")
 
