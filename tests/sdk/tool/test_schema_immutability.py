@@ -56,9 +56,10 @@ class SchemaImmutabilityMockObservation(Observation):
 class _SchemaImmutabilityCustomAction(Action):
     """Custom action for testing schema inheritance immutability.
 
-    This class is defined at module level (rather than inside a test function) to ensure
-    it's importable by Pydantic during serialization/deserialization. Defining it inside
-    a test function causes test pollution when running tests in parallel with pytest-xdist.
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
     """
 
     custom_field: str = Field(description="Custom field")
@@ -67,9 +68,10 @@ class _SchemaImmutabilityCustomAction(Action):
 class _SchemaImmutabilityCustomObservation(Observation):
     """Custom observation for testing schema inheritance immutability.
 
-    This class is defined at module level (rather than inside a test function) to ensure
-    it's importable by Pydantic during serialization/deserialization. Defining it inside
-    a test function causes test pollution when running tests in parallel with pytest-xdist.
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
     """
 
     custom_result: str = Field(description="Custom result")

@@ -29,9 +29,10 @@ from openhands.sdk.workspace import LocalWorkspace
 class _DifferentAgentForVerifyTest(AgentBase):
     """A different agent class used to test Agent.verify() rejects class mismatches.
 
-    This class is defined at module level (rather than inside a test function) to ensure
-    it's importable by Pydantic during serialization/deserialization. Defining it inside
-    a test function causes test pollution when running tests in parallel with pytest-xdist.
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
     """
 
     def __init__(self):

@@ -8,9 +8,10 @@ from openhands.sdk.tool import Action
 class _TestActionForReasoningContent(Action):
     """A test action used for testing reasoning content in ActionEvent.
 
-    This class is defined at module level (rather than inside a test function) to ensure
-    it's importable by Pydantic during serialization/deserialization. Defining it inside
-    a test function causes test pollution when running tests in parallel with pytest-xdist.
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
     """
 
     action: str = "test"
