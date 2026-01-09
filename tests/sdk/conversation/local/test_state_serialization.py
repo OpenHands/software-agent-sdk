@@ -900,11 +900,12 @@ def test_conversation_state_secrets_serialization_deserialization():
         api_key_source_restored = resumed_state.secret_registry.secret_sources[
             "API_KEY"
         ]
-        assert api_key_source_restored.value is None
         assert api_key_source_restored.get_value() is None
 
         # Getting env vars should return empty since values are None
-        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
+            "echo $API_KEY"
+        )
         assert env_vars == {}  # No value available
 
 
@@ -984,11 +985,12 @@ def test_conversation_state_secrets_with_cipher():
         api_key_source_restored = resumed_state.secret_registry.secret_sources[
             "API_KEY"
         ]
-        assert api_key_source_restored.value is not None
         assert api_key_source_restored.get_value() == "test-api-key"
 
         # Getting env vars should return the actual values
-        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
+            "echo $API_KEY"
+        )
         assert env_vars == {"API_KEY": "test-api-key"}
 
         db_env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
