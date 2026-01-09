@@ -73,9 +73,9 @@ class Telemetry(BaseModel):
         """
         self._stats_update_callback = callback
 
-    def on_request(self, log_ctx: dict | None) -> None:
+    def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
-        self._req_ctx = log_ctx or {}
+        self._req_ctx = telemetry_ctx or {}
 
     def on_response(
         self,
