@@ -90,10 +90,16 @@ TriggerType = Annotated[
 class Skill(BaseModel):
     """A skill provides specialized knowledge or functionality.
 
-    Skills use triggers to determine when they should be activated:
-    - None: Always active, for repository-specific guidelines
-    - KeywordTrigger: Activated when keywords appear in user messages
-    - TaskTrigger: Activated for specific tasks, may require user input
+    Skill behavior depends on format (is_agentskills_format) and trigger:
+
+    AgentSkills format (SKILL.md files):
+    - Always listed in <available_skills> with name, description, location
+    - Agent reads full content on demand (progressive disclosure)
+    - If has triggers: content is ALSO auto-injected when triggered
+
+    Legacy OpenHands format:
+    - With triggers: Listed in <available_skills>, content injected on trigger
+    - Without triggers (None): Full content in <REPO_CONTEXT>, always active
 
     This model supports both OpenHands-specific fields and AgentSkills standard
     fields (https://agentskills.io/specification) for cross-platform compatibility.
@@ -104,11 +110,11 @@ class Skill(BaseModel):
     trigger: TriggerType | None = Field(
         default=None,
         description=(
-            "Skills use triggers to determine when they should be activated. "
-            "None implies skill is always active. "
-            "Other implementations include KeywordTrigger (activated by a "
-            "keyword in a Message) and TaskTrigger (activated by specific tasks "
-            "and may require user input)"
+            "Trigger determines when skill content is auto-injected. "
+            "None = no auto-injection (for AgentSkills: agent reads on demand; "
+            "for legacy: full content always in system prompt). "
+            "KeywordTrigger = auto-inject when keywords appear in user messages. "
+            "TaskTrigger = auto-inject for specific tasks, may require user input."
         ),
     )
     source: str | None = Field(
@@ -129,6 +135,16 @@ class Skill(BaseModel):
     inputs: list[InputMetadata] = Field(
         default_factory=list,
         description="Input metadata for the skill (task skills only)",
+    )
+    is_agentskills_format: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill was loaded from a SKILL.md file following the "
+            "AgentSkills standard. AgentSkills-format skills use progressive "
+            "disclosure: always listed in <available_skills> with name, "
+            "description, and location. If the skill also has triggers, content "
+            "is auto-injected when triggered AND agent can read file anytime."
+        ),
     )
 
     # AgentSkills standard fields (https://agentskills.io/specification)
@@ -303,7 +319,13 @@ class Skill(BaseModel):
             resources = discovered_resources
 
         return cls._create_skill_from_metadata(
-            agent_name, content, path, metadata_dict, mcp_tools, resources=resources
+            agent_name,
+            content,
+            path,
+            metadata_dict,
+            mcp_tools,
+            resources=resources,
+            is_agentskills_format=True,
         )
 
     @classmethod
@@ -356,6 +378,7 @@ class Skill(BaseModel):
         metadata_dict: dict,
         mcp_tools: dict | None = None,
         resources: SkillResources | None = None,
+        is_agentskills_format: bool = False,
     ) -> "Skill":
         """Create a Skill object from parsed metadata.
 
@@ -366,6 +389,7 @@ class Skill(BaseModel):
             metadata_dict: Parsed frontmatter metadata.
             mcp_tools: MCP tools configuration (from .mcp.json or frontmatter).
             resources: Discovered resource directories.
+            is_agentskills_format: Whether this skill follows the AgentSkills standard.
         """
         # Extract AgentSkills standard fields (Pydantic validators handle
         # transformation). Handle "allowed-tools" to "allowed_tools" key mapping.
@@ -412,6 +436,7 @@ class Skill(BaseModel):
                 inputs=inputs,
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
 
@@ -423,6 +448,7 @@ class Skill(BaseModel):
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
         else:
@@ -434,6 +460,7 @@ class Skill(BaseModel):
                 trigger=None,
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
 

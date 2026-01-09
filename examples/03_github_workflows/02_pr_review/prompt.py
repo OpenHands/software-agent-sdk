@@ -10,6 +10,8 @@ The template supports skill triggers:
 
 The template includes:
 - {diff} - The complete git diff for the PR (truncated for large files)
+- {pr_number} - The PR number
+- {commit_id} - The HEAD commit SHA
 """
 
 PROMPT = """{skill_trigger}
@@ -22,6 +24,8 @@ Review the PR changes below and identify issues that need to be addressed.
 - **Repository**: {repo_name}
 - **Base Branch**: {base_branch}
 - **Head Branch**: {head_branch}
+- **PR Number**: {pr_number}
+- **Commit ID**: {commit_id}
 
 ## Git Diff
 
@@ -36,5 +40,177 @@ The following is the complete diff for this PR. Large file diffs may be truncate
 The diff above shows all the changes in this PR. You can use bash commands to examine
 additional context if needed (e.g., to see the full file content or related code).
 
-Analyze the changes and provide your structured review.
+Analyze the changes and identify specific issues that need attention.
+
+## CRITICAL: Post Inline Review Comments (use `gh` or HTTP API)
+
+After completing your analysis, you MUST post your review comments as *inline comments*
+on the PR.
+Do NOT output a giant comment in this chat.
+
+### How to Post Inline Review Comments
+
+Use the GitHub CLI (`gh`) because it handles authentication and JSON payloads
+more reliably.
+The `GITHUB_TOKEN` environment variable is already available, and `gh` will use it
+automatically.
+You can install it if it's not already available in your environment.
+
+**Post a review with multiple inline comments (recommended):**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
+  -f commit_id='{commit_id}' \\
+  -f event='COMMENT' \\
+  -f body='Brief overall summary of the review' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][line]=42 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Your specific comment about this line.' \\
+  -f comments[][path]='path/to/another_file.js' \\
+  -F comments[][line]=15 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Another specific comment.'
+```
+
+**Alternative: Post a single inline comment:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/comments \\
+  -f commit_id='{commit_id}' \\
+  -f path='path/to/file.py' \\
+  -F line=42 \\
+  -f side='RIGHT' \\
+  -f body='Your specific comment about this line.'
+```
+
+### Fallback / Alternative: Use GitHub HTTP API via `curl`
+
+If `gh` is unavailable, fails, or you need finer control, use `curl`.
+
+**Post a review with inline comments:**
+
+```bash
+curl -X POST \\
+  -H "Authorization: token $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "X-GitHub-Api-Version: 2022-11-28" \\
+  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/reviews" \\
+  -d '{{
+    "commit_id": "{commit_id}",
+    "body": "Brief overall summary of the review",
+    "event": "COMMENT",
+    "comments": [
+      {{
+        "path": "path/to/file.py",
+        "line": 42,
+        "side": "RIGHT",
+        "body": "Your specific comment about this line."
+      }},
+      {{
+        "path": "path/to/another_file.js",
+        "line": 15,
+        "side": "RIGHT",
+        "body": "Another specific comment."
+      }}
+    ]
+  }}'
+```
+
+**Alternative: Post a single inline comment:**
+
+```bash
+curl -X POST \\
+  -H "Authorization: token $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "X-GitHub-Api-Version: 2022-11-28" \\
+  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/comments" \\
+  -d '{{
+    "commit_id": "{commit_id}",
+    "path": "path/to/file.py",
+    "line": 42,
+    "side": "RIGHT",
+    "body": "Your specific comment about this line."
+  }}'
+```
+
+### Important Guidelines for Inline Comments:
+
+1. **path**: Use the exact file path as shown in the diff
+   (e.g., "src/utils/helper.py")
+2. **line**: Use the line number in the NEW version of the file
+   (the right side of the diff)
+   - For added lines (starting with +), use the line number shown in the diff
+   - You can use `grep -n` or examine the file directly to find the line number
+3. **side**: Use "RIGHT" for commenting on new/added lines (most common),
+   "LEFT" for deleted lines
+4. **body**: Provide a clear, actionable comment.
+   Be specific about what should be changed.
+
+### Tips for Finding Line Numbers:
+- The diff header shows line ranges: `@@ -old_start,old_count +new_start,new_count @@`
+- Count lines from `new_start` for added/modified lines
+- Use `grep -n "pattern" filename` to find exact line numbers in the current file
+- Use `head -n LINE filename | tail -1` to verify the line content
+
+### Using Suggestions for Small Code Changes:
+
+For small, concrete code changes, use GitHub's suggestion feature. This allows the PR
+author to apply your suggested change with one click. Format suggestions in the comment
+body using the special markdown syntax:
+
+~~~
+```suggestion
+def improved_function():
+    return "better code here"
+```
+~~~
+
+**Example: Posting a comment with a suggestion:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/comments \\
+  -f commit_id='{commit_id}' \\
+  -f path='path/to/file.py' \\
+  -F line=42 \\
+  -f side='RIGHT' \\
+  -f body='Consider using a more descriptive variable name:
+
+```suggestion
+user_count = len(users)
+```'
+```
+
+**When to use suggestions:**
+- Renaming variables or functions for clarity
+- Fixing typos or formatting issues
+- Small refactors (1-5 lines)
+- Adding missing type hints or docstrings
+
+**When NOT to use suggestions:**
+- Large refactors requiring multiple file changes
+- Architectural changes that need discussion
+- Changes where multiple valid approaches exist
+
+### What to Review:
+- Focus on bugs, security issues, performance problems, and code quality
+- Only post comments for actual issues or important suggestions
+- Use the suggestion syntax for small, concrete code changes
+- Be constructive and specific about what should be changed
+- If there are no issues, post a single approval comment summarizing the review
+
+### Your Task:
+1. Analyze the diff and code carefully
+2. Identify specific issues on specific lines
+3. Use the GitHub API to post inline comments on those lines
+4. End with a brief summary comment if needed
+
+Remember: Post your comments using the GitHub API commands above.
+Do NOT just output text - actually execute the API calls to post the comments.
 """

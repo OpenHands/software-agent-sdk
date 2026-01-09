@@ -9,7 +9,15 @@ AgentSkills standard which includes:
 - SKILL.md file with frontmatter metadata (name, description, triggers)
 - Optional resource directories: scripts/, references/, assets/
 
-See the example_skills/ directory for a complete skill structure.
+The example_skills/ directory contains two skills:
+- rot13-encryption: Has triggers (encrypt, decrypt) - listed in <available_skills>
+  AND content auto-injected when triggered
+- code-style-guide: No triggers - listed in <available_skills> for on-demand access
+
+All SKILL.md files follow the AgentSkills progressive disclosure model:
+they are listed in <available_skills> with name, description, and location.
+Skills with triggers get the best of both worlds: automatic content injection
+when triggered, plus the agent can proactively read them anytime.
 """
 
 import os
@@ -63,7 +71,7 @@ def main():
     if agent_skills:
         skill_name = list(agent_skills.keys())[0]
         loaded_skill = agent_skills[skill_name]
-        print("\nLoaded skill details (AgentSkills standard fields):")
+        print(f"\nDetails for '{skill_name}' (AgentSkills standard fields):")
         print(f"  - Name: {loaded_skill.name}")
         desc = loaded_skill.description or ""
         print(f"  - Description: {desc[:70]}...")
