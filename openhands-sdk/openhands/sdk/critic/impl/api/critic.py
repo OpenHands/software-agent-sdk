@@ -50,7 +50,9 @@ class APIBasedCritic(CriticBase, CriticClient):
             message.send_reasoning_content = False
         formatted_messages = [message.to_chat_dict() for message in messages]
 
-        response = self.classify_trace(formatted_messages, tools)
+        # Convert ToolDefinition objects to ChatCompletionToolParam format
+        tools_for_api = [tool.to_openai_tool() for tool in tools]
+        response = self.classify_trace(formatted_messages, tools_for_api)
         prob_map = self.extract_prob_map(response)
 
         score = 0.0
