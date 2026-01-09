@@ -21,8 +21,12 @@ from openhands.sdk.tool.builtins.think import (
 
 BUILT_IN_TOOLS = [FinishTool, ThinkTool]
 
+# Mapping of built-in tool class names to their classes, generated dynamically
+BUILT_IN_TOOL_CLASSES = {tool.__name__: tool for tool in BUILT_IN_TOOLS}
+
 __all__ = [
     "BUILT_IN_TOOLS",
+    "BUILT_IN_TOOL_CLASSES",
     "FinishTool",
     "FinishAction",
     "FinishObservation",

@@ -10,6 +10,15 @@ Please follow them while working.
 {% endfor %}
 </REPO_CONTEXT>
 {% endif %}
+{% if available_skills_prompt %}
+<SKILLS>
+The following skills are available and may be triggered by keywords or task types in your messages.
+When a skill is triggered, you will receive additional context and instructions.
+You can also directly look up a skill's full content by reading its location path, and use the skill's guidance proactively when relevant to your task.
+
+{{ available_skills_prompt }}
+</SKILLS>
+{% endif %}
 {% if system_message_suffix %}
 
 {{ system_message_suffix }}

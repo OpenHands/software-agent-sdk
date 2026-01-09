@@ -2,6 +2,20 @@
 
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 
+from openhands.sdk.tool import Action
+
+
+class _TestActionForReasoningContent(Action):
+    """A test action used for testing reasoning content in ActionEvent.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    action: str = "test"
+
 
 def create_mock_response(content: str = "Test response", response_id: str = "test-id"):
     """Helper function to create properly structured mock responses."""
@@ -113,11 +127,6 @@ def test_action_event_with_reasoning_content():
         MessageToolCall,
         TextContent,
     )
-    from openhands.sdk.tool import Action
-
-    # Create a simple action for testing
-    class TestAction(Action):
-        action: str = "test"
 
     # Create a tool call
     tool_call = MessageToolCall(
@@ -129,7 +138,7 @@ def test_action_event_with_reasoning_content():
 
     action_event = ActionEvent(
         thought=[TextContent(text="I need to test this")],
-        action=TestAction(),
+        action=_TestActionForReasoningContent(),
         tool_name="test_tool",
         tool_call_id="test-id",
         tool_call=tool_call,
