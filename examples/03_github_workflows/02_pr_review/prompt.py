@@ -48,7 +48,7 @@ After completing your analysis, you MUST post your review comments as *inline co
 on the PR.
 Do NOT output a giant comment in this chat.
 
-### Preferred: Use `gh api`
+### How to Post Inline Review Comments
 
 Use the GitHub CLI (`gh`) because it handles authentication and JSON payloads
 more reliably.
