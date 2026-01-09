@@ -1,6 +1,6 @@
 import json
 
-from pydantic import ValidationError, model_validator
+from pydantic import PrivateAttr, ValidationError, model_validator
 
 import openhands.sdk.security.risk as risk
 from openhands.sdk.agent.base import AgentBase
@@ -52,6 +52,7 @@ from openhands.sdk.observability.laminar import (
 from openhands.sdk.observability.utils import extract_action_name
 from openhands.sdk.security.security_service import (
     DefaultSecurityService,
+    SecurityServiceBase,
 )
 from openhands.sdk.tool import (
     Action,
@@ -79,6 +80,10 @@ class Agent(AgentBase):
         >>> tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
         >>> agent = Agent(llm=llm, tools=tools)
     """
+
+    # Conduct security analysis on relevant actions
+    # based on the Security Analyzer and Confirmation Policy.
+    _security_service: SecurityServiceBase = PrivateAttr()
 
     @model_validator(mode="before")
     @classmethod
@@ -255,7 +260,9 @@ class Agent(AgentBase):
                 if action_event is None:
                     continue
                 action_events.append(action_event)
-
+            assert self._security_service is not None, (
+                "_security_service should not be None"
+            )
             # Handle confirmation mode - exit early if actions need access_confirm
             if self._security_service.access_confirm(action_events).access_confirm:
                 state.execution_status = (
@@ -365,6 +372,9 @@ class Agent(AgentBase):
 
             # Fix malformed arguments (e.g., JSON strings for list/dict fields)
             arguments = fix_malformed_tool_arguments(arguments, tool.action_type)
+            assert self._security_service is not None, (
+                "_security_service should not be None"
+            )
             security_risk = self._security_service.extract_security_risk(
                 arguments,
                 tool.name,

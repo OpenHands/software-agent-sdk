@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
@@ -36,6 +36,27 @@ class SecurityServiceBase(ABC):
                  - security_level: Optional[risk.SecurityRisk] = Security risk
                  level of the actions (defaults to the highest risk level among all
                  actions; None if no risk))
+        """
+        pass
+
+    def extract_security_risk(
+        self,
+        arguments: dict,
+        tool_name: str,
+        read_only_tool: bool,
+    ) -> Any:
+        """
+        Extracts the security risk level from tool invocation arguments,
+        with adaptive logic for different LLM security analyzers.
+
+        Args:
+            arguments: Dictionary of tool invocation parameters, which may
+                       or may not contain the "security_risk" key.
+            tool_name: Name of the target tool, used to locate the problematic
+                       tool in exception messages.
+            read_only_tool: Boolean flag indicating if the tool is read-only
+                            (no security risk check required).
+
         """
         pass
 
