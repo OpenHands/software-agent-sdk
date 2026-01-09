@@ -906,3 +906,92 @@ def test_conversation_state_secrets_serialization_deserialization():
         # Getting env vars should return empty since values are None
         env_vars = resumed_state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
         assert env_vars == {}  # No value available
+
+
+def test_conversation_state_secrets_with_cipher():
+    """Test that secrets are preserved when using a cipher.
+
+    When a cipher is provided to ConversationState.create(), secrets should
+    be encrypted during serialization and decrypted during deserialization,
+    preserving the actual secret values across save/restore cycles.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890aa")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create a cipher for encryption
+        cipher = Cipher(secret_key="my-secret-encryption-key")
+
+        # Create conversation state with secrets AND cipher
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher,
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets(
+            {
+                "API_KEY": "test-api-key",
+                "DATABASE_URL": "postgresql://localhost/test",
+            }
+        )
+
+        # Verify secrets are set before save
+        env_vars = state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        assert env_vars == {"API_KEY": "test-api-key"}
+
+        # Force save the state (triggers serialization with encryption)
+        state._save_base_state(state._fs)
+
+        # Verify the serialized state has encrypted (not redacted) secrets
+        base_state_path = Path(persist_path) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "secret_registry" in base_state_content
+        api_key_source = base_state_content["secret_registry"]["secret_sources"][
+            "API_KEY"
+        ]
+        # Value should be encrypted (not '**********')
+        assert api_key_source["value"] != "**********"
+        assert api_key_source["value"] != "test-api-key"  # Not plaintext
+        assert len(api_key_source["value"]) > 20  # Encrypted value is longer
+
+        # Now restore the conversation state with the same cipher
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher,
+        )
+
+        # The state should load successfully
+        assert resumed_state.id == conv_id
+
+        # The secrets should be PRESERVED after restore
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        assert "DATABASE_URL" in resumed_state.secret_registry.secret_sources
+
+        # The values should be decrypted and accessible
+        api_key_source_restored = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ]
+        assert api_key_source_restored.value is not None
+        assert api_key_source_restored.get_value() == "test-api-key"
+
+        # Getting env vars should return the actual values
+        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        assert env_vars == {"API_KEY": "test-api-key"}
+
+        db_env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
+            "echo $DATABASE_URL"
+        )
+        assert db_env_vars == {"DATABASE_URL": "postgresql://localhost/test"}
