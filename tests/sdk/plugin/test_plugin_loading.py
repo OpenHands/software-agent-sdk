@@ -267,6 +267,7 @@ Fetch and display the current weather for the specified city.
         # Verify skill properties
         assert skill.name == "city-weather:now"
         assert skill.description == "Get current weather for a city"
+        assert skill.allowed_tools is not None
         assert "tavily_search" in skill.allowed_tools
 
         # Verify trigger format
