@@ -13,6 +13,9 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 
 _logger = logging.getLogger(__name__)
 
+# Polling configuration
+POLL_INTERVAL_SECONDS = 0.1
+
 
 class RemoteWorkspaceMixin(BaseModel):
     """Mixin providing remote workspace operations.
@@ -43,11 +46,15 @@ class RemoteWorkspaceMixin(BaseModel):
         command: str,
         cwd: str | Path | None,
         timeout: float,
-    ) -> Generator[dict[str, Any], httpx.Response, CommandResult]:
+    ) -> Generator[dict[str, Any], httpx.Response | None, CommandResult]:
         """Execute a bash command on the remote system.
 
         This method starts a bash command via the remote agent server API,
         then polls for the output until the command completes.
+
+        The generator yields either:
+        - HTTP request dicts (with "method", "url", etc.) for making requests
+        - Sleep request dicts (with "_sleep" key) for waiting between polls
 
         Args:
             command: The bash command to execute
@@ -69,13 +76,14 @@ class RemoteWorkspaceMixin(BaseModel):
 
         try:
             # Start the command
-            response: httpx.Response = yield {
+            response: httpx.Response | None = yield {
                 "method": "POST",
                 "url": f"{self.host}/api/bash/start_bash_command",
                 "json": payload,
                 "headers": self._headers,
                 "timeout": timeout + 5.0,  # Add buffer to HTTP timeout
             }
+            assert response is not None
             response.raise_for_status()
             bash_command = response.json()
             command_id = bash_command["id"]
@@ -84,9 +92,9 @@ class RemoteWorkspaceMixin(BaseModel):
 
             # Step 2: Poll for output until command completes
             start_time = time.time()
-            stdout_parts = []
-            stderr_parts = []
-            exit_code = None
+            stdout_parts: list[str] = []
+            stderr_parts: list[str] = []
+            exit_code: int | None = None
 
             while time.time() - start_time < timeout:
                 # Search for all events
@@ -101,6 +109,7 @@ class RemoteWorkspaceMixin(BaseModel):
                     "headers": self._headers,
                     "timeout": timeout,
                 }
+                assert response is not None
                 response.raise_for_status()
                 search_result = response.json()
 
@@ -118,8 +127,9 @@ class RemoteWorkspaceMixin(BaseModel):
                 if exit_code is not None:
                     break
 
-                # Wait a bit before polling again
-                time.sleep(0.1)
+                # Yield a sleep request - the executor will handle this appropriately
+                # (sync sleep for sync executor, async sleep for async executor)
+                yield {"_sleep": POLL_INTERVAL_SECONDS}
 
             # If we timed out waiting for completion
             if exit_code is None:

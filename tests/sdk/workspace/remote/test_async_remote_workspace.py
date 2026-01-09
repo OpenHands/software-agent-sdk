@@ -103,6 +103,36 @@ async def test_async_execute_method():
 
 
 @pytest.mark.asyncio
+@patch("openhands.sdk.workspace.remote.async_remote_workspace.asyncio.sleep")
+async def test_async_execute_handles_sleep_requests(mock_async_sleep):
+    """Test _execute method handles sleep requests with asyncio.sleep."""
+    workspace = AsyncRemoteWorkspace(
+        host="http://localhost:8000", working_dir="workspace"
+    )
+
+    # Mock async client
+    mock_client = AsyncMock()
+    mock_response = Mock()
+    mock_client.request.return_value = mock_response
+    workspace._client = mock_client
+
+    # Create a generator that yields a sleep request between HTTP requests
+    def test_generator():
+        yield {"method": "GET", "url": "http://test1.com"}
+        yield {"_sleep": 0.1}  # Sleep request
+        yield {"method": "GET", "url": "http://test2.com"}
+        return "test_result"
+
+    result = await workspace._execute(test_generator())
+
+    assert result == "test_result"
+    # Verify asyncio.sleep was called with the correct duration
+    mock_async_sleep.assert_called_once_with(0.1)
+    # Verify HTTP requests were made
+    assert mock_client.request.call_count == 2
+
+
+@pytest.mark.asyncio
 @patch(
     "openhands.sdk.workspace.remote.async_remote_workspace.AsyncRemoteWorkspace._execute"
 )
