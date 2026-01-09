@@ -826,3 +826,83 @@ def test_resume_with_conversation_id_mismatch_raises_error():
                 agent=agent,
                 id=different_id,
             )
+
+
+def test_conversation_state_secrets_serialization_deserialization():
+    """Test that secrets are properly serialized and deserialized.
+
+    This is a regression test for ALL-4846 where conversations with secrets
+    would fail to restore because secrets are serialized as '**********'
+    (redacted) but StaticSecret.value was a required field that couldn't
+    accept None after validation converted '**********' to None.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789099")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create conversation state with secrets
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets(
+            {
+                "API_KEY": "test-api-key",
+                "DATABASE_URL": "postgresql://localhost/test",
+            }
+        )
+
+        # Verify secrets are set before save
+        env_vars = state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        assert env_vars == {"API_KEY": "test-api-key"}
+
+        # Force save the state (triggers serialization)
+        state._save_base_state(state._fs)
+
+        # Verify the serialized state has redacted secrets
+        base_state_path = Path(persist_path) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "secret_registry" in base_state_content
+        api_key_source = base_state_content["secret_registry"]["secret_sources"][
+            "API_KEY"
+        ]
+        # Value should be redacted to '**********' in serialization
+        assert api_key_source["value"] == "**********"
+
+        # Now simulate restoring the conversation state from persisted data
+        # This was failing before the fix with:
+        # "pydantic_core._pydantic_core.ValidationError: Field required
+        # [type=missing, ... for StaticSecret.value"
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+
+        # The state should load successfully - this was the bug fix
+        assert resumed_state.id == conv_id
+
+        # The secrets should be None after restore (since they were redacted)
+        # but the StaticSecret objects should exist
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        assert "DATABASE_URL" in resumed_state.secret_registry.secret_sources
+
+        # The values should be None after deserialization of redacted secrets
+        api_key_source_restored = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ]
+        assert api_key_source_restored.value is None
+        assert api_key_source_restored.get_value() is None
+
+        # Getting env vars should return empty since values are None
+        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        assert env_vars == {}  # No value available

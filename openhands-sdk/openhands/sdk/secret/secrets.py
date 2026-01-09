@@ -25,9 +25,11 @@ class SecretSource(DiscriminatedUnionMixin, ABC):
 class StaticSecret(SecretSource):
     """A secret stored locally"""
 
-    value: SecretStr
+    value: SecretStr | None = None
 
-    def get_value(self):
+    def get_value(self) -> str | None:
+        if self.value is None:
+            return None
         return self.value.get_secret_value()
 
     @field_validator("value")
@@ -58,7 +60,9 @@ class LookupSecret(SecretSource):
         for key, value in headers.items():
             if _is_secret_header(key):
                 secret_value = validate_secret(SecretStr(value), info)
-                assert secret_value is not None
+                # Skip headers with redacted/empty secret values
+                if secret_value is None:
+                    continue
                 result[key] = secret_value.get_secret_value()
             else:
                 result[key] = value
@@ -70,7 +74,8 @@ class LookupSecret(SecretSource):
         for key, value in headers.items():
             if _is_secret_header(key):
                 secret_value = serialize_secret(SecretStr(value), info)
-                assert secret_value is not None
+                if secret_value is None:
+                    continue
                 result[key] = secret_value
             else:
                 result[key] = value
