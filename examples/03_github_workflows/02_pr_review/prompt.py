@@ -42,7 +42,7 @@ additional context if needed (e.g., to see the full file content or related code
 
 Analyze the changes and identify specific issues that need attention.
 
-## CRITICAL: Post Inline Review Comments (use `gh` first; HTTP API fallback)
+## CRITICAL: Post Inline Review Comments (use `gh` or HTTP API)
 
 After completing your analysis, you MUST post your review comments as *inline comments*
 on the PR.
