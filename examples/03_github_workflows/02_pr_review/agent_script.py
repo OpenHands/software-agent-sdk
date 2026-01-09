@@ -375,9 +375,6 @@ def main():
         secrets = {}
         if api_key:
             secrets["LLM_API_KEY"] = api_key
-        # Configure LLM
-        api_key = os.getenv("LLM_API_KEY")
-        github_token = os.getenv("GITHUB_TOKEN")
         model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
         if github_token:
             secrets["GITHUB_TOKEN"] = github_token
