@@ -54,6 +54,7 @@ Use the GitHub CLI (`gh`) because it handles authentication and JSON payloads
 more reliably.
 The `GITHUB_TOKEN` environment variable is already available, and `gh` will use it
 automatically.
+You can install it if it’s not already available in your environment.
 
 **Post a review with multiple inline comments (recommended):**
 
