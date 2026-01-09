@@ -283,6 +283,8 @@ def main():
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
+    github_token = os.getenv("GITHUB_TOKEN")
+
     # Get PR information
     pr_info = {
         "number": os.getenv("PR_NUMBER"),
