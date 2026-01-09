@@ -5,8 +5,12 @@ from abc import ABC, abstractmethod
 import httpx
 from pydantic import Field, SecretStr, field_serializer, field_validator
 
+from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
+
+
+logger = get_logger(__name__)
 
 
 class SecretSource(DiscriminatedUnionMixin, ABC):
@@ -62,6 +66,9 @@ class LookupSecret(SecretSource):
                 secret_value = validate_secret(SecretStr(value), info)
                 # Skip headers with redacted/empty secret values
                 if secret_value is None:
+                    logger.debug(
+                        f"Skipping redacted header '{key}' during deserialization"
+                    )
                     continue
                 result[key] = secret_value.get_secret_value()
             else:
@@ -75,6 +82,9 @@ class LookupSecret(SecretSource):
             if _is_secret_header(key):
                 secret_value = serialize_secret(SecretStr(value), info)
                 if secret_value is None:
+                    logger.debug(
+                        f"Skipping redacted header '{key}' during serialization"
+                    )
                     continue
                 result[key] = secret_value
             else:

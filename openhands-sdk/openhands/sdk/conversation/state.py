@@ -173,6 +173,14 @@ class ConversationState(OpenHandsModel):
         will be redacted (serialized as '**********').
         """
         context = {"cipher": self._cipher} if self._cipher else None
+        # Warn if secrets exist but no cipher is configured
+        if not self._cipher and self.secret_registry.secret_sources:
+            logger.warning(
+                f"Saving conversation state without cipher - "
+                f"{len(self.secret_registry.secret_sources)} secret(s) will be "
+                "redacted and lost on restore. Consider providing a cipher to "
+                "preserve secrets."
+            )
         payload = self.model_dump_json(exclude_none=True, context=context)
         fs.write(BASE_STATE, payload)
 
