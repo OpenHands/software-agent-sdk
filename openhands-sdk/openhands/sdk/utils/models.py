@@ -1,3 +1,4 @@
+import inspect
 import logging
 import threading
 from abc import ABC
@@ -37,11 +38,7 @@ def _get_schemas_in_progress() -> dict[type, JsonSchemaValue]:
 def _is_abstract(type_: type) -> bool:
     """Determine whether the class directly extends ABC or contains abstract methods"""
     try:
-        # Check if ABC is in bases or if class has abstract methods
-        # Use __abstractmethods__ directly to avoid triggering Pydantic's __getattr__
-        return ABC in type_.__bases__ or bool(
-            getattr(type_, "__abstractmethods__", None)
-        )
+        return inspect.isabstract(type_) or ABC in type_.__bases__
     except Exception:
         return False
 

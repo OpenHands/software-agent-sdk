@@ -14,10 +14,6 @@ This example demonstrates how to use skills for code review:
 The agent posts inline review comments on specific lines of code using the
 GitHub API, rather than posting one giant comment under the PR.
 
-This example demonstrates how to use skills for code review:
-- `/codereview` - Standard code review skill
-- `/codereview-roasted` - Linus Torvalds style brutally honest review
-
 Designed for use with GitHub Actions workflows triggered by PR labels.
 
 Environment Variables:
