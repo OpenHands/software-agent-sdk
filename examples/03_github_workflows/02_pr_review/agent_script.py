@@ -393,6 +393,19 @@ def main():
         if review_content:
             logger.info(f"Agent final response: {len(review_content)} characters")
 
+        # Print cost information for CI output
+        metrics = conversation.conversation_stats.get_combined_metrics()
+        print("\n=== PR Review Cost Summary ===")
+        print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
+        if metrics.accumulated_token_usage:
+            token_usage = metrics.accumulated_token_usage
+            print(f"Prompt Tokens: {token_usage.prompt_tokens}")
+            print(f"Completion Tokens: {token_usage.completion_tokens}")
+            if token_usage.cache_read_tokens > 0:
+                print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
+            if token_usage.cache_write_tokens > 0:
+                print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
+
         logger.info("PR review completed successfully")
 
     except Exception as e:
