@@ -3,7 +3,7 @@ import json
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import Field, PrivateAttr, model_validator
 
@@ -18,6 +18,12 @@ from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObserva
 from openhands.sdk.event.base import Event
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm_registry import LLMRegistry
+
+
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -180,6 +186,7 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        llm_registry: "LLMRegistry | None" = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -196,6 +203,10 @@ class ConversationState(OpenHandsModel):
         history), but all other configuration can be freely changed: LLM,
         agent_context, condenser, system prompts, etc.
 
+        When conversation state is persisted with LLM profile references (instead
+        of inlined credentials), pass an ``llm_registry`` so profile IDs can be
+        expanded during restore.
+
         Args:
             id: Unique conversation identifier
             agent: The Agent to use (tools must match persisted on restore)
@@ -203,6 +214,8 @@ class ConversationState(OpenHandsModel):
             persistence_dir: Directory for persisting state and events
             max_iterations: Maximum iterations per run
             stuck_detection: Whether to enable stuck detection
+            llm_registry: Optional registry used to expand profile references when
+                conversations persist profile IDs instead of inline credentials.
 
         Returns:
             ConversationState ready for use
@@ -222,32 +235,59 @@ class ConversationState(OpenHandsModel):
         except FileNotFoundError:
             base_text = None
 
+        context: dict[str, object] = {}
+        registry = llm_registry
+        if registry is None:
+            from openhands.sdk.llm.llm_registry import LLMRegistry
+
+            registry = LLMRegistry()
+        context["llm_registry"] = registry
+
+        # Ensure that any runtime-provided LLM without an explicit profile is
+        # persisted as a stable "default" profile, so conversation state can
+        # safely store only a profile reference.
+        agent = agent.model_copy(
+            update={"llm": registry.ensure_default_profile(agent.llm)}
+        )
+
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            base_payload = json.loads(base_text)
 
-            # Restore the conversation with the same id
-            if state.id != id:
+            persisted_id = ConversationID(base_payload.get("id"))
+            if persisted_id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
-                    f"but persisted state has {state.id}"
+                    f"but persisted state has {persisted_id}"
                 )
 
+            persisted_agent_payload = base_payload.get("agent")
+            if persisted_agent_payload is None:
+                raise ValueError("Persisted conversation is missing agent state")
+
             # Attach event log early so we can read history for tool verification
+            event_log = EventLog(file_store, dir_path=EVENTS_DIR)
+
+            persisted_agent = AgentBase.model_validate(
+                persisted_agent_payload,
+                context={"llm_registry": registry},
+            )
+            agent.verify(persisted_agent, events=event_log)
+
+            # Use runtime-provided Agent directly (PR #1542 / issue #1451)
+            base_payload["agent"] = agent.model_dump(
+                mode="json",
+                exclude_none=True,
+                context={"expose_secrets": True},
+            )
+            base_payload["workspace"] = workspace.model_dump(mode="json")
+            base_payload["max_iterations"] = max_iterations
+
+            state = cls.model_validate(base_payload, context=context)
             state._fs = file_store
-            state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+            state._events = event_log
 
-            # Verify compatibility (agent class + tools)
-            agent.verify(state.agent, events=state._events)
-
-            # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
-            state.agent = agent
-            state.workspace = workspace
-            state.max_iterations = max_iterations
-
-            # Note: stats are already deserialized from base_state.json above.
-            # Do NOT reset stats here - this would lose accumulated metrics.
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"

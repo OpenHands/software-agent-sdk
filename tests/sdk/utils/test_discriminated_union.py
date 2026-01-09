@@ -1,3 +1,4 @@
+import gc
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
@@ -228,7 +229,7 @@ def test_model_containing_polymorphic_field():
 
 
 def test_duplicate_kind():
-    # nAn error should be raised when a duplicate class name is detected
+    # An error should be raised when a duplicate class definition is detected.
 
     with pytest.raises(ValueError) as exc_info:
 
@@ -245,6 +246,9 @@ def test_duplicate_kind():
         "tests.sdk.utils.test_discriminated_union.SomeImpl"
     )
     assert expected in error_message
+
+    # Ensure the failed subclass definition does not leak into subsequent tests.
+    gc.collect()
 
 
 def test_enhanced_error_message_with_validation():

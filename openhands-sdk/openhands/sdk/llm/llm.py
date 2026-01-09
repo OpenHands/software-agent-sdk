@@ -4,7 +4,7 @@ import copy
 import json
 import os
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -15,8 +15,12 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -83,7 +87,6 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 logger = get_logger(__name__)
 
 __all__ = ["LLM"]
-
 
 # Exceptions we retry on
 LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
@@ -289,6 +292,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "Safety settings for models that support them (like Mistral AI and Gemini)"
         ),
     )
+    profile_id: str | None = Field(
+        default=None,
+        description="Optional profile id (filename under the profiles directory).",
+    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -334,6 +341,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         extra="ignore", arbitrary_types_allowed=True
     )
 
+    @model_serializer(mode="wrap", when_used="json")
+    def _serialize_with_profiles(
+        self, handler: SerializerFunctionWrapHandler, _info: SerializationInfo
+    ) -> Mapping[str, Any]:
+        """Serialize LLMs as profile references when possible.
+
+        In JSON mode we avoid persisting full LLM configuration (and any secrets)
+        into conversation state. Instead, when an LLM has ``profile_id`` we emit a
+        compact reference: ``{"profile_id": ...}``.
+
+        If no ``profile_id`` is set, we fall back to the full payload so existing
+        non-profile workflows keep working.
+        """
+
+        data = handler(self)
+        profile_id = data.get("profile_id") if isinstance(data, dict) else None
+        if profile_id:
+            return {"profile_id": profile_id}
+        return data
+
     # =========================================================================
     # Validators
     # =========================================================================
@@ -344,10 +371,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @model_validator(mode="before")
     @classmethod
-    def _coerce_inputs(cls, data):
-        if not isinstance(data, dict):
+    def _coerce_inputs(cls, data: Any, info: ValidationInfo):
+        if not isinstance(data, Mapping):
             return data
         d = dict(data)
+
+        profile_id = d.get("profile_id")
+        if profile_id and "model" not in d:
+            if info.context is None or "llm_registry" not in info.context:
+                raise ValueError(
+                    "LLM registry required in context to load profile references."
+                )
+
+            registry = info.context["llm_registry"]
+            llm = registry.load_profile(profile_id)
+            expanded = llm.model_dump(exclude_none=True)
+            expanded["profile_id"] = profile_id
+            d.update(expanded)
 
         model_val = d.get("model")
         if not model_val:
