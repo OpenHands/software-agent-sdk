@@ -681,7 +681,7 @@ class TestEventServiceSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_idle(self, event_service):
-        """Test send_message with run=True and agent idle."""
+        """Test send_message with run=True and agent idle triggers run()."""
         # Mock conversation and its methods
         conversation = MagicMock()
         state = MagicMock()
@@ -689,27 +689,28 @@ class TestEventServiceSendMessage:
         state.__enter__ = MagicMock(return_value=state)
         state.__exit__ = MagicMock(return_value=None)
         conversation.state = state
+        conversation._state = state
         conversation.send_message = MagicMock()
         conversation.run = MagicMock()
 
         event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
         message = Message(role="user", content=[])
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+        # Call send_message with run=True
+        await event_service.send_message(message, run=True)
 
-            # Call send_message with run=True
-            await event_service.send_message(message, run=True)
+        # Verify send_message was called
+        conversation.send_message.assert_called_once_with(message)
 
-            # Verify send_message was called via executor
-            mock_loop.run_in_executor.assert_any_call(
-                None, conversation.send_message, message
-            )
-            # Verify run was called via executor since agent is idle
-            mock_loop.run_in_executor.assert_any_call(None, conversation.run)
+        # Verify a run task was created (since agent was idle)
+        assert event_service._run_task is not None
+
+        # Wait for the background task to complete
+        await event_service._run_task
+
+        # Verify conversation.run was called
+        conversation.run.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_message_with_different_message_types(self, event_service):
