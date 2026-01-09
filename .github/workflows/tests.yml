@@ -114,10 +114,10 @@ jobs:
               run: |
                   # Clean up any existing coverage file
                   rm -f .coverage
-                  # Use pytest-xdist (-n auto) for parallel execution with proper
-                  # coverage collection. --forked prevents coverage from child processes.
+                  # Use --forked for tools tests due to terminal test conflicts
+                  # when running in parallel (shared /tmp paths, subprocess management)
                   CI=true uv run python -m pytest -vvs \
-                    -n auto \
+                    --forked \
                     --cov=openhands-tools \
                     --cov-report=term-missing \
                     --cov-fail-under=0 \
