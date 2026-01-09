@@ -42,7 +42,7 @@ additional context if needed (e.g., to see the full file content or related code
 
 Analyze the changes and identify specific issues that need attention.
 
-## CRITICAL: Post Inline Review Comments via GitHub API
+## CRITICAL: Post Inline Review Comments via `gh` or GitHub API
 
 After completing your analysis, you MUST post your review comments directly using the GitHub API.
 Do NOT output a giant comment - instead, post individual inline comments on specific lines of code.
