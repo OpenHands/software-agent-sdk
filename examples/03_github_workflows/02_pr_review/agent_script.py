@@ -5,7 +5,7 @@ Example: PR Review Agent
 This script runs OpenHands agent to review a pull request and provide
 fine-grained review comments. The agent has full repository access and uses
 bash commands to analyze changes in context and post detailed review feedback
-directly via the GitHub API.
+directly via `gh` or the GitHub API.
 
 This example demonstrates how to use skills for code review:
 - `/codereview` - Standard code review skill
