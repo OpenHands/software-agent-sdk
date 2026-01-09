@@ -379,9 +379,7 @@ def main():
         logger.info("Starting PR review analysis...")
         logger.info("Agent received the PR diff in the initial message")
         logger.info(f"Using skill trigger: {skill_trigger}")
-        logger.info(
-            "Agent will post inline review comments directly via GitHub API"
-        )
+        logger.info("Agent will post inline review comments directly via GitHub API")
 
         # Send the prompt and run the agent
         # The agent will analyze the code and post inline review comments
