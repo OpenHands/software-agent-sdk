@@ -12,7 +12,7 @@ Tests are classified into three types based on their filename prefix:
 
 - **Integration tests** (`t*.py`) - **REQUIRED**: Verify that the agent successfully completes essential tasks. These tests must pass for releases and focus on task completion and outcomes.
 - **Behavior tests** (`b*.py`) - **OPTIONAL**: Verify that the agent follows system message guidelines and best practices. These tests track quality improvements and focus on how the agent approaches problems. Failures don't block releases but should be addressed for optimal user experience.
-- **Condenser tests** (`c*.py`) - **OPTIONAL, NON-BLOCKING**: Stress test the condensation system's interaction with LLM APIs to ensure compatibility. These tests run on a limited set of LLMs (currently Claude Opus 4.5 and GPT-4o) and are triggered separately from integration tests. They validate that conversation condensation works correctly across different models and API patterns.
+- **Condenser tests** (`c*.py`) - **OPTIONAL, NON-BLOCKING**: Stress test the condensation system's interaction with LLM APIs to ensure compatibility. These tests run on a limited set of LLMs (currently Claude Opus 4.5 and GPT-5.1 Codex Max) and are triggered separately from integration tests. They validate that conversation condensation works correctly across different models and API patterns.
 
 Success rates are calculated separately for each test type to track completion capability, behavior quality, and condenser reliability.
 
@@ -82,7 +82,7 @@ Defined in `.github/workflows/condenser-runner.yml`, this workflow runs condense
 1. **Pull Request Labels**: When a PR is labeled with `condenser-test`
 2. **Manual Trigger**: Via workflow dispatch with a required reason
 
-**Test Coverage:** Runs only against 2 LLMs (Claude Opus 4.5 with extended thinking, GPT-4o) to save costs while validating cross-model compatibility
+**Test Coverage:** Runs only against 2 LLMs (Claude Opus 4.5 with extended thinking, GPT-5.1 Codex Max) to save costs while validating cross-model compatibility
 
 **Note:** Condenser tests are non-blocking and do not prevent PR merges
 
@@ -111,7 +111,7 @@ For more details on behavior testing and guidelines for adding new tests, see [B
 
 ### Condenser Tests (`c*.py`) - **Optional, Non-Blocking**
 
-These tests stress test the condensation system's interaction with LLM APIs to ensure compatibility across different models. Unlike integration tests, condenser tests run on a limited set of LLMs (currently Claude Opus 4.5 and GPT-4o) to save costs while validating cross-model compatibility. They are triggered separately using the `condenser-test` label and do not block PR merges.
+These tests stress test the condensation system's interaction with LLM APIs to ensure compatibility across different models. Unlike integration tests, condenser tests run on a limited set of LLMs (currently Claude Opus 4.5 and GPT-5.1 Codex Max) to save costs while validating cross-model compatibility. They are triggered separately using the `condenser-test` label and do not block PR merges.
 
 **Purpose:** Validate that conversation condensation works correctly across different models and API patterns, particularly focusing on:
 - Model-specific features (e.g., thinking blocks in Claude Opus)
