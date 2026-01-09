@@ -59,7 +59,9 @@ jobs:
                     echo "===== $PKG ====="
                     uv build --package "$PKG"
                     done
-                  uv publish --token "$UV_PUBLISH_TOKEN"
+                  # Use --check-url to skip files that already exist on PyPI
+                  # This allows re-running the workflow after partial failures
+                  uv publish --token "$UV_PUBLISH_TOKEN" --check-url https://pypi.org/simple/
                   echo "✅ All packages built and published successfully!"
 
     create-version-bump-prs:
