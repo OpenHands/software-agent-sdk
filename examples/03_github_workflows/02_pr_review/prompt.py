@@ -42,18 +42,57 @@ additional context if needed (e.g., to see the full file content or related code
 
 Analyze the changes and identify specific issues that need attention.
 
-## CRITICAL: Post Inline Review Comments via `gh` or GitHub API
+## CRITICAL: Post Inline Review Comments (use `gh` or HTTP API)
 
-After completing your analysis, you MUST post your review comments directly
-using the GitHub API. Do NOT output a giant comment - instead, post individual
-inline comments on specific lines of code.
+After completing your analysis, you MUST post your review comments as *inline comments*
+on the PR.
+Do NOT output a giant comment in this chat.
 
 ### How to Post Inline Review Comments
 
-Use the GitHub API to create a review with inline comments.
-The `GITHUB_TOKEN` environment variable is already available for authentication.
+Use the GitHub CLI (`gh`) because it handles authentication and JSON payloads
+more reliably.
+The `GITHUB_TOKEN` environment variable is already available, and `gh` will use it
+automatically.
+You can install it if it's not already available in your environment.
 
-**Use curl to post a review with inline comments:**
+**Post a review with multiple inline comments (recommended):**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
+  -f commit_id='{commit_id}' \\
+  -f event='COMMENT' \\
+  -f body='Brief overall summary of the review' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][line]=42 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Your specific comment about this line.' \\
+  -f comments[][path]='path/to/another_file.js' \\
+  -F comments[][line]=15 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Another specific comment.'
+```
+
+**Alternative: Post a single inline comment:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/comments \\
+  -f commit_id='{commit_id}' \\
+  -f path='path/to/file.py' \\
+  -F line=42 \\
+  -f side='RIGHT' \\
+  -f body='Your specific comment about this line.'
+```
+
+### Fallback / Alternative: Use GitHub HTTP API via `curl`
+
+If `gh` is unavailable, fails, or you need finer control, use `curl`.
+
+**Post a review with inline comments:**
 
 ```bash
 curl -X POST \\
