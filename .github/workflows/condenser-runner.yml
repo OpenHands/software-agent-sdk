@@ -62,16 +62,16 @@ jobs:
                 job-config:
                     # Only run against 2 LLMs for condenser tests:
                     # - Claude Opus 4.5 (primary - supports thinking blocks)
-                    # - GPT-4o (secondary - cross-LLM validation)
+                    # - GPT-5.1 Codex Max (secondary - cross-LLM validation)
                     - name: Claude Opus 4.5
                       run-suffix: opus_condenser_run
                       llm-config:
-                          model: litellm_proxy/claude-opus-4-5
+                          model: litellm_proxy/anthropic/claude-opus-4-5-20251101
                           extended_thinking: true
-                    - name: GPT-4o
-                      run-suffix: gpt4o_condenser_run
+                    - name: GPT-5.1 Codex Max
+                      run-suffix: gpt51_condenser_run
                       llm-config:
-                          model: litellm_proxy/openai/gpt-4o
+                          model: litellm_proxy/gpt-5.1-codex-max
         steps:
             - name: Checkout repository
               uses: actions/checkout@v5
