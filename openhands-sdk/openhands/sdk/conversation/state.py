@@ -251,8 +251,8 @@ class ConversationState(OpenHandsModel):
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
-                f"State: {state.model_dump(exclude={'agent'})}\n"
-                f"Agent: {state.agent.model_dump_succint()}"
+                f"State: {json.dumps(state.model_dump(exclude={'agent'}, mode='json'))}\n"
+                f"Agent: {json.dumps(state.agent.model_dump_succint())}"
             )
             return state
 
@@ -278,8 +278,8 @@ class ConversationState(OpenHandsModel):
         state._autosave_enabled = True
         logger.info(
             f"Created new conversation {state.id}\n"
-            f"State: {state.model_dump(exclude={'agent'})}\n"
-            f"Agent: {state.agent.model_dump_succint()}"
+            f"State: {json.dumps(state.model_dump(exclude={'agent'}, mode='json'))}\n"
+            f"Agent: {json.dumps(state.agent.model_dump_succint())}"
         )
         return state
 
