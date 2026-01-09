@@ -370,10 +370,19 @@ def main():
             ),
         )
 
-        # Create conversation
+        # Create conversation with secrets for masking
+        # These secrets will be masked in agent output to prevent accidental exposure
+        secrets = {}
+        if api_key:
+            secrets["LLM_API_KEY"] = api_key
+        github_token = os.getenv("GITHUB_TOKEN")
+        if github_token:
+            secrets["GITHUB_TOKEN"] = github_token
+
         conversation = Conversation(
             agent=agent,
             workspace=cwd,
+            secrets=secrets if secrets else None,
         )
 
         logger.info("Starting PR review analysis...")
