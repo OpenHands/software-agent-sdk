@@ -17,7 +17,7 @@ def test_organize_models_and_providers():
         "mistral/devstral-small-2505",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
-        "custom-provider/custom-model",  # invalid provider, should be bucketed under "other"
+        "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
         "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # invalid provider prefix
         "1024-x-1024/gpt-image-1.5",  # invalid provider prefix
         "openai/another-model",
