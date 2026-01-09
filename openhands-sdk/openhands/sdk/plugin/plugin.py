@@ -87,6 +87,25 @@ class Plugin(BaseModel):
         """Get the plugin description."""
         return self.manifest.description
 
+    def get_all_skills(self) -> list[Skill]:
+        """Get all skills including those converted from commands.
+
+        Returns skills from both the skills/ directory and commands/ directory.
+        Commands are converted to keyword-triggered skills using the format
+        /<plugin-name>:<command-name>.
+
+        Returns:
+            Combined list of skills (original + command-derived skills).
+        """
+        all_skills = list(self.skills)
+
+        # Convert commands to skills with keyword triggers
+        for command in self.commands:
+            skill = command.to_skill(self.name)
+            all_skills.append(skill)
+
+        return all_skills
+
     def add_skills_to(
         self,
         agent_context: AgentContext | None = None,
@@ -95,6 +114,7 @@ class Plugin(BaseModel):
         """Add this plugin's skills to an agent context.
 
         Plugin skills override existing skills with the same name.
+        Includes both explicit skills and command-derived skills.
 
         Args:
             agent_context: Existing agent context (or None to create new)
@@ -116,8 +136,11 @@ class Plugin(BaseModel):
 
         existing_skills = agent_context.skills if agent_context else []
 
+        # Get all skills including command-derived skills
+        all_skills = self.get_all_skills()
+
         skills_by_name = {s.name: s for s in existing_skills}
-        for skill in self.skills:
+        for skill in all_skills:
             if skill.name in skills_by_name:
                 logger.warning(f"Plugin skill '{skill.name}' overrides existing skill")
             skills_by_name[skill.name] = skill

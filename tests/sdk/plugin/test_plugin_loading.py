@@ -231,6 +231,140 @@ Review the specified code and provide feedback.
         assert "Read" in command.allowed_tools
         assert "Review the specified code" in command.content
 
+    def test_command_to_skill_conversion(self, tmp_path: Path):
+        """Test converting a command to a keyword-triggered skill."""
+        from openhands.sdk.context.skills.trigger import KeywordTrigger
+
+        plugin_dir = tmp_path / "city-weather"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        manifest_file = manifest_dir / "plugin.json"
+        manifest_file.write_text('{"name": "city-weather", "version": "1.0.0"}')
+
+        commands_dir = plugin_dir / "commands"
+        commands_dir.mkdir()
+        command_md = commands_dir / "now.md"
+        command_md.write_text(
+            """---
+description: Get current weather for a city
+argument-hint: <city-name>
+allowed-tools:
+  - tavily_search
+---
+
+Fetch and display the current weather for the specified city.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+        assert len(plugin.commands) == 1
+
+        # Convert command to skill
+        command = plugin.commands[0]
+        skill = command.to_skill("city-weather")
+
+        # Verify skill properties
+        assert skill.name == "city-weather:now"
+        assert skill.description == "Get current weather for a city"
+        assert "tavily_search" in skill.allowed_tools
+
+        # Verify trigger format
+        assert isinstance(skill.trigger, KeywordTrigger)
+        assert "/city-weather:now" in skill.trigger.keywords
+
+        # Verify content includes argument hint
+        assert "$ARGUMENTS" in skill.content
+        assert "Fetch and display the current weather" in skill.content
+
+    def test_get_all_skills_with_commands(self, tmp_path: Path):
+        """Test get_all_skills returns both skills and command-derived skills."""
+        from openhands.sdk.context.skills.trigger import KeywordTrigger
+
+        plugin_dir = tmp_path / "test-plugin"
+        plugin_dir.mkdir()
+        manifest_dir = plugin_dir / ".plugin"
+        manifest_dir.mkdir()
+        manifest_file = manifest_dir / "plugin.json"
+        manifest_file.write_text('{"name": "test-plugin", "version": "1.0.0"}')
+
+        # Create skills directory with a skill
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        skill_dir = skills_dir / "my-skill"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: my-skill
+description: A regular skill
+---
+
+This is a regular skill content.
+"""
+        )
+
+        # Create commands directory with a command
+        commands_dir = plugin_dir / "commands"
+        commands_dir.mkdir()
+        command_md = commands_dir / "greet.md"
+        command_md.write_text(
+            """---
+description: Greet someone
+argument-hint: <name>
+---
+
+Say hello to the specified person.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        # Verify separate counts
+        assert len(plugin.skills) == 1
+        assert len(plugin.commands) == 1
+
+        # Verify combined skills
+        all_skills = plugin.get_all_skills()
+        assert len(all_skills) == 2
+
+        # Find the regular skill and command-derived skill
+        skill_names = {s.name for s in all_skills}
+        assert "my-skill" in skill_names
+        assert "test-plugin:greet" in skill_names
+
+        # Verify command-derived skill has keyword trigger
+        command_skill = next(s for s in all_skills if s.name == "test-plugin:greet")
+        assert isinstance(command_skill.trigger, KeywordTrigger)
+        assert "/test-plugin:greet" in command_skill.trigger.keywords
+
+    def test_get_all_skills_empty_commands(self, tmp_path: Path):
+        """Test get_all_skills with no commands."""
+        plugin_dir = tmp_path / "no-commands"
+        plugin_dir.mkdir()
+
+        # Create skills directory with a skill only
+        skills_dir = plugin_dir / "skills"
+        skills_dir.mkdir()
+        skill_dir = skills_dir / "only-skill"
+        skill_dir.mkdir()
+        skill_md = skill_dir / "SKILL.md"
+        skill_md.write_text(
+            """---
+name: only-skill
+description: The only skill
+---
+
+Content for the only skill.
+"""
+        )
+
+        plugin = Plugin.load(plugin_dir)
+
+        all_skills = plugin.get_all_skills()
+        assert len(all_skills) == 1
+        assert all_skills[0].name == "only-skill"
+
     def test_load_all_plugins(self, tmp_path: Path):
         """Test loading all plugins from a directory."""
         plugins_dir = tmp_path / "plugins"

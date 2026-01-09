@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import frontmatter
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -144,6 +144,9 @@ type LspServersDict = dict[str, dict[str, Any]]
 #: Should have 'hooks' key with event types mapping to list of matchers.
 #: See openhands.sdk.hooks.HookConfig for the full structure.
 type HooksConfigDict = dict[str, Any]
+
+if TYPE_CHECKING:
+    from openhands.sdk.context.skills import Skill
 
 
 class PluginAuthor(BaseModel):
@@ -359,6 +362,53 @@ class CommandDefinition(BaseModel):
             content=post.content.strip(),
             source=str(command_path),
             metadata=metadata,
+        )
+
+    def to_skill(self, plugin_name: str) -> "Skill":
+        """Convert this command to a keyword-triggered Skill.
+
+        Creates a Skill with a KeywordTrigger using the Claude Code namespacing
+        format: /<plugin-name>:<command-name>
+
+        Args:
+            plugin_name: The name of the plugin this command belongs to.
+
+        Returns:
+            A Skill object with the command content and a KeywordTrigger.
+
+        Example:
+            For a plugin "city-weather" with command "now":
+            - Trigger keyword: "/city-weather:now"
+            - When user types "/city-weather:now Tokyo", the skill activates
+        """
+        from openhands.sdk.context.skills import Skill
+        from openhands.sdk.context.skills.trigger import KeywordTrigger
+
+        # Build the trigger keyword in Claude Code namespace format
+        trigger_keyword = f"/{plugin_name}:{self.name}"
+
+        # Build skill content with $ARGUMENTS placeholder context
+        content_parts = []
+        if self.description:
+            content_parts.append(f"## {self.name}\n\n{self.description}\n")
+
+        if self.argument_hint:
+            content_parts.append(
+                f"**Arguments**: `$ARGUMENTS` - {self.argument_hint}\n"
+            )
+
+        if self.content:
+            content_parts.append(f"\n{self.content}")
+
+        skill_content = "\n".join(content_parts).strip()
+
+        return Skill(
+            name=f"{plugin_name}:{self.name}",
+            content=skill_content,
+            description=self.description or f"Command {self.name} from {plugin_name}",
+            trigger=KeywordTrigger(keywords=[trigger_keyword]),
+            source=self.source,
+            allowed_tools=self.allowed_tools if self.allowed_tools else None,
         )
 
 
