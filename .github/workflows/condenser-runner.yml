@@ -2,10 +2,6 @@
 name: Run Condenser Tests
 
 on:
-    # Temporary push trigger for testing before merge to main
-    push:
-        branches:
-            - feat/condenser-integration-tests
     # Use pull_request_target to access secrets even on fork PRs
     # This is safe because we only run when the 'condenser-test' label is added by a maintainer
     pull_request_target:
@@ -48,8 +44,7 @@ jobs:
                     github.event_name == 'pull_request_target' &&
                     github.event.label.name == 'condenser-test'
                 ) ||
-                github.event_name == 'workflow_dispatch' ||
-                github.event_name == 'push'
+                github.event_name == 'workflow_dispatch'
             )
         runs-on: blacksmith-4vcpu-ubuntu-2204
         permissions:
@@ -166,8 +161,7 @@ jobs:
                     github.event_name == 'pull_request_target' &&
                     github.event.label.name == 'condenser-test'
                 ) ||
-                github.event_name == 'workflow_dispatch' ||
-                github.event_name == 'push'
+                github.event_name == 'workflow_dispatch'
             )
         runs-on: blacksmith-2vcpu-ubuntu-2404
         permissions:
