@@ -119,8 +119,15 @@ def test_example_scripts(
         returncode = process.returncode
     except subprocess.TimeoutExpired as e:
         timed_out = True
-        stdout = e.stdout or ""
-        stderr = e.stderr or ""
+        # e.stdout/e.stderr are bytes|str|None; ensure we have str
+        raw_stdout = e.stdout
+        raw_stderr = e.stderr
+        stdout = (
+            raw_stdout.decode() if isinstance(raw_stdout, bytes) else (raw_stdout or "")
+        )
+        stderr = (
+            raw_stderr.decode() if isinstance(raw_stderr, bytes) else (raw_stderr or "")
+        )
         returncode = -1
 
     duration = time.perf_counter() - start
