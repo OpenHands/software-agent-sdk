@@ -130,7 +130,7 @@ RESPONSES_API_MODELS: list[str] = [
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
     # OpenAI Codex (uses Responses API)
-    "codex",
+    "codex-mini-latest",
 ]
 
 # Models that require string serializer for tool messages

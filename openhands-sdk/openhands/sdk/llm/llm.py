@@ -1012,9 +1012,10 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - Concatenates system instructions into a single instructions string
 
         Codex subscription endpoints can reject complex/long `instructions`
-        ("Instructions are not valid"). For Codex models, we avoid sending
-        system prompts as top-level instructions and instead prepend them to
-        the first user message.
+        ("Instructions are not valid"). When using the ChatGPT subscription
+        transport (chatgpt.com/backend-api/codex), avoid sending system prompts
+        as top-level instructions and instead prepend them to the first user
+        message.
         """
         msgs = copy.deepcopy(messages)
 
@@ -1026,9 +1027,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         input_items: list[dict[str, Any]] = []
         system_chunks: list[str] = []
 
-        # Codex-specific behavior gate: avoid top-level instructions entirely.
-        # Use raw model string to also catch provider-prefixed ids (e.g. openai/*).
-        is_codex_model = "codex" in (self.model or "").lower()
+        # Subscription transport gate: only apply this workaround when calling
+        # ChatGPT subscription Codex backend (not the standard OpenAI API).
+        base = (self.base_url or "").lower()
+        is_subscription_codex_transport = (
+            "chatgpt.com" in base and "backend-api" in base and "codex" in base
+        )
 
         for m in msgs:
             val = m.to_responses_value(vision_enabled=vision_active)
@@ -1036,7 +1040,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 s = val.strip()
                 if not s:
                     continue
-                if is_codex_model:
+                if is_subscription_codex_transport:
                     system_chunks.append(s)
                 else:
                     instructions = (
@@ -1048,7 +1052,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 if val:
                     input_items.extend(val)
 
-        if is_codex_model and system_chunks:
+        if is_subscription_codex_transport and system_chunks:
             merged_system = "\n\n---\n\n".join(system_chunks).strip()
             if merged_system:
                 prefix = f"Context (system prompt):\n{merged_system}\n\n"
@@ -1074,9 +1078,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         },
                     )
 
-        # For Codex models, keep top-level instructions empty to avoid
-        # server-validated instruction failures.
-        return (None if is_codex_model else instructions), input_items
+        # For subscription Codex transport, keep top-level instructions empty
+        # to avoid server-validated instruction failures.
+        return (None if is_subscription_codex_transport else instructions), input_items
 
     def get_token_count(self, messages: list[Message]) -> int:
         logger.debug(

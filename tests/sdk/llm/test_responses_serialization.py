@@ -48,11 +48,11 @@ def test_system_to_responses_value_instructions_concat():
     assert inputs == []
 
 
-def test_codex_models_do_not_use_top_level_instructions_and_prepend_system_to_user():
+def test_subscription_codex_transport_does_not_use_top_level_instructions_and_prepend_system_to_user():
     m_sys = Message(role="system", content=[TextContent(text="SYS")])
     m_user = Message(role="user", content=[TextContent(text="USER")])
 
-    llm = LLM(model="gpt-5.1-codex")
+    llm = LLM(model="gpt-5.1-codex", base_url="https://chatgpt.com/backend-api/codex")
     instr, inputs = llm.format_messages_for_responses([m_sys, m_user])
 
     assert instr is None
@@ -64,6 +64,15 @@ def test_codex_models_do_not_use_top_level_instructions_and_prepend_system_to_us
     assert isinstance(content, list)
     assert content[0]["type"] == "input_text"
     assert "SYS" in content[0]["text"]
+
+
+def test_api_codex_models_keep_system_as_instructions():
+    m_sys = Message(role="system", content=[TextContent(text="SYS")])
+    llm = LLM(model="gpt-5.1-codex")
+    instr, inputs = llm.format_messages_for_responses([m_sys])
+
+    assert instr == "SYS"
+    assert inputs == []
 
 
 def test_user_to_responses_dict_with_and_without_vision():
