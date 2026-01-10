@@ -141,6 +141,68 @@ curl -X POST \\
 4. **body**: Provide a clear, actionable comment.
    Be specific about what should be changed.
 
+### Multi-Line Comments and Suggestions:
+
+When your comment or suggestion spans multiple lines, you MUST specify a line range
+using both `start_line` and `line` parameters. This is **critical** for multi-line
+suggestions - if you only specify `line`, the suggestion will be misaligned.
+
+**Parameters for multi-line comments:**
+- **start_line**: The first line of the range (required for multi-line)
+- **line**: The last line of the range
+- **start_side**: Side of the first line (optional, defaults to same as `side`)
+- **side**: Side of the last line
+
+**Example with gh CLI for multi-line suggestion:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
+  -f commit_id='{commit_id}' \\
+  -f event='COMMENT' \\
+  -f body='Found an issue spanning multiple lines.' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][start_line]=10 \\
+  -F comments[][line]=12 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Consider this improvement:
+
+```suggestion
+first_line = "improved"
+second_line = "code"
+third_line = "here"
+```'
+```
+
+**Example with curl for multi-line suggestion:**
+
+```bash
+curl -X POST \\
+  -H "Authorization: token $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "X-GitHub-Api-Version: 2022-11-28" \\
+  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/reviews" \\
+  -d '{{
+    "commit_id": "{commit_id}",
+    "body": "Review summary.",
+    "event": "COMMENT",
+    "comments": [
+      {{
+        "path": "path/to/file.py",
+        "start_line": 10,
+        "line": 11,
+        "side": "RIGHT",
+        "body": "Suggestion:\\n\\n```suggestion\\nx = 1\\ny = 2\\n```"
+      }}
+    ]
+  }}'
+```
+
+**IMPORTANT**: The number of lines in your suggestion block MUST match the number
+of lines in the selected range (line - start_line + 1). If you select lines 10-12
+(3 lines), your suggestion must also contain exactly 3 lines.
+
 ### Tips for Finding Line Numbers:
 - The diff header shows line ranges: `@@ -old_start,old_count +new_start,new_count @@`
 - Count lines from `new_start` for added/modified lines
