@@ -60,6 +60,51 @@ MAX_DIFF_PER_FILE = 10000
 MAX_TOTAL_DIFF = 100000
 
 
+def _is_gh_available() -> bool:
+    try:
+        result = subprocess.run(
+            ["gh", "--version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        return result.returncode == 0
+    except FileNotFoundError:
+        return False
+
+
+def _get_gh_repo() -> str:
+    repo = os.getenv("REPO_NAME")
+    if not repo:
+        raise ValueError("REPO_NAME environment variable is required")
+    return repo
+
+
+def get_pr_diff_via_gh(pr_number: str) -> str:
+    """Fetch the PR diff from GitHub via `gh pr diff`.
+
+    This matches GitHub's view of the PR diff and avoids relying on local git
+    remote-tracking refs (which may be missing/stale in CI checkouts).
+    """
+
+    if not _is_gh_available():
+        raise RuntimeError("GitHub CLI (gh) is not installed")
+
+    repo = _get_gh_repo()
+    result = subprocess.run(
+        ["gh", "pr", "diff", pr_number, "--repo", repo],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        raise RuntimeError(f"gh pr diff failed: {stderr}")
+
+    return result.stdout
+
+
 @dataclass
 class FileDiff:
     """Represents a diff for a single file."""
@@ -104,8 +149,9 @@ def ensure_base_ref(base_ref: str, repo_dir: Path) -> str:
     ref isn't present locally, `git diff` effectively degrades to comparing
     against an unrelated or stale ref, producing incorrect reviews.
 
-    Prefer diffing against the PR's merge base SHA (PR_BASE_SHA) when available.
-    This makes the review strictly about the PR diff against the current base.
+    Prefer diffing against the PR's base branch HEAD SHA (PR_BASE_SHA) when
+    available. This makes the review strictly about the PR diff against the
+    current base commit.
     """
 
     pr_base_sha = os.getenv("PR_BASE_SHA")
@@ -256,16 +302,34 @@ def format_pr_diff(
     return result
 
 
+def truncate_text(diff_text: str, max_total: int = MAX_TOTAL_DIFF) -> str:
+    if len(diff_text) <= max_total:
+        return diff_text
+
+    total_chars = len(diff_text)
+    return (
+        diff_text[:max_total]
+        + f"\n\n... [total diff truncated, {total_chars:,} chars total, "
+        + f"showing first {max_total:,}] ..."
+    )
+
+
 def get_truncated_pr_diff(base_branch: str) -> str:
-    """
-    Get the PR diff with large file diffs truncated.
+    """Get the PR diff with truncation.
 
-    Args:
-        base_branch: The base branch to compare against
-
-    Returns:
-        The truncated git diff output as a formatted string
+    Prefer GitHub's diff via `gh pr diff` so the review matches the PR's "Files
+    changed" view. Fall back to local git diff computation when `gh` is
+    unavailable.
     """
+
+    pr_number = os.getenv("PR_NUMBER")
+    if pr_number:
+        try:
+            diff_text = get_pr_diff_via_gh(pr_number)
+            return truncate_text(diff_text)
+        except Exception as e:
+            logger.warning(f"Failed to fetch PR diff via gh: {e}")
+
     file_diffs = get_pr_diff(base_branch)
     return format_pr_diff(file_diffs)
 
