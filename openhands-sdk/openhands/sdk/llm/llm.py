@@ -1034,6 +1034,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "chatgpt.com" in base and "backend-api" in base and "codex" in base
         )
 
+        DEFAULT_CODEX_INSTRUCTIONS = (
+            "You are a helpful coding assistant using Codex, a large language model trained "
+            "by OpenAI for agentic software development."
+        )
+
         for m in msgs:
             val = m.to_responses_value(vision_enabled=vision_active)
             if isinstance(val, str):
@@ -1078,9 +1083,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         },
                     )
 
-        # For subscription Codex transport, keep top-level instructions empty
-        # to avoid server-validated instruction failures.
-        return (None if is_subscription_codex_transport else instructions), input_items
+        # For subscription Codex transport, use a small, stable instructions string
+        # (required by the endpoint) and move the full system prompt into user content.
+        if is_subscription_codex_transport:
+            return DEFAULT_CODEX_INSTRUCTIONS, input_items
+
+        return instructions, input_items
 
     def get_token_count(self, messages: list[Message]) -> int:
         logger.debug(
