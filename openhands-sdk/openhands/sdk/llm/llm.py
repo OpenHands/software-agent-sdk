@@ -1035,8 +1035,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         DEFAULT_CODEX_INSTRUCTIONS = (
-            "You are a helpful coding assistant using Codex, a large language model trained "
-            "by OpenAI for agentic software development."
+            "You are a helpful coding assistant using Codex, a large language model "
+            "trained by OpenAI for agentic software development."
         )
 
         for m in msgs:

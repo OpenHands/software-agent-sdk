@@ -48,7 +48,7 @@ def test_system_to_responses_value_instructions_concat():
     assert inputs == []
 
 
-def test_subscription_codex_transport_does_not_use_top_level_instructions_and_prepend_system_to_user():
+def test_subscription_codex_transport_does_not_use_top_level_instructions_and_prepend_system_to_user():  # noqa: E501
     m_sys = Message(role="system", content=[TextContent(text="SYS")])
     m_user = Message(role="user", content=[TextContent(text="USER")])
 
