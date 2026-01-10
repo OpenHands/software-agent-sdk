@@ -1035,8 +1035,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
 
         DEFAULT_CODEX_INSTRUCTIONS = (
-            "You are a helpful coding assistant using Codex, a large language model "
-            "trained by OpenAI for agentic software development."
+            "You are OpenHands agent, a helpful AI assistant that can interact "
+            "with a computer to solve tasks."
         )
 
         for m in msgs:
@@ -1077,11 +1077,28 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     input_items.insert(
                         0,
                         {
-                            "type": "message",
                             "role": "user",
                             "content": [{"type": "input_text", "text": prefix}],
                         },
                     )
+
+        # For subscription Codex transport, normalize message items to match
+        # the shape used by OpenCode's Codex client:
+        #   {"role": "user", "content": [{"type": "input_text", ...}]}
+        # instead of our generic {"type": "message", ...} wrapper.
+        if is_subscription_codex_transport and input_items:
+            normalized: list[dict[str, Any]] = []
+            for item in input_items:
+                if item.get("type") == "message":
+                    normalized.append(
+                        {
+                            "role": item.get("role"),
+                            "content": item.get("content") or [],
+                        }
+                    )
+                else:
+                    normalized.append(item)
+            input_items = normalized
 
         # For subscription Codex transport, use a small, stable instructions string
         # (required by the endpoint) and move the full system prompt into user content.
