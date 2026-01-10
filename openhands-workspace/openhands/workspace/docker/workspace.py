@@ -132,10 +132,10 @@ class DockerWorkspace(RemoteWorkspace):
 
     @model_validator(mode="after")
     def _validate_mount_dir(self):
-        if self.__class__ is DockerWorkspace and self.mount_dir:
+        if self.mount_dir:
             warn_deprecated(
                 "DockerWorkspace.mount_dir",
-                deprecated_in="1.9.0",
+                deprecated_in="1.10.0",
                 removed_in=None,
                 details="Use DockerWorkspace.volumes instead",
             )
