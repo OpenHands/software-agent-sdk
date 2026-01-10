@@ -28,6 +28,9 @@ def _default_secret_key() -> SecretStr | None:
     session_api_key = os.getenv(SESSION_API_KEY_ENV)
     if session_api_key:
         return SecretStr(session_api_key)
+    session_api_key = os.getenv("OH_SESSION_API_KEYS_0")
+    if session_api_key:
+        return SecretStr(session_api_key)
     return None
 
 
