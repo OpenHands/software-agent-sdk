@@ -34,7 +34,8 @@ CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 ISSUER = "https://auth.openai.com"
 CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 DEFAULT_OAUTH_PORT = 1455
-OAUTH_TIMEOUT_SECONDS = 300  # 5 minutes
+OAUTH_TIMEOUT_SECONDS = 300  # 5 minutes (default)
+OAUTH_TIMEOUT_SECONDS_ENV = "OPENAI_OAUTH_TIMEOUT_SECONDS"
 
 # Models available via ChatGPT subscription (not API)
 OPENAI_CODEX_MODELS = frozenset(
@@ -323,8 +324,11 @@ class OpenAISubscriptionAuth:
                 )
 
             try:
+                timeout_seconds = int(
+                    os.environ.get(OAUTH_TIMEOUT_SECONDS_ENV, str(OAUTH_TIMEOUT_SECONDS))
+                )
                 tokens = await asyncio.wait_for(
-                    callback_future, timeout=OAUTH_TIMEOUT_SECONDS
+                    callback_future, timeout=timeout_seconds
                 )
             except TimeoutError:
                 raise RuntimeError(
