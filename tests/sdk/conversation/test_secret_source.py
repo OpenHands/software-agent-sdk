@@ -64,7 +64,7 @@ def test_lookup_secret_serialization_encrypt(lookup_secret):
 def test_lookup_secret_deserialization_redacted_headers():
     """Test LookupSecret can be deserialized with redacted header values.
 
-    This is a regression test for ALL-4846 where LookupSecret headers with
+    This is a regression test for issue 1505 where LookupSecret headers with
     redacted (masked) values would fail to deserialize due to assertion errors.
     """
     # Simulate the serialized state with redacted headers
@@ -94,7 +94,7 @@ def test_lookup_secret_deserialization_redacted_headers():
 def test_static_secret_optional_value():
     """Test StaticSecret works with optional value (None default).
 
-    This is a regression test for ALL-4846 where StaticSecret.value was
+    This is a regression test for issue 1505 where StaticSecret.value was
     a required field causing deserialization to fail when secrets were
     redacted (converted to None).
     """
@@ -117,7 +117,7 @@ def test_static_secret_optional_value():
 def test_static_secret_deserialization_redacted():
     """Test StaticSecret can be deserialized from redacted value.
 
-    This is a regression test for ALL-4846.
+    This is a regression test for issue 1505.
     """
     # Simulate the serialized state with redacted value
     serialized = {"kind": "StaticSecret", "value": "**********"}

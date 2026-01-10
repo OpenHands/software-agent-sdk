@@ -831,7 +831,7 @@ def test_resume_with_conversation_id_mismatch_raises_error():
 def test_conversation_state_secrets_serialization_deserialization():
     """Test that secrets are properly serialized and deserialized.
 
-    This is a regression test for ALL-4846 where conversations with secrets
+    This is a regression test for issue 1505 where conversations with secrets
     would fail to restore because secrets are serialized as '**********'
     (redacted) but StaticSecret.value was a required field that couldn't
     accept None after validation converted '**********' to None.
