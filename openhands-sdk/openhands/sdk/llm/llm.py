@@ -1010,6 +1010,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         - Uses Message.to_responses_value to get either instructions (system)
          or input items (others)
         - Concatenates system instructions into a single instructions string
+
+        Codex subscription endpoints can reject complex/long `instructions`
+        ("Instructions are not valid"). When using the ChatGPT subscription
+        transport (chatgpt.com/backend-api/codex), avoid sending system prompts
+        as top-level instructions and instead prepend them to the first user
+        message.
         """
         msgs = copy.deepcopy(messages)
 
@@ -1019,18 +1025,86 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
+        system_chunks: list[str] = []
+
+        # Subscription transport gate: only apply this workaround when calling
+        # ChatGPT subscription Codex backend (not the standard OpenAI API).
+        base = (self.base_url or "").lower()
+        is_subscription_codex_transport = (
+            "chatgpt.com" in base and "backend-api" in base and "codex" in base
+        )
+
+        DEFAULT_CODEX_INSTRUCTIONS = (
+            "You are OpenHands agent, a helpful AI assistant that can interact "
+            "with a computer to solve tasks."
+        )
+
         for m in msgs:
             val = m.to_responses_value(vision_enabled=vision_active)
             if isinstance(val, str):
                 s = val.strip()
                 if not s:
                     continue
-                instructions = (
-                    s if instructions is None else f"{instructions}\n\n---\n\n{s}"
-                )
+                if is_subscription_codex_transport:
+                    system_chunks.append(s)
+                else:
+                    instructions = (
+                        s
+                        if instructions is None
+                        else f"{instructions}\n\n---\n\n{s}"
+                    )
             else:
                 if val:
                     input_items.extend(val)
+
+        if is_subscription_codex_transport and system_chunks:
+            merged_system = "\n\n---\n\n".join(system_chunks).strip()
+            if merged_system:
+                prefix = f"Context (system prompt):\n{merged_system}\n\n"
+                injected = False
+                for item in input_items:
+                    if item.get("type") == "message" and item.get("role") == "user":
+                        content = item.get("content")
+                        if not isinstance(content, list):
+                            content = [content] if content else []
+                        item["content"] = (
+                            [{"type": "input_text", "text": prefix}] + content
+                        )
+                        injected = True
+                        break
+
+                if not injected:
+                    input_items.insert(
+                        0,
+                        {
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": prefix}],
+                        },
+                    )
+
+        # For subscription Codex transport, normalize message items to match
+        # the shape used by OpenCode's Codex client:
+        #   {"role": "user", "content": [{"type": "input_text", ...}]}
+        # instead of our generic {"type": "message", ...} wrapper.
+        if is_subscription_codex_transport and input_items:
+            normalized: list[dict[str, Any]] = []
+            for item in input_items:
+                if item.get("type") == "message":
+                    normalized.append(
+                        {
+                            "role": item.get("role"),
+                            "content": item.get("content") or [],
+                        }
+                    )
+                else:
+                    normalized.append(item)
+            input_items = normalized
+
+        # For subscription Codex transport, use a small, stable instructions string
+        # (required by the endpoint) and move the full system prompt into user content.
+        if is_subscription_codex_transport:
+            return DEFAULT_CODEX_INSTRUCTIONS, input_items
+
         return instructions, input_items
 
     def get_token_count(self, messages: list[Message]) -> int:
