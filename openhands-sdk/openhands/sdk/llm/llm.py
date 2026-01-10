@@ -697,6 +697,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
+                    "instructions": instructions,
                     "input": input_items[:],
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},
