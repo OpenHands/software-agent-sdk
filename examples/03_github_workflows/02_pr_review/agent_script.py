@@ -71,16 +71,7 @@ class FileDiff:
 
 
 def get_changed_files(base_ref: str, repo_dir: Path) -> list[str]:
-    """
-    Get list of files changed between base_ref and HEAD.
-
-    Args:
-        base_ref: Git reference to compare against (e.g., 'origin/main')
-        repo_dir: Path to the git repository
-
-    Returns:
-        List of file paths that have changes
-    """
+    """Get list of files changed between base_ref and HEAD."""
     try:
         output = run_git_command(
             ["git", "--no-pager", "diff", "--name-only", f"{base_ref}...HEAD"],
@@ -93,17 +84,7 @@ def get_changed_files(base_ref: str, repo_dir: Path) -> list[str]:
 
 
 def get_file_diff(base_ref: str, file_path: str, repo_dir: Path) -> FileDiff:
-    """
-    Get the diff for a single file.
-
-    Args:
-        base_ref: Git reference to compare against
-        file_path: Path to the file (relative to repo root)
-        repo_dir: Path to the git repository
-
-    Returns:
-        FileDiff object with the diff content
-    """
+    """Get the diff for a single file."""
     try:
         diff_content = run_git_command(
             ["git", "--no-pager", "diff", f"{base_ref}...HEAD", "--", file_path],
@@ -113,6 +94,60 @@ def get_file_diff(base_ref: str, file_path: str, repo_dir: Path) -> FileDiff:
     except Exception as e:
         logger.warning(f"Failed to get diff for {file_path}: {e}")
         return FileDiff(path=file_path, diff_content=f"[Error getting diff: {e}]")
+
+
+def ensure_base_ref(base_ref: str, repo_dir: Path) -> str:
+    """Resolve the base ref for diffs.
+
+    In GitHub Actions, `pull_request_target` checks out the PR branch without
+    fetching the base branch/commit. If we diff against `origin/<base>`, and the
+    ref isn't present locally, `git diff` effectively degrades to comparing
+    against an unrelated or stale ref, producing incorrect reviews.
+
+    Prefer diffing against the PR's merge base SHA (PR_BASE_SHA) when available.
+    This makes the review strictly about the PR diff against the current base.
+    """
+
+    pr_base_sha = os.getenv("PR_BASE_SHA")
+    if pr_base_sha:
+        try:
+            run_git_command(
+                ["git", "cat-file", "-e", f"{pr_base_sha}^{{commit}}"], repo_dir
+            )
+            return pr_base_sha
+        except Exception:
+            try:
+                subprocess.run(
+                    ["git", "fetch", "origin", pr_base_sha],
+                    cwd=repo_dir,
+                    capture_output=True,
+                    check=False,
+                )
+                run_git_command(
+                    ["git", "cat-file", "-e", f"{pr_base_sha}^{{commit}}"],
+                    repo_dir,
+                )
+                return pr_base_sha
+            except Exception as e:
+                logger.warning(f"Failed to use PR_BASE_SHA {pr_base_sha}: {e}")
+
+    try:
+        if "/" in base_ref or base_ref.startswith("refs/"):
+            return base_ref
+    except Exception:
+        pass
+
+    try:
+        subprocess.run(
+            ["git", "fetch", "origin", base_ref],
+            cwd=repo_dir,
+            capture_output=True,
+            check=False,
+        )
+    except Exception as e:
+        logger.warning(f"Failed to fetch origin/{base_ref}: {e}")
+
+    return f"origin/{base_ref}"
 
 
 def truncate_file_diff(
@@ -160,19 +195,7 @@ def get_pr_diff(base_branch: str, repo_dir: Path | None = None) -> list[FileDiff
     if repo_dir is None:
         repo_dir = Path.cwd()
 
-    # Fetch the base branch to ensure we have latest refs
-    try:
-        subprocess.run(
-            ["git", "fetch", "origin", base_branch],
-            cwd=repo_dir,
-            capture_output=True,
-            check=False,
-        )
-    except Exception as e:
-        logger.warning(f"Failed to fetch origin/{base_branch}: {e}")
-
-    # Determine the base reference
-    base_ref = f"origin/{base_branch}"
+    base_ref = ensure_base_ref(base_branch, repo_dir)
 
     # Get list of changed files
     changed_files = get_changed_files(base_ref, repo_dir)
