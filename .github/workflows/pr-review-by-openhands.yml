@@ -75,9 +75,9 @@ jobs:
               with:
                   enable-cache: true
 
-
             - name: Install GitHub CLI
               run: |
+                  # Install GitHub CLI for posting review comments
                   sudo apt-get update
                   sudo apt-get install -y gh
 
