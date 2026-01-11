@@ -1,11 +1,13 @@
 import asyncio
 import importlib
 import logging
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
+from pydantic import ValidationError
 
 from openhands.agent_server.config import Config, WebhookSpec
 from openhands.agent_server.event_service import EventService
@@ -34,13 +36,32 @@ logger = logging.getLogger(__name__)
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
-    return ConversationInfo(
-        **state.model_dump(),
-        title=stored.title,
-        metrics=stored.metrics,
-        created_at=stored.created_at,
-        updated_at=stored.updated_at,
-    )
+    # Retry with exponential backoff for transient race conditions where
+    # model_dump() can return incomplete data during concurrent state mutations.
+    # TODO: Implement proper locking in ConversationState.model_dump() to
+    # eliminate this race condition. See:
+    # https://github.com/OpenHands/software-agent-sdk/issues/1557
+    last_error: ValidationError | None = None
+    for attempt in range(4):
+        try:
+            return ConversationInfo(
+                **state.model_dump(),
+                title=stored.title,
+                metrics=stored.metrics,
+                created_at=stored.created_at,
+                updated_at=stored.updated_at,
+            )
+        except ValidationError as e:
+            last_error = e
+            delay = 0.1 * (2**attempt)  # 0.1, 0.2, 0.4, 0.8
+            logger.warning(
+                f"ConversationInfo validation failed (attempt {attempt + 1}/4), "
+                f"retrying after {delay}s: {e}"
+            )
+            time.sleep(delay)
+
+    assert last_error is not None
+    raise last_error
 
 
 @dataclass
