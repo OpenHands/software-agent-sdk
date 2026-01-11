@@ -25,9 +25,16 @@ def _default_session_api_keys():
 
 
 def _default_secret_key() -> SecretStr | None:
+    """
+    This fallback is used only if the OH_SECRET_KEY environment variable is missing.
+    First, check SESSION_API_KEY (Legacy variable), and if that is not defined
+    check OH_SESSION_API_KEYS_0 - The new variable, since we support multiple values
+    for key rotation.
+    """
     session_api_key = os.getenv(SESSION_API_KEY_ENV)
     if session_api_key:
         return SecretStr(session_api_key)
+    #
     session_api_key = os.getenv("OH_SESSION_API_KEYS_0")
     if session_api_key:
         return SecretStr(session_api_key)
@@ -80,7 +87,10 @@ class Config(BaseModel):
         description=(
             "List of valid session API keys used to authenticate incoming requests. "
             "Empty list implies the server will be unsecured. Any key in this list "
-            "will be accepted for authentication."
+            "will be accepted for authentication. Multiple keys are supported to "
+            "enable key rotation without service disruption - new keys can be added "
+            "to the list, then clients are updated with the new key, and finally the "
+            "old key is removed from the list. "
         ),
     )
     allow_cors_origins: list[str] = Field(
