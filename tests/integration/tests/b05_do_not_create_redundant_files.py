@@ -7,9 +7,6 @@ import subprocess
 from textwrap import dedent
 
 from openhands.sdk import get_logger
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.file_editor import FileEditorTool
-from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 from tests.integration.behavior_utils import (
     get_conversation_summary,
@@ -28,15 +25,12 @@ logger = get_logger(__name__)
 
 class NoRedundantFilesTest(BaseIntegrationTest):
     """Ensure the agent does not create any redundant files (e.g., .md files)
-    that are not asked by users when performing the task."""
+    that are not asked by users when performing the task.
+
+    Uses the default agent preset (TerminalTool, FileEditorTool, TaskTrackerTool).
+    """
 
     INSTRUCTION: str = INSTRUCTION
-
-    @property
-    def tools(self) -> list[Tool]:
-        register_tool("TerminalTool", TerminalTool)
-        register_tool("FileEditorTool", FileEditorTool)
-        return [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
 
     def setup(self) -> None:  # noqa: D401
         """Set up a realistic codebase by cloning the lerobot repo."""

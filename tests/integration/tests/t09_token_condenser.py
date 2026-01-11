@@ -9,8 +9,8 @@ This integration test verifies that:
 from openhands.sdk import get_logger
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.event.condenser import Condensation
-from openhands.sdk.tool import Tool, register_tool
-from openhands.tools.terminal import TerminalTool
+from openhands.sdk.tool import Tool
+from openhands.tools.preset.default import get_default_tools
 from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 
 
@@ -34,7 +34,11 @@ logger = get_logger(__name__)
 
 
 class TokenCondenserTest(BaseIntegrationTest):
-    """Test that agent with token-based condenser triggers condensation."""
+    """Test that agent with token-based condenser triggers condensation.
+
+    Uses the default tools but with a custom condenser configuration
+    to test token-based condensation behavior.
+    """
 
     INSTRUCTION: str = INSTRUCTION
 
@@ -59,11 +63,8 @@ class TokenCondenserTest(BaseIntegrationTest):
 
     @property
     def tools(self) -> list[Tool]:
-        """List of tools available to the agent."""
-        register_tool("TerminalTool", TerminalTool)
-        return [
-            Tool(name="TerminalTool"),
-        ]
+        """Use default tools without browser for this test."""
+        return get_default_tools(enable_browser=False)
 
     @property
     def condenser(self) -> LLMSummarizingCondenser:
