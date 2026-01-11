@@ -373,6 +373,8 @@ class Telemetry(BaseModel):
             elif self.log_dir:
                 # Create log directory if it doesn't exist
                 os.makedirs(self.log_dir, exist_ok=True)
+                if not os.access(self.log_dir, os.W_OK):
+                    raise PermissionError(f"log_dir is not writable: {self.log_dir}")
                 fname = os.path.join(self.log_dir, filename)
                 with open(fname, "w", encoding="utf-8") as f:
                     f.write(log_data)
