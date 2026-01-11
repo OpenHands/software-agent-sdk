@@ -212,6 +212,39 @@ def test_base_slug_truncation_no_tag():
     assert "very-long-repository-name" in result
 
 
+def test_base_slug_preserves_latest_tag_suffix():
+    """Ensure tag_latest suffix is not mangled when truncating long slugs."""
+    from openhands.agent_server.docker.build import _base_slug
+
+    image = (
+        "docker.io/swebench/sweb.eval.x86_64.astropy_1776_astropy-8872:"
+        "tag_latest-0a797356ebce"
+    )
+
+    result = _base_slug(image, max_len=64)
+
+    assert len(result) <= 64
+    assert "tag_latest" in result
+    # Keep cache keys stable with digest suffix
+    assert result[-13:-12] == "-"
+    assert all(c in "0123456789abcdef" for c in result[-12:])
+
+
+def test_base_slug_preserves_tag_with_registry_port():
+    """Handle registries with ports without losing the tag segment."""
+    from openhands.agent_server.docker.build import _base_slug
+
+    image = (
+        "localhost:5001/swebench/sweb.eval.x86_64.astropy_1776_astropy-8872:"
+        "tag_latest-0a797356ebce"
+    )
+
+    result = _base_slug(image, max_len=64)
+
+    assert len(result) <= 64
+    assert "tag_latest" in result
+
+
 def test_base_slug_custom_max_len():
     """Test base_slug with custom max_len parameter."""
     from openhands.agent_server.docker.build import _base_slug
