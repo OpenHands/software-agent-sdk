@@ -98,6 +98,61 @@ class TestAgentContext:
         assert "<location>pdf-tools.md</location>" in result
         assert "<location>image-resize.md</location>" in result
 
+    def test_agentskills_format_progressive_disclosure(self):
+        """Test that AgentSkills-format skills use progressive disclosure.
+
+        AgentSkills-format skills (is_agentskills_format=True) should always
+        be listed in <available_skills> regardless of trigger, following the
+        AgentSkills standard's progressive disclosure model.
+        """
+        # AgentSkills-format skill WITHOUT triggers
+        agentskills_no_trigger = Skill(
+            name="code-style",
+            content="Full content that should NOT be in system prompt",
+            description="Code style guidelines",
+            source="/path/to/code-style/SKILL.md",
+            trigger=None,
+            is_agentskills_format=True,
+        )
+        # AgentSkills-format skill WITH triggers
+        agentskills_with_trigger = Skill(
+            name="encryption",
+            content="Encryption instructions",
+            description="Encrypt and decrypt messages",
+            source="/path/to/encryption/SKILL.md",
+            trigger=KeywordTrigger(keywords=["encrypt"]),
+            is_agentskills_format=True,
+        )
+        # Legacy OpenHands skill WITHOUT triggers (should go to REPO_CONTEXT)
+        legacy_no_trigger = Skill(
+            name="repo-rules",
+            content="Legacy repo rules content",
+            source="repo.md",
+            trigger=None,
+            is_agentskills_format=False,
+        )
+
+        context = AgentContext(
+            skills=[agentskills_no_trigger, agentskills_with_trigger, legacy_no_trigger]
+        )
+        result = context.get_system_message_suffix()
+
+        assert result is not None
+
+        # AgentSkills-format skills should be in <available_skills>
+        assert "<available_skills>" in result
+        assert "<name>code-style</name>" in result
+        assert "<name>encryption</name>" in result
+        assert "Code style guidelines" in result
+        assert "Encrypt and decrypt messages" in result
+
+        # AgentSkills-format skill content should NOT be dumped
+        assert "Full content that should NOT be in system prompt" not in result
+
+        # Legacy skill should be in REPO_CONTEXT with full content
+        assert "<REPO_CONTEXT>" in result
+        assert "Legacy repo rules content" in result
+
     def test_get_system_message_suffix_with_repo_skills(self):
         """Test system message suffix rendering with repo skills."""
         repo_agent1 = Skill(

@@ -9,16 +9,50 @@ import pytest
 from pydantic import SecretStr, ValidationError
 
 from openhands.sdk import Agent, Conversation
+from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
+)
+from openhands.sdk.conversation.types import (
+    ConversationCallbackType,
+    ConversationTokenCallbackType,
 )
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import RegistryEvent
 from openhands.sdk.security.confirmation_policy import AlwaysConfirm
 from openhands.sdk.workspace import LocalWorkspace
+
+
+class _DifferentAgentForVerifyTest(AgentBase):
+    """A different agent class used to test Agent.verify() rejects class mismatches.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    def __init__(self):
+        llm = LLM(
+            model="gpt-4o-mini",
+            api_key=SecretStr("test-key"),
+            usage_id="test-llm",
+        )
+        super().__init__(llm=llm, tools=[])
+
+    def init_state(self, state, on_event):
+        pass
+
+    def step(
+        self,
+        conversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
+    ):
+        pass
 
 
 def test_conversation_state_basic_serialization():
@@ -490,35 +524,9 @@ def test_agent_verify_allows_different_llm():
 
 def test_agent_verify_different_class_raises_error():
     """Test that agent.verify() raises error for different agent classes."""
-    from openhands.sdk.agent.base import AgentBase
-    from openhands.sdk.conversation.types import (
-        ConversationCallbackType,
-        ConversationTokenCallbackType,
-    )
-
-    class DifferentAgent(AgentBase):
-        def __init__(self):
-            llm = LLM(
-                model="gpt-4o-mini",
-                api_key=SecretStr("test-key"),
-                usage_id="test-llm",
-            )
-            super().__init__(llm=llm, tools=[])
-
-        def init_state(self, state, on_event):
-            pass
-
-        def step(
-            self,
-            conversation,
-            on_event: ConversationCallbackType,
-            on_token: ConversationTokenCallbackType | None = None,
-        ):
-            pass
-
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
     original_agent = Agent(llm=llm, tools=[])
-    different_agent = DifferentAgent()
+    different_agent = _DifferentAgentForVerifyTest()
 
     with pytest.raises(ValueError, match="Cannot load from persisted"):
         original_agent.verify(different_agent)
