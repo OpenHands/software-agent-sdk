@@ -5,7 +5,7 @@ Example: PR Review Agent
 This script runs OpenHands agent to review a pull request and provide
 fine-grained review comments. The agent has full repository access and uses
 bash commands to analyze changes in context and post detailed review feedback
-directly via `gh` or the GitHub API.
+via the GitHub API.
 
 This example demonstrates how to use skills for code review:
 - `/codereview` - Standard code review skill
@@ -34,9 +34,9 @@ see README.md in this directory.
 """
 
 import os
-import subprocess
 import sys
-from dataclasses import dataclass
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
@@ -54,254 +54,48 @@ from prompt import PROMPT  # noqa: E402
 
 logger = get_logger(__name__)
 
-# Maximum characters per file diff before truncation
-MAX_DIFF_PER_FILE = 10000
 # Maximum total diff size
 MAX_TOTAL_DIFF = 100000
 
 
-def _is_gh_available() -> bool:
+def _get_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise ValueError(f"{name} environment variable is required")
+    return value
+
+
+def get_pr_diff_via_github_api(pr_number: str) -> str:
+    """Fetch the PR diff exactly as GitHub renders it.
+
+    Uses the GitHub REST API "Get a pull request" endpoint with an `Accept`
+    header requesting diff output.
+
+    This avoids depending on local git refs (often stale/missing in
+    `pull_request_target` checkouts) and avoids requiring `gh` to be installed.
+    """
+
+    repo = _get_required_env("REPO_NAME")
+    token = _get_required_env("GITHUB_TOKEN")
+
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    request = urllib.request.Request(url)
+    request.add_header("Accept", "application/vnd.github.v3.diff")
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+
     try:
-        result = subprocess.run(
-            ["gh", "--version"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        return result.returncode == 0
-    except FileNotFoundError:
-        return False
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+    except urllib.error.HTTPError as e:
+        details = (e.read() or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"GitHub diff API request failed: HTTP {e.code} {e.reason}. {details}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitHub diff API request failed: {e.reason}") from e
 
-
-def _get_gh_repo() -> str:
-    repo = os.getenv("REPO_NAME")
-    if not repo:
-        raise ValueError("REPO_NAME environment variable is required")
-    return repo
-
-
-def get_pr_diff_via_gh(pr_number: str) -> str:
-    """Fetch the PR diff from GitHub via `gh pr diff`.
-
-    This matches GitHub's view of the PR diff and avoids relying on local git
-    remote-tracking refs (which may be missing/stale in CI checkouts).
-    """
-
-    if not _is_gh_available():
-        raise RuntimeError("GitHub CLI (gh) is not installed")
-
-    repo = _get_gh_repo()
-    result = subprocess.run(
-        ["gh", "pr", "diff", pr_number, "--repo", repo],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        raise RuntimeError(f"gh pr diff failed: {stderr}")
-
-    return result.stdout
-
-
-@dataclass
-class FileDiff:
-    """Represents a diff for a single file."""
-
-    path: str
-    diff_content: str
-    is_truncated: bool = False
-    original_size: int = 0
-
-
-def get_changed_files(base_ref: str, repo_dir: Path) -> list[str]:
-    """Get list of files changed between base_ref and HEAD."""
-    try:
-        output = run_git_command(
-            ["git", "--no-pager", "diff", "--name-only", f"{base_ref}...HEAD"],
-            repo_dir,
-        )
-        return [f.strip() for f in output.splitlines() if f.strip()]
-    except Exception as e:
-        logger.warning(f"Failed to get changed files: {e}")
-        return []
-
-
-def get_file_diff(base_ref: str, file_path: str, repo_dir: Path) -> FileDiff:
-    """Get the diff for a single file."""
-    try:
-        diff_content = run_git_command(
-            ["git", "--no-pager", "diff", f"{base_ref}...HEAD", "--", file_path],
-            repo_dir,
-        )
-        return FileDiff(path=file_path, diff_content=diff_content)
-    except Exception as e:
-        logger.warning(f"Failed to get diff for {file_path}: {e}")
-        return FileDiff(path=file_path, diff_content=f"[Error getting diff: {e}]")
-
-
-def ensure_base_ref(base_ref: str, repo_dir: Path) -> str:
-    """Resolve the base ref for diffs.
-
-    In GitHub Actions, `pull_request_target` checks out the PR branch without
-    fetching the base branch/commit. If we diff against `origin/<base>`, and the
-    ref isn't present locally, `git diff` can end up comparing against an
-    unrelated or stale ref, producing incorrect reviews.
-
-    Prefer diffing against the base branch tip SHA from the PR event payload
-    (PR_BASE_SHA), when available.
-    """
-
-    pr_base_sha = os.getenv("PR_BASE_SHA")
-    if pr_base_sha:
-        try:
-            run_git_command(
-                ["git", "cat-file", "-e", f"{pr_base_sha}^{{commit}}"], repo_dir
-            )
-            return pr_base_sha
-        except Exception:
-            result = subprocess.run(
-                ["git", "fetch", "origin", pr_base_sha],
-                cwd=repo_dir,
-                capture_output=True,
-                check=False,
-            )
-            if result.returncode == 0:
-                try:
-                    run_git_command(
-                        ["git", "cat-file", "-e", f"{pr_base_sha}^{{commit}}"],
-                        repo_dir,
-                    )
-                    return pr_base_sha
-                except Exception as e:
-                    logger.warning(f"Failed to use PR_BASE_SHA {pr_base_sha}: {e}")
-            else:
-                stderr = (result.stderr or "").strip()
-                logger.warning(
-                    f"Failed to fetch PR_BASE_SHA {pr_base_sha} from origin: {stderr}"
-                )
-
-    if "/" in base_ref or base_ref.startswith("refs/"):
-        return base_ref
-
-    result = subprocess.run(
-        ["git", "fetch", "origin", base_ref],
-        cwd=repo_dir,
-        capture_output=True,
-        check=False,
-    )
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        logger.warning(f"Failed to fetch origin/{base_ref}: {stderr}")
-
-    return f"origin/{base_ref}"
-
-
-def truncate_file_diff(
-    file_diff: FileDiff, max_size: int = MAX_DIFF_PER_FILE
-) -> FileDiff:
-    """
-    Truncate a file diff if it exceeds the maximum size.
-
-    Args:
-        file_diff: The FileDiff to potentially truncate
-        max_size: Maximum allowed size in characters
-
-    Returns:
-        FileDiff, potentially truncated with a note
-    """
-    original_size = len(file_diff.diff_content)
-    if original_size <= max_size:
-        return file_diff
-
-    truncated_content = (
-        file_diff.diff_content[:max_size]
-        + f"\n\n... [{file_diff.path}: diff truncated, {original_size:,} chars "
-        + f"total, showing first {max_size:,}] ...\n"
-    )
-
-    return FileDiff(
-        path=file_diff.path,
-        diff_content=truncated_content,
-        is_truncated=True,
-        original_size=original_size,
-    )
-
-
-def get_pr_diff(base_branch: str, repo_dir: Path | None = None) -> list[FileDiff]:
-    """
-    Get structured diff for all changed files in the PR.
-
-    Args:
-        base_branch: The base branch to compare against (e.g., 'main')
-        repo_dir: Path to the repository (defaults to cwd)
-
-    Returns:
-        List of FileDiff objects for each changed file
-    """
-    if repo_dir is None:
-        repo_dir = Path.cwd()
-
-    base_ref = ensure_base_ref(base_branch, repo_dir)
-
-    # Get list of changed files
-    changed_files = get_changed_files(base_ref, repo_dir)
-    if not changed_files:
-        logger.info("No changed files found")
-        return []
-
-    logger.info(f"Found {len(changed_files)} changed file(s)")
-
-    # Get diff for each file
-    file_diffs = []
-    for file_path in changed_files:
-        file_diff = get_file_diff(base_ref, file_path, repo_dir)
-        file_diffs.append(file_diff)
-
-    return file_diffs
-
-
-def format_pr_diff(
-    file_diffs: list[FileDiff],
-    max_per_file: int = MAX_DIFF_PER_FILE,
-    max_total: int = MAX_TOTAL_DIFF,
-) -> str:
-    """
-    Format file diffs into a single string with truncation.
-
-    Args:
-        file_diffs: List of FileDiff objects
-        max_per_file: Maximum characters per file diff
-        max_total: Maximum total characters
-
-    Returns:
-        Formatted diff string
-    """
-    if not file_diffs:
-        return "[No changes found]"
-
-    # Truncate individual file diffs
-    truncated_diffs = [truncate_file_diff(fd, max_per_file) for fd in file_diffs]
-
-    truncated_count = sum(1 for fd in truncated_diffs if fd.is_truncated)
-    if truncated_count > 0:
-        logger.info(f"Truncated {truncated_count} large file diff(s)")
-
-    # Combine all diffs
-    result = "\n".join(fd.diff_content for fd in truncated_diffs)
-
-    # Enforce total size limit
-    if len(result) > max_total:
-        total_chars = len(result)
-        result = (
-            result[:max_total]
-            + f"\n\n... [total diff truncated, {total_chars:,} chars total, "
-            + f"showing first {max_total:,}] ..."
-        )
-        logger.info(f"Total diff truncated to {max_total} chars")
-
-    return result
+    return data.decode("utf-8", errors="replace")
 
 
 def truncate_text(diff_text: str, max_total: int = MAX_TOTAL_DIFF) -> str:
@@ -316,24 +110,16 @@ def truncate_text(diff_text: str, max_total: int = MAX_TOTAL_DIFF) -> str:
     )
 
 
-def get_truncated_pr_diff(base_branch: str) -> str:
+def get_truncated_pr_diff() -> str:
     """Get the PR diff with truncation.
 
-    Prefer GitHub's diff via `gh pr diff` so the review matches the PR's "Files
-    changed" view. Fall back to local git diff computation when `gh` is
-    unavailable.
+    This uses GitHub as the source of truth so the review matches the PR's
+    "Files changed" view.
     """
 
-    pr_number = os.getenv("PR_NUMBER")
-    if pr_number:
-        try:
-            diff_text = get_pr_diff_via_gh(pr_number)
-            return truncate_text(diff_text)
-        except Exception as e:
-            logger.warning(f"Failed to fetch PR diff via gh: {e}")
-
-    file_diffs = get_pr_diff(base_branch)
-    return format_pr_diff(file_diffs)
+    pr_number = _get_required_env("PR_NUMBER")
+    diff_text = get_pr_diff_via_github_api(pr_number)
+    return truncate_text(diff_text)
 
 
 def get_head_commit_sha(repo_dir: Path | None = None) -> str:
@@ -394,10 +180,7 @@ def main():
     logger.info(f"Review style: {review_style}")
 
     try:
-        # Get the PR diff upfront so the agent has it in the initial message
-        base_branch = pr_info["base_branch"]
-        logger.info(f"Getting git diff from origin/{base_branch}...")
-        pr_diff = get_truncated_pr_diff(base_branch)
+        pr_diff = get_truncated_pr_diff()
         logger.info(f"Got PR diff with {len(pr_diff)} characters")
 
         # Get the HEAD commit SHA for inline comments

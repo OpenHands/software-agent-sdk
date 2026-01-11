@@ -75,12 +75,6 @@ jobs:
               with:
                   enable-cache: true
 
-            - name: Install GitHub CLI
-              run: |
-                  # Install GitHub CLI for posting review comments
-                  sudo apt-get update
-                  sudo apt-get install -y gh
-
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from local checkout
@@ -107,7 +101,6 @@ jobs:
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
               run: |
                   # Change to the PR repository directory so agent can analyze the code
                   cd pr-repo
