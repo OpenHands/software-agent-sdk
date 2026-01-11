@@ -1,5 +1,9 @@
 import os
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from filelock import FileLock, Timeout
 
 from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
@@ -125,3 +129,16 @@ class LocalFileStore(FileStore):
     def get_absolute_path(self, path: str) -> str:
         """Get absolute filesystem path."""
         return self.get_full_path(path)
+
+    @contextmanager
+    def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:
+        """Acquire file-based lock using flock."""
+        lock_path = self.get_full_path(path)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        file_lock = FileLock(lock_path)
+        try:
+            with file_lock.acquire(timeout=timeout):
+                yield
+        except Timeout:
+            logger.error(f"Failed to acquire lock within {timeout}s: {lock_path}")
+            raise TimeoutError(f"Lock acquisition timed out: {path}")

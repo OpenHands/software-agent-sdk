@@ -3,8 +3,6 @@ import operator
 from collections.abc import Iterator
 from typing import SupportsIndex, overload
 
-from filelock import BaseFileLock, FileLock, Timeout
-
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.persistence_const import (
     EVENT_FILE_PATTERN,
@@ -23,30 +21,29 @@ LOCK_TIMEOUT_SECONDS = 30
 
 
 class EventLog(EventsListBase):
-    """Persistent event log with file-based locking for concurrent writes.
+    """Persistent event log with locking for concurrent writes.
 
     This class provides thread-safe and process-safe event storage using
-    file-based locking (flock). Events are persisted to disk and can be
-    accessed by index or event ID.
+    the FileStore's locking mechanism. Events are persisted to disk and
+    can be accessed by index or event ID.
 
     Note:
-        File locking via flock() does NOT work reliably on NFS mounts or
-        network filesystems. Users deploying with shared storage should
-        use alternative coordination mechanisms.
+        For LocalFileStore, file locking via flock() does NOT work reliably
+        on NFS mounts or network filesystems. Users deploying with shared
+        storage should use alternative coordination mechanisms.
     """
 
     _fs: FileStore
     _dir: str
     _length: int
-    _lock: BaseFileLock
+    _lock_path: str
 
     def __init__(self, fs: FileStore, dir_path: str = EVENTS_DIR) -> None:
         self._fs = fs
         self._dir = dir_path
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
-        lock_path = self._fs.get_absolute_path(f"{dir_path}/{LOCK_FILE_NAME}")
-        self._lock = FileLock(lock_path)
+        self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._length = self._scan_and_build_index()
 
     def get_index(self, event_id: EventID) -> int:
@@ -100,16 +97,16 @@ class EventLog(EventsListBase):
             yield evt
 
     def append(self, event: Event) -> None:
-        """Append an event with file-based locking for thread/process safety.
+        """Append an event with locking for thread/process safety.
 
         Raises:
-            Timeout: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
+            TimeoutError: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
             ValueError: If an event with the same ID already exists.
         """
         evt_id = event.id
 
         try:
-            with self._lock.acquire(timeout=LOCK_TIMEOUT_SECONDS):
+            with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
                 # Sync with disk in case another process wrote while we waited
                 disk_length = self._count_events_on_disk()
                 if disk_length > self._length:
@@ -127,11 +124,10 @@ class EventLog(EventsListBase):
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length
                 self._length += 1
-        except Timeout:
+        except TimeoutError:
             logger.error(
-                "Failed to acquire EventLog lock within %ds for event %s",
-                LOCK_TIMEOUT_SECONDS,
-                evt_id,
+                f"Failed to acquire EventLog lock within {LOCK_TIMEOUT_SECONDS}s "
+                f"for event {evt_id}"
             )
             raise
 
