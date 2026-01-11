@@ -1,4 +1,8 @@
 import os
+import threading
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from openhands.sdk.io.base import FileStore
 from openhands.sdk.logger import get_logger
@@ -9,9 +13,13 @@ logger = get_logger(__name__)
 
 class InMemoryFileStore(FileStore):
     files: dict[str, str]
+    _instance_id: str
+    _lock: threading.Lock
 
     def __init__(self, files: dict[str, str] | None = None) -> None:
         self.files = {}
+        self._instance_id = uuid.uuid4().hex
+        self._lock = threading.Lock()
         if files is not None:
             self.files = files
 
@@ -51,4 +59,29 @@ class InMemoryFileStore(FileStore):
                 del self.files[key]
             logger.debug(f"Cleared in-memory file store: {path}")
         except Exception as e:
-            logger.error(f"Error clearing in-memory file store: {str(e)}")
+            logger.error(f"Error clearing in-memory file store: {e}")
+
+    def exists(self, path: str) -> bool:
+        """Check if a file exists."""
+        if path in self.files:
+            return True
+        return any(f.startswith(path + "/") for f in self.files)
+
+    def get_absolute_path(self, path: str) -> str:
+        """Get absolute path (uses temp dir with unique instance ID)."""
+        import tempfile
+
+        return os.path.join(
+            tempfile.gettempdir(), f"openhands_inmemory_{self._instance_id}", path
+        )
+
+    @contextmanager
+    def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:
+        """Acquire thread lock for in-memory store."""
+        acquired = self._lock.acquire(timeout=timeout)
+        if not acquired:
+            raise TimeoutError(f"Lock acquisition timed out: {path}")
+        try:
+            yield
+        finally:
+            self._lock.release()

@@ -243,13 +243,14 @@ def test_event_log_index_gaps_detection():
 
 def test_event_log_file_store_exceptions():
     """Test handling of file store exceptions."""
-    # Mock file store that raises exceptions
+    import tempfile
+
     mock_fs = Mock()
     mock_fs.list.side_effect = Exception("File system error")
-
-    # Should handle gracefully
-    log = EventLog(mock_fs)
-    assert len(log) == 0
+    with tempfile.TemporaryDirectory() as temp_dir:
+        mock_fs.get_absolute_path.return_value = f"{temp_dir}/.eventlog.lock"
+        log = EventLog(mock_fs)
+        assert len(log) == 0
 
 
 def test_event_log_iteration_with_missing_files():
@@ -343,3 +344,61 @@ def test_event_log_large_index_formatting():
 
     assert log.get_index("large-index-event") == 99999
     assert log.get_id(99999) == "large-index-event"
+
+
+def test_event_log_concurrent_append_thread_safety():
+    """Test concurrent appends from multiple threads."""
+    import tempfile
+    import threading
+
+    from openhands.sdk.io.local import LocalFileStore
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        fs = LocalFileStore(temp_dir)
+        log = EventLog(fs)
+        errors: list[Exception] = []
+        lock = threading.Lock()
+
+        def append_events(thread_id: int, num_events: int):
+            for i in range(num_events):
+                try:
+                    event = create_test_event(
+                        f"t{thread_id}-e{i}", f"Thread {thread_id}"
+                    )
+                    log.append(event)
+                except Exception as e:
+                    with lock:
+                        errors.append(e)
+
+        threads = []
+        for t_id in range(5):
+            t = threading.Thread(target=append_events, args=(t_id, 10))
+            threads.append(t)
+            t.start()
+
+        for t in threads:
+            t.join()
+
+        assert len(errors) == 0, f"Errors: {errors}"
+        assert len(log) == 50
+
+
+def test_event_log_concurrent_writes_serialized():
+    """Test two EventLog instances serialize writes correctly."""
+    import tempfile
+
+    from openhands.sdk.io.local import LocalFileStore
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        fs = LocalFileStore(temp_dir)
+        log1 = EventLog(fs)
+        log2 = EventLog(fs)
+
+        log1.append(create_test_event("event-1", "First"))
+        log2.append(create_test_event("event-2", "Second"))
+
+        assert log1._length == 1
+        assert log2._length == 2
+
+        files = [f for f in fs.list("events") if not f.endswith(".lock")]
+        assert len(files) == 2
