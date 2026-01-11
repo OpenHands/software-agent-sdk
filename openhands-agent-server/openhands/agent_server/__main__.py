@@ -2,9 +2,10 @@ import argparse
 import atexit
 import faulthandler
 import signal
-import sys
+from types import FrameType
 
 import uvicorn
+from uvicorn import Config
 
 from openhands.agent_server.logging_config import LOGGING_CONFIG
 from openhands.sdk.logger import DEBUG, get_logger
@@ -13,30 +14,33 @@ from openhands.sdk.logger import DEBUG, get_logger
 logger = get_logger(__name__)
 
 
-def _setup_signal_handlers() -> None:
-    """Set up signal handlers to log termination signals."""
+class LoggingServer(uvicorn.Server):
+    """Custom uvicorn Server that logs signal handling events.
 
-    def signal_handler(signum: int, _frame) -> None:
-        sig_name = signal.Signals(signum).name
+    This subclass overrides handle_exit to add structured logging when
+    termination signals are received, ensuring visibility into why the
+    server is shutting down.
+    """
+
+    def handle_exit(self, sig: int, frame: FrameType | None) -> None:
+        """Handle exit signals with logging before delegating to parent."""
+        sig_name = signal.Signals(sig).name
         logger.info(
             "Received signal %s (%d), shutting down...",
             sig_name,
-            signum,
+            sig,
         )
-        sys.exit(128 + signum)
-
-    # Register handlers for common termination signals
-    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-        try:
-            signal.signal(sig, signal_handler)
-        except (OSError, ValueError):
-            # Some signals may not be available on all platforms
-            pass
+        super().handle_exit(sig, frame)
 
 
 def _setup_crash_diagnostics() -> None:
-    """Enable crash diagnostics for debugging unexpected terminations."""
-    # Enable faulthandler for segfault tracebacks (SIGSEGV, SIGFPE, SIGABRT, etc.)
+    """Enable crash diagnostics for debugging unexpected terminations.
+
+    Note: faulthandler outputs tracebacks to stderr in plain text format,
+    not through the structured JSON logger. This is unavoidable because
+    during a segfault, Python's normal logging infrastructure is not
+    available. The plain text traceback is still valuable for debugging.
+    """
     faulthandler.enable()
 
     # Register atexit handler to log normal exits
@@ -45,10 +49,9 @@ def _setup_crash_diagnostics() -> None:
         logger.info("Process exiting via atexit handler")
 
 
-def main():
+def main() -> None:
     # Set up crash diagnostics early, before any other initialization
     _setup_crash_diagnostics()
-    _setup_signal_handlers()
 
     parser = argparse.ArgumentParser(description="OpenHands Agent Server App")
     parser.add_argument(
@@ -81,21 +84,27 @@ def main():
     # Configure uvicorn logging based on DEBUG environment variable
     log_level = "debug" if DEBUG else "info"
 
+    # Create uvicorn config
+    config = Config(
+        "openhands.agent_server.api:api",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+        reload_includes=[
+            "openhands-agent-server",
+            "openhands-sdk",
+            "openhands-tools",
+        ],
+        log_level=log_level,
+        log_config=LOGGING_CONFIG,
+        ws="wsproto",  # Use wsproto instead of deprecated websockets implementation
+    )
+
+    # Use custom LoggingServer to capture signal handling events
+    server = LoggingServer(config)
+
     try:
-        uvicorn.run(
-            "openhands.agent_server.api:api",
-            host=args.host,
-            port=args.port,
-            reload=args.reload,
-            reload_includes=[
-                "openhands-agent-server",
-                "openhands-sdk",
-                "openhands-tools",
-            ],
-            log_level=log_level,
-            log_config=LOGGING_CONFIG,
-            ws="wsproto",  # Use wsproto instead of deprecated websockets implementation
-        )
+        server.run()
     except Exception:
         logger.error("Server crashed with unexpected exception", exc_info=True)
         raise
