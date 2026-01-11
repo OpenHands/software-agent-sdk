@@ -106,6 +106,18 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
+    plugin_source: str | None = Field(
+        default=None,
+        description=(
+            "Plugin source to fetch and load for this conversation. Can be "
+            "'github:owner/repo', a git URL, or a local path. The plugin's skills, "
+            "hooks, and MCP configuration will be merged into the conversation."
+        ),
+    )
+    plugin_ref: str | None = Field(
+        default=None,
+        description="Optional branch, tag, or commit for the plugin.",
+    )
 
 
 class StoredConversation(StartConversationRequest):
