@@ -79,6 +79,24 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
+markers = [
+    "forked: marks tests as requiring process isolation (deselect with '-m \"not forked\"')",
+]
+
+# Coverage configuration - needed for --forked tests to collect coverage data
+[tool.coverage.run]
+branch = true
+parallel = true
+concurrency = ["multiprocessing", "thread"]
+sigterm = true
+source = ["openhands-sdk", "openhands-tools", "openhands-workspace", "openhands-agent-server"]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
 
 # Pyright configuration for PEP 420 namespace packages
 # This is needed for VSCode to properly resolve imports across multiple packages in the monorepo
