@@ -14,11 +14,11 @@ logger = get_logger(__name__)
 
 
 def _setup_signal_handlers() -> None:
-    """Set up signal handlers to log unexpected termination signals."""
+    """Set up signal handlers to log termination signals."""
 
     def signal_handler(signum: int, frame) -> None:
         sig_name = signal.Signals(signum).name
-        logger.critical(
+        logger.info(
             "Received signal %s (%d), shutting down...",
             sig_name,
             signum,
@@ -93,10 +93,10 @@ def main():
             ws="wsproto",  # Use wsproto instead of deprecated websockets implementation
         )
     except Exception:
-        logger.critical("Server crashed with exception", exc_info=True)
+        logger.error("Server crashed with unexpected exception", exc_info=True)
         raise
     except BaseException as e:
-        # Catch SystemExit, KeyboardInterrupt, etc.
+        # Catch SystemExit, KeyboardInterrupt, etc. - these are normal termination paths
         logger.info("Server terminated: %s: %s", type(e).__name__, e)
         raise
 
