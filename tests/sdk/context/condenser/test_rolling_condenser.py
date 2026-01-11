@@ -155,3 +155,84 @@ def test_no_condensation_available_exception_message() -> None:
 
     with pytest.raises(NoCondensationAvailableException, match=exception_message):
         raise NoCondensationAvailableException(exception_message)
+
+
+def test_default_hard_context_reset_raises_error() -> None:
+    """Test that default hard_context_reset raises NoCondensationAvailableException.
+
+    When there's a hard requirement but no condensation available, and the default
+    hard_context_reset implementation is used (returns None), the
+    NoCondensationAvailableException should be raised.
+    """
+    condenser = MockRollingCondenser(
+        condensation_requirement_value=CondensationRequirement.HARD,
+        raise_exception=True,
+    )
+
+    events: list[Event] = [
+        message_event("Event 1"),
+        message_event("Event 2"),
+        message_event("Event 3"),
+    ]
+    view = View.from_events(events)
+
+    # The default hard_context_reset returns None, so the exception should be raised
+    with pytest.raises(NoCondensationAvailableException):
+        condenser.condense(view)
+
+
+class MockRollingCondenserWithHardReset(RollingCondenser):
+    """Mock implementation of RollingCondenser with custom hard_context_reset."""
+
+    def __init__(self, hard_reset_condensation: Condensation):
+        self._hard_reset_condensation = hard_reset_condensation
+
+    def condensation_requirement(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> CondensationRequirement | None:
+        return CondensationRequirement.HARD
+
+    def get_condensation(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation:
+        raise NoCondensationAvailableException(
+            "No condensation available due to API constraints"
+        )
+
+    def hard_context_reset(
+        self, view: View, agent_llm: LLM | None = None
+    ) -> Condensation | None:
+        return self._hard_reset_condensation
+
+
+def test_hard_context_reset_condensation_is_returned() -> None:
+    """Test that condensation from hard_context_reset is returned.
+
+    When there's a hard requirement but no condensation available, and
+    hard_context_reset returns a Condensation, that should be returned
+    instead of raising an exception.
+    """
+    events: list[Event] = [
+        message_event("Event 1"),
+        message_event("Event 2"),
+        message_event("Event 3"),
+    ]
+    view = View.from_events(events)
+
+    # Create a condensation that will be returned by hard_context_reset
+    hard_reset_condensation = Condensation(
+        forgotten_event_ids=[events[0].id, events[1].id],
+        summary="Hard context reset summary",
+        summary_offset=0,
+        llm_response_id="hard_reset_response",
+    )
+
+    condenser = MockRollingCondenserWithHardReset(
+        hard_reset_condensation=hard_reset_condensation
+    )
+
+    result = condenser.condense(view)
+
+    assert isinstance(result, Condensation)
+    assert result == hard_reset_condensation
+    assert result.summary == "Hard context reset summary"

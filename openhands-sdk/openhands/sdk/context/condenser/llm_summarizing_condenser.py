@@ -250,6 +250,20 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Summary offset is the same as forgetting_start
         return forgotten_events, forgetting_start
 
+    def hard_context_reset(
+        self,
+        view: View,
+        agent_llm: LLM | None = None,  # noqa: ARG002
+    ) -> Condensation | None:
+        summary_event_content = self._get_summary_event_content(view)
+        forgotten_events = view.events
+
+        return self._generate_condensation(
+            summary_event_content=summary_event_content,
+            forgotten_events=forgotten_events,
+            summary_offset=0,
+        )
+
     @observe(ignore_inputs=["view", "agent_llm"])
     def get_condensation(
         self, view: View, agent_llm: LLM | None = None
