@@ -75,6 +75,12 @@ jobs:
               with:
                   enable-cache: true
 
+
+            - name: Install GitHub CLI
+              run: |
+                  sudo apt-get update
+                  sudo apt-get install -y gh
+
             - name: Install OpenHands dependencies
               run: |
                   # Install OpenHands SDK and tools from local checkout
