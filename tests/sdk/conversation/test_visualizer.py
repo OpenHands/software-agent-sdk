@@ -479,6 +479,23 @@ def test_event_base_fallback_visualize():
     assert "Unknown event type: _UnknownEventForVisualizerTest" in text_content
 
 
+def test_conversation_error_event_visualize():
+    """Test that ConversationErrorEvent provides a specific visualization."""
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+    event = ConversationErrorEvent(
+        source="environment",
+        code="TestError",
+        detail="Something went wrong",
+    )
+    text_content = event.visualize.plain
+
+    assert "Unknown event type:" not in text_content
+    assert "Conversation Error" in text_content
+    assert "TestError" in text_content
+    assert "Something went wrong" in text_content
+
+
 def test_visualizer_conversation_state_update_event_skipped():
     """Test that ConversationStateUpdateEvent is not visualized."""
     visualizer = DefaultConversationVisualizer()
