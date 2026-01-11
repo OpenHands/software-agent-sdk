@@ -1,9 +1,9 @@
-"""Test that agent with token-based condenser successfully triggers condensation.
+"""Test that agent with size-based condenser successfully triggers condensation.
 
 This integration test verifies that:
-1. An agent can be configured with an LLMSummarizingCondenser using max_tokens
-2. The condenser correctly uses get_token_count to measure conversation size
-3. Condensation is triggered when token limit is exceeded
+1. An agent can be configured with an LLMSummarizingCondenser using max_size
+2. The condenser correctly counts events to measure conversation size
+3. Condensation is triggered when event count limit is exceeded
 """
 
 from openhands.sdk import get_logger
@@ -16,25 +16,20 @@ from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
 
 # Instruction designed to generate multiple agent messages
 INSTRUCTION = """
-Count from 1 to 1000. For each number, use the echo command to print it along with
-a short, unique property of that number (e.g., "1 is the first natural number",
-"2 is the only even prime number", etc.). Be creative with your descriptions.
+Count from 1 to 50. For each number, use the echo command to print it along with
+a short description (e.g., "1 is the first number", "2 is an even number", etc.).
 
 DO NOT write a script to do this. Instead, interactively call the echo command
-1000 times, once for each number from 1 to 1000.
+50 times, once for each number from 1 to 50.
 
-This won't be efficient -- that is okay, we're using the output as a test for our
-context management system.
-
-Make sure you should generate some "extended thinking" for each tool call you make
-to help us test the system.
+This is intentionally inefficient to test our context management system.
 """
 
 logger = get_logger(__name__)
 
 
-class TokenCondenserTest(BaseIntegrationTest):
-    """Test that agent with token-based condenser triggers condensation."""
+class SizeCondenserTest(BaseIntegrationTest):
+    """Test that agent with size-based condenser triggers condensation."""
 
     INSTRUCTION: str = INSTRUCTION
 
@@ -44,15 +39,15 @@ class TokenCondenserTest(BaseIntegrationTest):
         super().__init__(*args, **kwargs)
 
         # Some models explicitly disallow long, repetitive tool loops for cost/safety.
-        # GPT-5.1 Codex Max often refuses the 1..1000 echo prompt and may disable
-        # extended tool usage. In such cases, token-count-based condensation cannot be
+        # GPT-5.1 Codex Max often refuses the 1..N echo prompt and may disable
+        # extended tool usage. In such cases, event-count-based condensation cannot be
         # reliably exercised. Skip this test for that model to avoid spurious failures.
         model_name = self.llm.model
         canonical = self.llm.model_info.get("model") if self.llm.model_info else None
         name = (canonical or model_name or "").split("/")[-1]
         if name == "gpt-5.1-codex-max":
             raise SkipTest(
-                "This test stresses long repetitive tool loops to trigger token-based "
+                "This test stresses long repetitive tool loops to trigger size-based "
                 "condensation. GPT-5.1 Codex Max often declines such requests for "
                 "efficiency/safety reasons."
             )
@@ -67,15 +62,15 @@ class TokenCondenserTest(BaseIntegrationTest):
 
     @property
     def condenser(self) -> LLMSummarizingCondenser:
-        """Configure a token-based condenser with low limits to trigger condensation."""
-        # Create a condenser with a low token limit to trigger condensation
-        # Using max_tokens instead of max_size to test token counting
+        """Configure a size-based condenser with low limit to trigger condensation."""
+        # Create a condenser with a low max_size to trigger condensation
+        # Using max_size instead of max_tokens to test event counting
         condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
         return LLMSummarizingCondenser(
             llm=condenser_llm,
-            max_size=1000,  # Set high so it doesn't trigger on event count
-            max_tokens=5000,  # Low token limit to ensure condensation triggers
-            keep_first=1,  # Keep only initial user message (not tool loop start)
+            max_size=10,  # Low event limit to ensure condensation triggers
+            max_tokens=None,  # Don't use token limit
+            keep_first=1,  # Keep only initial user message
         )
 
     @property
@@ -90,19 +85,18 @@ class TokenCondenserTest(BaseIntegrationTest):
             if len(self.condensations) >= 1:
                 logger.info("2nd condensation detected! Stopping test early.")
                 self.conversation.pause()
-            # We allow the first condensation request to test if
-            # thinking block + condensation will work together
+            # We allow the first condensation request to test if condensation works
             self.condensations.append(event)
 
     def setup(self) -> None:
-        logger.info(f"Token condenser test: max_tokens={self.condenser.max_tokens}")
+        logger.info(f"Size condenser test: max_size={self.condenser.max_size}")
 
     def verify_result(self) -> TestResult:
-        """Verify that condensation was triggered based on token count."""
+        """Verify that condensation was triggered based on event count."""
         if len(self.condensations) == 0:
             return TestResult(
                 success=False,
-                reason="Condensation not triggered. Token counting may not work.",
+                reason="Condensation not triggered. Event counting may not work.",
             )
 
         events_summarized = len(self.condensations[0].forgotten_event_ids)

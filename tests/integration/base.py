@@ -183,6 +183,10 @@ class BaseIntegrationTest(ABC):
 
             return result
 
+        except SkipTest:
+            # Re-raise SkipTest so it can be caught by the test runner
+            raise
+
         except Exception as e:
             return TestResult(success=False, reason=f"Test execution failed: {str(e)}")
 

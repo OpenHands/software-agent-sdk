@@ -32,12 +32,12 @@ class TestInstance(BaseModel):
 
     instance_id: str
     file_path: str
-    test_type: Literal["integration", "behavior"]
+    test_type: Literal["integration", "behavior", "condenser"]
     test_class: BaseIntegrationTest | None = None
 
     @property
     def required(self) -> bool:
-        """Whether the test is required (integration) or optional (behavior)."""
+        """Whether the test is required (integration) or optional (everything else)."""
         return self.test_type == "integration"
 
 
@@ -47,7 +47,7 @@ class EvalOutput(BaseModel):
     instance_id: str
     test_result: TestResult
     llm_model: str
-    test_type: Literal["integration", "behavior"]
+    test_type: Literal["integration", "behavior", "condenser"]
     cost: float = 0.0
     token_usage: TokenUsageData | None = None
     error_message: str | None = None
@@ -55,18 +55,20 @@ class EvalOutput(BaseModel):
 
     @property
     def required(self) -> bool:
-        """Whether the test is required (integration) or optional (behavior)."""
+        """Whether the test is required (integration) or optional (everything else)."""
         return self.test_type == "integration"
 
 
 def load_integration_tests() -> list[TestInstance]:
     """Load tests from python files under ./tests/integration"""
     test_dir = Path(__file__).parent / "tests"
-    # Load both task completion tests (t*.py) and behavior tests (b*.py)
+    # Load task completion tests (t*.py), behavior tests (b*.py), and condenser tests
+    # (c*.py)
     test_files = [
         f
-        for f in test_dir.glob("[tb]*.py")
-        if (f.name.startswith("t") or f.name.startswith("b")) and f.name.endswith(".py")
+        for f in test_dir.glob("[tbc]*.py")
+        if (f.name.startswith("t") or f.name.startswith("b") or f.name.startswith("c"))
+        and f.name.endswith(".py")
     ]
 
     instances = []
@@ -76,6 +78,8 @@ def load_integration_tests() -> list[TestInstance]:
         # Determine test type based on filename prefix
         if test_file.name.startswith("b"):
             test_type = "behavior"
+        elif test_file.name.startswith("c"):
+            test_type = "condenser"
         else:
             test_type = "integration"
 
@@ -415,9 +419,12 @@ def main():
     )
     parser.add_argument(
         "--test-type",
-        choices=["all", "integration", "behavior"],
+        choices=["all", "integration", "behavior", "condenser"],
         default="all",
-        help="Restrict execution to integration tests, behavior tests, or all",
+        help=(
+            "Restrict execution to integration tests, behavior tests, condenser tests, "
+            "or all"
+        ),
     )
     parser.add_argument(
         "--output-dir",
