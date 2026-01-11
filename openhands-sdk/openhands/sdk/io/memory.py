@@ -14,7 +14,7 @@ class InMemoryFileStore(FileStore):
 
     def __init__(self, files: dict[str, str] | None = None) -> None:
         self.files = {}
-        self._instance_id = str(uuid.uuid4())
+        self._instance_id = uuid.uuid4().hex
         if files is not None:
             self.files = files
 
@@ -52,9 +52,9 @@ class InMemoryFileStore(FileStore):
             keys_to_delete = [key for key in self.files.keys() if key.startswith(path)]
             for key in keys_to_delete:
                 del self.files[key]
-            logger.debug("Cleared in-memory file store: %s", path)
+            logger.debug(f"Cleared in-memory file store: {path}")
         except Exception as e:
-            logger.error("Error clearing in-memory file store: %s", str(e))
+            logger.error(f"Error clearing in-memory file store: {e}")
 
     def exists(self, path: str) -> bool:
         """Check if a file exists."""
