@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 def _setup_signal_handlers() -> None:
     """Set up signal handlers to log termination signals."""
 
-    def signal_handler(signum: int, frame) -> None:
+    def signal_handler(signum: int, _frame) -> None:
         sig_name = signal.Signals(signum).name
         logger.info(
             "Received signal %s (%d), shutting down...",
@@ -36,7 +36,7 @@ def _setup_signal_handlers() -> None:
 
 def _setup_crash_diagnostics() -> None:
     """Enable crash diagnostics for debugging unexpected terminations."""
-    # Enable faulthandler to print tracebacks on SIGSEGV, SIGFPE, SIGABRT, SIGBUS, SIGILL
+    # Enable faulthandler for segfault tracebacks (SIGSEGV, SIGFPE, SIGABRT, etc.)
     faulthandler.enable()
 
     # Register atexit handler to log normal exits
@@ -87,7 +87,11 @@ def main():
             host=args.host,
             port=args.port,
             reload=args.reload,
-            reload_includes=["openhands-agent-server", "openhands-sdk", "openhands-tools"],
+            reload_includes=[
+                "openhands-agent-server",
+                "openhands-sdk",
+                "openhands-tools",
+            ],
             log_level=log_level,
             log_config=LOGGING_CONFIG,
             ws="wsproto",  # Use wsproto instead of deprecated websockets implementation
