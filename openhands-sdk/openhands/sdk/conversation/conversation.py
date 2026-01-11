@@ -67,6 +67,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        stop_agent_on_close: bool = False,
     ) -> "LocalConversation": ...
 
     @overload
@@ -88,6 +89,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        stop_agent_on_close: bool = False,
     ) -> "RemoteConversation": ...
 
     def __new__(
@@ -109,6 +111,7 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        stop_agent_on_close: bool = False,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -134,6 +137,7 @@ class Conversation:
                 visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
+                stop_agent_on_close=stop_agent_on_close,
             )
 
         return LocalConversation(
@@ -149,4 +153,5 @@ class Conversation:
             workspace=workspace,
             persistence_dir=persistence_dir,
             secrets=secrets,
+            stop_agent_on_close=stop_agent_on_close,
         )
