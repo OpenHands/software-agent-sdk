@@ -72,7 +72,7 @@ def get_pr_diff_via_github_api(pr_number: str) -> str:
     header requesting diff output.
 
     This avoids depending on local git refs (often stale/missing in
-    `pull_request_target` checkouts) and avoids requiring `gh` to be installed.
+    `pull_request_target` checkouts).
     """
 
     repo = _get_required_env("REPO_NAME")
