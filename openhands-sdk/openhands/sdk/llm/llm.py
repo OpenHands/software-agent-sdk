@@ -1121,3 +1121,62 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if v is not None:
                 data[field_name] = v
         return cls(**data)
+
+    @classmethod
+    def subscription_login(
+        cls,
+        vendor: str = "openai",
+        model: str = "gpt-5.2-codex",
+        force_login: bool = False,
+        open_browser: bool = True,
+        **llm_kwargs,
+    ) -> LLM:
+        """Authenticate with a subscription service and return an LLM instance.
+
+        This method provides subscription-based access to LLM models that are
+        available through chat subscriptions (e.g., ChatGPT Plus/Pro) rather
+        than API credits. It handles credential caching, token refresh, and
+        the OAuth login flow.
+
+        Currently supported vendors:
+        - "openai": ChatGPT Plus/Pro subscription for Codex models
+
+        Supported OpenAI models:
+        - gpt-5.1-codex-max
+        - gpt-5.1-codex-mini
+        - gpt-5.2
+        - gpt-5.2-codex
+
+        Args:
+            vendor: The vendor/provider. Currently only "openai" is supported.
+            model: The model to use. Must be supported by the vendor's
+                subscription service.
+            force_login: If True, always perform a fresh login even if valid
+                credentials exist.
+            open_browser: Whether to automatically open the browser for the
+                OAuth login flow.
+            **llm_kwargs: Additional arguments to pass to the LLM constructor.
+
+        Returns:
+            An LLM instance configured for subscription-based access.
+
+        Raises:
+            ValueError: If the vendor or model is not supported.
+            RuntimeError: If authentication fails.
+
+        Example:
+            >>> from openhands.sdk import LLM
+            >>> # First time: opens browser for OAuth login
+            >>> llm = LLM.subscription_login(model="gpt-5.2-codex")
+            >>> # Subsequent calls: reuses cached credentials
+            >>> llm = LLM.subscription_login(model="gpt-5.2-codex")
+        """
+        from openhands.sdk.llm.auth.openai import subscription_login
+
+        return subscription_login(
+            vendor=vendor,
+            model=model,
+            force_login=force_login,
+            open_browser=open_browser,
+            **llm_kwargs,
+        )
