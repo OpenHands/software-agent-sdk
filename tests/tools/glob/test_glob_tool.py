@@ -124,8 +124,10 @@ def test_glob_tool_specific_directory():
         assert observation.search_path == str(src_dir.resolve())
 
         # Check that all found files are in src directory
+        # Use resolved path for comparison (handles Windows short paths)
+        src_dir_resolved = str(src_dir.resolve())
         for file_path in observation.files:
-            assert str(src_dir) in file_path
+            assert src_dir_resolved in file_path
 
 
 def test_glob_tool_no_matches():

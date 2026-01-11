@@ -5,6 +5,7 @@ import logging
 import os
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -18,6 +19,15 @@ from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
 from openhands.tools.browser_use.server import CustomBrowserUseServer
 from openhands.tools.utils.timeout import TimeoutError, run_with_timeout
+
+
+def get_browser_executor_class() -> type["BrowserToolExecutor"]:
+    """Get the platform-appropriate browser executor class."""
+    if sys.platform == "win32":
+        from openhands.tools.browser_use.impl_windows import WindowsBrowserToolExecutor
+
+        return WindowsBrowserToolExecutor
+    return BrowserToolExecutor
 
 
 # Suppress browser-use logging for cleaner integration

@@ -17,11 +17,17 @@ from openhands.tools.file_editor.utils.shell import (
 
 def test_run_shell_cmd_success():
     """Test running a successful shell command."""
+    import sys
+
     cmd = "echo 'Hello, World!'"
     returncode, stdout, stderr = run_shell_cmd(cmd)
 
     assert returncode == 0
-    assert stdout.strip() == "Hello, World!"
+    # PowerShell keeps quotes in output, bash removes them
+    if sys.platform == "win32":
+        assert "Hello, World!" in stdout
+    else:
+        assert stdout.strip() == "Hello, World!"
     assert stderr == ""
 
 
