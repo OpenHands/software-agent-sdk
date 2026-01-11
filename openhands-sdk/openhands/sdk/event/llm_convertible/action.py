@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from pydantic import Field
 from rich.text import Text
 
+from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType, ToolCallID
 from openhands.sdk.llm import (
@@ -65,6 +66,11 @@ class ActionEvent(LLMConvertibleEvent):
         description="The LLM's assessment of the safety risk of this action.",
     )
 
+    critic_result: CriticResult | None = Field(
+        default=None,
+        description="Optional critic evaluation of this action and preceding history.",
+    )
+
     summary: str | None = Field(
         default=None,
         description=(
@@ -124,6 +130,10 @@ class ActionEvent(LLMConvertibleEvent):
             # When action is None (non-executable), show the function call
             content.append("Function call:\n", style="bold")
             content.append(f"- {self.tool_call.name} ({self.tool_call.id})\n")
+
+        # Display critic result if available
+        if self.critic_result is not None:
+            content.append(self.critic_result.visualize)
 
         return content
 
