@@ -826,3 +826,342 @@ def test_resume_with_conversation_id_mismatch_raises_error():
                 agent=agent,
                 id=different_id,
             )
+
+
+def test_conversation_state_secrets_serialization_deserialization():
+    """Test that secrets are properly serialized and deserialized.
+
+    This is a regression test for issue 1505 where conversations with secrets
+    would fail to restore because secrets are serialized as '**********'
+    (redacted) but StaticSecret.value was a required field that couldn't
+    accept None after validation converted '**********' to None.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789099")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create conversation state with secrets
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets(
+            {
+                "API_KEY": "test-api-key",
+                "DATABASE_URL": "postgresql://localhost/test",
+            }
+        )
+
+        # Verify secrets are set before save
+        env_vars = state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        assert env_vars == {"API_KEY": "test-api-key"}
+
+        # Force save the state (triggers serialization)
+        state._save_base_state(state._fs)
+
+        # Verify the serialized state has redacted secrets
+        base_state_path = Path(persist_path) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "secret_registry" in base_state_content
+        api_key_source = base_state_content["secret_registry"]["secret_sources"][
+            "API_KEY"
+        ]
+        # Value should be redacted to '**********' in serialization
+        assert api_key_source["value"] == "**********"
+
+        # Now simulate restoring the conversation state from persisted data
+        # This was failing before the fix with:
+        # "pydantic_core._pydantic_core.ValidationError: Field required
+        # [type=missing, ... for StaticSecret.value"
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+        )
+
+        # The state should load successfully - this was the bug fix
+        assert resumed_state.id == conv_id
+
+        # The secrets should be None after restore (since they were redacted)
+        # but the StaticSecret objects should exist
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        assert "DATABASE_URL" in resumed_state.secret_registry.secret_sources
+
+        # The values should be None after deserialization of redacted secrets
+        api_key_source_restored = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ]
+        assert api_key_source_restored.get_value() is None
+
+        # Getting env vars should return empty since values are None
+        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
+            "echo $API_KEY"
+        )
+        assert env_vars == {}  # No value available
+
+
+def test_conversation_state_secrets_with_cipher():
+    """Test that secrets are preserved when using a cipher.
+
+    When a cipher is provided to ConversationState.create(), secrets should
+    be encrypted during serialization and decrypted during deserialization,
+    preserving the actual secret values across save/restore cycles.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890aa")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create a cipher for encryption
+        cipher = Cipher(secret_key="my-secret-encryption-key")
+
+        # Create conversation state with secrets AND cipher
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher,
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets(
+            {
+                "API_KEY": "test-api-key",
+                "DATABASE_URL": "postgresql://localhost/test",
+            }
+        )
+
+        # Verify secrets are set before save
+        env_vars = state.secret_registry.get_secrets_as_env_vars("echo $API_KEY")
+        assert env_vars == {"API_KEY": "test-api-key"}
+
+        # Force save the state (triggers serialization with encryption)
+        state._save_base_state(state._fs)
+
+        # Verify the serialized state has encrypted (not redacted) secrets
+        base_state_path = Path(persist_path) / "base_state.json"
+        base_state_content = json.loads(base_state_path.read_text())
+        assert "secret_registry" in base_state_content
+        api_key_source = base_state_content["secret_registry"]["secret_sources"][
+            "API_KEY"
+        ]
+        # Value should be encrypted (not '**********')
+        assert api_key_source["value"] != "**********"
+        assert api_key_source["value"] != "test-api-key"  # Not plaintext
+        assert len(api_key_source["value"]) > 20  # Encrypted value is longer
+
+        # Now restore the conversation state with the same cipher
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher,
+        )
+
+        # The state should load successfully
+        assert resumed_state.id == conv_id
+
+        # The secrets should be PRESERVED after restore
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        assert "DATABASE_URL" in resumed_state.secret_registry.secret_sources
+
+        # The values should be decrypted and accessible
+        api_key_source_restored = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ]
+        assert api_key_source_restored.get_value() == "test-api-key"
+
+        # Getting env vars should return the actual values
+        env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
+            "echo $API_KEY"
+        )
+        assert env_vars == {"API_KEY": "test-api-key"}
+
+        db_env_vars = resumed_state.secret_registry.get_secrets_as_env_vars(
+            "echo $DATABASE_URL"
+        )
+        assert db_env_vars == {"DATABASE_URL": "postgresql://localhost/test"}
+
+
+def test_conversation_state_save_with_cipher_load_without():
+    """Test loading state saved with cipher but without providing cipher.
+
+    When state is saved with a cipher (secrets encrypted) but loaded without
+    a cipher, the encrypted values should remain as-is (unusable) but the
+    conversation should still load successfully.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890bb")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create a cipher for encryption
+        cipher = Cipher(secret_key="my-secret-encryption-key")
+
+        # Create conversation state with secrets AND cipher
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher,
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets({"API_KEY": "test-api-key"})
+
+        # Force save the state (triggers serialization with encryption)
+        state._save_base_state(state._fs)
+
+        # Now restore WITHOUT a cipher - should load but secrets are unusable
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=None,  # No cipher provided
+        )
+
+        # The state should load successfully
+        assert resumed_state.id == conv_id
+
+        # The secret source should exist but value is the encrypted string
+        # (not decrypted, so not usable as the original value)
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        api_key_value = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ].get_value()
+        # Value should be the encrypted string, not the original
+        assert api_key_value != "test-api-key"
+        assert api_key_value is not None  # It's the encrypted value
+
+
+def test_conversation_state_save_without_cipher_load_with():
+    """Test loading state saved without cipher but with cipher provided.
+
+    When state is saved without a cipher (secrets redacted) but loaded with
+    a cipher, the redacted secrets should deserialize to None values.
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890cc")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create conversation state with secrets but NO cipher
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=None,  # No cipher - secrets will be redacted
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets({"API_KEY": "test-api-key"})
+
+        # Force save the state (triggers serialization with redaction)
+        state._save_base_state(state._fs)
+
+        # Now restore WITH a cipher - should load but secrets are already lost
+        cipher = Cipher(secret_key="my-secret-encryption-key")
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher,
+        )
+
+        # The state should load successfully
+        assert resumed_state.id == conv_id
+
+        # The secret source should exist but value is None (was redacted)
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        api_key_value = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ].get_value()
+        assert api_key_value is None
+
+
+def test_conversation_state_cipher_mismatch():
+    """Test loading state with a different cipher than used for saving.
+
+    When state is saved with cipher A but loaded with cipher B, decryption
+    fails gracefully - the conversation loads but secrets are set to None
+    (with a warning logged).
+    """
+    from openhands.sdk.utils.cipher import Cipher
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
+        )
+        agent = Agent(llm=llm, tools=[])
+        conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890dd")
+        persist_path = LocalConversation.get_persistence_dir(temp_dir, conv_id)
+
+        # Create cipher A for encryption
+        cipher_a = Cipher(secret_key="cipher-key-a")
+
+        # Create conversation state with secrets AND cipher A
+        state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher_a,
+        )
+
+        # Add secrets to the secret registry
+        state.secret_registry.update_secrets({"API_KEY": "test-api-key"})
+
+        # Force save the state (triggers serialization with encryption using cipher A)
+        state._save_base_state(state._fs)
+
+        # Now try to restore with cipher B - decryption fails gracefully
+        cipher_b = Cipher(secret_key="cipher-key-b")
+
+        # Conversation loads but secrets are lost (set to None with warning)
+        resumed_state = ConversationState.create(
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=persist_path,
+            agent=agent,
+            id=conv_id,
+            cipher=cipher_b,
+        )
+
+        # The state should load successfully
+        assert resumed_state.id == conv_id
+
+        # The secret source should exist but value is None (decryption failed)
+        assert "API_KEY" in resumed_state.secret_registry.secret_sources
+        api_key_value = resumed_state.secret_registry.secret_sources[
+            "API_KEY"
+        ].get_value()
+        assert api_key_value is None

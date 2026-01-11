@@ -23,6 +23,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -124,6 +125,7 @@ class ConversationState(OpenHandsModel):
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
     )  # to avoid recursion during init
@@ -166,8 +168,20 @@ class ConversationState(OpenHandsModel):
     def _save_base_state(self, fs: FileStore) -> None:
         """
         Persist base state snapshot (no events; events are file-backed).
+
+        If a cipher is configured, secrets will be encrypted. Otherwise, they
+        will be redacted (serialized as '**********').
         """
-        payload = self.model_dump_json(exclude_none=True)
+        context = {"cipher": self._cipher} if self._cipher else None
+        # Warn if secrets exist but no cipher is configured
+        if not self._cipher and self.secret_registry.secret_sources:
+            logger.warning(
+                f"Saving conversation state without cipher - "
+                f"{len(self.secret_registry.secret_sources)} secret(s) will be "
+                "redacted and lost on restore. Consider providing a cipher to "
+                "preserve secrets."
+            )
+        payload = self.model_dump_json(exclude_none=True, context=context)
         fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
@@ -180,6 +194,7 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        cipher: Cipher | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
 
@@ -203,6 +218,10 @@ class ConversationState(OpenHandsModel):
             persistence_dir: Directory for persisting state and events
             max_iterations: Maximum iterations per run
             stuck_detection: Whether to enable stuck detection
+            cipher: Optional cipher for encrypting/decrypting secrets in
+                    persisted state. If provided, secrets are encrypted when
+                    saving and decrypted when loading. If not provided, secrets
+                    are redacted (lost) on serialization.
 
         Returns:
             ConversationState ready for use
@@ -224,7 +243,9 @@ class ConversationState(OpenHandsModel):
 
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            # Use cipher context for decrypting secrets if provided
+            context = {"cipher": cipher} if cipher else None
+            state = cls.model_validate(json.loads(base_text), context=context)
 
             # Restore the conversation with the same id
             if state.id != id:
@@ -236,6 +257,7 @@ class ConversationState(OpenHandsModel):
             # Attach event log early so we can read history for tool verification
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+            state._cipher = cipher
 
             # Verify compatibility (agent class + tools)
             agent.verify(state.agent, events=state._events)
@@ -272,6 +294,7 @@ class ConversationState(OpenHandsModel):
         )
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+        state._cipher = cipher
         state.stats = ConversationStats()
 
         state._save_base_state(file_store)  # initial snapshot
