@@ -146,12 +146,11 @@ def ensure_base_ref(base_ref: str, repo_dir: Path) -> str:
 
     In GitHub Actions, `pull_request_target` checks out the PR branch without
     fetching the base branch/commit. If we diff against `origin/<base>`, and the
-    ref isn't present locally, `git diff` effectively degrades to comparing
-    against an unrelated or stale ref, producing incorrect reviews.
+    ref isn't present locally, `git diff` can end up comparing against an
+    unrelated or stale ref, producing incorrect reviews.
 
-    Prefer diffing against the PR's base branch HEAD SHA (PR_BASE_SHA) when
-    available. This makes the review strictly about the PR diff against the
-    current base commit.
+    Prefer diffing against the base branch tip SHA from the PR event payload
+    (PR_BASE_SHA), when available.
     """
 
     pr_base_sha = os.getenv("PR_BASE_SHA")
@@ -162,36 +161,39 @@ def ensure_base_ref(base_ref: str, repo_dir: Path) -> str:
             )
             return pr_base_sha
         except Exception:
-            try:
-                subprocess.run(
-                    ["git", "fetch", "origin", pr_base_sha],
-                    cwd=repo_dir,
-                    capture_output=True,
-                    check=False,
+            result = subprocess.run(
+                ["git", "fetch", "origin", pr_base_sha],
+                cwd=repo_dir,
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode == 0:
+                try:
+                    run_git_command(
+                        ["git", "cat-file", "-e", f"{pr_base_sha}^{{commit}}"],
+                        repo_dir,
+                    )
+                    return pr_base_sha
+                except Exception as e:
+                    logger.warning(f"Failed to use PR_BASE_SHA {pr_base_sha}: {e}")
+            else:
+                stderr = (result.stderr or "").strip()
+                logger.warning(
+                    f"Failed to fetch PR_BASE_SHA {pr_base_sha} from origin: {stderr}"
                 )
-                run_git_command(
-                    ["git", "cat-file", "-e", f"{pr_base_sha}^{{commit}}"],
-                    repo_dir,
-                )
-                return pr_base_sha
-            except Exception as e:
-                logger.warning(f"Failed to use PR_BASE_SHA {pr_base_sha}: {e}")
 
-    try:
-        if "/" in base_ref or base_ref.startswith("refs/"):
-            return base_ref
-    except Exception:
-        pass
+    if "/" in base_ref or base_ref.startswith("refs/"):
+        return base_ref
 
-    try:
-        subprocess.run(
-            ["git", "fetch", "origin", base_ref],
-            cwd=repo_dir,
-            capture_output=True,
-            check=False,
-        )
-    except Exception as e:
-        logger.warning(f"Failed to fetch origin/{base_ref}: {e}")
+    result = subprocess.run(
+        ["git", "fetch", "origin", base_ref],
+        cwd=repo_dir,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip()
+        logger.warning(f"Failed to fetch origin/{base_ref}: {stderr}")
 
     return f"origin/{base_ref}"
 
