@@ -11,7 +11,7 @@ from openhands.sdk.context.condenser import LLMSummarizingCondenser
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
-from tests.integration.base import BaseIntegrationTest, SkipTest, TestResult
+from tests.integration.base import BaseIntegrationTest, TestResult
 
 
 # Instruction designed to generate multiple agent messages
