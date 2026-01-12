@@ -416,27 +416,22 @@ class View(BaseModel):
         else:
             return True
 
-    def find_next_manipulation_index(self, threshold: int, strict: bool = False) -> int:
-        """Find the smallest manipulation index greater than (or equal to) a threshold.
+    def find_next_manipulation_index(self, threshold: int) -> int:
+        """Find the smallest manipulation index greater than or equal to a threshold.
 
         This is a helper method for condensation logic that needs to find safe
         boundaries for forgetting events. Uses the cached manipulation_indices property.
 
         Args:
             threshold: The threshold value to compare against
-            strict: If True, finds index > threshold. If False, finds index >= threshold
 
         Returns:
-            The smallest manipulation index that satisfies the condition, or the
-            threshold itself if no such index exists
+            The smallest manipulation index >= threshold, or the threshold itself
+            if no such index exists
         """
         for idx in self.manipulation_indices:
-            if strict:
-                if idx > threshold:
-                    return idx
-            else:
-                if idx >= threshold:
-                    return idx
+            if idx >= threshold:
+                return idx
         return threshold
 
     @staticmethod
