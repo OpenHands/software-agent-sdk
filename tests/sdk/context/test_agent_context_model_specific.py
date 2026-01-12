@@ -9,6 +9,12 @@ from openhands.sdk.context.skills import load_project_skills
 _REPO_BASELINE_TEXT = (
     "---\n# type: repo\nversion: 1.0.0\nagent: CodeActAgent\n---\n\nRepo baseline\n"
 )
+_REPO_BASELINE_TEXT = (
+    "---\n# type: repo\nversion: 1.0.0\nagent: CodeActAgent\n---\n\nRepo baseline\n"
+)
+# Different baseline formats for testing backward compatibility:
+# - REPO_BASELINE_TEXT: Legacy format with frontmatter (used in .openhands/skills/repo.md)
+# - AGENTS_BASELINE_TEXT: Simple markdown format (used in AGENTS.md)
 _AGENTS_BASELINE_TEXT = "# Project Guidelines\n\nRepo baseline\n"
 
 
