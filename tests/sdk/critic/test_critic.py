@@ -11,8 +11,8 @@ from openhands.sdk.critic import (
     EmptyPatchCritic,
     PassCritic,
 )
-from openhands.sdk.event import ActionEvent
-from openhands.sdk.llm import MessageToolCall, TextContent
+from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk.llm import Message, MessageToolCall, TextContent
 from openhands.sdk.tool.builtins.finish import FinishAction
 from openhands.sdk.tool.schema import Action
 
@@ -160,8 +160,8 @@ def test_agent_finished_critic_with_empty_patch():
     assert "empty" in result.message.lower()
 
 
-def test_agent_finished_critic_without_finish_action():
-    """Test AgentFinishedCritic fails when no FinishAction present."""
+def test_agent_finished_critic_without_finish_signal():
+    """Test AgentFinishedCritic fails when no proper finish signal present."""
     critic = AgentFinishedCritic()
 
     patch = "diff --git a/file.py"
@@ -171,7 +171,7 @@ def test_agent_finished_critic_without_finish_action():
     assert result.score == 0.0
     assert result.success is False
 
-    # Events without FinishAction
+    # Events with only non-finish ActionEvent (no FinishAction, no MessageEvent)
     other_action = DummyAction()
     events = [
         ActionEvent(
@@ -196,7 +196,7 @@ def test_agent_finished_critic_without_finish_action():
     assert "finish" in result.message.lower()
 
 
-def test_agent_finished_critic_success():
+def test_agent_finished_critic_success_with_finish_action():
     """Test AgentFinishedCritic succeeds with FinishAction and non-empty patch."""
     critic = AgentFinishedCritic()
 
@@ -236,6 +236,53 @@ def test_agent_finished_critic_success():
                 origin="completion",
             ),
             llm_response_id="resp_finish_success",
+        ),
+    ]
+
+    result = critic.evaluate(events, patch)
+    assert result.score == 1.0
+    assert result.success is True
+
+
+def test_agent_finished_critic_success_with_message_event():
+    """Test AgentFinishedCritic succeeds with final MessageEvent and non-empty patch.
+
+    This tests the implicit finish case where the agent sends a text message
+    instead of calling FinishAction explicitly. This is valid because the SDK
+    marks the conversation as FINISHED when the LLM produces content.
+    """
+    critic = AgentFinishedCritic()
+
+    patch = """
+    diff --git a/file.py b/file.py
+    --- a/file.py
+    +++ b/file.py
+    @@ -1 +1,2 @@
+     original line
+    +new line
+    """
+
+    events = [
+        ActionEvent(
+            thought=[TextContent(text="Making changes")],
+            action=None,
+            tool_name="edit",
+            tool_call_id="edit_id",
+            tool_call=MessageToolCall(
+                id="edit_id",
+                name="edit",
+                arguments=json.dumps({}),
+                origin="completion",
+            ),
+            llm_response_id="resp_edit",
+        ),
+        # Agent finishes with a message instead of FinishAction
+        MessageEvent(
+            source="agent",
+            llm_message=Message(
+                role="assistant",
+                content=[TextContent(text="I've completed the task.")],
+            ),
         ),
     ]
 

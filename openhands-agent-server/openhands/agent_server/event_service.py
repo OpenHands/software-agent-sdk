@@ -425,6 +425,7 @@ class EventService:
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
+            cipher=self.cipher,
         )
 
         # Set confirmation mode if enabled

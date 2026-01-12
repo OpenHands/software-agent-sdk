@@ -424,8 +424,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> None:
         if self.retry_listener is not None:
             self.retry_listener(attempt_number, num_retries, _err)
-        if self._telemetry is not None and _err is not None:
-            self._telemetry.on_error(_err)
+        # NOTE: don't call Telemetry.on_error here.
+        # This function runs for each retried failure (before the next attempt),
+        # which would create noisy duplicate error logs.
+        # The completion()/responses() exception handlers call Telemetry.on_error
+        # after retries are exhausted (final failure), which is what we want to log.
 
     # =========================================================================
     # Serializers
@@ -697,6 +700,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             telemetry_ctx.update(
                 {
                     "llm_path": "responses",
+                    "instructions": instructions,
                     "input": input_items[:],
                     "tools": tools,
                     "kwargs": {k: v for k, v in call_kwargs.items()},

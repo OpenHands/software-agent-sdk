@@ -141,6 +141,102 @@ curl -X POST \\
 4. **body**: Provide a clear, actionable comment.
    Be specific about what should be changed.
 
+### Priority Levels for Review Comments:
+
+**IMPORTANT**: Each inline comment MUST start with a priority label to help the PR
+author understand the importance of each suggestion. Use one of these prefixes:
+
+- **🔴 Critical**: Must be fixed before merging. Security vulnerabilities, bugs that
+  will cause failures, data loss risks, or breaking changes.
+- **🟠 Important**: Should be addressed. Logic errors, performance issues, missing
+  error handling, or significant code quality concerns.
+- **🟡 Suggestion**: Nice to have improvements. Better naming, code organization,
+  or minor optimizations that would improve the code.
+- **🟢 Nit**: Minor stylistic preferences. Formatting, comment wording, or trivial
+  improvements that are optional.
+
+**Example comment with priority:**
+```
+🟠 Important: This function doesn't handle the case when `user` is None, which could
+cause an AttributeError in production.
+
+```suggestion
+if user is None:
+    raise ValueError("User cannot be None")
+```
+```
+
+**Another example:**
+```
+🟢 Nit: Consider using a more descriptive variable name for clarity.
+
+```suggestion
+user_count = len(users)
+```
+```
+
+### Multi-Line Comments and Suggestions:
+
+When your comment or suggestion spans multiple lines, you MUST specify a line range
+using both `start_line` and `line` parameters. This is **critical** for multi-line
+suggestions - if you only specify `line`, the suggestion will be misaligned.
+
+**Parameters for multi-line comments:**
+- **start_line**: The first line of the range (required for multi-line)
+- **line**: The last line of the range
+- **start_side**: Side of the first line (optional, defaults to same as `side`)
+- **side**: Side of the last line
+
+**Example with gh CLI for multi-line suggestion:**
+
+```bash
+gh api \\
+  -X POST \\
+  repos/{repo_name}/pulls/{pr_number}/reviews \\
+  -f commit_id='{commit_id}' \\
+  -f event='COMMENT' \\
+  -f body='Found an issue spanning multiple lines.' \\
+  -f comments[][path]='path/to/file.py' \\
+  -F comments[][start_line]=10 \\
+  -F comments[][line]=12 \\
+  -f comments[][side]='RIGHT' \\
+  -f comments[][body]='Consider this improvement:
+
+```suggestion
+first_line = "improved"
+second_line = "code"
+third_line = "here"
+```'
+```
+
+**Example with curl for multi-line suggestion:**
+
+```bash
+curl -X POST \\
+  -H "Authorization: token $GITHUB_TOKEN" \\
+  -H "Accept: application/vnd.github+json" \\
+  -H "X-GitHub-Api-Version: 2022-11-28" \\
+  "https://api.github.com/repos/{repo_name}/pulls/{pr_number}/reviews" \\
+  -d '{{
+    "commit_id": "{commit_id}",
+    "body": "Review summary.",
+    "event": "COMMENT",
+    "comments": [
+      {{
+        "path": "path/to/file.py",
+        "start_line": 10,
+        "line": 11,
+        "side": "RIGHT",
+        "body": "Suggestion:\\n\\n```suggestion\\nx = 1\\ny = 2\\n```"
+      }}
+    ]
+  }}'
+```
+
+**IMPORTANT**: The number of lines in your suggestion block MUST match the number
+of lines in the selected range (line - start_line + 1). If you select lines 10-12
+(3 lines), your suggestion must also contain exactly 3 lines.
+
 ### Tips for Finding Line Numbers:
 - The diff header shows line ranges: `@@ -old_start,old_count +new_start,new_count @@`
 - Count lines from `new_start` for added/modified lines
@@ -201,6 +297,8 @@ user_count = len(users)
 - Only post comments for actual issues or important suggestions
 - Use the suggestion syntax for small, concrete code changes
 - Be constructive and specific about what should be changed
+- **Always include a priority label** (🔴 Critical, 🟠 Important, 🟡 Suggestion, 🟢 Nit)
+  at the start of each inline comment
 - If there are no issues, post a single review with an approval message (no inline
   comments needed)
 
