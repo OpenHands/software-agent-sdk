@@ -2,14 +2,14 @@
 AgentFinishedCritic implementation.
 
 This critic evaluates whether an agent properly finished a task by checking:
-1. The agent's last action was a FinishAction (proper completion)
+1. The agent finished properly (via FinishAction or final MessageEvent)
 2. The generated git patch is non-empty (actual changes were made)
 """
 
 from collections.abc import Sequence
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
-from openhands.sdk.event import ActionEvent, LLMConvertibleEvent
+from openhands.sdk.event import ActionEvent, LLMConvertibleEvent, MessageEvent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.builtins.finish import FinishAction
 
@@ -22,7 +22,10 @@ class AgentFinishedCritic(CriticBase):
     Critic that evaluates whether an agent properly finished a task.
 
     This critic checks two main criteria:
-    1. The agent's last action was a FinishAction (proper completion)
+    1. The agent finished properly - either via:
+       - A FinishAction (explicit completion), or
+       - A final MessageEvent from the agent (implicit completion when LLM
+         produces content and awaits user input)
     2. The generated git patch is non-empty (actual changes were made)
     """
 
@@ -51,10 +54,10 @@ class AgentFinishedCritic(CriticBase):
                 + "; ".join(reasons),
             )
 
-        # Check if agent properly finished with FinishAction
-        if not self._has_finish_action(events):
-            reasons.append("No FinishAction found")
-            logger.debug("AgentFinishedCritic: No FinishAction")
+        # Check if agent properly finished
+        if not self._has_proper_finish(events):
+            reasons.append("No proper finish signal found")
+            logger.debug("AgentFinishedCritic: No proper finish signal")
             return CriticResult(
                 score=0.0,
                 message="Agent did not finish properly. " + "; ".join(reasons),
@@ -63,21 +66,43 @@ class AgentFinishedCritic(CriticBase):
         logger.debug("AgentFinishedCritic: Successfully completed")
         return CriticResult(
             score=1.0,
-            message="Agent completed with FinishAction and non-empty patch",
+            message="Agent completed properly with non-empty patch",
         )
 
-    def _has_finish_action(self, events: Sequence[LLMConvertibleEvent]) -> bool:
-        """Check if the last action was a FinishAction."""
+    def _has_proper_finish(self, events: Sequence[LLMConvertibleEvent]) -> bool:
+        """Check if the agent finished properly.
+
+        The agent can finish in two ways:
+        1. By calling FinishAction explicitly
+        2. By sending a final MessageEvent (when LLM produces content and
+           the conversation awaits user input - this sets execution_status
+           to FINISHED in the SDK)
+
+        We check for either signal by looking at the last meaningful event
+        (skipping ConversationStateUpdateEvent which is just metadata).
+        """
         if not events:
             return False
 
-        # Look for the last ActionEvent in the history
+        # Look for the last meaningful event in the history
         for event in reversed(events):
+            # Check for FinishAction
             if isinstance(event, ActionEvent):
-                # Check if this is a FinishAction
                 if event.action and isinstance(event.action, FinishAction):
+                    logger.debug("AgentFinishedCritic: Found FinishAction")
                     return True
-                # If we find any other action type, the agent didn't finish
+                # If we find any other action type as the last event,
+                # the agent didn't finish properly
+                action_name = type(event.action).__name__
+                logger.debug(
+                    f"AgentFinishedCritic: Last action was {action_name}, "
+                    "not FinishAction"
+                )
                 return False
+
+            # Check for final MessageEvent from agent (implicit finish)
+            if isinstance(event, MessageEvent) and event.source == "agent":
+                logger.debug("AgentFinishedCritic: Found final MessageEvent from agent")
+                return True
 
         return False
