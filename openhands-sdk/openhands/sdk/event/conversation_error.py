@@ -1,4 +1,5 @@
 from pydantic import Field
+from rich.text import Text
 
 from openhands.sdk.event.base import Event
 
@@ -23,3 +24,14 @@ class ConversationErrorEvent(Event):
 
     code: str = Field(description="Code for the error - typically a type")
     detail: str = Field(description="Details about the error")
+
+    @property
+    def visualize(self) -> Text:
+        """Return Rich Text representation of this conversation error event."""
+        content = Text()
+        content.append("Conversation Error\n", style="bold")
+        content.append("Code: ", style="bold")
+        content.append(self.code)
+        content.append("\n\nDetail:\n", style="bold")
+        content.append(self.detail)
+        return content

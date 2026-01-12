@@ -6,7 +6,12 @@ from collections.abc import Generator, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+)
 
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
@@ -15,7 +20,13 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
+from openhands.sdk.tool import (
+    BUILT_IN_TOOL_CLASSES,
+    BUILT_IN_TOOLS,
+    Tool,
+    ToolDefinition,
+    resolve_tool,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -80,6 +91,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         " added.",
         examples=["^(?!repomix)(.*)|^repomix.*pack_codebase.*$"],
     )
+    include_default_tools: list[str] = Field(
+        default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
+        description=(
+            "List of default tool class names to include. By default, the agent "
+            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
+            "all default tools, or provide a subset to include only specific ones. "
+            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
+            "or include_default_tools=[] to disable all default tools."
+        ),
+        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
+    )
     agent_context: AgentContext | None = Field(
         default=None,
         description="Optional AgentContext to initialize "
@@ -88,7 +110,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             {
                 "skills": [
                     {
-                        "name": "repo.md",
+                        "name": "AGENTS.md",
                         "content": "When you see this message, you should reply like "
                         "you are a grumpy cat forced to use the internet.",
                         "type": "repo",
@@ -154,6 +176,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
+    _initialized: bool = PrivateAttr(default=False)
 
     @property
     def prompt_dir(self) -> str:
@@ -218,7 +241,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def _initialize(self, state: "ConversationState"):
         """Create an AgentBase instance from an AgentSpec."""
 
-        if self._tools:
+        if self._initialized:
             logger.warning("Agent already initialized; skipping re-initialization.")
             return
 
@@ -254,10 +277,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{[tool.name for tool in tools]}",
             )
 
-        # Always include built-in tools; not subject to filtering
-        # Instantiate built-in tools using their .create() method
-        for tool_class in BUILT_IN_TOOLS:
-            tools.extend(tool_class.create(state))
+        # Include default tools from include_default_tools; not subject to regex
+        # filtering. Use explicit mapping to resolve tool class names.
+        for tool_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
+            if tool_class is None:
+                raise ValueError(
+                    f"Unknown built-in tool class: '{tool_name}'. "
+                    f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
+                )
+            tool_instances = tool_class.create(state)
+            tools.extend(tool_instances)
 
         # Check tool types
         for tool in tools:
@@ -275,6 +305,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
+        self._initialized = True
 
     @abstractmethod
     def step(
@@ -465,6 +496,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Raises:
             RuntimeError: If the agent has not been initialized.
         """
-        if not self._tools:
+        if not self._initialized:
             raise RuntimeError("Agent not initialized; call initialize() before use")
         return self._tools

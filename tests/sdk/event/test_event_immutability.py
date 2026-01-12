@@ -75,13 +75,21 @@ class EventsImmutabilityMockTool(
         ]
 
 
+class _TestEventForImmutability(Event):
+    """Test event class for immutability tests.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    test_field: str = "test_value"
+
+
 def test_event_base_is_frozen():
     """Test that Event instances are frozen and cannot be modified."""
-
-    class TestEvent(Event):
-        test_field: str = "test_value"
-
-    event = TestEvent(source="agent", test_field="initial_value")
+    event = _TestEventForImmutability(source="agent", test_field="initial_value")
 
     # Test that we cannot modify any field
     with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen models

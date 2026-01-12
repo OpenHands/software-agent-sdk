@@ -10,6 +10,19 @@ from openhands.sdk.workspace.models import CommandResult, FileOperationResult
 from openhands.sdk.workspace.remote.base import RemoteWorkspace
 
 
+class MockHTTPResponse:
+    """Mock HTTP response for urlopen."""
+
+    def __init__(self, status: int = 200):
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
 def test_remote_workspace_initialization():
     """Test RemoteWorkspace can be initialized with required parameters."""
     workspace = RemoteWorkspace(
@@ -278,3 +291,114 @@ def test_execute_generator_completion():
     assert mock_client.request.call_count == 2
     mock_client.request.assert_any_call(method="GET", url="http://test1.com")
     mock_client.request.assert_any_call(method="POST", url="http://test2.com")
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_returns_true_on_successful_health_check(mock_urlopen):
+    """Test alive property returns True when health endpoint returns 2xx status."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_urlopen.return_value = MockHTTPResponse(status=200)
+
+    result = workspace.alive
+
+    assert result is True
+    mock_urlopen.assert_called_once_with("http://localhost:8000/health", timeout=5.0)
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_returns_true_on_204_status(mock_urlopen):
+    """Test alive property returns True when health endpoint returns 204 No Content."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_urlopen.return_value = MockHTTPResponse(status=204)
+
+    result = workspace.alive
+
+    assert result is True
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_returns_false_on_server_error(mock_urlopen):
+    """Test alive property returns False when health endpoint returns 5xx status."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_urlopen.return_value = MockHTTPResponse(status=500)
+
+    result = workspace.alive
+
+    assert result is False
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_returns_false_on_client_error(mock_urlopen):
+    """Test alive property returns False when health endpoint returns 4xx status."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_urlopen.return_value = MockHTTPResponse(status=404)
+
+    result = workspace.alive
+
+    assert result is False
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_returns_false_on_connection_error(mock_urlopen):
+    """Test alive property returns False when connection fails."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    mock_urlopen.side_effect = Exception("Connection refused")
+
+    result = workspace.alive
+
+    assert result is False
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_returns_false_on_timeout(mock_urlopen):
+    """Test alive property returns False when request times out."""
+    workspace = RemoteWorkspace(host="http://localhost:8000", working_dir="/tmp")
+
+    from urllib.error import URLError
+
+    mock_urlopen.side_effect = URLError("timed out")
+
+    result = workspace.alive
+
+    assert result is False
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_constructs_correct_health_url(mock_urlopen):
+    """Test alive property constructs correct health URL from host."""
+    workspace = RemoteWorkspace(
+        host="https://my-agent-server.example.com", working_dir="/tmp"
+    )
+
+    mock_urlopen.return_value = MockHTTPResponse(status=200)
+
+    _ = workspace.alive
+
+    mock_urlopen.assert_called_once_with(
+        "https://my-agent-server.example.com/health", timeout=5.0
+    )
+
+
+@patch("openhands.sdk.workspace.remote.base.urlopen")
+def test_alive_with_normalized_host(mock_urlopen):
+    """Test alive property works correctly when host was normalized."""
+    # Host with trailing slash gets normalized in model_post_init
+    workspace = RemoteWorkspace(host="http://localhost:8000/", working_dir="/tmp")
+
+    mock_urlopen.return_value = MockHTTPResponse(status=200)
+
+    result = workspace.alive
+
+    assert result is True
+    # Should not have double slash
+    mock_urlopen.assert_called_once_with("http://localhost:8000/health", timeout=5.0)
+
+
+def test_alive_is_property():
+    """Test that alive is a property, not a method."""
+    assert isinstance(RemoteWorkspace.alive, property)

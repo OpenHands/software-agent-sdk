@@ -23,6 +23,7 @@ class TokenUsageData(BaseModel):
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
     reasoning_tokens: int = 0
+    context_window: int = 0
 
     def __add__(self, other: "TokenUsageData") -> "TokenUsageData":
         """Add two TokenUsageData instances together."""
@@ -32,6 +33,7 @@ class TokenUsageData(BaseModel):
             cache_read_tokens=self.cache_read_tokens + other.cache_read_tokens,
             cache_write_tokens=self.cache_write_tokens + other.cache_write_tokens,
             reasoning_tokens=self.reasoning_tokens + other.reasoning_tokens,
+            context_window=max(self.context_window, other.context_window),
         )
 
 
@@ -112,6 +114,7 @@ class ModelTestResults(BaseModel):
                     cache_read_tokens=output.token_usage.cache_read_tokens,
                     cache_write_tokens=output.token_usage.cache_write_tokens,
                     reasoning_tokens=output.token_usage.reasoning_tokens,
+                    context_window=output.token_usage.context_window,
                 )
 
             test_instances.append(
