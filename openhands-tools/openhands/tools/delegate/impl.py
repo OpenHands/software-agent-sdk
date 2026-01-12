@@ -118,7 +118,8 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
-# Disable streaming for sub-agents since they run in separate threads without token callbacks
+            # Disable streaming for sub-agents since they run in
+            # separate threads without token callbacks
             sub_agent_llm = parent_llm.model_copy(update={"stream": False})
 
             resolved_agent_types = [
