@@ -28,7 +28,7 @@ class SoftCondensationRequirementTest(BaseIntegrationTest):
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking for condensation."""
-        self.condensation_count = 0
+        self.condensations: list[Condensation] = []
         super().__init__(*args, **kwargs)
 
     @property
@@ -57,11 +57,7 @@ class SoftCondensationRequirementTest(BaseIntegrationTest):
         super().conversation_callback(event)
 
         if isinstance(event, Condensation):
-            self.condensation_count += 1
-
-    def setup(self) -> None:
-        """No special setup needed."""
-        pass
+            self.condensations.append(event)
 
     def run_instructions(self, conversation: LocalConversation) -> None:
         """Test soft condensation requirements.
@@ -93,7 +89,7 @@ class SoftCondensationRequirementTest(BaseIntegrationTest):
         1. Conversation completed successfully (didn't crash on soft requirement)
         2. At least one condensation occurred (once valid ranges existed)
         """
-        if self.condensation_count == 0:
+        if len(self.condensations) == 0:
             return TestResult(
                 success=False,
                 reason="Expected at least one condensation to occur during the test",
@@ -102,7 +98,7 @@ class SoftCondensationRequirementTest(BaseIntegrationTest):
         return TestResult(
             success=True,
             reason=(
-                f"Soft requirements handled correctly: {self.condensation_count} "
+                f"Soft requirements handled correctly: {len(self.condensations)} "
                 "condensation(s) occurred without crashing"
             ),
         )

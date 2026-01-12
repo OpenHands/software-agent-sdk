@@ -227,7 +227,6 @@ class BaseIntegrationTest(ABC):
         """
         return 100
 
-    @abstractmethod
     def setup(self) -> None:
         """
         Initialize test-specific setup.

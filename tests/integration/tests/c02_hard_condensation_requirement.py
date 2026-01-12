@@ -52,10 +52,6 @@ class HardCondensationRequirementTest(BaseIntegrationTest):
         """Limit iterations since this is a simple test."""
         return 10
 
-    def setup(self) -> None:
-        """No special setup needed."""
-        pass
-
     def run_instructions(self, conversation: LocalConversation) -> None:
         """Test explicit condense() with insufficient events.
 
