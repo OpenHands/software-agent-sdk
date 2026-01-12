@@ -127,7 +127,7 @@ class Plugin(BaseModel):
             >>> plugin = Plugin.load(path)
 
             >>> # Fetch a plugin from a subdirectory
-            >>> path = Plugin.fetch("github:owner/monorepo", subpath="plugins/my-plugin")
+            >>> path = Plugin.fetch("github:owner/monorepo", subpath="plugins/sub")
             >>> plugin = Plugin.load(path)
 
             >>> # Fetch and load in one step
