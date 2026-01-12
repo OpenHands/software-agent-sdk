@@ -124,7 +124,7 @@ class ApptainerWorkspace(RemoteWorkspace):
         description=(
             "List of locations to disable mounting for."
             "Helpful for disabling system-level mounts/binds from apptainer.conf"
-            "Set to False for custom Apptainer behavior."
+            "Specify locations to disable for custom Apptainer behavior."
         ),
     )
 
