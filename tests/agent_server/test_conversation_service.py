@@ -1518,6 +1518,7 @@ class TestPluginLoading:
             workspace=LocalWorkspace(working_dir="/tmp/test"),
             plugin_source="github:test/plugin",
             plugin_ref="v1.0.0",
+            plugin_path="plugins/sub-plugin",
         )
 
         result = conversation_service._load_and_merge_plugin(request)
@@ -1526,6 +1527,38 @@ class TestPluginLoading:
         mock_plugin_class.fetch.assert_called_once_with(
             source="github:test/plugin",
             ref="v1.0.0",
+            subpath="plugins/sub-plugin",
+        )
+
+        # Verify Plugin.load was called
+        mock_plugin_class.load.assert_called_once_with(Path("/tmp/test-plugin"))
+
+        # Verify skills were merged
+        assert result.agent.agent_context is not None
+        assert len(result.agent.agent_context.skills) == 2
+
+    @patch("openhands.agent_server.conversation_service.Plugin")
+    def test_load_and_merge_plugin_success_without_path(
+        self, mock_plugin_class, conversation_service, mock_plugin
+    ):
+        """Test successful plugin loading without plugin_path."""
+        mock_plugin_class.fetch.return_value = Path("/tmp/test-plugin")
+        mock_plugin_class.load.return_value = mock_plugin
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:test/plugin",
+            plugin_ref="v1.0.0",
+        )
+
+        result = conversation_service._load_and_merge_plugin(request)
+
+        # Verify Plugin.fetch was called with subpath=None
+        mock_plugin_class.fetch.assert_called_once_with(
+            source="github:test/plugin",
+            ref="v1.0.0",
+            subpath=None,
         )
 
         # Verify Plugin.load was called

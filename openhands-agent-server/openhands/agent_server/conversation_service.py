@@ -222,6 +222,7 @@ class ConversationService:
             plugin_path = Plugin.fetch(
                 source=request.plugin_source,
                 ref=request.plugin_ref,
+                subpath=request.plugin_path,
             )
 
             # Load the plugin

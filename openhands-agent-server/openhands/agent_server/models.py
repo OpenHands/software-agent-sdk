@@ -118,6 +118,10 @@ class StartConversationRequest(BaseModel):
         default=None,
         description="Optional branch, tag, or commit for the plugin.",
     )
+    plugin_path: str | None = Field(
+        default=None,
+        description="Optional subdirectory path within the plugin repository.",
+    )
 
 
 class StoredConversation(StartConversationRequest):
