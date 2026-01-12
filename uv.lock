@@ -2113,7 +2113,7 @@ wheels = [
 
 [[package]]
 name = "openhands-agent-server"
-version = "1.8.0"
+version = "1.8.1"
 source = { editable = "openhands-agent-server" }
 dependencies = [
     { name = "aiosqlite" },
@@ -2144,11 +2144,12 @@ requires-dist = [
 
 [[package]]
 name = "openhands-sdk"
-version = "1.8.0"
+version = "1.8.1"
 source = { editable = "openhands-sdk" }
 dependencies = [
     { name = "deprecation" },
     { name = "fastmcp" },
+    { name = "filelock" },
     { name = "httpx" },
     { name = "litellm" },
     { name = "lmnr" },
@@ -2169,6 +2170,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'boto3'", specifier = ">=1.35.0" },
     { name = "deprecation", specifier = ">=2.1.0" },
     { name = "fastmcp", specifier = ">=2.11.3" },
+    { name = "filelock", specifier = ">=3.15.0" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "litellm", specifier = ">=1.80.10" },
     { name = "lmnr", specifier = ">=0.7.24" },
@@ -2182,7 +2184,7 @@ provides-extras = ["boto3"]
 
 [[package]]
 name = "openhands-tools"
-version = "1.8.0"
+version = "1.8.1"
 source = { editable = "openhands-tools" }
 dependencies = [
     { name = "bashlex" },
@@ -2211,7 +2213,7 @@ requires-dist = [
 
 [[package]]
 name = "openhands-workspace"
-version = "1.8.0"
+version = "1.8.1"
 source = { editable = "openhands-workspace" }
 dependencies = [
     { name = "openhands-agent-server" },
