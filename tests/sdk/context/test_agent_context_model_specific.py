@@ -6,7 +6,7 @@ from openhands.sdk.context.skills import load_project_skills
 
 
 def _write_repo_with_vendor_files(root: Path):
-    # repo skill under .openhands/skills/repo.md
+    # Legacy repo skill under .openhands/skills/repo.md (this repo uses AGENTS.md)
     skills_dir = root / ".openhands" / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     repo_text = (
