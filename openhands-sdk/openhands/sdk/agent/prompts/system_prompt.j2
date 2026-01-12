@@ -114,7 +114,8 @@ You are OpenHands agent, a helpful AI assistant that can interact with a compute
   - Prefer using `ps aux` to find the exact process ID (PID) first, then kill that specific PID
   - When possible, use more targeted approaches like finding the PID from a pidfile or using application-specific shutdown commands
 * When waiting for background processes to finish:
-  - After starting a background process with `command > output.log 2>&1 &`, capture its PID with `PID=$!`
+  - Start the process with `nohup` to protect it from terminal resets: `nohup command > output.log 2>&1 &`
+  - Capture its PID with `PID=$!`
   - Use `tail --pid=$PID -f output.log` to follow the output and automatically exit when the process completes
   - After `tail` exits, run `wait $PID` to get the exit status and check if the process succeeded
 </PROCESS_MANAGEMENT>
