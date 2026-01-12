@@ -188,6 +188,7 @@ def fetch_plugin(
     cache_dir: Path | None = None,
     ref: str | None = None,
     update: bool = True,
+    subpath: str | None = None,
     git_helper: GitHelper | None = None,
 ) -> Path:
     """Fetch a plugin from a remote source and return the local cached path.
@@ -200,13 +201,16 @@ def fetch_plugin(
         cache_dir: Directory for caching. Defaults to ~/.openhands/cache/plugins/
         ref: Optional branch, tag, or commit to checkout.
         update: If True and cache exists, update it. If False, use cached version as-is.
+        subpath: Optional subdirectory path within the repo. If specified, the returned
+            path will point to this subdirectory instead of the repository root.
         git_helper: GitHelper instance (for testing). Defaults to global instance.
 
     Returns:
-        Path to the local plugin directory (ready for Plugin.load())
+        Path to the local plugin directory (ready for Plugin.load()).
+        If subpath is specified, returns the path to that subdirectory.
 
     Raises:
-        PluginFetchError: If fetching fails.
+        PluginFetchError: If fetching fails or subpath doesn't exist.
     """
     source_type, url = parse_plugin_source(source)
 
@@ -215,6 +219,14 @@ def fetch_plugin(
         local_path = Path(url).expanduser().resolve()
         if not local_path.exists():
             raise PluginFetchError(f"Local plugin path does not exist: {local_path}")
+        # Apply subpath for local paths too
+        if subpath:
+            final_path = local_path / subpath.strip("/")
+            if not final_path.exists():
+                raise PluginFetchError(
+                    f"Subdirectory '{subpath}' not found in local plugin path"
+                )
+            return final_path
         return local_path
 
     # Get git helper
@@ -239,6 +251,15 @@ def fetch_plugin(
                     _checkout_ref(plugin_path, ref, git)
         else:
             _clone_repository(url, plugin_path, ref, git)
+
+        # Apply subpath if specified
+        if subpath:
+            final_path = plugin_path / subpath.strip("/")
+            if not final_path.exists():
+                raise PluginFetchError(
+                    f"Subdirectory '{subpath}' not found in plugin repository"
+                )
+            return final_path
 
         return plugin_path
 

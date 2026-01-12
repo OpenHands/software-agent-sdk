@@ -91,6 +91,7 @@ class Plugin(BaseModel):
         cache_dir: Path | None = None,
         ref: str | None = None,
         update: bool = True,
+        subpath: str | None = None,
     ) -> Path:
         """Fetch a plugin from a remote source and return the local cached path.
 
@@ -106,12 +107,16 @@ class Plugin(BaseModel):
             cache_dir: Directory for caching. Defaults to ~/.openhands/cache/plugins/
             ref: Optional branch, tag, or commit to checkout.
             update: If True and cache exists, update it. If False, use cached as-is.
+            subpath: Optional subdirectory path within the repo. If specified, the
+                returned path will point to this subdirectory instead of the
+                repository root.
 
         Returns:
-            Path to the local plugin directory (ready for Plugin.load())
+            Path to the local plugin directory (ready for Plugin.load()).
+            If subpath is specified, returns the path to that subdirectory.
 
         Raises:
-            PluginFetchError: If fetching fails.
+            PluginFetchError: If fetching fails or subpath doesn't exist.
 
         Example:
             >>> path = Plugin.fetch("github:owner/my-plugin")
@@ -121,10 +126,16 @@ class Plugin(BaseModel):
             >>> path = Plugin.fetch("github:owner/my-plugin", ref="v1.0.0")
             >>> plugin = Plugin.load(path)
 
+            >>> # Fetch a plugin from a subdirectory
+            >>> path = Plugin.fetch("github:owner/monorepo", subpath="plugins/my-plugin")
+            >>> plugin = Plugin.load(path)
+
             >>> # Fetch and load in one step
             >>> plugin = Plugin.load(Plugin.fetch("github:owner/my-plugin"))
         """
-        return fetch_plugin(source, cache_dir=cache_dir, ref=ref, update=update)
+        return fetch_plugin(
+            source, cache_dir=cache_dir, ref=ref, update=update, subpath=subpath
+        )
 
     @classmethod
     def load(cls, plugin_path: str | Path) -> Plugin:

@@ -436,6 +436,136 @@ class TestPluginFetchMethod:
             assert result.exists()
 
 
+class TestSubpathParameter:
+    """Tests for subpath parameter in fetch_plugin() and Plugin.fetch()."""
+
+    def test_fetch_local_path_with_subpath(self, tmp_path: Path):
+        """Test fetching local path with subpath returns the subdirectory."""
+        plugin_dir = tmp_path / "monorepo"
+        plugin_dir.mkdir()
+        subplugin_dir = plugin_dir / "plugins" / "my-plugin"
+        subplugin_dir.mkdir(parents=True)
+
+        result = fetch_plugin(str(plugin_dir), subpath="plugins/my-plugin")
+        assert result == subplugin_dir.resolve()
+
+    def test_fetch_local_path_with_nonexistent_subpath(self, tmp_path: Path):
+        """Test fetching local path with nonexistent subpath raises error."""
+        plugin_dir = tmp_path / "monorepo"
+        plugin_dir.mkdir()
+
+        with pytest.raises(PluginFetchError, match="Subdirectory.*not found"):
+            fetch_plugin(str(plugin_dir), subpath="nonexistent/path")
+
+    def test_fetch_local_path_with_subpath_leading_slash(self, tmp_path: Path):
+        """Test that leading slashes are stripped from subpath."""
+        plugin_dir = tmp_path / "monorepo"
+        plugin_dir.mkdir()
+        subplugin_dir = plugin_dir / "plugins" / "my-plugin"
+        subplugin_dir.mkdir(parents=True)
+
+        result = fetch_plugin(str(plugin_dir), subpath="/plugins/my-plugin/")
+        assert result == subplugin_dir.resolve()
+
+    def test_fetch_github_with_subpath(self, tmp_path: Path):
+        """Test fetching from GitHub with subpath returns subdirectory."""
+        mock_git = create_autospec(GitHelper)
+
+        def clone_side_effect(url, dest, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".git").mkdir()
+            # Create the subdirectory structure
+            subdir = dest / "plugins" / "sub-plugin"
+            subdir.mkdir(parents=True)
+
+        mock_git.clone.side_effect = clone_side_effect
+
+        result = fetch_plugin(
+            "github:owner/monorepo",
+            cache_dir=tmp_path,
+            subpath="plugins/sub-plugin",
+            git_helper=mock_git,
+        )
+
+        assert result.exists()
+        assert result.name == "sub-plugin"
+        assert "plugins" in str(result)
+
+    def test_fetch_github_with_nonexistent_subpath(self, tmp_path: Path):
+        """Test fetching from GitHub with nonexistent subpath raises error."""
+        mock_git = create_autospec(GitHelper)
+
+        def clone_side_effect(url, dest, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".git").mkdir()
+
+        mock_git.clone.side_effect = clone_side_effect
+
+        with pytest.raises(PluginFetchError, match="Subdirectory.*not found"):
+            fetch_plugin(
+                "github:owner/repo",
+                cache_dir=tmp_path,
+                subpath="nonexistent",
+                git_helper=mock_git,
+            )
+
+    def test_fetch_with_subpath_and_ref(self, tmp_path: Path):
+        """Test fetching with both subpath and ref."""
+        mock_git = create_autospec(GitHelper)
+
+        def clone_side_effect(url, dest, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".git").mkdir()
+            subdir = dest / "plugins" / "my-plugin"
+            subdir.mkdir(parents=True)
+
+        mock_git.clone.side_effect = clone_side_effect
+
+        result = fetch_plugin(
+            "github:owner/monorepo",
+            cache_dir=tmp_path,
+            ref="v1.0.0",
+            subpath="plugins/my-plugin",
+            git_helper=mock_git,
+        )
+
+        assert result.exists()
+        mock_git.clone.assert_called_once()
+        call_kwargs = mock_git.clone.call_args[1]
+        assert call_kwargs["branch"] == "v1.0.0"
+
+    def test_plugin_fetch_with_subpath(self, tmp_path: Path):
+        """Test Plugin.fetch() with subpath parameter."""
+        plugin_dir = tmp_path / "monorepo"
+        plugin_dir.mkdir()
+        subplugin_dir = plugin_dir / "plugins" / "my-plugin"
+        subplugin_dir.mkdir(parents=True)
+
+        result = Plugin.fetch(str(plugin_dir), subpath="plugins/my-plugin")
+        assert result == subplugin_dir.resolve()
+
+    def test_fetch_no_subpath_returns_root(self, tmp_path: Path):
+        """Test that fetch without subpath returns repository root."""
+        mock_git = create_autospec(GitHelper)
+
+        def clone_side_effect(url, dest, **kwargs):
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / ".git").mkdir()
+            (dest / "plugins").mkdir()
+
+        mock_git.clone.side_effect = clone_side_effect
+
+        result = fetch_plugin(
+            "github:owner/repo",
+            cache_dir=tmp_path,
+            subpath=None,
+            git_helper=mock_git,
+        )
+
+        assert result.exists()
+        assert (result / ".git").exists()
+
+
 class TestSetGitHelper:
     """Tests for set_git_helper and get_git_helper functions."""
 
