@@ -93,17 +93,16 @@ class AgentFinishedCritic(CriticBase):
                     return True
                 # If we find any other action type as the last event,
                 # the agent didn't finish properly
+                action_name = type(event.action).__name__
                 logger.debug(
-                    f"AgentFinishedCritic: Last action was {type(event.action).__name__}, "
+                    f"AgentFinishedCritic: Last action was {action_name}, "
                     "not FinishAction"
                 )
                 return False
 
             # Check for final MessageEvent from agent (implicit finish)
             if isinstance(event, MessageEvent) and event.source == "agent":
-                logger.debug(
-                    "AgentFinishedCritic: Found final MessageEvent from agent"
-                )
+                logger.debug("AgentFinishedCritic: Found final MessageEvent from agent")
                 return True
 
         return False
