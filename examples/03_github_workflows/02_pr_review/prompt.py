@@ -158,7 +158,7 @@ author understand the importance of each suggestion. Use one of these prefixes:
 **Example comment with priority:**
 ```
 🟠 Important: This function doesn't handle the case when `user` is None, which could
-cause a NullPointerException in production.
+cause an AttributeError in production.
 
 ```suggestion
 if user is None:
