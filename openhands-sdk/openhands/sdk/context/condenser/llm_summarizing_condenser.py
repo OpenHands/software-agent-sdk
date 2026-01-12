@@ -42,7 +42,11 @@ class LLMSummarizingCondenser(RollingCondenser):
     llm: LLM
     max_size: int = Field(default=240, gt=0)
     max_tokens: int | None = None
+
     keep_first: int = Field(default=2, ge=0)
+    """Minimum number of events to preserve at the start of the view. The first
+    `keep_first` events in the conversation will never be condensed or summarized.
+    """
 
     @model_validator(mode="after")
     def validate_keep_first_vs_max_size(self):
@@ -236,13 +240,11 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 
-        # Find actual forgetting_start: smallest manipulation index > keep_first
-        forgetting_start = view.find_next_manipulation_index(
-            self.keep_first, strict=True
-        )
+        # Find actual forgetting_start: smallest manipulation index >= keep_first
+        forgetting_start = view.find_next_manipulation_index(self.keep_first)
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
-        forgetting_end = view.find_next_manipulation_index(naive_end, strict=False)
+        forgetting_end = view.find_next_manipulation_index(naive_end)
 
         # Extract events to forget using boundary-aware indices
         forgotten_events = view[forgetting_start:forgetting_end]
