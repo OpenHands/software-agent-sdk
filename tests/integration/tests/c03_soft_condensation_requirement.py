@@ -40,7 +40,7 @@ class SoftCondensationRequirementTest(BaseIntegrationTest):
     @property
     def condenser(self) -> LLMSummarizingCondenser:
         """Use LLMSummarizingCondenser with low max_size for soft requirements."""
-        condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
+        condenser_llm = self.create_llm_copy("test-condenser-llm")
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=6,  # Low enough to trigger even with very efficient agents

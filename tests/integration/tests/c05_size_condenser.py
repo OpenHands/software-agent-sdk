@@ -60,7 +60,7 @@ class SizeCondenserTest(BaseIntegrationTest):
         """Configure a size-based condenser with low limit to trigger condensation."""
         # Create a condenser with a low max_size to trigger condensation
         # Using max_size instead of max_tokens to test event counting
-        condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
+        condenser_llm = self.create_llm_copy("test-condenser-llm")
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=10,  # Low event limit to ensure condensation triggers

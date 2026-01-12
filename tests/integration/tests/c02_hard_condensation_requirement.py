@@ -40,7 +40,7 @@ class HardCondensationRequirementTest(BaseIntegrationTest):
     @property
     def condenser(self) -> LLMSummarizingCondenser:
         """Use LLMSummarizingCondenser to enable explicit condensation."""
-        condenser_llm = self.llm.model_copy(update={"usage_id": "test-condenser-llm"})
+        condenser_llm = self.create_llm_copy("test-condenser-llm")
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=1000,  # High to prevent automatic triggering

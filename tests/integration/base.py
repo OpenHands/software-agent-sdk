@@ -257,6 +257,20 @@ class BaseIntegrationTest(ABC):
         if name in patterns:
             raise SkipTest(reason)
 
+    def create_llm_copy(self, usage_id: str) -> LLM:
+        """Create a copy of the test LLM with a different usage_id.
+
+        This is useful when a test needs multiple LLM instances for different purposes
+        (e.g., a separate LLM for a condenser).
+
+        Args:
+            usage_id: The usage_id for the LLM copy (used for metrics tracking)
+
+        Returns:
+            A copy of self.llm with the specified usage_id
+        """
+        return self.llm.model_copy(update={"usage_id": usage_id})
+
     @abstractmethod
     def verify_result(self) -> TestResult:
         """
