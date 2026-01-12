@@ -107,7 +107,7 @@ class ApptainerWorkspace(RemoteWorkspace):
         default=True,
         description=(
             "Whether to use --compat for maximum Docker compatibility."
-            "Details in below URL"
+            "Check below URL for documentation"
             "https://apptainer.org/docs/user/main/docker_and_oci.html#docker-like-compat-flag"
             "Set to False if you want custom Apptainer behavior."
         ),
