@@ -39,18 +39,13 @@ class SizeCondenserTest(BaseIntegrationTest):
         super().__init__(*args, **kwargs)
 
         # Some models explicitly disallow long, repetitive tool loops for cost/safety.
-        # GPT-5.1 Codex Max often refuses the 1..N echo prompt and may disable
-        # extended tool usage. In such cases, event-count-based condensation cannot be
-        # reliably exercised. Skip this test for that model to avoid spurious failures.
-        model_name = self.llm.model
-        canonical = self.llm.model_info.get("model") if self.llm.model_info else None
-        name = (canonical or model_name or "").split("/")[-1]
-        if name == "gpt-5.1-codex-max":
-            raise SkipTest(
-                "This test stresses long repetitive tool loops to trigger size-based "
-                "condensation. GPT-5.1 Codex Max often declines such requests for "
-                "efficiency/safety reasons."
-            )
+        # Skip this test for models that decline such requests.
+        self.skip_if_model_matches(
+            "gpt-5.1-codex-max",
+            "This test stresses long repetitive tool loops to trigger size-based "
+            "condensation. GPT-5.1 Codex Max often declines such requests for "
+            "efficiency/safety reasons.",
+        )
 
     @property
     def tools(self) -> list[Tool]:

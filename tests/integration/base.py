@@ -236,6 +236,27 @@ class BaseIntegrationTest(ABC):
         """
         pass
 
+    def skip_if_model_matches(self, pattern: str | list[str], reason: str) -> None:
+        """Skip test if the model name matches the given pattern(s).
+
+        Extracts the canonical model name and checks if it matches any of the provided
+        patterns. If a match is found, raises SkipTest with the given reason.
+
+        Args:
+            pattern: A single model name or list of model names to check against
+            reason: The reason for skipping the test
+
+        Raises:
+            SkipTest: If the model name matches any of the patterns
+        """
+        model_name = self.llm.model
+        canonical = self.llm.model_info.get("model") if self.llm.model_info else None
+        name = (canonical or model_name or "").split("/")[-1]
+
+        patterns = [pattern] if isinstance(pattern, str) else pattern
+        if name in patterns:
+            raise SkipTest(reason)
+
     @abstractmethod
     def verify_result(self) -> TestResult:
         """
