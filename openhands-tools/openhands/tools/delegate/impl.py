@@ -120,7 +120,7 @@ class DelegateExecutor(ToolExecutor):
 
             # Disable streaming for sub-agents since they don't have token callbacks.
             # Sub-agents run in separate threads and their output is collected after
-            # completion, so streaming provides no benefit and causes errors.
+            # completion
             sub_agent_llm = parent_llm.model_copy(update={"stream": False})
 
             resolved_agent_types = [
