@@ -13,17 +13,18 @@ _REPO_BASELINE_TEXT = (
     "---\n# type: repo\nversion: 1.0.0\nagent: CodeActAgent\n---\n\nRepo baseline\n"
 )
 # Different baseline formats for testing backward compatibility:
-# - REPO_BASELINE_TEXT: Legacy format with frontmatter (used in .openhands/skills/repo.md)
-# - AGENTS_BASELINE_TEXT: Simple markdown format (used in AGENTS.md)
+# - _REPO_BASELINE_TEXT: legacy format with frontmatter (used in
+#   .openhands/skills/repo.md)
+# - _AGENTS_BASELINE_TEXT: simple markdown format (used in AGENTS.md)
 _AGENTS_BASELINE_TEXT = "# Project Guidelines\n\nRepo baseline\n"
 
 
 def _write_repo_with_vendor_files(root: Path, baseline_source: str) -> None:
     """Create test repository with baseline and vendor-specific skill files.
-    
+
     Args:
         root: Root directory for the test repository
-        baseline_source: Either "repo_md" (legacy .openhands/skills/repo.md) 
+        baseline_source: Either "repo_md" (legacy .openhands/skills/repo.md)
                         or "agents_md" (AGENTS.md in repo root)
     """
     if baseline_source == "repo_md":
