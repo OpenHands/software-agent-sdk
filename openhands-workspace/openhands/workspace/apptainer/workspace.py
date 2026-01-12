@@ -106,20 +106,21 @@ class ApptainerWorkspace(RemoteWorkspace):
     enable_docker_compat: bool = Field(
         default=True,
         description=(
-            "Whether to use --compat for maximum Docker compatibility."
-            "Check below URL for documentation"
+            "Whether to use --compat for maximum Docker compatibility. "
+            "Check this URL for documentation: "
             "https://apptainer.org/docs/user/main/docker_and_oci.html#docker-like-compat-flag"
-            "Set to False if you want custom Apptainer behavior."
+            " Set to False if you want custom Apptainer behavior."
         ),
     )
 
     disable_mount_locations: list[str] = Field(
         default=["hostfs", "bind-paths"],
         description=(
-            "List of locations to disable mounting for."
-            "Helpful for disabling system-level mounts/binds from apptainer.conf"
-            "Check https://apptainer.org/docs/user/main/bind_paths_and_mounts.html#disabling-system-binds"
-            "Specify locations to disable for custom Apptainer behavior."
+            "List of locations to disable mounting for. "
+            "Helpful for disabling system-level mounts/binds from apptainer.conf. "
+            "Check this URL for documentation: "
+            "https://apptainer.org/docs/user/main/bind_paths_and_mounts.html. "
+            "Specify locations to disable mounts for custom Apptainer behavior."
         ),
     )
 
