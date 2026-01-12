@@ -42,7 +42,7 @@ class LLMSummarizingCondenser(RollingCondenser):
     llm: LLM
     max_size: int = Field(default=240, gt=0)
     max_tokens: int | None = None
-    
+
     keep_first: int = Field(default=2, ge=0)
     """Minimum number of events to preserve at the start of the view. The first
     `keep_first` events in the conversation will never be condensed or summarized.
