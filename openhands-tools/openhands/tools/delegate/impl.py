@@ -118,13 +118,17 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
+            # Disable streaming for sub-agents since they run in
+            # separate threads without token callbacks
+            sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
                 factory = get_agent_factory(agent_type)
-                worker_agent = factory.factory_func(parent_llm)
+                worker_agent = factory.factory_func(sub_agent_llm)
 
                 if isinstance(parent_visualizer, DelegationVisualizer):
                     sub_visualizer = DelegationVisualizer(

@@ -16,17 +16,34 @@ from openhands.sdk.logger import get_logger
 
 logger = get_logger(__name__)
 
+LOCK_FILE_NAME = ".eventlog.lock"
+LOCK_TIMEOUT_SECONDS = 30
+
 
 class EventLog(EventsListBase):
+    """Persistent event log with locking for concurrent writes.
+
+    This class provides thread-safe and process-safe event storage using
+    the FileStore's locking mechanism. Events are persisted to disk and
+    can be accessed by index or event ID.
+
+    Note:
+        For LocalFileStore, file locking via flock() does NOT work reliably
+        on NFS mounts or network filesystems. Users deploying with shared
+        storage should use alternative coordination mechanisms.
+    """
+
     _fs: FileStore
     _dir: str
     _length: int
+    _lock_path: str
 
     def __init__(self, fs: FileStore, dir_path: str = EVENTS_DIR) -> None:
         self._fs = fs
         self._dir = dir_path
         self._id_to_idx: dict[EventID, int] = {}
         self._idx_to_id: dict[int, EventID] = {}
+        self._lock_path = f"{dir_path}/{LOCK_FILE_NAME}"
         self._length = self._scan_and_build_index()
 
     def get_index(self, event_id: EventID) -> int:
@@ -54,7 +71,6 @@ class EventLog(EventsListBase):
         if isinstance(idx, slice):
             start, stop, step = idx.indices(self._length)
             return [self._get_single_item(i) for i in range(start, stop, step)]
-        # idx is int-like (SupportsIndex)
         return self._get_single_item(idx)
 
     def _get_single_item(self, idx: SupportsIndex) -> Event:
@@ -75,26 +91,82 @@ class EventLog(EventsListBase):
                 continue
             evt = Event.model_validate_json(txt)
             evt_id = evt.id
-            # only backfill mapping if missing
             if i not in self._idx_to_id:
                 self._idx_to_id[i] = evt_id
                 self._id_to_idx.setdefault(evt_id, i)
             yield evt
 
     def append(self, event: Event) -> None:
-        evt_id = event.id
-        # Check for duplicate ID
-        if evt_id in self._id_to_idx:
-            existing_idx = self._id_to_idx[evt_id]
-            raise ValueError(
-                f"Event with ID '{evt_id}' already exists at index {existing_idx}"
-            )
+        """Append an event with locking for thread/process safety.
 
-        path = self._path(self._length, event_id=evt_id)
-        self._fs.write(path, event.model_dump_json(exclude_none=True))
-        self._idx_to_id[self._length] = evt_id
-        self._id_to_idx[evt_id] = self._length
-        self._length += 1
+        Raises:
+            TimeoutError: If the lock cannot be acquired within LOCK_TIMEOUT_SECONDS.
+            ValueError: If an event with the same ID already exists.
+        """
+        evt_id = event.id
+
+        try:
+            with self._fs.lock(self._lock_path, timeout=LOCK_TIMEOUT_SECONDS):
+                # Sync with disk in case another process wrote while we waited
+                disk_length = self._count_events_on_disk()
+                if disk_length > self._length:
+                    self._sync_from_disk(disk_length)
+
+                if evt_id in self._id_to_idx:
+                    existing_idx = self._id_to_idx[evt_id]
+                    raise ValueError(
+                        f"Event with ID '{evt_id}' already exists at index "
+                        f"{existing_idx}"
+                    )
+
+                target_path = self._path(self._length, event_id=evt_id)
+                self._fs.write(target_path, event.model_dump_json(exclude_none=True))
+                self._idx_to_id[self._length] = evt_id
+                self._id_to_idx[evt_id] = self._length
+                self._length += 1
+        except TimeoutError:
+            logger.error(
+                f"Failed to acquire EventLog lock within {LOCK_TIMEOUT_SECONDS}s "
+                f"for event {evt_id}"
+            )
+            raise
+
+    def _count_events_on_disk(self) -> int:
+        """Count event files on disk."""
+        try:
+            paths = self._fs.list(self._dir)
+        except FileNotFoundError:
+            # Directory doesn't exist yet - expected for new event logs
+            return 0
+        except Exception as e:
+            logger.warning("Error listing event directory %s: %s", self._dir, e)
+            return 0
+        return sum(
+            1
+            for p in paths
+            if p.rsplit("/", 1)[-1].startswith("event-") and p.endswith(".json")
+        )
+
+    def _sync_from_disk(self, disk_length: int) -> None:
+        """Sync state for events written by other processes.
+
+        Preserves existing index mappings and only scans new events.
+        """
+        # Preserve existing mappings
+        existing_idx_to_id = dict(self._idx_to_id)
+
+        # Re-scan to pick up new events
+        scanned_length = self._scan_and_build_index()
+
+        # Restore any mappings that were lost (e.g., for non-UUID event IDs)
+        for idx, evt_id in existing_idx_to_id.items():
+            if idx not in self._idx_to_id:
+                self._idx_to_id[idx] = evt_id
+            if evt_id not in self._id_to_idx:
+                self._id_to_idx[evt_id] = idx
+
+        # Use the higher of scanned length or disk_length
+        self._length = max(scanned_length, disk_length)
 
     def __len__(self) -> int:
         return self._length
