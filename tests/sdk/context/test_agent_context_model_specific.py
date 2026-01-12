@@ -19,6 +19,13 @@ _AGENTS_BASELINE_TEXT = "# Project Guidelines\n\nRepo baseline\n"
 
 
 def _write_repo_with_vendor_files(root: Path, baseline_source: str) -> None:
+    """Create test repository with baseline and vendor-specific skill files.
+    
+    Args:
+        root: Root directory for the test repository
+        baseline_source: Either "repo_md" (legacy .openhands/skills/repo.md) 
+                        or "agents_md" (AGENTS.md in repo root)
+    """
     if baseline_source == "repo_md":
         skills_dir = root / ".openhands" / "skills"
         skills_dir.mkdir(parents=True, exist_ok=True)
