@@ -1209,8 +1209,8 @@ def test_agent_verify_builtin_tools_included_in_check():
     serialized = persisted_agent_obj.model_dump_json()
     persisted_agent = AgentBase.model_validate_json(serialized)
 
-    # Create a runtime agent with DIFFERENT tools (FileEditorTool instead of TerminalTool)
-    # but still including FinishTool builtin
+    # Create a runtime agent with DIFFERENT tools (FileEditorTool instead of
+    # TerminalTool) but still including FinishTool builtin
     runtime_agent = Agent(
         llm=llm,
         tools=[Tool(name="FileEditorTool")],  # Different from persisted!
@@ -1269,7 +1269,7 @@ def test_agent_verify_think_builtin_tool_included():
 
 
 def test_agent_verify_missing_builtin_tool_fails():
-    """Test that verify fails when a used builtin tool is not in include_default_tools."""
+    """Test that verify fails when a used builtin tool is not configured."""
     from openhands.sdk.agent import AgentBase
     from openhands.sdk.event import ActionEvent
     from openhands.sdk.llm import MessageToolCall
