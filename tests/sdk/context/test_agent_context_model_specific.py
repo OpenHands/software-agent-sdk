@@ -39,6 +39,9 @@ def _write_repo_with_vendor_files(root: Path, baseline_source: str) -> None:
     (root / "gemini.md").write_text("Gemini-Specific Instructions")
 
 
+# Test both loading mechanisms for backward compatibility:
+# - "repo_md": Legacy .openhands/skills/repo.md (still supported for existing repos)
+# - "agents_md": New approach using AGENTS.md in repo root (recommended)
 @pytest.mark.parametrize("baseline_source", ["repo_md", "agents_md"])
 def test_context_gates_claude_vendor_file(tmp_path: Path, baseline_source: str):
     _write_repo_with_vendor_files(tmp_path, baseline_source)
