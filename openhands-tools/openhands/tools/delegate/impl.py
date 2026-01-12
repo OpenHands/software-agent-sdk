@@ -118,13 +118,18 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
+            # Disable streaming for sub-agents since they don't have token callbacks.
+            # Sub-agents run in separate threads and their output is collected after
+            # completion, so streaming provides no benefit and causes errors.
+            sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
                 factory = get_agent_factory(agent_type)
-                worker_agent = factory.factory_func(parent_llm)
+                worker_agent = factory.factory_func(sub_agent_llm)
 
                 if isinstance(parent_visualizer, DelegationVisualizer):
                     sub_visualizer = DelegationVisualizer(
