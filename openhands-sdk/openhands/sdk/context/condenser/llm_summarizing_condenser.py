@@ -236,9 +236,9 @@ class LLMSummarizingCondenser(RollingCondenser):
         # Calculate naive forgetting end (without considering atomic boundaries)
         naive_end = len(view) - events_from_tail
 
-        # Find actual forgetting_start: smallest manipulation index > keep_first
+        # Find actual forgetting_start: smallest manipulation index >= keep_first
         forgetting_start = view.find_next_manipulation_index(
-            self.keep_first, strict=True
+            self.keep_first, strict=False
         )
 
         # Find actual forgetting_end: smallest manipulation index >= naive_end
