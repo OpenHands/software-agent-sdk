@@ -5,11 +5,16 @@
 - Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
 
 ## Quick commands (repo-specific)
-- Set up the dev environment: `make build`
-- Lint/format: `make lint`, `make format` (and see pre-commit guidance below)
+- Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
+- Lint/format: `make lint`, `make format`
 - Run tests: `uv run pytest`
-- Build agent-server: `make build-server`
+- Build agent-server: `make build-server` (output: `dist/agent-server/`)
+- Clean caches: `make clean`
 - Run an example: `uv run python examples/01_standalone_sdk/main.py`
+
+## Repo config notes
+- Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
+- Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
 
 ## Agent instructions (primary source of truth)
 
