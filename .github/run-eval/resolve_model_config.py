@@ -81,7 +81,7 @@ MODELS = {
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v3.2"},
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",

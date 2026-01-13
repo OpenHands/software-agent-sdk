@@ -50,8 +50,8 @@ class TestInstanceResult(BaseModel):
 
     instance_id: str
     test_result: TestResultData
-    test_type: Literal["integration", "behavior"]
-    required: bool  # True for integration tests, False for behavior tests
+    test_type: Literal["integration", "behavior", "condenser"]
+    required: bool  # True for integration tests, False for behavior/condenser tests
     cost: float = 0.0
     token_usage: TokenUsageData | None = None
     error_message: str | None = None

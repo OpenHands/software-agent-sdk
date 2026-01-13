@@ -384,6 +384,13 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 if isinstance(event, ActionEvent) and event.tool_name
             }
 
+            # Add builtin tool names from include_default_tools
+            # These are runtime names like 'finish', 'think'
+            for tool_class_name in self.include_default_tools:
+                tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+                if tool_class is not None:
+                    runtime_names.add(tool_class.name)
+
             # Only require tools that were actually used in history.
             missing_used_tools = used_tools - runtime_names
             if missing_used_tools:

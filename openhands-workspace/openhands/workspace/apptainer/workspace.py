@@ -102,25 +102,25 @@ class ApptainerWorkspace(RemoteWorkspace):
             "Set to False if fakeroot is not supported in your environment."
         ),
     )
-    disable_mount_hostfs: bool = Field(
+
+    enable_docker_compat: bool = Field(
         default=True,
         description=(
-            "Whether to over-ride the `mount hostfs = yes` setting in apptainer.conf"
-            "Set to False if you want to disable --no-mount hostfs"
+            "Whether to use --compat for maximum Docker compatibility. "
+            "Check this URL for documentation: "
+            "https://apptainer.org/docs/user/main/docker_and_oci.html#docker-like-compat-flag"
+            " Set to False if you want custom Apptainer behavior."
         ),
     )
-    disable_mount_bind_path: bool = Field(
-        default=True,
+
+    disable_mount_locations: list[str] = Field(
+        default=["hostfs", "bind-paths"],
         description=(
-            "Whether to ignore the custom bind path entries in apptainer.conf"
-            "Set to False if you want to disable --no-mount bind-paths"
-        ),
-    )
-    enable_containall: bool = Field(
-        default=True,
-        description=(
-            "Whether to use --containall for maximum container isolation."
-            "Set to False if you do not want to start the apptainer with --containall"
+            "List of locations to disable mounting for. "
+            "Helpful for disabling system-level mounts/binds from apptainer.conf. "
+            "Check this URL for documentation: "
+            "https://apptainer.org/docs/user/main/bind_paths_and_mounts.html. "
+            "Specify locations to disable mounts for custom Apptainer behavior."
         ),
     )
 
@@ -252,23 +252,19 @@ class ApptainerWorkspace(RemoteWorkspace):
             )
 
         # Build container options
-        container_opts: list[str] = [
-            "--writable-tmpfs",
-            "--cleanenv",  # Prevent host environment leakage
-            "--no-home",  # Don't mount host home directory
-            "--no-mount",
-            "tmp",  # Don't bind host /tmp (avoids tmux socket conflicts)
-        ]
+        container_opts: list[str] = []
 
         # Add fakeroot for consistent file ownership (user appears as root)
         if self.use_fakeroot:
             container_opts.append("--fakeroot")
-        if self.disable_mount_hostfs:
-            container_opts += ["--no-mount", "hostfs"]  # Disable hostfs mount
-        if self.disable_mount_bind_path:
-            container_opts += ["--no-mount", "bind-paths"]  # Disable custom bind paths
-        if self.enable_containall:
-            container_opts.append("--containall")  # Maximum isolation
+        if self.enable_docker_compat:
+            container_opts.append("--compat")
+        if self.disable_mount_locations:
+            for loc in self.disable_mount_locations:
+                container_opts += [
+                    "--no-mount",
+                    loc,
+                ]  # Disable specified mount locations
 
         # Run the agent server using apptainer run to respect the image's entrypoint
         # This works with both 'source' and 'binary' build targets

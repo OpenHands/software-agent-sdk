@@ -4,11 +4,15 @@ Example: PR Review Agent
 
 This script runs OpenHands agent to review a pull request and provide
 fine-grained review comments. The agent has full repository access and uses
-bash commands to analyze changes in context and post detailed review feedback.
+bash commands to analyze changes in context and post detailed review feedback
+directly via `gh` or the GitHub API.
 
 This example demonstrates how to use skills for code review:
 - `/codereview` - Standard code review skill
 - `/codereview-roasted` - Linus Torvalds style brutally honest review
+
+The agent posts inline review comments on specific lines of code using the
+GitHub API, rather than posting one giant comment under the PR.
 
 Designed for use with GitHub Actions workflows triggered by PR labels.
 
@@ -38,7 +42,6 @@ from pathlib import Path
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
 from openhands.sdk.git.utils import run_git_command
-from openhands.sdk.utils.github import sanitize_openhands_mentions
 from openhands.tools.preset.default import get_default_condenser, get_default_tools
 
 
@@ -244,40 +247,20 @@ def get_truncated_pr_diff(base_branch: str) -> str:
     return format_pr_diff(file_diffs)
 
 
-def post_review_comment(review_content: str) -> None:
+def get_head_commit_sha(repo_dir: Path | None = None) -> str:
     """
-    Post a review comment to the PR using GitHub CLI.
+    Get the SHA of the HEAD commit.
 
     Args:
-        review_content: The review content to post
+        repo_dir: Path to the repository (defaults to cwd)
+
+    Returns:
+        The commit SHA
     """
-    # Sanitize @OpenHands mentions to prevent self-mention loops
-    review_content = sanitize_openhands_mentions(review_content)
+    if repo_dir is None:
+        repo_dir = Path.cwd()
 
-    logger.info("Posting review comment to GitHub...")
-    pr_number = os.getenv("PR_NUMBER")
-    repo_name = os.getenv("REPO_NAME")
-    github_token = os.getenv("GITHUB_TOKEN")
-
-    if not pr_number or not repo_name or not github_token:
-        raise RuntimeError("Missing required environment variables for posting review")
-
-    subprocess.run(
-        [
-            "gh",
-            "pr",
-            "review",
-            pr_number,
-            "--repo",
-            repo_name,
-            "--comment",
-            "--body",
-            review_content,
-        ],
-        check=True,
-        env={**os.environ, "GH_TOKEN": github_token},
-    )
-    logger.info("Successfully posted review comment")
+    return run_git_command(["git", "rev-parse", "HEAD"], repo_dir).strip()
 
 
 def main():
@@ -299,6 +282,8 @@ def main():
     if missing_vars:
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
+
+    github_token = os.getenv("GITHUB_TOKEN")
 
     # Get PR information
     pr_info = {
@@ -326,6 +311,10 @@ def main():
         pr_diff = get_truncated_pr_diff(base_branch)
         logger.info(f"Got PR diff with {len(pr_diff)} characters")
 
+        # Get the HEAD commit SHA for inline comments
+        commit_id = get_head_commit_sha()
+        logger.info(f"HEAD commit SHA: {commit_id}")
+
         # Create the review prompt using the template
         # Include the skill trigger keyword to activate the appropriate skill
         skill_trigger = (
@@ -337,6 +326,8 @@ def main():
             repo_name=pr_info.get("repo_name", "N/A"),
             base_branch=pr_info.get("base_branch", "main"),
             head_branch=pr_info.get("head_branch", "N/A"),
+            pr_number=pr_info.get("number", "N/A"),
+            commit_id=commit_id,
             skill_trigger=skill_trigger,
             diff=pr_diff,
         )
@@ -381,29 +372,49 @@ def main():
             ),
         )
 
-        # Create conversation
+        # Create conversation with secrets for masking
+        # These secrets will be masked in agent output to prevent accidental exposure
+        secrets = {}
+        if api_key:
+            secrets["LLM_API_KEY"] = api_key
+        if github_token:
+            secrets["GITHUB_TOKEN"] = github_token
+
         conversation = Conversation(
             agent=agent,
             workspace=cwd,
+            secrets=secrets,
         )
 
         logger.info("Starting PR review analysis...")
         logger.info("Agent received the PR diff in the initial message")
         logger.info(f"Using skill trigger: {skill_trigger}")
+        logger.info("Agent will post inline review comments directly via GitHub API")
 
         # Send the prompt and run the agent
+        # The agent will analyze the code and post inline review comments
+        # directly to the PR using the GitHub API
         conversation.send_message(prompt)
         conversation.run()
 
-        # Get the agent's response
+        # The agent should have posted review comments via GitHub API
+        # Log the final response for debugging purposes
         review_content = get_agent_final_response(conversation.state.events)
-        if not review_content:
-            raise RuntimeError("No review content generated by the agent")
+        if review_content:
+            logger.info(f"Agent final response: {len(review_content)} characters")
 
-        logger.info(f"Generated review with {len(review_content)} characters")
-
-        # Post the review comment
-        post_review_comment(review_content)
+        # Print cost information for CI output
+        metrics = conversation.conversation_stats.get_combined_metrics()
+        print("\n=== PR Review Cost Summary ===")
+        print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
+        if metrics.accumulated_token_usage:
+            token_usage = metrics.accumulated_token_usage
+            print(f"Prompt Tokens: {token_usage.prompt_tokens}")
+            print(f"Completion Tokens: {token_usage.completion_tokens}")
+            if token_usage.cache_read_tokens > 0:
+                print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
+            if token_usage.cache_write_tokens > 0:
+                print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
 
         logger.info("PR review completed successfully")
 
