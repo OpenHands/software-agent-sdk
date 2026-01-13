@@ -65,7 +65,7 @@ class APIRemoteWorkspace(RemoteWorkspace):
         default=300.0, description="Runtime init timeout (seconds)"
     )
     startup_wait_timeout: float = Field(
-        default=300.0, description="Max seconds to wait for runtime to become ready"
+        default=300.0, description="Max seconds to wait for runtime to become ready", gt=0
     )
     api_timeout: float = Field(
         default=60.0, description="API request timeout (seconds)"
