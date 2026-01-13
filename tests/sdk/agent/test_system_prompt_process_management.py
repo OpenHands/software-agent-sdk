@@ -12,5 +12,5 @@ def test_system_prompt_includes_wait_for_background_process_guidance() -> None:
 
     # Verify the guidance about waiting for background processes is included
     assert "tail --pid=$PID -f output.log" in message
-    assert "capture its PID with `PID=$!`" in message
+    assert "Capture its PID with `PID=$!`" in message
     assert "When waiting for background processes to finish" in message
