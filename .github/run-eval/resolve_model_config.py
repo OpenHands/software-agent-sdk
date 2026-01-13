@@ -86,7 +86,9 @@ MODELS = {
     "qwen-3-coder": {
         "id": "qwen-3-coder",
         "display_name": "Qwen 3 Coder",
-        "llm_config": {"model": "litellm_proxy/qwen/qwen3-coder"},
+        "llm_config": {
+            "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
+        },
     },
 }
 
