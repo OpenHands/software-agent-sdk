@@ -290,10 +290,10 @@ class View(BaseModel):
             raise ValueError(f"Invalid key type: {type(key)}")
 
     @staticmethod
-    def _enforce_batch_atomicity[T: Event](
-        view_events: Sequence[T],
+    def _enforce_batch_atomicity(
+        view_events: Sequence[LLMConvertibleEvent],
         all_events: Sequence[Event],
-    ) -> list[T]:
+    ) -> list[LLMConvertibleEvent]:
         """Ensure that if any ActionEvent in a batch is removed from the view,
         all ActionEvents in that batch are removed.
 
@@ -335,8 +335,9 @@ class View(BaseModel):
         return [event for event in view_events if event.id not in ids_to_remove]
 
     @staticmethod
-    def filter_unmatched_tool_calls(
-        events: list[LLMConvertibleEvent],
+    def _filter_unmatched_tool_calls(
+        view_events: Sequence[LLMConvertibleEvent],
+        all_events: Sequence[Event],  # noqa: ARG004
     ) -> list[LLMConvertibleEvent]:
         """Filter out unmatched tool call events.
 
@@ -344,17 +345,25 @@ class View(BaseModel):
         but don't have matching pairs. Also enforces batch atomicity - if any
         ActionEvent in a batch is filtered out, all ActionEvents in that batch
         are also filtered out.
+
+        Args:
+            view_events: The list of events to filter
+            all_events: The complete original list of all events (unused for now,
+                        but included to match signature pattern)
+
+        Returns:
+            Filtered list of events with unmatched tool calls removed
         """
-        action_tool_call_ids = View._get_action_tool_call_ids(events)
-        observation_tool_call_ids = View._get_observation_tool_call_ids(events)
+        action_tool_call_ids = View._get_action_tool_call_ids(view_events)
+        observation_tool_call_ids = View._get_observation_tool_call_ids(view_events)
 
         # Build batch info for batch atomicity enforcement
-        action_batch = ActionBatch.from_events(events)
+        action_batch = ActionBatch.from_events(view_events)
 
         # First pass: filter out events that don't match based on tool call pairing
         kept_events = [
             event
-            for event in events
+            for event in view_events
             if View._should_keep_event(
                 event, action_tool_call_ids, observation_tool_call_ids
             )
@@ -363,7 +372,7 @@ class View(BaseModel):
         # Second pass: enforce batch atomicity for ActionEvents
         # If any ActionEvent in a batch is removed, all ActionEvents in that
         # batch should also be removed
-        kept_events = View._enforce_batch_atomicity(kept_events, events)
+        kept_events = View._enforce_batch_atomicity(kept_events, view_events)
 
         # Third pass: also remove ObservationEvents whose ActionEvents were removed
         # due to batch atomicity
@@ -387,7 +396,7 @@ class View(BaseModel):
         return result
 
     @staticmethod
-    def _get_action_tool_call_ids(events: list[LLMConvertibleEvent]) -> set[ToolCallID]:
+    def _get_action_tool_call_ids(events: Sequence[Event]) -> set[ToolCallID]:
         """Extract tool_call_ids from ActionEvents."""
         tool_call_ids = set()
         for event in events:
@@ -397,7 +406,7 @@ class View(BaseModel):
 
     @staticmethod
     def _get_observation_tool_call_ids(
-        events: list[LLMConvertibleEvent],
+        events: Sequence[Event],
     ) -> set[ToolCallID]:
         """Extract tool_call_ids from ObservationEvents."""
         tool_call_ids = set()
@@ -411,7 +420,7 @@ class View(BaseModel):
 
     @staticmethod
     def _should_keep_event(
-        event: LLMConvertibleEvent,
+        event: Event,
         action_tool_call_ids: set[ToolCallID],
         observation_tool_call_ids: set[ToolCallID],
     ) -> bool:
@@ -513,9 +522,10 @@ class View(BaseModel):
         # remove all events in that batch to prevent partial batches with thinking
         # blocks separated from their tool calls
         output = View._enforce_batch_atomicity(output, events)
+        output = View._filter_unmatched_tool_calls(output, events)
 
         return View(
-            events=View.filter_unmatched_tool_calls(output),
+            events=output,
             unhandled_condensation_request=View.unhandled_condensation_request_exists(events),
             condensations=condensations,
         )

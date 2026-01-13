@@ -600,7 +600,7 @@ def test_summary_event_with_zero_offset() -> None:
 
 def test_filter_unmatched_tool_calls_empty_list() -> None:
     """Test filter_unmatched_tool_calls with empty event list."""
-    result = View.filter_unmatched_tool_calls([])
+    result = View._filter_unmatched_tool_calls([], [])
     assert result == []
 
 
@@ -613,7 +613,7 @@ def test_filter_unmatched_tool_calls_no_tool_events() -> None:
     message_event_2.id = "msg_2"
 
     events = [message_event_1, message_event_2]
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # All non-tool events should be kept
     assert len(result) == 2
@@ -655,7 +655,7 @@ def test_filter_unmatched_tool_calls_matched_pairs() -> None:
         observation_event_2,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # All events should be kept (all tool calls are matched)
     assert len(result) == 5
@@ -695,7 +695,7 @@ def test_filter_unmatched_tool_calls_unmatched_action() -> None:
         action_event_unmatched,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep: message_event, matched pair
     # Should filter out: unmatched ActionEvent
@@ -734,7 +734,7 @@ def test_filter_unmatched_tool_calls_unmatched_observation() -> None:
         observation_event_unmatched,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep: message_event, matched pair
     # Should filter out: unmatched ObservationEvent
@@ -795,7 +795,7 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
         observation_event_2,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep: message events and matched pairs
     # Should filter out: unmatched action and observation events
@@ -839,7 +839,7 @@ def test_filter_unmatched_tool_calls_none_tool_call_id() -> None:
         observation_event_valid,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep only the valid matched pair
     # Events with None tool_call_id should be filtered out

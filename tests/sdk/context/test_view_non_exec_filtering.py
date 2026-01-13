@@ -48,7 +48,7 @@ def test_filter_keeps_action_none_when_matched_by_observation() -> None:
 
     events = [m1, action_event, err, m2]
 
-    filtered = View.filter_unmatched_tool_calls(events)  # type: ignore[arg-type]
+    filtered = View._filter_unmatched_tool_calls(events, events)  # type: ignore[arg-type]
 
     # Both ActionEvent(action=None) and matching AgentErrorEvent must be kept
     assert len(filtered) == 4
