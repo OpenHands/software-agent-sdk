@@ -436,15 +436,15 @@ class View(BaseModel):
 
     @staticmethod
     def apply_condensation(
-        events: Sequence[Event], condensation: Condensation
-    ) -> Sequence[Event]:
+        events: Sequence[LLMConvertibleEvent], condensation: Condensation
+    ) -> list[LLMConvertibleEvent]:
         """Apply a single condensation to a list of events.
         
         Events marked to be forgotten in the condensation will be removed, and if there
         is summary metadata present, a CondensationSummaryEvent will be inserted at the
         specified offset.
         """
-        output: list[Event] = []
+        output: list[LLMConvertibleEvent] = []
 
         # Copy the events into output, skipping forgotten events.
         for event in events:
@@ -462,66 +462,48 @@ class View(BaseModel):
         return output
 
     @staticmethod
+    def unhandled_condensation_request_exists(
+        events: Sequence[Event],
+    ) -> bool:
+        """Check if there is an unhandled condensation request in the list of events.
+
+        An unhandled condensation request is defined as a CondensationRequest event
+        that appears after the most recent Condensation event in the list.
+        """
+        for event in reversed(events):
+            if isinstance(event, Condensation):
+                return False
+            if isinstance(event, CondensationRequest):
+                return True
+        return False
+
+    @staticmethod
     def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
-        forgotten_event_ids: set[EventID] = set()
+        output: list[LLMConvertibleEvent] = []
         condensations: list[Condensation] = []
+
         for event in events:
-            if isinstance(event, Condensation):
+            if isinstance(event, CondensationRequest):
+                continue
+            
+            elif isinstance(event, Condensation):
                 condensations.append(event)
-                forgotten_event_ids.update(event.forgotten_event_ids)
-                # Make sure we also forget the condensation action itself
-                forgotten_event_ids.add(event.id)
-            if isinstance(event, CondensationRequest):
-                forgotten_event_ids.add(event.id)
+                output = View.apply_condensation(output, event)
+            
+            elif isinstance(event, LLMConvertibleEvent):
+                output.append(event)
 
-        # Enforce batch atomicity: if any event in a multi-action batch is forgotten,
-        # forget all events in that batch to prevent partial batches with thinking
-        # blocks separated from their tool calls
-        forgotten_event_ids = View._enforce_batch_atomicity(events, forgotten_event_ids)
-
-        kept_events = [
-            event
-            for event in events
-            if event.id not in forgotten_event_ids
-            and isinstance(event, LLMConvertibleEvent)
-        ]
-
-        # If we have a summary, insert it at the specified offset.
-        summary: str | None = None
-        summary_offset: int | None = None
-
-        # The relevant summary is always in the last condensation event (i.e., the most
-        # recent one).
-        for event in reversed(events):
-            if isinstance(event, Condensation):
-                if event.summary is not None and event.summary_offset is not None:
-                    summary = event.summary
-                    summary_offset = event.summary_offset
-                    break
-
-        if summary is not None and summary_offset is not None:
-            logger.debug(f"Inserting summary at offset {summary_offset}")
-
-            _new_summary_event = CondensationSummaryEvent(summary=summary)
-            kept_events.insert(summary_offset, _new_summary_event)
-
-        # Check for an unhandled condensation request -- these are events closer to the
-        # end of the list than any condensation action.
-        unhandled_condensation_request = False
-
-        for event in reversed(events):
-            if isinstance(event, Condensation):
-                break
-
-            if isinstance(event, CondensationRequest):
-                unhandled_condensation_request = True
-                break
+            else:
+                logger.debug(
+                    f"Skipping non-LLMConvertibleEvent of type {type(event)} "
+                    f"in View.from_events"
+                )
 
         return View(
-            events=View.filter_unmatched_tool_calls(kept_events),
-            unhandled_condensation_request=unhandled_condensation_request,
+            events=View.filter_unmatched_tool_calls(output),
+            unhandled_condensation_request=View.unhandled_condensation_request_exists(events),
             condensations=condensations,
         )
