@@ -33,11 +33,17 @@ For setup instructions, usage examples, and GitHub Actions integration,
 see README.md in this directory.
 """
 
+import json
 import os
+import re
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
@@ -56,6 +62,203 @@ logger = get_logger(__name__)
 
 # Maximum total diff size
 MAX_TOTAL_DIFF = 100000
+
+
+@dataclass(frozen=True)
+class ReviewComment:
+    path: str
+    side: str
+    line: int
+    body: str
+    start_line: int | None = None
+    start_side: str | None = None
+
+
+def _extract_json_object(text: str) -> str:
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("Empty agent response")
+
+    # Fast-path: already valid JSON
+    try:
+        json.loads(text)
+        return text
+    except Exception:
+        pass
+
+    # Common failure mode: fenced code blocks
+    fenced = re.search(r"```(?:json)?\s*(\{.*\})\s*```", text, flags=re.DOTALL)
+    if fenced:
+        candidate = fenced.group(1).strip()
+        json.loads(candidate)
+        return candidate
+
+    # Fallback: first {...} block
+    brace = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    if brace:
+        candidate = brace.group(0).strip()
+        json.loads(candidate)
+        return candidate
+
+    raise ValueError("Could not find JSON object in agent response")
+
+
+def parse_review_response(review_content: str) -> tuple[str, str, list[ReviewComment]]:
+    raw_json = _extract_json_object(review_content)
+    data = json.loads(raw_json)
+
+    event = str(data.get("event", "COMMENT")).upper()
+    if event not in {"COMMENT", "APPROVE", "REQUEST_CHANGES"}:
+        raise ValueError(f"Invalid event: {event}")
+
+    summary = str(data.get("summary", "")).strip()
+    if not summary:
+        summary = "Automated review from OpenHands. See inline comments."
+
+    comments_in: list[dict[str, Any]] = data.get("comments") or []
+    comments: list[ReviewComment] = []
+    for c in comments_in:
+        if not isinstance(c, dict):
+            continue
+        path = str(c.get("path", "")).strip()
+        side = str(c.get("side", "RIGHT")).upper().strip() or "RIGHT"
+        body = str(c.get("body", "")).strip()
+        line = c.get("line")
+        start_line = c.get("start_line")
+        start_side = c.get("start_side")
+
+        if not path or not body or line is None:
+            continue
+        if side not in {"RIGHT", "LEFT"}:
+            side = "RIGHT"
+
+        comments.append(
+            ReviewComment(
+                path=path,
+                side=side,
+                line=int(line),
+                start_line=int(start_line) if start_line is not None else None,
+                start_side=str(start_side).upper() if start_side is not None else None,
+                body=body,
+            )
+        )
+
+    return event, summary, comments
+
+
+def get_feedback_base_url(repo: str) -> str:
+    configured = (os.getenv("FEEDBACK_BASE_URL") or "").strip()
+    if configured:
+        return configured.rstrip("/") + "/"
+
+    # Default to GitHub project pages URL.
+    # Example: https://OWNER.github.io/REPO/
+    owner, repo_name = repo.split("/", 1)
+    return f"https://{owner}.github.io/{repo_name}/"
+
+
+def build_feedback_url(
+    base_url: str,
+    *,
+    repo: str,
+    pr_number: str,
+    run_id: str,
+    comment_key: str,
+    rating: str,
+    path: str | None = None,
+    line: int | None = None,
+) -> str:
+    return_to = f"https://github.com/{repo}/pull/{pr_number}"
+    params: dict[str, str] = {
+        "repo": repo,
+        "pr": str(pr_number),
+        "run_id": run_id,
+        "comment_key": comment_key,
+        "rating": rating,
+        "return_to": return_to,
+    }
+    if path:
+        params["path"] = path
+    if line is not None:
+        params["line"] = str(line)
+
+    return f"{base_url}?{urllib.parse.urlencode(params)}"
+
+
+def append_feedback_links(
+    body: str,
+    *,
+    base_url: str,
+    repo: str,
+    pr_number: str,
+    run_id: str,
+    comment_key: str,
+    path: str | None = None,
+    line: int | None = None,
+) -> str:
+    up = build_feedback_url(
+        base_url,
+        repo=repo,
+        pr_number=pr_number,
+        run_id=run_id,
+        comment_key=comment_key,
+        rating="up",
+        path=path,
+        line=line,
+    )
+    down = build_feedback_url(
+        base_url,
+        repo=repo,
+        pr_number=pr_number,
+        run_id=run_id,
+        comment_key=comment_key,
+        rating="down",
+        path=path,
+        line=line,
+    )
+
+    footer = f"\n\n---\nFeedback: [👍 Useful]({up}) | [👎 Not useful]({down})"
+    return (body or "").rstrip() + footer
+
+
+def post_pr_review(
+    *,
+    repo: str,
+    pr_number: str,
+    token: str,
+    commit_id: str,
+    event: str,
+    body: str,
+    comments: list[dict[str, Any]],
+) -> dict[str, Any]:
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}/reviews"
+    payload: dict[str, Any] = {
+        "commit_id": commit_id,
+        "event": event,
+        "body": body,
+    }
+    if comments:
+        payload["comments"] = comments
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        method="POST",
+    )
+    req.add_header("Accept", "application/vnd.github+json")
+    req.add_header("Authorization", f"Bearer {token}")
+    req.add_header("X-GitHub-Api-Version", "2022-11-28")
+
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            return json.loads(resp.read().decode("utf-8", errors="replace"))
+    except urllib.error.HTTPError as e:
+        details = (e.read() or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"GitHub create review failed: HTTP {e.code} {e.reason}. {details}"
+        ) from e
+
+
 
 
 def _get_required_env(name: str) -> str:
@@ -158,7 +361,8 @@ def main():
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
-    github_token = os.getenv("GITHUB_TOKEN")
+    github_token = _get_required_env("GITHUB_TOKEN")
+    run_id = os.getenv("GITHUB_RUN_ID") or uuid.uuid4().hex
 
     # Get PR information
     pr_info = {
@@ -186,6 +390,10 @@ def main():
         # Get the HEAD commit SHA for inline comments
         commit_id = get_head_commit_sha()
         logger.info(f"HEAD commit SHA: {commit_id}")
+
+        # Prevent the agent from posting to GitHub directly via gh/curl.
+        # We keep the token in-memory for posting the final review.
+        os.environ.pop("GITHUB_TOKEN", None)
 
         # Create the review prompt using the template
         # Include the skill trigger keyword to activate the appropriate skill
@@ -246,11 +454,9 @@ def main():
 
         # Create conversation with secrets for masking
         # These secrets will be masked in agent output to prevent accidental exposure
-        secrets = {}
+        secrets: dict[str, str] = {}
         if api_key:
             secrets["LLM_API_KEY"] = api_key
-        if github_token:
-            secrets["GITHUB_TOKEN"] = github_token
 
         conversation = Conversation(
             agent=agent,
@@ -261,19 +467,88 @@ def main():
         logger.info("Starting PR review analysis...")
         logger.info("Agent received the PR diff in the initial message")
         logger.info(f"Using skill trigger: {skill_trigger}")
-        logger.info("Agent will post inline review comments directly via GitHub API")
+        logger.info(
+            "Agent will return structured JSON only; this script will post the GitHub review "
+            "and append feedback links to every inline comment."
+        )
 
-        # Send the prompt and run the agent
-        # The agent will analyze the code and post inline review comments
-        # directly to the PR using the GitHub API
         conversation.send_message(prompt)
         conversation.run()
 
-        # The agent should have posted review comments via GitHub API
-        # Log the final response for debugging purposes
         review_content = get_agent_final_response(conversation.state.events)
-        if review_content:
-            logger.info(f"Agent final response: {len(review_content)} characters")
+        if not review_content:
+            raise RuntimeError("Agent did not return a final response")
+        logger.info(f"Agent final response: {len(review_content)} characters")
+
+        repo = str(pr_info["repo_name"])
+        pr_number = str(pr_info["number"])
+        feedback_base_url = get_feedback_base_url(repo)
+
+        try:
+            event, summary, review_comments = parse_review_response(review_content)
+            review_body = append_feedback_links(
+                summary,
+                base_url=feedback_base_url,
+                repo=repo,
+                pr_number=pr_number,
+                run_id=run_id,
+                comment_key="summary",
+            )
+
+            gh_comments: list[dict[str, Any]] = []
+            for idx, c in enumerate(review_comments, start=1):
+                comment_body = append_feedback_links(
+                    c.body,
+                    base_url=feedback_base_url,
+                    repo=repo,
+                    pr_number=pr_number,
+                    run_id=run_id,
+                    comment_key=str(idx),
+                    path=c.path,
+                    line=c.line,
+                )
+
+                payload: dict[str, Any] = {
+                    "path": c.path,
+                    "side": c.side,
+                    "line": c.line,
+                    "body": comment_body,
+                }
+                if c.start_line is not None:
+                    payload["start_line"] = c.start_line
+                    payload["start_side"] = c.start_side or c.side
+
+                gh_comments.append(payload)
+
+        except Exception as e:
+            logger.error(f"Failed to parse agent JSON output: {e}")
+            event = "COMMENT"
+            raw = review_content.strip()
+            if len(raw) > 20000:
+                raw = raw[:20000] + "\n\n...[truncated]..."
+
+            review_body = append_feedback_links(
+                "Automated review output could not be parsed into structured comments. "
+                "Posting raw output instead.\n\n" + raw,
+                base_url=feedback_base_url,
+                repo=repo,
+                pr_number=pr_number,
+                run_id=run_id,
+                comment_key="summary",
+            )
+            gh_comments = []
+
+        logger.info(f"Posting GitHub review: event={event}, comments={len(gh_comments)}")
+        resp = post_pr_review(
+            repo=repo,
+            pr_number=pr_number,
+            token=github_token,
+            commit_id=commit_id,
+            event=event,
+            body=review_body,
+            comments=gh_comments,
+        )
+        logger.info(f"Posted GitHub review id={resp.get('id')}")
 
         # Print cost information for CI output
         metrics = conversation.conversation_stats.get_combined_metrics()

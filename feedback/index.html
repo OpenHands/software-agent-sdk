@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Review Feedback</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; margin: 40px; max-width: 760px; }
+      code { background: #f5f5f5; padding: 2px 6px; border-radius: 4px; }
+      .muted { color: #666; }
+      .btn { display: inline-block; padding: 10px 14px; border: 1px solid #ddd; border-radius: 8px; text-decoration: none; margin-right: 10px; }
+    </style>
+    <script>
+      // Minimal PostHog JS loader (no build step)
+      (function(t,e){var o,n,p,r;e.__SV=1;window.posthog=e;e._i=[];e.init=function(i,s,a){function g(t,e){var o=e.split(".");2==o.length&&(t=t[o[0]],e=o[1]);t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}}(p=t.createElement("script")).type="text/javascript";p.async=!0;p.src=s.api_host+"/static/array.js";(r=t.getElementsByTagName("script")[0]).parentNode.insertBefore(p,r);var u=e;for(void 0!==a?u=e[a]=[]:a="posthog",u.people=u.people||[],u.toString=function(t){var e="posthog";return"posthog"!==a&&(e+="."+a),t||(e+=" (stub)"),e},u.people.toString=function(){return u.toString(1)+".people (stub)"},o="capture identify alias people.set people.set_once set_config register register_once unregister opt_out_capturing opt_in_capturing has_opted_out_capturing reset get_distinct_id debug on off".split(" "),n=0;n<o.length;n++)g(u,o[n]);e._i.push([i,s,a])};
+      })(document,window.posthog||[]);
+
+      posthog.init('phc_QkAtbXVsh3Ja0Pw4IK696cxYEmr20Bx1kbnI7QtOCqg', {
+        api_host: 'https://us.i.posthog.com'
+      });
+
+      function getParam(name) {
+        const url = new URL(window.location.href);
+        return url.searchParams.get(name) || '';
+      }
+
+      function ensureDistinctId() {
+        const key = 'oh_review_feedback_distinct_id';
+        let id = localStorage.getItem(key);
+        if (!id) {
+          id = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()) + '-' + Math.random().toString(16).slice(2);
+          localStorage.setItem(key, id);
+        }
+        return id;
+      }
+
+      function alreadySent(dedupeKey) {
+        const key = 'oh_review_feedback_sent_' + dedupeKey;
+        return localStorage.getItem(key) === '1';
+      }
+
+      function markSent(dedupeKey) {
+        const key = 'oh_review_feedback_sent_' + dedupeKey;
+        localStorage.setItem(key, '1');
+      }
+
+      window.addEventListener('DOMContentLoaded', () => {
+        const repo = getParam('repo');
+        const pr = getParam('pr');
+        const runId = getParam('run_id');
+        const commentKey = getParam('comment_key');
+        const rating = getParam('rating');
+        const path = getParam('path');
+        const line = getParam('line');
+        const returnTo = getParam('return_to');
+
+        document.getElementById('repo').textContent = repo || '(unknown)';
+        document.getElementById('pr').textContent = pr || '(unknown)';
+        document.getElementById('rating').textContent = rating || '(unknown)';
+        document.getElementById('path').textContent = path || '(n/a)';
+        document.getElementById('line').textContent = line || '(n/a)';
+
+        const distinctId = ensureDistinctId();
+        posthog.identify(distinctId);
+
+        const dedupeKey = [repo, pr, runId, commentKey, rating].join('|');
+        if (repo && pr && runId && commentKey && (rating === 'up' || rating === 'down') && !alreadySent(dedupeKey)) {
+          posthog.capture('pr_review_feedback', {
+            repo,
+            pr_number: pr,
+            run_id: runId,
+            comment_key: commentKey,
+            rating,
+            path,
+            line,
+            return_to: returnTo
+          });
+          markSent(dedupeKey);
+        }
+
+        const back = document.getElementById('back');
+        if (returnTo) {
+          back.href = returnTo;
+          back.style.display = 'inline-block';
+        }
+      });
+    </script>
+  </head>
+  <body>
+    <h1>Thanks — feedback recorded</h1>
+
+    <p class="muted">
+      Repo: <code id="repo"></code><br />
+      PR: <code id="pr"></code><br />
+      Rating: <code id="rating"></code><br />
+      Location: <code id="path"></code>:<code id="line"></code>
+    </p>
+
+    <p>
+      <a id="back" class="btn" style="display:none">Back to PR</a>
+    </p>
+
+    <p class="muted">
+      If you clicked this link multiple times, we only record it once per comment & rating.
+    </p>
+  </body>
+</html>
