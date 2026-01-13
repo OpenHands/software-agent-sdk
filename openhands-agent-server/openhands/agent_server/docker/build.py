@@ -248,15 +248,11 @@ def _base_slug(image: str, max_len: int = 64) -> str:
 
     if len(ident) > visible_budget:
         if tag_piece and len(tag_piece) < visible_budget:
-            # Keep the full tag portion and trim the repo prefix if needed.
-            head_budget = visible_budget - len(tag_piece)
-            ident = repo[:head_budget] + tag_piece
-        elif tag_piece:
-            # Tag portion alone is longer than the budget; keep the leading part
-            # so sentinel substrings like "tag_latest" remain intact.
-            ident = tag_piece[:visible_budget]
+            # Full tag fits: trim repo to make room
+            ident = repo[: visible_budget - len(tag_piece)] + tag_piece
         else:
-            ident = ident[:visible_budget]
+            # Either no tag or tag too long: truncate from the start
+            ident = (tag_piece or ident)[:visible_budget]
 
     truncated = ident + suffix
     logger.debug(
