@@ -107,9 +107,10 @@ class TestTelemetryLifecycle:
 
         assert basic_telemetry._req_ctx == telemetry_ctx
 
-    def test_on_error_stub(self, basic_telemetry):
-        """Test on_error method (currently a stub)."""
+    def test_on_error_noop_when_logging_disabled(self, basic_telemetry):
+        """Test on_error method when logging is disabled."""
         # Should not raise any exceptions
+        basic_telemetry.on_request({"context_window": 4096})
         basic_telemetry.on_error(Exception("test error"))
 
     @patch("time.time")
@@ -388,6 +389,54 @@ class TestTelemetryLogging:
             assert data["latency_sec"] == 1.5
             assert "response" in data
             assert "timestamp" in data
+
+    def test_log_error_success(self, mock_metrics):
+        """Test that failed requests are logged when logging is enabled."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            telemetry = Telemetry(
+                model_name="gpt-4o",
+                log_enabled=True,
+                log_dir=temp_dir,
+                metrics=mock_metrics,
+            )
+
+            telemetry.on_request(
+                {
+                    "llm_path": "responses",
+                    "context_window": 4096,
+                    "instructions": "test instructions",
+                    "input": [
+                        {"type": "reasoning", "id": "rs_test", "summary": []},
+                        {
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "output_text", "text": "hi"}],
+                        },
+                    ],
+                    "kwargs": {"foo": "bar"},
+                }
+            )
+
+            telemetry.on_error(ValueError("boom"))
+
+            files = os.listdir(temp_dir)
+            assert len(files) == 1
+            assert files[0].endswith("-error.json")
+
+            with open(os.path.join(temp_dir, files[0])) as f:
+                data = json.loads(f.read())
+
+            assert data["llm_path"] == "responses"
+            assert data["context_window"] == 4096
+            assert data["instructions"] == "test instructions"
+            assert data["input"][0]["type"] == "reasoning"
+            assert "error" in data
+            assert data["error"]["type"] == "ValueError"
+            assert data["error"]["message"] == "boom"
+            assert "traceback" in data["error"]
+            assert data["cost"] == 0.0
+            assert "timestamp" in data
+            assert "latency_sec" in data
 
     def test_log_completion_with_raw_response(self, mock_metrics, mock_response):
         """Test logging with raw response included."""

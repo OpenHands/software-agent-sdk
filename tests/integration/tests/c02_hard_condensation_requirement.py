@@ -44,7 +44,7 @@ class HardCondensationRequirementTest(BaseIntegrationTest):
         return LLMSummarizingCondenser(
             llm=condenser_llm,
             max_size=1000,  # High to prevent automatic triggering
-            keep_first=1,
+            keep_first=4,  # Set higher than normal to avoid a valid condensation range
         )
 
     @property
