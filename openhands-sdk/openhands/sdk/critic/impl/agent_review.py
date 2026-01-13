@@ -2,35 +2,29 @@ import json
 import re
 from collections.abc import Sequence
 
-from pydantic import BaseModel, Field
-
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
-from openhands.sdk.llm import TextContent
+from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
 
 
-class AgentReviewOutput(BaseModel):
-    decision: str = Field(description="pass | not_pass")
-    summary: str = Field(default="")
-
-
 class AgentReviewCritic(CriticBase):
     """Critic that spawns another OpenHands agent to perform a review.
 
-    Important: this critic *forks* the current agent settings (LLM, tools,
-    context, condenser, etc.) from the conversation events, rather than reading
-    critic-specific environment variables.
+    Important: this critic *forks* the current agent settings (tools, context,
+    condenser, etc.) from the conversation events and uses the same LLM.
 
     This is intended to be used together with the Stop hook: when the main agent
     tries to finish, the Stop hook can call this critic on the current
     conversation's events + git patch, and deny stop if the critic says
     `not_pass`.
     """
+
+    llm: LLM | None = None
 
     review_style: str = "roasted"
     max_diff_chars: int = 100_000
@@ -41,7 +35,7 @@ class AgentReviewCritic(CriticBase):
         if not git_patch or not git_patch.strip():
             return CriticResult(score=0.0, message="Empty git patch")
 
-        root_llm = self._extract_llm(events)
+        root_llm = self.llm or self._extract_llm(events)
         if root_llm is None:
             return CriticResult(score=0.0, message="Could not infer agent LLM")
 
@@ -62,42 +56,37 @@ class AgentReviewCritic(CriticBase):
         conversation.run()
 
         final_text = self._extract_final_text(list(conversation.state.events))
-        parsed = self._parse_output(final_text)
+        return self._parse_output(final_text)
 
-        if parsed.decision == "pass":
-            return CriticResult(score=1.0, message=parsed.summary or "pass")
-
-        return CriticResult(score=0.0, message=parsed.summary or "not_pass")
-
-    def _extract_llm(self, events: Sequence[LLMConvertibleEvent]):
+    def _extract_llm(self, events: Sequence[LLMConvertibleEvent]) -> LLM | None:
         for event in events:
             agent = getattr(event, "agent", None)
-            if agent is not None:
-                llm = getattr(agent, "llm", None)
-                if llm is not None:
-                    return llm
+            llm = getattr(agent, "llm", None)
+            if isinstance(llm, LLM):
+                return llm
 
         for event in events:
-            if isinstance(event, SystemPromptEvent):
-                agent = getattr(event, "agent", None)
-                if agent is not None:
-                    llm = getattr(agent, "llm", None)
-                    if llm is not None:
-                        return llm
+            if not isinstance(event, SystemPromptEvent):
+                continue
+            agent = getattr(event, "agent", None)
+            llm = getattr(agent, "llm", None)
+            if isinstance(llm, LLM):
+                return llm
 
         return None
 
-    def _extract_agent(self, events: Sequence[LLMConvertibleEvent]):
+    def _extract_agent(self, events: Sequence[LLMConvertibleEvent]) -> Agent | None:
         for event in events:
             agent = getattr(event, "agent", None)
             if isinstance(agent, Agent):
                 return agent
 
         for event in events:
-            if isinstance(event, SystemPromptEvent):
-                agent = getattr(event, "agent", None)
-                if isinstance(agent, Agent):
-                    return agent
+            if not isinstance(event, SystemPromptEvent):
+                continue
+            agent = getattr(event, "agent", None)
+            if isinstance(agent, Agent):
+                return agent
 
         return None
 
@@ -136,7 +125,7 @@ class AgentReviewCritic(CriticBase):
                 return "".join(parts)
         return ""
 
-    def _parse_output(self, text: str) -> AgentReviewOutput:
+    def _parse_output(self, text: str) -> CriticResult:
         blocks = re.findall(r"```json\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
         candidate = blocks[-1] if blocks else None
         if candidate is None:
@@ -149,20 +138,15 @@ class AgentReviewCritic(CriticBase):
 
         if not candidate:
             logger.warning("Critic output missing JSON block")
-            return AgentReviewOutput(
-                decision="not_pass", summary="Critic output missing JSON"
-            )
+            return CriticResult(score=0.0, message="Critic output missing JSON")
 
         try:
             data = json.loads(candidate)
         except Exception as e:
             logger.warning(f"Failed to parse critic JSON: {e}")
-            return AgentReviewOutput(
-                decision="not_pass", summary="Critic JSON parse error"
-            )
+            return CriticResult(score=0.0, message="Critic JSON parse error")
 
         decision = str(data.get("decision", "not_pass")).strip()
-        if decision not in {"pass", "not_pass"}:
-            decision = "not_pass"
-        summary = str(data.get("summary", "") or "").strip()
-        return AgentReviewOutput(decision=decision, summary=summary)
+        score = 1.0 if decision == "pass" else 0.0
+        summary = str(data.get("summary", "") or "").strip() or decision
+        return CriticResult(score=score, message=summary)
