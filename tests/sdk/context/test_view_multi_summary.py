@@ -180,12 +180,14 @@ def test_summaries_preserve_order_and_content() -> None:
     assert view.events[0].summary == "Summary A"
 
     assert isinstance(view.events[1], MessageEvent)
+    assert isinstance(view.events[1].llm_message.content[0], TextContent)
     assert view.events[1].llm_message.content[0].text == "Msg 1"
 
     assert isinstance(view.events[2], CondensationSummaryEvent)
     assert view.events[2].summary == "Summary B"
 
     assert isinstance(view.events[3], MessageEvent)
+    assert isinstance(view.events[3].llm_message.content[0], TextContent)
     assert view.events[3].llm_message.content[0].text == "Msg 3"
 
 
@@ -739,12 +741,14 @@ def test_summary_offset_is_absolute_in_final_view() -> None:
 
     assert len(view.events) == 4
     assert isinstance(view.events[0], MessageEvent)
+    assert isinstance(view.events[0].llm_message.content[0], TextContent)
     assert view.events[0].llm_message.content[0].text == "Msg 2"
 
     assert isinstance(view.events[1], CondensationSummaryEvent)
     assert view.events[1].summary == "Summary at offset 1"
 
     assert isinstance(view.events[2], MessageEvent)
+    assert isinstance(view.events[2].llm_message.content[0], TextContent)
     assert view.events[2].llm_message.content[0].text == "Msg 3"
 
 
@@ -955,12 +959,14 @@ def test_interleaved_events_and_summaries() -> None:
     assert len(view.events) == 6
 
     assert isinstance(view.events[0], MessageEvent)
+    assert isinstance(view.events[0].llm_message.content[0], TextContent)
     assert view.events[0].llm_message.content[0].text == "Msg 0"
 
     assert isinstance(view.events[1], CondensationSummaryEvent)
     assert view.events[1].summary == "Summary A"
 
     assert isinstance(view.events[2], MessageEvent)
+    assert isinstance(view.events[2].llm_message.content[0], TextContent)
     assert view.events[2].llm_message.content[0].text == "Msg 2"
 
     assert isinstance(view.events[3], CondensationSummaryEvent)

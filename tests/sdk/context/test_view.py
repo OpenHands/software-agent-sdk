@@ -1,4 +1,3 @@
-from typing import cast
 from unittest.mock import create_autospec
 
 from openhands.sdk.context.view import View
