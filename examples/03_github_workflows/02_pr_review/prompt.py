@@ -44,13 +44,20 @@ Analyze the changes and identify specific issues that need attention.
 
 ## Additional Review Requirements
 
-- **Search official documentation** for any referenced flags, config keys, endpoints, or behavior to confirm the change is valid and supported.
-- If the PR introduces or changes **access to external APIs** (e.g., GitHub/GitLab/Bitbucket/Datadog/Slack/etc.), verify:
-  - authentication method and required scopes/permissions are correct
-  - endpoint/method/headers are correct
-  - pagination, rate limits, retries/timeouts, and error handling are appropriate
-  - any required configuration is properly documented (env vars, tokens, permissions), ideally with links to official docs
-  - secrets/PII are handled safely (no token leakage in logs, etc.)
+- **Verify the changes yourself**:
+  - trace any referenced config keys/flags/endpoints through the codebase and (when applicable) confirm they exist in the upstream system (Operator/SDK/API) rather than assuming.
+  - run lightweight checks when feasible (tests/lint/typecheck) or explain why you cannot.
+
+- **Search and cite official documentation**:
+  - for any referenced flags, config keys, endpoints, or behavior, find the *official* documentation that confirms it.
+  - when applicable, include the validated documentation URL(s) directly in your review (summary or inline comment), so the author can click through.
+
+- If the PR introduces or changes **access to external APIs** (e.g., GitHub/GitLab/Bitbucket/Datadog/Slack/etc.), verify and comment on:
+  - authentication method and required scopes/permissions
+  - endpoint/method/headers correctness
+  - pagination, rate limits, retries/timeouts, and error handling
+  - whether required configuration is properly documented (env vars, tokens, permissions) **with official doc links**
+  - secrets/PII handling (no token leakage in logs, etc.)
 
 ## CRITICAL: Post ONE Single Review with All Comments
 
