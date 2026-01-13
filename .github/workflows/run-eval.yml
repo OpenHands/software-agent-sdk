@@ -235,6 +235,7 @@ jobs:
                   NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
                   PUSH_TO_INDEX: ${{ github.event.inputs.push_to_index || 'false' }}
                   MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
+                  TRIGGERED_BY: ${{ github.actor }}
               run: |
                   echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
@@ -251,7 +252,8 @@ jobs:
                     --arg num_eval_workers "$NUM_EVAL_WORKERS" \
                     --arg push_to_index "$PUSH_TO_INDEX" \
                     --arg max_retries "$MAX_RETRIES" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, push_to_index: $push_to_index, max_retries: $max_retries}}')
+                    --arg triggered_by "$TRIGGERED_BY" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, push_to_index: $push_to_index, max_retries: $max_retries, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
