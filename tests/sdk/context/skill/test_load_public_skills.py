@@ -178,7 +178,7 @@ def test_update_skills_repository_clone_new(tmp_path):
     mock_result.returncode = 0
 
     with patch(
-        "openhands.sdk.context.skills.utils.subprocess.run", return_value=mock_result
+        "openhands.sdk.git.cached_repo.subprocess.run", return_value=mock_result
     ) as mock_run:
         repo_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
@@ -211,7 +211,7 @@ def test_update_skills_repository_update_existing(tmp_path):
     mock_result.returncode = 0
 
     with patch(
-        "openhands.sdk.context.skills.utils.subprocess.run", return_value=mock_result
+        "openhands.sdk.git.cached_repo.subprocess.run", return_value=mock_result
     ) as mock_run:
         result_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
@@ -220,12 +220,15 @@ def test_update_skills_repository_update_existing(tmp_path):
         )
 
         assert result_path == repo_path
-        # Check that git fetch and reset were called
-        assert mock_run.call_count == 2
-        first_call_args = mock_run.call_args_list[0][0][0]
-        second_call_args = mock_run.call_args_list[1][0][0]
-        assert first_call_args[:3] == ["git", "fetch", "origin"]
-        assert second_call_args[:3] == ["git", "reset", "--hard"]
+        # The shared git helper does: fetch, then _checkout_ref (which does
+        # fetch ref, checkout, reset)
+        assert mock_run.call_count == 4
+        all_commands = [call[0][0] for call in mock_run.call_args_list]
+        # Should have fetch, fetch ref, checkout, reset
+        assert all_commands[0][:3] == ["git", "fetch", "origin"]
+        assert all_commands[1][:3] == ["git", "fetch", "origin"]
+        assert all_commands[2][:2] == ["git", "checkout"]
+        assert all_commands[3][:3] == ["git", "reset", "--hard"]
 
 
 def test_update_skills_repository_clone_timeout(tmp_path):
@@ -234,7 +237,7 @@ def test_update_skills_repository_clone_timeout(tmp_path):
     cache_dir.mkdir()
 
     with patch(
-        "openhands.sdk.context.skills.utils.subprocess.run",
+        "openhands.sdk.git.cached_repo.subprocess.run",
         side_effect=subprocess.TimeoutExpired("git", 60),
     ) as mock_run:
         repo_path = update_skills_repository(
@@ -260,7 +263,7 @@ def test_update_skills_repository_update_fails_uses_cache(tmp_path):
 
     # Mock fetch to fail, reset to fail
     with patch(
-        "openhands.sdk.context.skills.utils.subprocess.run",
+        "openhands.sdk.git.cached_repo.subprocess.run",
         side_effect=subprocess.CalledProcessError(1, "git", stderr=b"Error"),
     ):
         result_path = update_skills_repository(

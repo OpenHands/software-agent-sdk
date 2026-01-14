@@ -4,33 +4,22 @@ from __future__ import annotations
 
 import hashlib
 import re
-import shutil
 from pathlib import Path
 
+from openhands.sdk.git.cached_repo import (
+    GitHelper,
+    _checkout_ref,
+    _clone_repository,
+    _update_repository,
+    get_git_helper,
+)
+from openhands.sdk.git.exceptions import GitError
 from openhands.sdk.logger import get_logger
-from openhands.sdk.plugin.git_helper import GitError, GitHelper
 
 
 logger = get_logger(__name__)
 
 DEFAULT_CACHE_DIR = Path.home() / ".openhands" / "cache" / "plugins"
-
-# Default GitHelper instance - can be replaced for testing
-_default_git_helper: GitHelper | None = None
-
-
-def get_git_helper() -> GitHelper:
-    """Get the default GitHelper instance."""
-    global _default_git_helper
-    if _default_git_helper is None:
-        _default_git_helper = GitHelper()
-    return _default_git_helper
-
-
-def set_git_helper(helper: GitHelper | None) -> None:
-    """Set the default GitHelper instance (for testing)."""
-    global _default_git_helper
-    _default_git_helper = helper
 
 
 class PluginFetchError(Exception):
@@ -269,81 +258,3 @@ def fetch_plugin(
         raise
     except Exception as e:
         raise PluginFetchError(f"Failed to fetch plugin from {source}: {e}") from e
-
-
-def _clone_repository(url: str, dest: Path, ref: str | None, git: GitHelper) -> None:
-    """Clone a git repository.
-
-    Args:
-        url: Git URL to clone.
-        dest: Destination path.
-        ref: Optional branch/tag to checkout.
-        git: GitHelper instance.
-    """
-    logger.info(f"Cloning plugin from {url}")
-
-    # Remove existing directory if it exists (but isn't a valid git repo)
-    if dest.exists():
-        shutil.rmtree(dest)
-
-    git.clone(url, dest, depth=1, branch=ref)
-
-    logger.debug(f"Plugin cloned to {dest}")
-
-
-def _update_repository(repo_path: Path, ref: str | None, git: GitHelper) -> None:
-    """Update an existing repository.
-
-    Args:
-        repo_path: Path to the repository.
-        ref: Optional branch/tag to checkout.
-        git: GitHelper instance.
-    """
-    logger.debug(f"Updating plugin repository at {repo_path}")
-
-    try:
-        # Fetch latest changes
-        git.fetch(repo_path)
-
-        if ref:
-            _checkout_ref(repo_path, ref, git)
-        else:
-            # Get the current branch
-            current_branch = git.get_current_branch(repo_path)
-
-            if current_branch:
-                # Reset to latest on current branch
-                git.reset_hard(repo_path, f"origin/{current_branch}")
-
-        logger.debug("Plugin repository updated successfully")
-
-    except GitError as e:
-        logger.warning(
-            f"Failed to update repository: {e}, using existing cached version"
-        )
-
-
-def _checkout_ref(repo_path: Path, ref: str, git: GitHelper) -> None:
-    """Checkout a specific ref (branch, tag, or commit).
-
-    Args:
-        repo_path: Path to the repository.
-        ref: Branch, tag, or commit to checkout.
-        git: GitHelper instance.
-    """
-    logger.debug(f"Checking out ref: {ref}")
-
-    # First try to fetch the ref
-    try:
-        git.fetch(repo_path, ref=ref)
-    except GitError:
-        pass  # May fail for commits, that's ok
-
-    # Checkout the ref
-    git.checkout(repo_path, ref)
-
-    # If it's a branch, reset to origin
-    try:
-        git.reset_hard(repo_path, f"origin/{ref}")
-    except GitError:
-        pass  # May fail for tags/commits, that's ok

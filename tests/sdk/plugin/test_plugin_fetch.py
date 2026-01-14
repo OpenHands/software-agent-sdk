@@ -6,22 +6,24 @@ from unittest.mock import create_autospec, patch
 
 import pytest
 
-from openhands.sdk.plugin import (
-    GitError,
+from openhands.sdk.git.cached_repo import (
     GitHelper,
+    _checkout_ref,
+    _clone_repository,
+    _update_repository,
+    get_git_helper,
+    set_git_helper,
+)
+from openhands.sdk.git.exceptions import GitError
+from openhands.sdk.plugin import (
     Plugin,
     PluginFetchError,
     parse_plugin_source,
 )
 from openhands.sdk.plugin.fetch import (
-    _checkout_ref,
-    _clone_repository,
     _extract_readable_name,
-    _update_repository,
     fetch_plugin,
     get_cache_path,
-    get_git_helper,
-    set_git_helper,
 )
 
 
