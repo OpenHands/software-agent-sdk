@@ -1,12 +1,15 @@
 import abc
 from collections.abc import Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from pydantic import Field
 
 from openhands.sdk.critic.result import CriticResult
-from openhands.sdk.event import LLMConvertibleEvent
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.event.base import LLMConvertibleEvent
 
 
 class CriticBase(DiscriminatedUnionMixin, abc.ABC):
@@ -26,6 +29,6 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
 
     @abc.abstractmethod
     def evaluate(
-        self, events: Sequence[LLMConvertibleEvent], git_patch: str | None = None
+        self, events: Sequence["LLMConvertibleEvent"], git_patch: str | None = None
     ) -> CriticResult:
         pass
