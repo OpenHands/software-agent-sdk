@@ -91,6 +91,7 @@ EXPOSE ${PORT}
 # It includes additional Docker, VNC, Desktop, and VSCode Web.
 ####################################################################################
 FROM base-image-minimal AS base-image
+ARG USERNAME
 
 USER root
 # --- VSCode Web ---
