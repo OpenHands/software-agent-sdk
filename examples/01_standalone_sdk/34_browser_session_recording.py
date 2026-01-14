@@ -86,12 +86,12 @@ Please complete the following task to demonstrate browser session recording:
 
 1. First, use `browser_start_recording` to begin recording the browser session.
 
-2. Then navigate to https://example.com and:
+2. Then navigate to https://docs.openhands.dev/ and:
    - Get the page content
    - Scroll down the page
    - Get the browser state to see interactive elements
 
-3. Next, navigate to https://httpbin.org/html and:
+3. Next, navigate to https://docs.openhands.dev/openhands/usage/cli/installation and:
    - Get the page content
    - Scroll down to see more content
 
