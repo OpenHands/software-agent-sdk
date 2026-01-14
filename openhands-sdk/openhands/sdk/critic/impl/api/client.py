@@ -2,7 +2,7 @@ import copy
 from collections.abc import Sequence
 from typing import Any, cast
 
-import requests
+import httpx
 from litellm import ChatCompletionToolParam
 from pydantic import (
     BaseModel,
@@ -107,7 +107,7 @@ class CriticClient(BaseModel):
     )
 
     # --- runtime fields ---
-    _session: requests.Session = PrivateAttr(default_factory=requests.Session)
+    _client: httpx.Client = PrivateAttr(default_factory=httpx.Client)
     _template_renderer: ChatTemplateRenderer | None = PrivateAttr(default=None)
 
     # --- label space ---
@@ -243,8 +243,8 @@ class CriticClient(BaseModel):
 
         def should_retry(exc: BaseException) -> bool:
             # Retry only on 500 Internal Server Error
-            if isinstance(exc, requests.exceptions.HTTPError):
-                return exc.response is not None and exc.response.status_code == 500
+            if isinstance(exc, httpx.HTTPStatusError):
+                return exc.response.status_code == 500
             return False
 
         @retry(
@@ -261,7 +261,7 @@ class CriticClient(BaseModel):
                 if isinstance(self.api_key, SecretStr)
                 else self.api_key
             )
-            resp = self._session.post(
+            resp = self._client.post(
                 f"{self.server_url}/classify",
                 headers={
                     "Content-Type": "application/json",

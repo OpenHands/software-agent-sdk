@@ -13,7 +13,6 @@ dependencies = [
     "pydantic>=2.12.5",
     "python-frontmatter>=1.1.0",
     "python-json-logger>=3.3.0",
-    "requests>=2.31.0",
     "tenacity>=9.1.2",
     "websockets>=12",
     "lmnr>=0.7.24",
