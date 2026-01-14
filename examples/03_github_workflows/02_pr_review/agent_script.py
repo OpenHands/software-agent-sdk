@@ -4,11 +4,15 @@ Example: PR Review Agent
 
 This script runs OpenHands agent to review a pull request and provide
 fine-grained review comments. The agent has full repository access and uses
-bash commands to analyze changes in context and post detailed review feedback.
+bash commands to analyze changes in context and post detailed review feedback
+directly via `gh` or the GitHub API.
 
 This example demonstrates how to use skills for code review:
 - `/codereview` - Standard code review skill
 - `/codereview-roasted` - Linus Torvalds style brutally honest review
+
+The agent posts inline review comments on specific lines of code using the
+GitHub API, rather than posting one giant comment under the PR.
 
 Designed for use with GitHub Actions workflows triggered by PR labels.
 
@@ -30,14 +34,15 @@ see README.md in this directory.
 """
 
 import os
-import subprocess
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from openhands.sdk import LLM, AgentContext, Conversation, get_logger
+from openhands.sdk import LLM, Agent, AgentContext, Conversation, get_logger
 from openhands.sdk.conversation import get_agent_final_response
-from openhands.sdk.utils.github import sanitize_openhands_mentions
-from openhands.tools.preset.default import get_default_agent
+from openhands.sdk.git.utils import run_git_command
+from openhands.tools.preset.default import get_default_condenser, get_default_tools
 
 
 # Add the script directory to Python path so we can import prompt.py
@@ -49,41 +54,88 @@ from prompt import PROMPT  # noqa: E402
 
 logger = get_logger(__name__)
 
+# Maximum total diff size
+MAX_TOTAL_DIFF = 100000
 
-def post_review_comment(review_content: str) -> None:
+
+def _get_required_env(name: str) -> str:
+    value = os.getenv(name)
+    if not value:
+        raise ValueError(f"{name} environment variable is required")
+    return value
+
+
+def get_pr_diff_via_github_api(pr_number: str) -> str:
+    """Fetch the PR diff exactly as GitHub renders it.
+
+    Uses the GitHub REST API "Get a pull request" endpoint with an `Accept`
+    header requesting diff output.
+
+    This avoids depending on local git refs (often stale/missing in
+    `pull_request_target` checkouts).
     """
-    Post a review comment to the PR using GitHub CLI.
+
+    repo = _get_required_env("REPO_NAME")
+    token = _get_required_env("GITHUB_TOKEN")
+
+    url = f"https://api.github.com/repos/{repo}/pulls/{pr_number}"
+    request = urllib.request.Request(url)
+    request.add_header("Accept", "application/vnd.github.v3.diff")
+    request.add_header("Authorization", f"Bearer {token}")
+    request.add_header("X-GitHub-Api-Version", "2022-11-28")
+
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            data = response.read()
+    except urllib.error.HTTPError as e:
+        details = (e.read() or b"").decode("utf-8", errors="replace").strip()
+        raise RuntimeError(
+            f"GitHub diff API request failed: HTTP {e.code} {e.reason}. {details}"
+        ) from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"GitHub diff API request failed: {e.reason}") from e
+
+    return data.decode("utf-8", errors="replace")
+
+
+def truncate_text(diff_text: str, max_total: int = MAX_TOTAL_DIFF) -> str:
+    if len(diff_text) <= max_total:
+        return diff_text
+
+    total_chars = len(diff_text)
+    return (
+        diff_text[:max_total]
+        + f"\n\n... [total diff truncated, {total_chars:,} chars total, "
+        + f"showing first {max_total:,}] ..."
+    )
+
+
+def get_truncated_pr_diff() -> str:
+    """Get the PR diff with truncation.
+
+    This uses GitHub as the source of truth so the review matches the PR's
+    "Files changed" view.
+    """
+
+    pr_number = _get_required_env("PR_NUMBER")
+    diff_text = get_pr_diff_via_github_api(pr_number)
+    return truncate_text(diff_text)
+
+
+def get_head_commit_sha(repo_dir: Path | None = None) -> str:
+    """
+    Get the SHA of the HEAD commit.
 
     Args:
-        review_content: The review content to post
+        repo_dir: Path to the repository (defaults to cwd)
+
+    Returns:
+        The commit SHA
     """
-    # Sanitize @OpenHands mentions to prevent self-mention loops
-    review_content = sanitize_openhands_mentions(review_content)
+    if repo_dir is None:
+        repo_dir = Path.cwd()
 
-    logger.info("Posting review comment to GitHub...")
-    pr_number = os.getenv("PR_NUMBER")
-    repo_name = os.getenv("REPO_NAME")
-    github_token = os.getenv("GITHUB_TOKEN")
-
-    if not pr_number or not repo_name or not github_token:
-        raise RuntimeError("Missing required environment variables for posting review")
-
-    subprocess.run(
-        [
-            "gh",
-            "pr",
-            "review",
-            pr_number,
-            "--repo",
-            repo_name,
-            "--comment",
-            "--body",
-            review_content,
-        ],
-        check=True,
-        env={**os.environ, "GH_TOKEN": github_token},
-    )
-    logger.info("Successfully posted review comment")
+    return run_git_command(["git", "rev-parse", "HEAD"], repo_dir).strip()
 
 
 def main():
@@ -106,6 +158,8 @@ def main():
         logger.error(f"Missing required environment variables: {missing_vars}")
         sys.exit(1)
 
+    github_token = os.getenv("GITHUB_TOKEN")
+
     # Get PR information
     pr_info = {
         "number": os.getenv("PR_NUMBER"),
@@ -126,6 +180,13 @@ def main():
     logger.info(f"Review style: {review_style}")
 
     try:
+        pr_diff = get_truncated_pr_diff()
+        logger.info(f"Got PR diff with {len(pr_diff)} characters")
+
+        # Get the HEAD commit SHA for inline comments
+        commit_id = get_head_commit_sha()
+        logger.info(f"HEAD commit SHA: {commit_id}")
+
         # Create the review prompt using the template
         # Include the skill trigger keyword to activate the appropriate skill
         skill_trigger = (
@@ -137,7 +198,10 @@ def main():
             repo_name=pr_info.get("repo_name", "N/A"),
             base_branch=pr_info.get("base_branch", "main"),
             head_branch=pr_info.get("head_branch", "N/A"),
+            pr_number=pr_info.get("number", "N/A"),
+            commit_id=commit_id,
             skill_trigger=skill_trigger,
+            diff=pr_diff,
         )
 
         # Configure LLM
@@ -169,38 +233,60 @@ def main():
         )
 
         # Create agent with default tools and agent context
-        agent = get_default_agent(
+        # Note: agent_context must be passed at initialization since Agent is frozen
+        agent = Agent(
             llm=llm,
-            cli_mode=True,
+            tools=get_default_tools(enable_browser=False),  # CLI mode - no browser
+            agent_context=agent_context,
+            system_prompt_kwargs={"cli_mode": True},
+            condenser=get_default_condenser(
+                llm=llm.model_copy(update={"usage_id": "condenser"})
+            ),
         )
-        # Set agent_context on the agent
-        agent.agent_context = agent_context
 
-        # Create conversation
+        # Create conversation with secrets for masking
+        # These secrets will be masked in agent output to prevent accidental exposure
+        secrets = {}
+        if api_key:
+            secrets["LLM_API_KEY"] = api_key
+        if github_token:
+            secrets["GITHUB_TOKEN"] = github_token
+
         conversation = Conversation(
             agent=agent,
             workspace=cwd,
+            secrets=secrets,
         )
 
         logger.info("Starting PR review analysis...")
-        logger.info(
-            "Agent will analyze the PR using bash commands for full repository access"
-        )
+        logger.info("Agent received the PR diff in the initial message")
         logger.info(f"Using skill trigger: {skill_trigger}")
+        logger.info("Agent will post inline review comments directly via GitHub API")
 
         # Send the prompt and run the agent
+        # The agent will analyze the code and post inline review comments
+        # directly to the PR using the GitHub API
         conversation.send_message(prompt)
         conversation.run()
 
-        # Get the agent's response
+        # The agent should have posted review comments via GitHub API
+        # Log the final response for debugging purposes
         review_content = get_agent_final_response(conversation.state.events)
-        if not review_content:
-            raise RuntimeError("No review content generated by the agent")
+        if review_content:
+            logger.info(f"Agent final response: {len(review_content)} characters")
 
-        logger.info(f"Generated review with {len(review_content)} characters")
-
-        # Post the review comment
-        post_review_comment(review_content)
+        # Print cost information for CI output
+        metrics = conversation.conversation_stats.get_combined_metrics()
+        print("\n=== PR Review Cost Summary ===")
+        print(f"Total Cost: ${metrics.accumulated_cost:.6f}")
+        if metrics.accumulated_token_usage:
+            token_usage = metrics.accumulated_token_usage
+            print(f"Prompt Tokens: {token_usage.prompt_tokens}")
+            print(f"Completion Tokens: {token_usage.completion_tokens}")
+            if token_usage.cache_read_tokens > 0:
+                print(f"Cache Read Tokens: {token_usage.cache_read_tokens}")
+            if token_usage.cache_write_tokens > 0:
+                print(f"Cache Write Tokens: {token_usage.cache_write_tokens}")
 
         logger.info("PR review completed successfully")
 

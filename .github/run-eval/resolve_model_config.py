@@ -81,12 +81,14 @@ MODELS = {
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v3.2"},
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",
         "display_name": "Qwen 3 Coder",
-        "llm_config": {"model": "litellm_proxy/qwen/qwen3-coder"},
+        "llm_config": {
+            "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
+        },
     },
 }
 
