@@ -8,7 +8,11 @@ logger = get_logger(__name__)
 
 # rrweb loader script - injected into every page to make rrweb available
 # This script loads rrweb from CDN dynamically
-RRWEB_CDN_URL = "https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
+# NOTE: Using unpkg instead of jsdelivr because:
+# - jsdelivr returns Content-Type: application/node for .cjs files (browser won't execute)
+# - jsdelivr's .min.js is ES module format (no global window.rrweb)
+# - unpkg returns Content-Type: text/javascript for .cjs files (browser executes it)
+RRWEB_CDN_URL = "https://unpkg.com/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
 
 RRWEB_LOADER_SCRIPT = """
 (function() {
