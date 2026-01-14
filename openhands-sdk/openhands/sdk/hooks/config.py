@@ -203,7 +203,7 @@ class HookConfig(BaseModel):
         if has_legacy_format:
             warn_deprecated(
                 "HookConfig with 'hooks' wrapper or PascalCase keys",
-                deprecated_in="1.0",
+                deprecated_in="1.8.2",
                 removed_in="1.10",
                 details=(
                     "Use snake_case field names directly: pre_tool_use, "
