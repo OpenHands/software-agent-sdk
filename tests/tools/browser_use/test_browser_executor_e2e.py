@@ -194,8 +194,10 @@ class TestBrowserExecutorE2E:
 
         assert isinstance(result, BrowserObservation)
         assert not result.is_error
-        # Some CI environments return an empty interactive_elements list even when
-        # the page loads correctly. We at least validate the navigation worked.
+        # Check for interactive elements which are reliably present
+        assert "Click Me" in result.text
+        # Note: browser-use 0.10.1 has a bug where page title is not properly
+        # extracted from <title> tag. We check for URL instead.
         assert test_server in result.text
 
     def test_get_state_with_screenshot(
@@ -227,11 +229,11 @@ class TestBrowserExecutorE2E:
         get_state_action = BrowserGetStateAction(include_screenshot=False)
         state_result = browser_executor(get_state_action)
 
-        # Some CI environments return an empty interactive_elements list.
-        # If we can't find elements, this test isn't meaningful.
-        if '"interactive_elements": []' in state_result.text:
-            pytest.skip("No interactive elements detected in this environment")
+        # Parse the state to find button index
+        # The test button should be indexed in the interactive elements
+        assert "Click Me" in state_result.text
 
+        # Try to click the first interactive element (likely the button)
         click_action = BrowserClickAction(index=0)
         result = browser_executor(click_action)
 
@@ -248,12 +250,12 @@ class TestBrowserExecutorE2E:
         get_state_action = BrowserGetStateAction(include_screenshot=False)
         state_result = browser_executor(get_state_action)
 
-        # Some CI environments return an empty interactive_elements list.
-        # If we can't find elements, this test isn't meaningful.
+        # Look for input field in the state
         state_output = state_result.text
-        if '"interactive_elements": []' in state_output:
-            pytest.skip("No interactive elements detected in this environment")
+        assert "test-input" in state_output or "Type here" in state_output
 
+        # Find the input field index and type into it
+        # This assumes the input field is one of the interactive elements
         type_action = BrowserTypeAction(index=1, text="Hello World")
         result = browser_executor(type_action)
 
@@ -296,8 +298,6 @@ class TestBrowserExecutorE2E:
 
         assert isinstance(result, BrowserObservation)
         assert not result.is_error
-        if "Forbidden." in result.text:
-            pytest.skip("Content extraction blocked in this environment")
         assert "Browser Test Page" in result.text
 
         # Get content with links
@@ -308,8 +308,6 @@ class TestBrowserExecutorE2E:
 
         assert isinstance(result, BrowserObservation)
         assert not result.is_error
-        if "Forbidden." in result.text:
-            pytest.skip("Content extraction blocked in this environment")
         assert "Browser Test Page" in result.text
 
     def test_navigate_new_tab(
