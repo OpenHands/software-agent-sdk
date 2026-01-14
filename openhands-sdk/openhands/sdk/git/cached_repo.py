@@ -315,7 +315,9 @@ def _update_repository(
         logger.debug("Repository updated successfully")
 
     except GitError as e:
-        logger.warning(f"Failed to update repository: {e}, using existing cached version")
+        logger.warning(
+            f"Failed to update repository: {e}, using existing cached version"
+        )
 
 
 def _checkout_ref(repo_path: Path, ref: str, git: GitHelper) -> None:
