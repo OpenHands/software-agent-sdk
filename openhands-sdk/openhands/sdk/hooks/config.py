@@ -100,7 +100,7 @@ class HookMatcher(BaseModel):
 class HookConfig(BaseModel):
     """Configuration for all hooks.
 
-    Hooks can be configured either by loading from .openhands/hooks.json or
+    Hooks can be configured either by loading from `.openhands/hooks.json` or
     by directly instantiating with typed fields:
 
         # Direct instantiation with typed fields (recommended):
@@ -116,6 +116,10 @@ class HookConfig(BaseModel):
         # Load from JSON file:
         config = HookConfig.load(".openhands/hooks.json")
     """
+
+    model_config = {
+        "extra": "forbid",
+    }
 
     pre_tool_use: list[HookMatcher] = Field(
         default_factory=list,
@@ -170,8 +174,13 @@ class HookConfig(BaseModel):
         has_legacy_format = False
 
         # Unwrap legacy format: {"hooks": {"PreToolUse": [...]}}
-        if "hooks" in data and len(data) == 1:
+        if "hooks" in data:
             has_legacy_format = True
+            if len(data) != 1:
+                logger.warning(
+                    'HookConfig legacy wrapper format should be {"hooks": {...}}. '
+                    "Extra top-level keys will be ignored."
+                )
             data = data["hooks"]
 
         # Convert PascalCase keys to snake_case field names
@@ -253,6 +262,11 @@ class HookConfig(BaseModel):
         except (json.JSONDecodeError, OSError) as e:
             # Log warning but don't fail - just return empty config
             logger.warning(f"Failed to load hooks from {path}: {e}")
+            return cls()
+        except Exception as e:
+            # Validation errors (or our own ValueError from validators) should not
+            # crash the caller; treat as empty config but make it visible.
+            logger.warning(f"Failed to validate hooks from {path}: {e}")
             return cls()
 
     @classmethod
