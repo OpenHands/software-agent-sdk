@@ -254,20 +254,10 @@ class HookConfig(BaseModel):
         if not path.exists():
             return cls()
 
-        try:
-            with open(path) as f:
-                data = json.load(f)
-            # Use model_validate which triggers the model_validator
-            return cls.model_validate(data)
-        except (json.JSONDecodeError, OSError) as e:
-            # Log warning but don't fail - just return empty config
-            logger.warning(f"Failed to load hooks from {path}: {e}")
-            return cls()
-        except Exception as e:
-            # Validation errors (or our own ValueError from validators) should not
-            # crash the caller; treat as empty config but make it visible.
-            logger.warning(f"Failed to validate hooks from {path}: {e}")
-            return cls()
+        with open(path) as f:
+            data = json.load(f)
+        # Use model_validate which triggers the model_validator
+        return cls.model_validate(data)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HookConfig":
