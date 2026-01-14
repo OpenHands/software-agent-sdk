@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import tempfile
@@ -18,6 +19,8 @@ from openhands.tools.browser_use.definition import (
     BrowserObservation,
     BrowserScrollAction,
     BrowserSetStorageAction,
+    BrowserStartRecordingAction,
+    BrowserStopRecordingAction,
     BrowserSwitchTabAction,
     BrowserTypeAction,
 )
@@ -649,6 +652,159 @@ class TestBrowserExecutorE2E:
                 # Verify the file content is not empty
                 file_path = os.path.join(temp_save_dir, screenshot_files[0])
                 assert os.path.getsize(file_path) > 0
+
+            finally:
+                if executor:
+                    try:
+                        executor.close()
+                    except Exception:
+                        pass
+
+    def test_start_recording(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        """Test starting a recording session."""
+        # Navigate to the test page first
+        navigate_action = BrowserNavigateAction(url=test_server)
+        browser_executor(navigate_action)
+
+        # Wait for rrweb to load from CDN with retry
+        result = None
+        for attempt in range(10):
+            time.sleep(1)
+            result = browser_executor(BrowserStartRecordingAction())
+            if "Recording started" in result.text:
+                break
+
+        assert isinstance(result, BrowserObservation)
+        assert not result.is_error
+        assert "Recording started" in result.text
+
+    def test_stop_recording_without_start(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        """Test stopping recording when not started returns appropriate message."""
+        # Navigate to the test page
+        navigate_action = BrowserNavigateAction(url=test_server)
+        browser_executor(navigate_action)
+
+        # Wait for page to load
+        time.sleep(1)
+
+        # Try to stop recording without starting
+        stop_action = BrowserStopRecordingAction()
+        result = browser_executor(stop_action)
+
+        assert isinstance(result, BrowserObservation)
+        # Should return error indicating not recording
+        data = json.loads(result.text)
+        assert "error" in data or data.get("count", -1) == 0
+
+    def test_recording_captures_events(
+        self, browser_executor: BrowserToolExecutor, test_server: str
+    ):
+        """Test that recording captures browser events."""
+        # Navigate to the test page
+        navigate_action = BrowserNavigateAction(url=test_server)
+        browser_executor(navigate_action)
+
+        # Wait for rrweb to load from CDN with retry
+        start_result = None
+        for attempt in range(10):
+            time.sleep(1)
+            start_result = browser_executor(BrowserStartRecordingAction())
+            if "Recording started" in start_result.text:
+                break
+
+        assert start_result is not None
+        assert not start_result.is_error
+        assert "Recording started" in start_result.text
+
+        # Perform some actions that should be recorded
+        browser_executor(BrowserScrollAction(direction="down"))
+        time.sleep(0.5)
+        browser_executor(BrowserScrollAction(direction="up"))
+        time.sleep(0.5)
+
+        # Stop recording and get events
+        stop_result = browser_executor(BrowserStopRecordingAction())
+
+        assert isinstance(stop_result, BrowserObservation)
+        assert not stop_result.is_error
+
+        # Parse the JSON response
+        data = json.loads(stop_result.text)
+
+        # Should have events captured
+        assert "events" in data
+        assert "count" in data
+        assert data["count"] > 0, "Expected at least some events to be recorded"
+        assert len(data["events"]) == data["count"]
+
+        # rrweb events should have required fields
+        # Event type 4 is meta, type 2 is full snapshot, etc.
+        event_types = [e.get("type") for e in data["events"]]
+        assert len(event_types) > 0, "Events should have type field"
+
+    def test_recording_save_to_file(self, test_server: str):
+        """Test that recording can be saved to a file."""
+        with tempfile.TemporaryDirectory() as temp_save_dir:
+            executor = None
+            try:
+                executor = BrowserToolExecutor(
+                    headless=True,
+                    session_timeout_minutes=5,
+                    full_output_save_dir=temp_save_dir,
+                )
+
+                # Navigate to the test page
+                navigate_action = BrowserNavigateAction(url=test_server)
+                executor(navigate_action)
+
+                # Wait for rrweb to load from CDN with retry
+                start_result = None
+                for attempt in range(10):
+                    time.sleep(1)
+                    start_result = executor(BrowserStartRecordingAction())
+                    if "Recording started" in start_result.text:
+                        break
+                    print(f"Attempt {attempt + 1}: {start_result.text}")
+
+                assert start_result is not None
+                assert "Recording started" in start_result.text, (
+                    f"Failed to start recording: {start_result.text}"
+                )
+
+                # Perform actions
+                executor(BrowserScrollAction(direction="down"))
+                time.sleep(0.5)
+
+                # Stop recording
+                stop_result = executor(BrowserStopRecordingAction())
+                assert not stop_result.is_error
+
+                # Parse and save the recording
+                data = json.loads(stop_result.text)
+                assert data["count"] > 0
+
+                # Save recording to file
+                recording_path = os.path.join(temp_save_dir, "recording.json")
+                with open(recording_path, "w") as f:
+                    json.dump(data, f, indent=2)
+
+                # Verify file was saved and has content
+                assert os.path.exists(recording_path)
+                assert os.path.getsize(recording_path) > 0
+
+                # Read back and verify
+                with open(recording_path) as f:
+                    saved_data = json.load(f)
+                assert saved_data["count"] == data["count"]
+                assert len(saved_data["events"]) == len(data["events"])
+
+                print(f"\n✓ Recording saved to {recording_path}")
+                print(f"✓ Captured {data['count']} events")
+                print(f"✓ File size: {os.path.getsize(recording_path)} bytes")
 
             finally:
                 if executor:

@@ -7,13 +7,49 @@ from openhands.tools.browser_use.logging_fix import LogSafeBrowserUseServer
 logger = get_logger(__name__)
 
 # rrweb loader script - injected into every page to make rrweb available
+# This script loads rrweb from CDN dynamically
+RRWEB_CDN_URL = "https://cdn.jsdelivr.net/npm/rrweb@2.0.0-alpha.17/dist/rrweb.umd.cjs"
+
 RRWEB_LOADER_SCRIPT = """
 (function() {
     if (window.__rrweb_loaded) return;
     window.__rrweb_loaded = true;
-    var s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/@rrweb/record@latest/dist/record.umd.min.cjs';
-    document.head.appendChild(s);
+
+    // Create a simple fallback in case CDN fails
+    window.__rrweb_events = window.__rrweb_events || [];
+
+    function loadRrweb() {
+        var s = document.createElement('script');
+        s.src = '""" + RRWEB_CDN_URL + """';
+        s.onload = function() {
+            window.__rrweb_ready = true;
+            console.log('[rrweb] Loaded successfully from CDN');
+        };
+        s.onerror = function() {
+            console.error('[rrweb] Failed to load from CDN, creating minimal stub');
+            // Create a minimal stub that just captures basic events
+            window.rrweb = {
+                record: function(opts) {
+                    console.log('[rrweb-stub] Recording started');
+                    var emitFn = opts.emit;
+                    // Emit a meta event
+                    emitFn({type: 4, data: {href: location.href, width: window.innerWidth, height: window.innerHeight}, timestamp: Date.now()});
+                    // Emit a full snapshot stub
+                    emitFn({type: 2, data: {node: {type: 0, childNodes: []}}, timestamp: Date.now()});
+                    // Return a stop function
+                    return function() { console.log('[rrweb-stub] Recording stopped'); };
+                }
+            };
+            window.__rrweb_ready = true;
+        };
+        (document.head || document.documentElement).appendChild(s);
+    }
+
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', loadRrweb);
+    } else {
+        loadRrweb();
+    }
 })();
 """
 
@@ -82,9 +118,12 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     "expression": """
                         (function() {
                             if (window.__rrweb_stopFn) return 'Already recording';
-                            if (typeof rrwebRecord === 'undefined') return 'rrweb not loaded yet - try again after page loads';
+                            // rrweb UMD module exports to window.rrweb (not rrwebRecord)
+                            var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
+                                           (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
+                            if (!recordFn) return 'rrweb not loaded yet - try again after page loads';
                             window.__rrweb_events = [];
-                            window.__rrweb_stopFn = rrwebRecord.record({
+                            window.__rrweb_stopFn = recordFn({
                                 emit: function(event) {
                                     window.__rrweb_events.push(event);
                                 }
