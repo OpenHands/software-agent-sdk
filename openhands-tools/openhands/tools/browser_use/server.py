@@ -19,9 +19,11 @@ RRWEB_LOADER_SCRIPT = """
     if (window.__rrweb_loaded) return;
     window.__rrweb_loaded = true;
 
-    // Initialize storage for events
+    // Initialize storage for events (per-page, will be flushed to backend)
     window.__rrweb_events = window.__rrweb_events || [];
     window.__rrweb_using_stub = false;
+    // Flag to indicate if we should auto-start recording (set by backend)
+    window.__rrweb_should_record = window.__rrweb_should_record || false;
 
     function loadRrweb() {
         var s = document.createElement('script');
@@ -30,6 +32,10 @@ RRWEB_LOADER_SCRIPT = """
             window.__rrweb_ready = true;
             window.__rrweb_using_stub = false;
             console.log('[rrweb] Loaded successfully from CDN');
+            // Auto-start recording if flag is set (for cross-page continuity)
+            if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
+                startRecordingInternal();
+            }
         };
         s.onerror = function() {
             console.error('[rrweb] Failed to load from CDN, creating minimal stub');
@@ -133,9 +139,28 @@ RRWEB_LOADER_SCRIPT = """
                 }
             };
             window.__rrweb_ready = true;
+            // Auto-start for stub too
+            if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
+                startRecordingInternal();
+            }
         };
         (document.head || document.documentElement).appendChild(s);
     }
+
+    // Internal function to start recording (used for auto-start on navigation)
+    window.startRecordingInternal = function() {
+        var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
+                       (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
+        if (!recordFn || window.__rrweb_stopFn) return;
+        
+        window.__rrweb_events = [];
+        window.__rrweb_stopFn = recordFn({
+            emit: function(event) {
+                window.__rrweb_events.push(event);
+            }
+        });
+        console.log('[rrweb] Auto-started recording on new page');
+    };
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', loadRrweb);
@@ -160,6 +185,11 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
     _inject_scripts: list[str] = []
     # Script identifiers returned by CDP (for cleanup if needed)
     _injected_script_ids: list[str] = []
+
+    # Recording state stored on Python side to persist across page navigations
+    _recording_events: list[dict] = []
+    _is_recording: bool = False
+    _recording_using_stub: bool = False
 
     def set_inject_scripts(self, scripts: list[str]) -> None:
         """Set scripts to be injected into every new document.
@@ -202,19 +232,151 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         except Exception as e:
             logger.warning(f"Failed to inject scripts: {e}")
 
+    async def _flush_recording_events(self) -> int:
+        """Flush recording events from browser to Python storage.
+
+        This should be called before navigation to preserve events across pages.
+        Returns the number of events flushed.
+        """
+        if not self.browser_session or not self._is_recording:
+            return 0
+
+        try:
+            cdp_session = await self.browser_session.get_or_create_cdp_session()
+            result = await cdp_session.cdp_client.send.Runtime.evaluate(
+                params={
+                    "expression": """
+                        (function() {
+                            var events = window.__rrweb_events || [];
+                            var using_stub = !!window.__rrweb_using_stub;
+                            // Clear browser-side events after flushing
+                            window.__rrweb_events = [];
+                            return JSON.stringify({events: events, using_stub: using_stub});
+                        })();
+                    """,
+                    "returnByValue": True,
+                },
+                session_id=cdp_session.session_id,
+            )
+            import json
+            data = json.loads(result.get("result", {}).get("value", "{}"))
+            events = data.get("events", [])
+            if events:
+                self._recording_events.extend(events)
+                if data.get("using_stub"):
+                    self._recording_using_stub = True
+                logger.debug(f"Flushed {len(events)} recording events from browser")
+            return len(events)
+        except Exception as e:
+            logger.warning(f"Failed to flush recording events: {e}")
+            return 0
+
+    async def _set_recording_flag(self, should_record: bool) -> None:
+        """Set the recording flag in the browser for auto-start on new pages."""
+        if not self.browser_session:
+            return
+
+        try:
+            cdp_session = await self.browser_session.get_or_create_cdp_session()
+            await cdp_session.cdp_client.send.Runtime.evaluate(
+                params={
+                    "expression": f"window.__rrweb_should_record = {str(should_record).lower()};",
+                    "returnByValue": True,
+                },
+                session_id=cdp_session.session_id,
+            )
+        except Exception as e:
+            logger.debug(f"Failed to set recording flag: {e}")
+
+    async def _restart_recording_on_new_page(self) -> None:
+        """Restart recording on a new page after navigation.
+
+        This waits for rrweb to be ready and starts a new recording session.
+        Called automatically after navigation when recording is active.
+        """
+        import asyncio
+
+        if not self.browser_session or not self._is_recording:
+            return
+
+        try:
+            cdp_session = await self.browser_session.get_or_create_cdp_session()
+
+            # Wait for rrweb to be ready and start recording
+            start_recording_js = """
+                (function() {
+                    var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
+                                   (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
+                    if (!recordFn) return {status: 'not_loaded'};
+                    if (window.__rrweb_stopFn) return {status: 'already_recording'};
+
+                    window.__rrweb_events = [];
+                    window.__rrweb_stopFn = recordFn({
+                        emit: function(event) {
+                            window.__rrweb_events.push(event);
+                        }
+                    });
+                    return {
+                        status: 'started',
+                        using_stub: !!window.__rrweb_using_stub
+                    };
+                })();
+            """
+
+            # Retry a few times waiting for rrweb to load on new page
+            for attempt in range(RRWEB_START_MAX_RETRIES):
+                result = await cdp_session.cdp_client.send.Runtime.evaluate(
+                    params={"expression": start_recording_js, "returnByValue": True},
+                    session_id=cdp_session.session_id,
+                )
+
+                value = result.get("result", {}).get("value", {})
+                status = value.get("status") if isinstance(value, dict) else value
+
+                if status == "started":
+                    if value.get("using_stub"):
+                        self._recording_using_stub = True
+                    logger.debug("Recording restarted on new page")
+                    return
+
+                elif status == "already_recording":
+                    logger.debug("Recording already active on new page")
+                    return
+
+                elif status == "not_loaded":
+                    if attempt < RRWEB_START_MAX_RETRIES - 1:
+                        await asyncio.sleep(RRWEB_START_RETRY_DELAY_MS / 1000)
+                    continue
+
+            logger.warning("Could not restart recording on new page (rrweb not loaded)")
+
+        except Exception as e:
+            logger.warning(f"Failed to restart recording on new page: {e}")
+
     async def _start_recording(self) -> str:
         """Start rrweb session recording with automatic retry.
 
         Will retry up to RRWEB_START_MAX_RETRIES times if rrweb is not loaded yet.
         This handles the case where recording is started before the page fully loads.
+
+        Recording persists across page navigations - events are stored on the Python
+        side and automatically collected when stop_recording is called.
         """
         import asyncio
 
         if not self.browser_session:
             return "Error: No browser session active"
 
+        # Reset Python-side storage for new recording session
+        self._recording_events = []
+        self._is_recording = True
+        self._recording_using_stub = False
+
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
+
+            # Set flag so new pages auto-start recording
+            await self._set_recording_flag(True)
 
             start_recording_js = """
                 (function() {
@@ -224,6 +386,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                                    (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
                     if (!recordFn) return {status: 'not_loaded'};
                     window.__rrweb_events = [];
+                    window.__rrweb_should_record = true;
                     window.__rrweb_stopFn = recordFn({
                         emit: function(event) {
                             window.__rrweb_events.push(event);
@@ -249,6 +412,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
                 if status == "started":
                     using_stub = value.get("using_stub", False) if isinstance(value, dict) else False
+                    self._recording_using_stub = using_stub
                     if using_stub:
                         logger.warning("Recording started using fallback stub (CDN load failed)")
                         return "Recording started (using fallback recorder - CDN unavailable)"
@@ -271,12 +435,14 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     return f"Unknown status: {status}"
 
             # All retries exhausted
+            self._is_recording = False
             return (
                 "rrweb not loaded after retries. "
                 "Please navigate to a page first and try again."
             )
 
         except Exception as e:
+            self._is_recording = False
             logger.exception("Error starting recording", exc_info=e)
             return f"Error starting recording: {str(e)}"
 
@@ -284,58 +450,47 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         """Stop rrweb recording and return events as JSON.
 
         Returns a JSON object with:
-        - events: Array of rrweb events
+        - events: Array of rrweb events (combined from all pages visited)
         - count: Number of events captured
         - using_stub: Whether the fallback stub was used (CDN unavailable)
         - event_types: Summary of event types captured
+        - pages_recorded: Number of pages that were recorded
         """
+        import json
+
         if not self.browser_session:
             return '{"error": "No browser session active"}'
 
+        if not self._is_recording:
+            return json.dumps({
+                "error": "Not recording",
+                "hint": "Call browser_start_recording first"
+            })
+
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
+
+            # Stop recording on current page and get its events
             result = await cdp_session.cdp_client.send.Runtime.evaluate(
                 params={
                     "expression": """
                         (function() {
-                            if (!window.__rrweb_stopFn) {
-                                return JSON.stringify({
-                                    error: 'Not recording',
-                                    hint: 'Call browser_start_recording first'
-                                });
-                            }
-
-                            // Stop the recording
-                            window.__rrweb_stopFn();
-
                             var events = window.__rrweb_events || [];
                             var using_stub = !!window.__rrweb_using_stub;
 
-                            // Count event types for summary
-                            var eventTypes = {};
-                            var typeNames = {
-                                0: 'DomContentLoaded',
-                                1: 'Load',
-                                2: 'FullSnapshot',
-                                3: 'IncrementalSnapshot',
-                                4: 'Meta',
-                                5: 'Custom',
-                                6: 'Plugin'
-                            };
-                            events.forEach(function(e) {
-                                var typeName = typeNames[e.type] || ('Unknown_' + e.type);
-                                eventTypes[typeName] = (eventTypes[typeName] || 0) + 1;
-                            });
+                            // Stop the recording if active
+                            if (window.__rrweb_stopFn) {
+                                window.__rrweb_stopFn();
+                                window.__rrweb_stopFn = null;
+                            }
 
-                            // Cleanup
-                            window.__rrweb_stopFn = null;
+                            // Clear flags
+                            window.__rrweb_should_record = false;
                             window.__rrweb_events = [];
 
                             return JSON.stringify({
                                 events: events,
-                                count: events.length,
-                                using_stub: using_stub,
-                                event_types: eventTypes
+                                using_stub: using_stub
                             });
                         })();
                     """,
@@ -344,29 +499,63 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 session_id=cdp_session.session_id,
             )
 
-            result_str = result.get("result", {}).get("value", "{}")
+            current_page_data = json.loads(result.get("result", {}).get("value", "{}"))
+            current_page_events = current_page_data.get("events", [])
+            if current_page_data.get("using_stub"):
+                self._recording_using_stub = True
+
+            # Combine events from Python storage with current page
+            all_events = self._recording_events + current_page_events
+
+            # Count event types for summary
+            event_types = {}
+            type_names = {
+                0: 'DomContentLoaded',
+                1: 'Load',
+                2: 'FullSnapshot',
+                3: 'IncrementalSnapshot',
+                4: 'Meta',
+                5: 'Custom',
+                6: 'Plugin'
+            }
+            for e in all_events:
+                type_num = e.get("type", -1)
+                type_name = type_names.get(type_num, f'Unknown_{type_num}')
+                event_types[type_name] = event_types.get(type_name, 0) + 1
+
+            # Count pages (each FullSnapshot typically represents a new page)
+            pages_recorded = event_types.get('FullSnapshot', 0)
+
+            # Reset state
+            self._is_recording = False
+            await self._set_recording_flag(False)
+
+            # Prepare result
+            result_data = {
+                "events": all_events,
+                "count": len(all_events),
+                "using_stub": self._recording_using_stub,
+                "event_types": event_types,
+                "pages_recorded": pages_recorded
+            }
+
+            # Clear Python-side storage
+            self._recording_events = []
+            self._recording_using_stub = False
 
             # Log summary
-            try:
-                import json
-                data = json.loads(result_str)
-                count = data.get("count", 0)
-                using_stub = data.get("using_stub", False)
-                event_types = data.get("event_types", {})
+            if self._recording_using_stub:
+                logger.warning(f"Recording stopped (fallback stub): {len(all_events)} events from {pages_recorded} page(s)")
+            else:
+                logger.info(f"Recording stopped: {len(all_events)} events from {pages_recorded} page(s)")
+            logger.debug(f"Event types: {event_types}")
 
-                if using_stub:
-                    logger.warning(f"Recording stopped (fallback stub): {count} events captured")
-                else:
-                    logger.info(f"Recording stopped: {count} events captured")
-                logger.debug(f"Event types: {event_types}")
-            except Exception:
-                pass  # Don't fail on logging
-
-            return result_str
+            return json.dumps(result_data)
 
         except Exception as e:
+            self._is_recording = False
             logger.exception("Error stopping recording", exc_info=e)
-            return '{"error": "' + str(e).replace('"', '\\"') + '"}'
+            return json.dumps({"error": str(e)})
 
     async def _get_storage(self) -> str:
         """Get browser storage (cookies, local storage, session storage)."""

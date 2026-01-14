@@ -302,19 +302,58 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
     # Navigation & Browser Control Methods
     async def navigate(self, url: str, new_tab: bool = False) -> str:
-        """Navigate to a URL."""
+        """Navigate to a URL.
+
+        If recording is active, events from the current page are flushed
+        to Python storage before navigation to preserve cross-page recordings.
+        Recording is automatically restarted on the new page.
+        """
         await self._ensure_initialized()
-        return await self._server._navigate(url, new_tab)
+        # Flush recording events before navigation to preserve them
+        is_recording = self._server._is_recording
+        if is_recording:
+            await self._server._flush_recording_events()
+
+        result = await self._server._navigate(url, new_tab)
+
+        # Restart recording on new page if it was active
+        if is_recording:
+            await self._server._restart_recording_on_new_page()
+
+        return result
 
     async def go_back(self) -> str:
-        """Go back in browser history."""
+        """Go back in browser history.
+
+        If recording is active, events from the current page are flushed
+        to Python storage before navigation. Recording is automatically
+        restarted on the new page.
+        """
         await self._ensure_initialized()
-        return await self._server._go_back()
+        # Flush recording events before navigation to preserve them
+        is_recording = self._server._is_recording
+        if is_recording:
+            await self._server._flush_recording_events()
+
+        result = await self._server._go_back()
+
+        # Restart recording on new page if it was active
+        if is_recording:
+            await self._server._restart_recording_on_new_page()
+
+        return result
 
     # Page Interaction
     async def click(self, index: int, new_tab: bool = False) -> str:
-        """Click an element by index."""
+        """Click an element by index.
+
+        If recording is active, events are flushed before the click
+        in case it causes a navigation.
+        """
         await self._ensure_initialized()
+        # Flush recording events before click (might cause navigation)
+        if self._server._is_recording:
+            await self._server._flush_recording_events()
         return await self._server._click(index, new_tab)
 
     async def type_text(self, index: int, text: str) -> str:
