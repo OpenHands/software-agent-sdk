@@ -173,6 +173,91 @@ def _extract_readable_name(source: str) -> str:
     return name[:32] if name else "plugin"
 
 
+def _resolve_local_source(url: str, subpath: str | None) -> Path:
+    """Resolve a local plugin source to a path.
+
+    Args:
+        url: Local path string (may contain ~ for home directory).
+        subpath: Optional subdirectory within the local path.
+
+    Returns:
+        Resolved absolute path to the plugin directory.
+
+    Raises:
+        PluginFetchError: If path doesn't exist or subpath is invalid.
+    """
+    local_path = Path(url).expanduser().resolve()
+    if not local_path.exists():
+        raise PluginFetchError(f"Local plugin path does not exist: {local_path}")
+    return _apply_subpath(local_path, subpath, "local plugin path")
+
+
+def _fetch_remote_source(
+    url: str,
+    cache_dir: Path,
+    ref: str | None,
+    update: bool,
+    subpath: str | None,
+    git_helper: GitHelper | None,
+    source: str,
+) -> Path:
+    """Fetch a remote plugin source and cache it locally.
+
+    Args:
+        url: Git URL to fetch.
+        cache_dir: Base directory for caching.
+        ref: Optional branch, tag, or commit to checkout.
+        update: Whether to update existing cache.
+        subpath: Optional subdirectory within the repository.
+        git_helper: GitHelper instance for git operations.
+        source: Original source string (for error messages).
+
+    Returns:
+        Path to the cached plugin directory.
+
+    Raises:
+        PluginFetchError: If fetching fails or subpath is invalid.
+    """
+    plugin_path = get_cache_path(url, cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    result = cached_clone_or_update(
+        url=url,
+        repo_path=plugin_path,
+        ref=ref,
+        update=update,
+        git_helper=git_helper,
+    )
+
+    if result is None:
+        raise PluginFetchError(f"Failed to fetch plugin from {source}")
+
+    return _apply_subpath(plugin_path, subpath, "plugin repository")
+
+
+def _apply_subpath(base_path: Path, subpath: str | None, context: str) -> Path:
+    """Apply a subpath to a base path, validating it exists.
+
+    Args:
+        base_path: The root path.
+        subpath: Optional subdirectory path (may have leading/trailing slashes).
+        context: Description for error messages (e.g., "plugin repository").
+
+    Returns:
+        The final path (base_path if no subpath, otherwise base_path/subpath).
+
+    Raises:
+        PluginFetchError: If subpath doesn't exist.
+    """
+    if not subpath:
+        return base_path
+
+    final_path = base_path / subpath.strip("/")
+    if not final_path.exists():
+        raise PluginFetchError(f"Subdirectory '{subpath}' not found in {context}")
+    return final_path
+
+
 def fetch_plugin(
     source: str,
     cache_dir: Path | None = None,
@@ -204,49 +289,12 @@ def fetch_plugin(
     """
     source_type, url = parse_plugin_source(source)
 
-    # Local paths are returned as-is
     if source_type == "local":
-        local_path = Path(url).expanduser().resolve()
-        if not local_path.exists():
-            raise PluginFetchError(f"Local plugin path does not exist: {local_path}")
-        # Apply subpath for local paths too
-        if subpath:
-            final_path = local_path / subpath.strip("/")
-            if not final_path.exists():
-                raise PluginFetchError(
-                    f"Subdirectory '{subpath}' not found in local plugin path"
-                )
-            return final_path
-        return local_path
+        return _resolve_local_source(url, subpath)
 
-    # Get cache path
     if cache_dir is None:
         cache_dir = DEFAULT_CACHE_DIR
 
-    plugin_path = get_cache_path(url, cache_dir)
-
-    # Ensure cache directory exists
-    cache_dir.mkdir(parents=True, exist_ok=True)
-
-    # Use the shared cached_clone_or_update function
-    result = cached_clone_or_update(
-        url=url,
-        repo_path=plugin_path,
-        ref=ref,
-        update=update,
-        git_helper=git_helper,
+    return _fetch_remote_source(
+        url, cache_dir, ref, update, subpath, git_helper, source
     )
-
-    if result is None:
-        raise PluginFetchError(f"Failed to fetch plugin from {source}")
-
-    # Apply subpath if specified
-    if subpath:
-        final_path = plugin_path / subpath.strip("/")
-        if not final_path.exists():
-            raise PluginFetchError(
-                f"Subdirectory '{subpath}' not found in plugin repository"
-            )
-        return final_path
-
-    return plugin_path
