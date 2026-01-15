@@ -160,7 +160,12 @@ class Agent(AgentBase):
             )
             return critic_result
         except Exception as e:
-            logger.warning(f"Critic evaluation failed: {e}")
+            logger.warning(
+                f"Critic evaluation failed: {e}. "
+                f"Event type: {type(event).__name__}, "
+                f"Critic mode: {self.critic.mode}",
+                exc_info=True,  # Include stack trace in logs
+            )
             return None
 
     def _execute_actions(
