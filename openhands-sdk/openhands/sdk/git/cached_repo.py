@@ -9,12 +9,18 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from filelock import FileLock, Timeout
+
 from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+# Default timeout for acquiring cache locks (seconds)
+# Consistent with other lock timeouts in the SDK (io/local.py, event_store.py)
+DEFAULT_LOCK_TIMEOUT = 30
 
 
 class GitHelper:
@@ -171,6 +177,7 @@ def cached_clone_or_update(
     ref: str | None = None,
     update: bool = True,
     git_helper: GitHelper | None = None,
+    lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
 ) -> Path | None:
     """Clone or update a git repository in a cache directory.
 
@@ -185,12 +192,18 @@ def cached_clone_or_update(
     The update sequence is: fetch origin -> checkout ref -> reset --hard origin/ref.
     This ensures local changes are discarded and the cache matches the remote.
 
+    Concurrency:
+        Uses file-based locking to prevent race conditions when multiple processes
+        access the same cache directory. The lock file is created adjacent to the
+        repo directory (repo_path.lock).
+
     Args:
         url: Git URL to clone.
         repo_path: Path where the repository should be cached.
         ref: Branch, tag, or commit to checkout. If None, uses default branch.
         update: If True and repo exists, fetch and update it. If False, skip fetch.
         git_helper: GitHelper instance for git operations. If None, creates one.
+        lock_timeout: Timeout in seconds for acquiring the lock. Default is 5 minutes.
 
     Returns:
         Path to the local repository if successful, None on failure.
@@ -198,29 +211,65 @@ def cached_clone_or_update(
     """
     git = git_helper if git_helper is not None else GitHelper()
 
+    # Ensure parent directory exists for both the repo and lock file
+    repo_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Use a lock file adjacent to the repo directory
+    lock_path = repo_path.with_suffix(".lock")
+    lock = FileLock(lock_path)
+
     try:
-        if repo_path.exists() and (repo_path / ".git").exists():
-            if update:
-                logger.debug(f"Updating repository at {repo_path}")
-                _update_repository(repo_path, ref, git)
-            elif ref:
-                # No update requested, but checkout specific ref
-                logger.debug(f"Checking out ref {ref} at {repo_path}")
-                _checkout_ref(repo_path, ref, git)
-            else:
-                logger.debug(f"Using cached repository at {repo_path}")
-        else:
-            logger.info(f"Cloning repository from {url}")
-            _clone_repository(url, repo_path, ref, git)
-
-        return repo_path
-
+        with lock.acquire(timeout=lock_timeout):
+            return _do_clone_or_update(url, repo_path, ref, update, git)
+    except Timeout:
+        logger.warning(
+            f"Timed out waiting for lock on {repo_path} after {lock_timeout}s"
+        )
+        return None
     except GitCommandError as e:
         logger.warning(f"Git operation failed: {e}")
         return None
     except Exception as e:
         logger.warning(f"Error managing repository: {str(e)}")
         return None
+
+
+def _do_clone_or_update(
+    url: str,
+    repo_path: Path,
+    ref: str | None,
+    update: bool,
+    git: GitHelper,
+) -> Path:
+    """Perform the actual clone or update operation (called while holding lock).
+
+    Args:
+        url: Git URL to clone.
+        repo_path: Path where the repository should be cached.
+        ref: Branch, tag, or commit to checkout.
+        update: Whether to update existing repos.
+        git: GitHelper instance.
+
+    Returns:
+        Path to the repository.
+
+    Raises:
+        GitCommandError: If git operations fail.
+    """
+    if repo_path.exists() and (repo_path / ".git").exists():
+        if update:
+            logger.debug(f"Updating repository at {repo_path}")
+            _update_repository(repo_path, ref, git)
+        elif ref:
+            logger.debug(f"Checking out ref {ref} at {repo_path}")
+            _checkout_ref(repo_path, ref, git)
+        else:
+            logger.debug(f"Using cached repository at {repo_path}")
+    else:
+        logger.info(f"Cloning repository from {url}")
+        _clone_repository(url, repo_path, ref, git)
+
+    return repo_path
 
 
 def _clone_repository(

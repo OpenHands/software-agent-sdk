@@ -910,3 +910,118 @@ class TestGetDefaultBranch:
             result = git.get_default_branch(repo)
 
             assert result is None
+
+
+class TestCacheLocking:
+    """Tests for cache directory locking behavior."""
+
+    def test_lock_file_created_during_clone(self, tmp_path: Path):
+        """Test that a lock file is created when cloning."""
+        from openhands.sdk.git.cached_repo import cached_clone_or_update
+
+        cache_dir = tmp_path / "cache"
+        repo_path = cache_dir / "test-repo"
+
+        mock_git = create_autospec(GitHelper, instance=True)
+
+        # Track whether lock file exists during clone
+        lock_existed_during_clone = []
+
+        def mock_clone(url, dest, depth=None, branch=None, timeout=120):
+            lock_path = repo_path.with_suffix(".lock")
+            lock_existed_during_clone.append(lock_path.exists())
+
+        mock_git.clone.side_effect = mock_clone
+
+        cached_clone_or_update(
+            url="https://github.com/test/repo.git",
+            repo_path=repo_path,
+            git_helper=mock_git,
+        )
+
+        # Lock file should have existed during the clone operation
+        assert lock_existed_during_clone[0] is True
+
+    def test_lock_timeout_returns_none(self, tmp_path: Path):
+        """Test that lock timeout returns None gracefully."""
+        from filelock import FileLock
+
+        from openhands.sdk.git.cached_repo import cached_clone_or_update
+
+        cache_dir = tmp_path / "cache"
+        cache_dir.mkdir(parents=True)
+        repo_path = cache_dir / "test-repo"
+
+        # Pre-acquire the lock to simulate another process holding it
+        lock_path = repo_path.with_suffix(".lock")
+        external_lock = FileLock(lock_path)
+        external_lock.acquire()
+
+        try:
+            mock_git = create_autospec(GitHelper, instance=True)
+
+            # Try to clone with a very short timeout
+            result = cached_clone_or_update(
+                url="https://github.com/test/repo.git",
+                repo_path=repo_path,
+                git_helper=mock_git,
+                lock_timeout=0.1,  # Very short timeout
+            )
+
+            # Should return None due to lock timeout
+            assert result is None
+            # Clone should not have been called
+            mock_git.clone.assert_not_called()
+        finally:
+            external_lock.release()
+
+    def test_lock_released_after_operation(self, tmp_path: Path):
+        """Test that lock is released after successful operation."""
+        from filelock import FileLock
+
+        from openhands.sdk.git.cached_repo import cached_clone_or_update
+
+        cache_dir = tmp_path / "cache"
+        repo_path = cache_dir / "test-repo"
+
+        mock_git = create_autospec(GitHelper, instance=True)
+
+        cached_clone_or_update(
+            url="https://github.com/test/repo.git",
+            repo_path=repo_path,
+            git_helper=mock_git,
+        )
+
+        # Lock should be released - we should be able to acquire it immediately
+        lock_path = repo_path.with_suffix(".lock")
+        lock = FileLock(lock_path)
+        lock.acquire(timeout=0)  # Should not block
+        lock.release()
+
+    def test_lock_released_on_error(self, tmp_path: Path):
+        """Test that lock is released even when operation fails."""
+        from filelock import FileLock
+
+        from openhands.sdk.git.cached_repo import cached_clone_or_update
+
+        cache_dir = tmp_path / "cache"
+        repo_path = cache_dir / "test-repo"
+
+        mock_git = create_autospec(GitHelper, instance=True)
+        mock_git.clone.side_effect = GitCommandError(
+            "Clone failed", command=["git", "clone"], exit_code=1, stderr="error"
+        )
+
+        result = cached_clone_or_update(
+            url="https://github.com/test/repo.git",
+            repo_path=repo_path,
+            git_helper=mock_git,
+        )
+
+        assert result is None
+
+        # Lock should still be released
+        lock_path = repo_path.with_suffix(".lock")
+        lock = FileLock(lock_path)
+        lock.acquire(timeout=0)
+        lock.release()
