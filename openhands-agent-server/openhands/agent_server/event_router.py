@@ -24,7 +24,7 @@ from openhands.agent_server.models import (
     Success,
 )
 from openhands.sdk import Message
-from openhands.sdk.event import Event
+from openhands.sdk.event import Event, MessageEvent
 
 
 event_router = APIRouter(
@@ -185,11 +185,18 @@ async def batch_get_conversation_events(
 async def send_message(
     request: SendMessageRequest,
     event_service: EventService = Depends(get_event_service),
-) -> Success:
-    """Send a message to a conversation"""
+) -> MessageEvent:
+    """Send a message to a conversation.
+
+    Returns the MessageEvent that was created and added to the event stream.
+    This allows clients to immediately have access to the event without waiting
+    for WebSocket delivery.
+    """
     message = Message(role=request.role, content=request.content)
-    await event_service.send_message(message, request.run)
-    return Success()
+    message_event = await event_service.send_message(
+        message, request.run, request.sender
+    )
+    return message_event
 
 
 @event_router.post(

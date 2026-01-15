@@ -34,6 +34,7 @@ from openhands.sdk.event.conversation_state import (
     ConversationStateUpdateEvent,
 )
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
+from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.hooks import (
     HookConfig,
     HookEventProcessor,
@@ -680,7 +681,20 @@ class RemoteConversation(BaseConversation):
         )
 
     @observe(name="conversation.send_message")
-    def send_message(self, message: str | Message, sender: str | None = None) -> None:
+    def send_message(
+        self, message: str | Message, sender: str | None = None
+    ) -> MessageEvent:
+        """Send a message to the agent.
+
+        Args:
+            message: Either a string (which will be converted to a user message)
+                    or a Message object
+            sender: Optional identifier of the sender. Can be used to track
+                   message origin in multi-agent scenarios.
+
+        Returns:
+            The MessageEvent that was created and added to the event stream.
+        """
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
         assert message.role == "user", (
@@ -693,9 +707,14 @@ class RemoteConversation(BaseConversation):
         }
         if sender is not None:
             payload["sender"] = sender
-        _send_request(
+        response = _send_request(
             self._client, "POST", f"/api/conversations/{self._id}/events", json=payload
         )
+        # Parse the returned MessageEvent and add it to local cache immediately
+        # This ensures the event is available locally without waiting for WebSocket
+        message_event = MessageEvent.model_validate(response.json())
+        self._state.events.add_event(message_event)
+        return message_event
 
     @observe(name="conversation.run")
     def run(

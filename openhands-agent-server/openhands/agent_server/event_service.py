@@ -19,7 +19,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.event import AgentErrorEvent
+from openhands.sdk.event import AgentErrorEvent, MessageEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -302,16 +302,31 @@ class EventService:
         )
         return results
 
-    async def send_message(self, message: Message, run: bool = False):
+    async def send_message(
+        self, message: Message, run: bool = False, sender: str | None = None
+    ) -> MessageEvent:
+        """Send a message to the conversation.
+
+        Args:
+            message: The message to send.
+            run: Whether to start running the conversation after sending.
+            sender: Optional identifier of the message sender.
+
+        Returns:
+            The MessageEvent that was created and added to the event stream.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.send_message, message)
+        message_event: MessageEvent = await loop.run_in_executor(
+            None, self._conversation.send_message, message, sender
+        )
         if run:
             with self._conversation.state as state:
                 run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
             loop.run_in_executor(None, self._conversation.run)
+        return message_event
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)

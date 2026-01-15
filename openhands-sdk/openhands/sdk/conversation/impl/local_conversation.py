@@ -256,7 +256,9 @@ class LocalConversation(BaseConversation):
         return self._stuck_detector
 
     @observe(name="conversation.send_message")
-    def send_message(self, message: str | Message, sender: str | None = None) -> None:
+    def send_message(
+        self, message: str | Message, sender: str | None = None
+    ) -> MessageEvent:
         """Send a message to the agent.
 
         Args:
@@ -266,6 +268,9 @@ class LocalConversation(BaseConversation):
                    message origin in multi-agent scenarios. For example, when
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
+
+        Returns:
+            The MessageEvent that was created and added to the event stream.
         """
         # Convert string to Message if needed
         if isinstance(message, str):
@@ -311,6 +316,7 @@ class LocalConversation(BaseConversation):
                 sender=sender,
             )
             self._on_event(user_msg_event)
+            return user_msg_event
 
     @observe(name="conversation.run")
     def run(self) -> None:

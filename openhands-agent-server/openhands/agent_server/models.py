@@ -51,6 +51,10 @@ class SendMessageRequest(BaseModel):
         default=False,
         description=("Whether the agent loop should automatically run if not running"),
     )
+    sender: str | None = Field(
+        default=None,
+        description="Optional identifier of the sender for multi-agent scenarios",
+    )
 
     def create_message(self) -> Message:
         message = Message(role=self.role, content=self.content)
