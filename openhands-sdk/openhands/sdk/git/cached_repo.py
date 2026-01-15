@@ -201,56 +201,71 @@ def _update_repository(
     repo_path: Path,
     branch: str | None,
     git: GitHelper,
-) -> None:
+) -> bool:
     """Update an existing repository.
 
     Args:
         repo_path: Path to the repository.
         branch: Branch to update to (optional).
         git: GitHelper instance.
+
+    Returns:
+        True if update succeeded, False if it failed (cached version is still usable).
+
+    Raises:
+        GitCommandError: Only if a critical operation fails unexpectedly.
     """
     try:
-        # Fetch latest changes
         git.fetch(repo_path)
+    except GitCommandError as e:
+        logger.warning(f"Failed to fetch updates: {e}. Using cached version.")
+        return False
 
+    try:
         if branch:
-            # Checkout and reset to the specified branch
             _checkout_ref(repo_path, branch, git)
         else:
-            # Get the current branch and reset to origin
             current_branch = git.get_current_branch(repo_path)
             if current_branch:
                 git.reset_hard(repo_path, f"origin/{current_branch}")
-
-        logger.debug("Repository updated successfully")
-
     except GitCommandError as e:
-        logger.warning(
-            f"Failed to update repository: {e}, using existing cached version"
-        )
+        logger.warning(f"Failed to checkout/reset: {e}. Using cached version.")
+        return False
+
+    logger.debug("Repository updated successfully")
+    return True
 
 
 def _checkout_ref(repo_path: Path, ref: str, git: GitHelper) -> None:
     """Checkout a specific ref (branch, tag, or commit).
 
+    For branches: fetches the ref, checks out, and resets to origin.
+    For tags/commits: checks out directly (reset to origin will be skipped).
+
     Args:
         repo_path: Path to the repository.
         ref: Branch, tag, or commit to checkout.
         git: GitHelper instance.
+
+    Raises:
+        GitCommandError: If checkout fails (the critical operation).
     """
     logger.debug(f"Checking out ref: {ref}")
 
-    # First try to fetch the ref
+    # Try to fetch the specific ref. This may fail for:
+    # - Commits (expected - they don't have refspecs)
+    # - Network issues (unexpected but non-critical since we already fetched)
     try:
         git.fetch(repo_path, ref=ref)
     except GitCommandError:
-        pass  # May fail for commits, that's ok
+        logger.debug(f"Could not fetch ref '{ref}' specifically (may be a commit/tag)")
 
-    # Checkout the ref
+    # Checkout is the critical operation - let it raise if it fails
     git.checkout(repo_path, ref)
 
-    # If it's a branch, reset to origin
+    # Try to reset to origin (makes sense for branches, not for tags/commits)
     try:
         git.reset_hard(repo_path, f"origin/{ref}")
     except GitCommandError:
-        pass  # May fail for tags/commits, that's ok
+        # Expected for tags and commits - origin/{ref} doesn't exist for them
+        logger.debug(f"Reset to origin/{ref} skipped (ref is likely a tag or commit)")

@@ -226,8 +226,9 @@ class TestUpdateRepository:
         mock_git = create_autospec(GitHelper)
         mock_git.get_current_branch.return_value = "main"
 
-        _update_repository(tmp_path, None, mock_git)
+        result = _update_repository(tmp_path, None, mock_git)
 
+        assert result is True
         mock_git.fetch.assert_called_once_with(tmp_path)
         mock_git.get_current_branch.assert_called_once_with(tmp_path)
         mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
@@ -236,8 +237,9 @@ class TestUpdateRepository:
         """Test update with ref checks out that ref."""
         mock_git = create_autospec(GitHelper)
 
-        _update_repository(tmp_path, "v1.0.0", mock_git)
+        result = _update_repository(tmp_path, "v1.0.0", mock_git)
 
+        assert result is True
         # fetch is called twice: once in _update_repository, once in _checkout_ref
         assert mock_git.fetch.call_count == 2
         mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
@@ -247,19 +249,33 @@ class TestUpdateRepository:
         mock_git = create_autospec(GitHelper)
         mock_git.get_current_branch.return_value = None
 
-        _update_repository(tmp_path, None, mock_git)
+        result = _update_repository(tmp_path, None, mock_git)
 
+        assert result is True
         mock_git.fetch.assert_called_once()
         mock_git.reset_hard.assert_not_called()
 
-    def test_update_handles_git_error(self, tmp_path: Path):
-        """Test update continues on GitCommandError (uses cached version)."""
+    def test_update_returns_false_on_fetch_error(self, tmp_path: Path):
+        """Test update returns False on fetch failure (uses cached version)."""
         mock_git = create_autospec(GitHelper)
         mock_git.fetch.side_effect = GitCommandError(
             "Network error", command=["git", "fetch"], exit_code=1
         )
 
-        _update_repository(tmp_path, None, mock_git)
+        result = _update_repository(tmp_path, None, mock_git)
+
+        assert result is False
+
+    def test_update_returns_false_on_checkout_error(self, tmp_path: Path):
+        """Test update returns False on checkout failure."""
+        mock_git = create_autospec(GitHelper)
+        mock_git.checkout.side_effect = GitCommandError(
+            "Invalid ref", command=["git", "checkout"], exit_code=1
+        )
+
+        result = _update_repository(tmp_path, "nonexistent", mock_git)
+
+        assert result is False
 
 
 class TestCheckoutRef:
