@@ -209,6 +209,8 @@ def test_update_skills_repository_update_existing(tmp_path):
 
     mock_result = MagicMock()
     mock_result.returncode = 0
+    # Simulate being on a branch (not detached HEAD) so reset is called
+    mock_result.stdout = "main"
 
     with patch(
         "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
@@ -220,14 +222,13 @@ def test_update_skills_repository_update_existing(tmp_path):
         )
 
         assert result_path == repo_path
-        # The shared git helper does: fetch, then _checkout_ref (which does
-        # fetch ref, checkout, reset)
+        # The git operations are: fetch, checkout, get_current_branch, reset
+        # (get_current_branch returns branch name so reset is called)
         assert mock_run.call_count == 4
         all_commands = [call[0][0] for call in mock_run.call_args_list]
-        # Should have fetch, fetch ref, checkout, reset
         assert all_commands[0][:3] == ["git", "fetch", "origin"]
-        assert all_commands[1][:3] == ["git", "fetch", "origin"]
-        assert all_commands[2][:2] == ["git", "checkout"]
+        assert all_commands[1][:2] == ["git", "checkout"]
+        assert all_commands[2] == ["git", "rev-parse", "--abbrev-ref", "HEAD"]
         assert all_commands[3][:3] == ["git", "reset", "--hard"]
 
 
