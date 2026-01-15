@@ -917,7 +917,7 @@ class TestCacheLocking:
 
     def test_lock_file_created_during_clone(self, tmp_path: Path):
         """Test that a lock file is created when cloning."""
-        from openhands.sdk.git.cached_repo import cached_clone_or_update
+        from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 
         cache_dir = tmp_path / "cache"
         repo_path = cache_dir / "test-repo"
@@ -933,7 +933,7 @@ class TestCacheLocking:
 
         mock_git.clone.side_effect = mock_clone
 
-        cached_clone_or_update(
+        try_cached_clone_or_update(
             url="https://github.com/test/repo.git",
             repo_path=repo_path,
             git_helper=mock_git,
@@ -946,7 +946,7 @@ class TestCacheLocking:
         """Test that lock timeout returns None gracefully."""
         from filelock import FileLock
 
-        from openhands.sdk.git.cached_repo import cached_clone_or_update
+        from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 
         cache_dir = tmp_path / "cache"
         cache_dir.mkdir(parents=True)
@@ -961,7 +961,7 @@ class TestCacheLocking:
             mock_git = create_autospec(GitHelper, instance=True)
 
             # Try to clone with a very short timeout
-            result = cached_clone_or_update(
+            result = try_cached_clone_or_update(
                 url="https://github.com/test/repo.git",
                 repo_path=repo_path,
                 git_helper=mock_git,
@@ -979,14 +979,14 @@ class TestCacheLocking:
         """Test that lock is released after successful operation."""
         from filelock import FileLock
 
-        from openhands.sdk.git.cached_repo import cached_clone_or_update
+        from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 
         cache_dir = tmp_path / "cache"
         repo_path = cache_dir / "test-repo"
 
         mock_git = create_autospec(GitHelper, instance=True)
 
-        cached_clone_or_update(
+        try_cached_clone_or_update(
             url="https://github.com/test/repo.git",
             repo_path=repo_path,
             git_helper=mock_git,
@@ -1002,7 +1002,7 @@ class TestCacheLocking:
         """Test that lock is released even when operation fails."""
         from filelock import FileLock
 
-        from openhands.sdk.git.cached_repo import cached_clone_or_update
+        from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 
         cache_dir = tmp_path / "cache"
         repo_path = cache_dir / "test-repo"
@@ -1012,7 +1012,7 @@ class TestCacheLocking:
             "Clone failed", command=["git", "clone"], exit_code=1, stderr="error"
         )
 
-        result = cached_clone_or_update(
+        result = try_cached_clone_or_update(
             url="https://github.com/test/repo.git",
             repo_path=repo_path,
             git_helper=mock_git,

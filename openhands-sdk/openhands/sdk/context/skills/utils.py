@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING
 from fastmcp.mcp_config import MCPConfig
 
 from openhands.sdk.context.skills.exceptions import SkillValidationError
-from openhands.sdk.git.cached_repo import cached_clone_or_update
+from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 
 
@@ -327,7 +327,7 @@ def update_skills_repository(
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return cached_clone_or_update(repo_url, repo_path, ref=branch, update=True)
+    return try_cached_clone_or_update(repo_url, repo_path, ref=branch, update=True)
 
 
 def discover_skill_resources(skill_dir: Path) -> SkillResources:

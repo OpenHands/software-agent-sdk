@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from openhands.sdk.git.cached_repo import GitHelper, cached_clone_or_update
+from openhands.sdk.git.cached_repo import GitHelper, try_cached_clone_or_update
 from openhands.sdk.git.utils import extract_repo_name, is_git_url, normalize_git_url
 from openhands.sdk.logger import get_logger
 
@@ -152,7 +152,7 @@ def _fetch_remote_source(
     plugin_path = get_cache_path(url, cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
 
-    result = cached_clone_or_update(
+    result = try_cached_clone_or_update(
         url=url,
         repo_path=plugin_path,
         ref=ref,

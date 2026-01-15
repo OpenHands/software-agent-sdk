@@ -171,7 +171,7 @@ class GitHelper:
             return None
 
 
-def cached_clone_or_update(
+def try_cached_clone_or_update(
     url: str,
     repo_path: Path,
     ref: str | None = None,
