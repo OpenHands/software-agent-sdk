@@ -11,8 +11,6 @@ from pydantic import BaseModel, Field
 
 from openhands.agent_server.skills_service import (
     ExposedUrlData,
-    get_skill_triggers,
-    get_skill_type,
     load_all_skills,
     sync_public_skills,
 )
@@ -152,15 +150,15 @@ def get_skills(request: SkillsRequest) -> SkillsResponse:
     # Convert Skill objects to SkillInfo for response
     skills_info = [
         SkillInfo(
-            name=skill.name,
-            type=get_skill_type(skill),
-            content=skill.content,
-            triggers=get_skill_triggers(skill),
-            source=skill.source,
-            description=skill.description,
-            is_agentskills_format=skill.is_agentskills_format,
+            name=info.name,
+            type=info.type,
+            content=info.content,
+            triggers=info.triggers,
+            source=info.source,
+            description=info.description,
+            is_agentskills_format=info.is_agentskills_format,
         )
-        for skill in result.skills
+        for info in (skill.to_skill_info() for skill in result.skills)
     ]
 
     return SkillsResponse(skills=skills_info, sources=result.sources)

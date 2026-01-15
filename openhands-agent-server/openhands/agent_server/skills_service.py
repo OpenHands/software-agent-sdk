@@ -20,7 +20,6 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
 
 from openhands.sdk.context.skills import (
     Skill,
@@ -33,7 +32,6 @@ from openhands.sdk.context.skills.skill import (
     PUBLIC_SKILLS_REPO,
     load_skills_from_dir,
 )
-from openhands.sdk.context.skills.trigger import KeywordTrigger, TaskTrigger
 from openhands.sdk.context.skills.utils import (
     get_skills_cache_dir,
     update_skills_repository,
@@ -250,39 +248,6 @@ def create_sandbox_skill(
         trigger=None,  # Always active
         source=None,  # Programmatically generated
     )
-
-
-def get_skill_type(skill: Skill) -> Literal["repo", "knowledge", "agent"]:
-    """Determine the type of a skill based on its format and trigger.
-
-    Args:
-        skill: The Skill object to classify.
-
-    Returns:
-        One of "repo", "knowledge", or "agent".
-    """
-    if skill.is_agentskills_format:
-        return "agent"
-    elif skill.trigger is None:
-        return "repo"
-    else:
-        return "knowledge"
-
-
-def get_skill_triggers(skill: Skill) -> list[str]:
-    """Extract trigger keywords from a skill.
-
-    Args:
-        skill: The Skill object to extract triggers from.
-
-    Returns:
-        List of trigger strings, or empty list if no triggers.
-    """
-    if isinstance(skill.trigger, KeywordTrigger):
-        return skill.trigger.keywords
-    elif isinstance(skill.trigger, TaskTrigger):
-        return skill.trigger.triggers
-    return []
 
 
 def merge_skills(skill_lists: list[list[Skill]]) -> list[Skill]:
