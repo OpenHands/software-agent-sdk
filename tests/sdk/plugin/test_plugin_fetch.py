@@ -660,6 +660,7 @@ class TestFetchPluginEdgeCases:
         assert result.exists()
         assert str(tmp_path / "cache") in str(result)
 
+
 class TestGitHelperErrors:
     """Tests for GitHelper error handling paths.
 

@@ -155,7 +155,7 @@ def _extract_readable_name(source: str) -> str:
     name = source
     for prefix in ("github:", "https://", "http://", "git://", "file://"):
         if name.startswith(prefix):
-            name = name[len(prefix):]
+            name = name[len(prefix) :]
             break
 
     # Handle SSH format: user@host:path -> path
