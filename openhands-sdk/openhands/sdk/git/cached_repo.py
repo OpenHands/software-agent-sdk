@@ -7,10 +7,10 @@ and keeping them updated. Used by both the skills system and plugin fetching.
 from __future__ import annotations
 
 import shutil
-import subprocess
 from pathlib import Path
 
-from openhands.sdk.git.exceptions import GitError
+from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.utils import run_git_command
 from openhands.sdk.logger import get_logger
 
 
@@ -21,7 +21,7 @@ class GitHelper:
     """Abstraction for git operations, enabling easy mocking in tests.
 
     This class wraps git commands for cloning, fetching, and managing
-    cached repositories. All methods raise GitError on failure.
+    cached repositories. All methods raise GitCommandError on failure.
     """
 
     def clone(
@@ -42,7 +42,7 @@ class GitHelper:
             timeout: Timeout in seconds.
 
         Raises:
-            GitError: If clone fails.
+            GitCommandError: If clone fails.
         """
         cmd = ["git", "clone"]
 
@@ -54,20 +54,7 @@ class GitHelper:
 
         cmd.extend([url, str(dest)])
 
-        logger.debug(f"Running: {' '.join(cmd)}")
-
-        try:
-            subprocess.run(
-                cmd,
-                check=True,
-                capture_output=True,
-                timeout=timeout,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode() if e.stderr else str(e)
-            raise GitError(f"Clone failed: {stderr}") from e
-        except subprocess.TimeoutExpired as e:
-            raise GitError(f"Clone timed out after {timeout}s") from e
+        run_git_command(cmd, timeout=timeout)
 
     def fetch(
         self,
@@ -85,27 +72,13 @@ class GitHelper:
             timeout: Timeout in seconds.
 
         Raises:
-            GitError: If fetch fails.
+            GitCommandError: If fetch fails.
         """
         cmd = ["git", "fetch", remote]
         if ref:
             cmd.append(ref)
 
-        logger.debug(f"Running: {' '.join(cmd)} in {repo_path}")
-
-        try:
-            subprocess.run(
-                cmd,
-                cwd=repo_path,
-                check=True,
-                capture_output=True,
-                timeout=timeout,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode() if e.stderr else str(e)
-            raise GitError(f"Fetch failed: {stderr}") from e
-        except subprocess.TimeoutExpired as e:
-            raise GitError(f"Fetch timed out after {timeout}s") from e
+        run_git_command(cmd, cwd=repo_path, timeout=timeout)
 
     def checkout(self, repo_path: Path, ref: str, timeout: int = 30) -> None:
         """Checkout a ref (branch, tag, or commit).
@@ -116,25 +89,9 @@ class GitHelper:
             timeout: Timeout in seconds.
 
         Raises:
-            GitError: If checkout fails.
+            GitCommandError: If checkout fails.
         """
-        cmd = ["git", "checkout", ref]
-
-        logger.debug(f"Running: {' '.join(cmd)} in {repo_path}")
-
-        try:
-            subprocess.run(
-                cmd,
-                cwd=repo_path,
-                check=True,
-                capture_output=True,
-                timeout=timeout,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode() if e.stderr else str(e)
-            raise GitError(f"Checkout failed: {stderr}") from e
-        except subprocess.TimeoutExpired as e:
-            raise GitError(f"Checkout timed out after {timeout}s") from e
+        run_git_command(["git", "checkout", ref], cwd=repo_path, timeout=timeout)
 
     def reset_hard(self, repo_path: Path, ref: str, timeout: int = 30) -> None:
         """Hard reset to a ref.
@@ -145,25 +102,9 @@ class GitHelper:
             timeout: Timeout in seconds.
 
         Raises:
-            GitError: If reset fails.
+            GitCommandError: If reset fails.
         """
-        cmd = ["git", "reset", "--hard", ref]
-
-        logger.debug(f"Running: {' '.join(cmd)} in {repo_path}")
-
-        try:
-            subprocess.run(
-                cmd,
-                cwd=repo_path,
-                check=True,
-                capture_output=True,
-                timeout=timeout,
-            )
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr.decode() if e.stderr else str(e)
-            raise GitError(f"Reset failed: {stderr}") from e
-        except subprocess.TimeoutExpired as e:
-            raise GitError(f"Reset timed out after {timeout}s") from e
+        run_git_command(["git", "reset", "--hard", ref], cwd=repo_path, timeout=timeout)
 
     def get_current_branch(self, repo_path: Path, timeout: int = 10) -> str | None:
         """Get the current branch name.
@@ -176,28 +117,15 @@ class GitHelper:
             Branch name, or None if in detached HEAD state.
 
         Raises:
-            GitError: If command fails.
+            GitCommandError: If command fails.
         """
-        cmd = ["git", "rev-parse", "--abbrev-ref", "HEAD"]
-
-        logger.debug(f"Running: {' '.join(cmd)} in {repo_path}")
-
-        try:
-            result = subprocess.run(
-                cmd,
-                cwd=repo_path,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-            )
-            branch = result.stdout.strip()
-            # "HEAD" means detached HEAD state
-            return None if branch == "HEAD" else branch
-        except subprocess.CalledProcessError as e:
-            stderr = e.stderr if e.stderr else str(e)
-            raise GitError(f"Failed to get current branch: {stderr}") from e
-        except subprocess.TimeoutExpired as e:
-            raise GitError(f"Get branch timed out after {timeout}s") from e
+        branch = run_git_command(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=repo_path,
+            timeout=timeout,
+        )
+        # "HEAD" means detached HEAD state
+        return None if branch == "HEAD" else branch
 
 
 # Default GitHelper instance - can be replaced for testing
@@ -257,7 +185,7 @@ def cached_clone_or_update(
 
         return repo_path
 
-    except GitError as e:
+    except GitCommandError as e:
         logger.warning(f"Git operation failed: {e}")
         return None
     except Exception as e:
@@ -314,7 +242,7 @@ def _update_repository(
 
         logger.debug("Repository updated successfully")
 
-    except GitError as e:
+    except GitCommandError as e:
         logger.warning(
             f"Failed to update repository: {e}, using existing cached version"
         )
@@ -333,7 +261,7 @@ def _checkout_ref(repo_path: Path, ref: str, git: GitHelper) -> None:
     # First try to fetch the ref
     try:
         git.fetch(repo_path, ref=ref)
-    except GitError:
+    except GitCommandError:
         pass  # May fail for commits, that's ok
 
     # Checkout the ref
@@ -342,5 +270,5 @@ def _checkout_ref(repo_path: Path, ref: str, git: GitHelper) -> None:
     # If it's a branch, reset to origin
     try:
         git.reset_hard(repo_path, f"origin/{ref}")
-    except GitError:
+    except GitCommandError:
         pass  # May fail for tags/commits, that's ok

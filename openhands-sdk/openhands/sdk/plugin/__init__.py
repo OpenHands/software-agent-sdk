@@ -5,7 +5,7 @@ skills, hooks, MCP configurations, agents, and commands together.
 """
 
 from openhands.sdk.git.cached_repo import GitHelper
-from openhands.sdk.git.exceptions import GitError
+from openhands.sdk.git.exceptions import GitCommandError, GitError
 from openhands.sdk.plugin.fetch import PluginFetchError, parse_plugin_source
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import (
@@ -26,4 +26,5 @@ __all__ = [
     "parse_plugin_source",
     "GitHelper",
     "GitError",
+    "GitCommandError",
 ]

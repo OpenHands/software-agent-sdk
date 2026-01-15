@@ -13,7 +13,7 @@ from openhands.sdk.git.cached_repo import (
     _update_repository,
     get_git_helper,
 )
-from openhands.sdk.git.exceptions import GitError
+from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.logger import get_logger
 
 
@@ -252,7 +252,7 @@ def fetch_plugin(
 
         return plugin_path
 
-    except GitError as e:
+    except GitCommandError as e:
         raise PluginFetchError(f"Git operation failed: {e}") from e
     except PluginFetchError:
         raise

@@ -178,7 +178,7 @@ def test_update_skills_repository_clone_new(tmp_path):
     mock_result.returncode = 0
 
     with patch(
-        "openhands.sdk.git.cached_repo.subprocess.run", return_value=mock_result
+        "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
     ) as mock_run:
         repo_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
@@ -211,7 +211,7 @@ def test_update_skills_repository_update_existing(tmp_path):
     mock_result.returncode = 0
 
     with patch(
-        "openhands.sdk.git.cached_repo.subprocess.run", return_value=mock_result
+        "openhands.sdk.git.utils.subprocess.run", return_value=mock_result
     ) as mock_run:
         result_path = update_skills_repository(
             "https://github.com/OpenHands/skills",
@@ -237,7 +237,7 @@ def test_update_skills_repository_clone_timeout(tmp_path):
     cache_dir.mkdir()
 
     with patch(
-        "openhands.sdk.git.cached_repo.subprocess.run",
+        "openhands.sdk.git.utils.subprocess.run",
         side_effect=subprocess.TimeoutExpired("git", 60),
     ) as mock_run:
         repo_path = update_skills_repository(
@@ -261,10 +261,15 @@ def test_update_skills_repository_update_fails_uses_cache(tmp_path):
     git_dir = repo_path / ".git"
     git_dir.mkdir()
 
-    # Mock fetch to fail, reset to fail
+    # Mock subprocess.run to return a failed result (non-zero return code)
+    mock_result = MagicMock()
+    mock_result.returncode = 1
+    mock_result.stdout = ""
+    mock_result.stderr = "Error: fetch failed"
+
     with patch(
-        "openhands.sdk.git.cached_repo.subprocess.run",
-        side_effect=subprocess.CalledProcessError(1, "git", stderr=b"Error"),
+        "openhands.sdk.git.utils.subprocess.run",
+        return_value=mock_result,
     ):
         result_path = update_skills_repository(
             "https://github.com/OpenHands/skills",

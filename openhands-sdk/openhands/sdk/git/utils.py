@@ -13,12 +13,17 @@ logger = logging.getLogger(__name__)
 GIT_EMPTY_TREE_HASH = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 
-def run_git_command(args: list[str], cwd: str | Path) -> str:
+def run_git_command(
+    args: list[str],
+    cwd: str | Path | None = None,
+    timeout: int = 30,
+) -> str:
     """Run a git command safely without shell injection vulnerabilities.
 
     Args:
         args: List of command arguments (e.g., ['git', 'status', '--porcelain'])
-        cwd: Working directory to run the command in
+        cwd: Working directory to run the command in (optional for commands like clone)
+        timeout: Timeout in seconds (default: 30)
 
     Returns:
         Command output as string
@@ -33,7 +38,7 @@ def run_git_command(args: list[str], cwd: str | Path) -> str:
             capture_output=True,
             text=True,
             check=False,
-            timeout=30,  # Prevent hanging commands
+            timeout=timeout,
         )
 
         if result.returncode != 0:
