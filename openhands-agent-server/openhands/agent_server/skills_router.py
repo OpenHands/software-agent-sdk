@@ -64,7 +64,8 @@ class OrgConfig(BaseModel):
         description="Git provider type: github, gitlab, azure, bitbucket"
     )
     org_repo_url: str = Field(
-        description="Pre-authenticated Git URL for the organization repository"
+        description="Pre-authenticated Git URL for the organization repository. "
+        "Contains sensitive credentials - handle with care and avoid logging."
     )
     org_name: str = Field(description="Organization name")
 
@@ -137,6 +138,11 @@ WORK_HOSTS_SKILL_CONTENT = (
     "a web application, each of which has a corresponding port:\n{hosts}"
 )
 
+# Prefix for sandbox URLs that should be exposed as work_hosts skill.
+# URLs with names starting with this prefix represent web applications
+# or services running in the sandbox that the agent should be aware of.
+SANDBOX_WORKER_URL_PREFIX = "WORKER_"
+
 
 def load_org_skills_from_url(
     org_repo_url: str,
@@ -151,6 +157,13 @@ def load_org_skills_from_url(
 
     The org_repo_url should be a pre-authenticated Git URL (e.g., containing
     credentials or tokens) as provided by the app-server.
+
+    Note:
+        This is a blocking I/O operation that may take up to 120 seconds due to
+        the git clone timeout. When called from FastAPI endpoints defined with
+        `def` (not `async def`), FastAPI automatically runs this in a thread
+        pool to avoid blocking the event loop. Do not call this function
+        directly from async code without wrapping it in asyncio.to_thread().
 
     Args:
         org_repo_url: Pre-authenticated Git URL for the organization repository.
@@ -194,12 +207,11 @@ def load_org_skills_from_url(
                 timeout=120,
                 env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
             )
-        except subprocess.CalledProcessError as e:
-            # Repository doesn't exist or access denied - this is expected
-            stderr = e.stderr.decode() if e.stderr else ""
+        except subprocess.CalledProcessError:
+            # Repository doesn't exist or access denied - this is expected.
+            # Note: We intentionally don't log stderr as it may contain credentials.
             logger.debug(
-                f"Organization repository not found or access denied for {org_name}: "
-                f"{stderr}"
+                f"Organization repository not found or access denied for {org_name}"
             )
             return all_skills
         except subprocess.TimeoutExpired:
@@ -274,18 +286,23 @@ def create_sandbox_skill(
     This function creates a skill that informs the agent about web applications
     and services available in the sandbox environment via exposed ports/URLs.
 
+    Only URLs with names starting with SANDBOX_WORKER_URL_PREFIX are included,
+    as these represent web applications the agent should be aware of.
+
     Args:
         exposed_urls: List of ExposedUrl objects containing name, url, and port.
 
     Returns:
-        A Skill object with work_hosts content if there are WORKER_ prefixed URLs,
+        A Skill object with work_hosts content if there are matching URLs,
         or None if no relevant URLs are provided.
     """
     if not exposed_urls:
         return None
 
-    # Filter for WORKER_ prefixed URLs
-    worker_urls = [url for url in exposed_urls if url.name.startswith("WORKER_")]
+    # Filter for URLs with the worker prefix
+    worker_urls = [
+        url for url in exposed_urls if url.name.startswith(SANDBOX_WORKER_URL_PREFIX)
+    ]
 
     if not worker_urls:
         return None
@@ -357,7 +374,7 @@ def merge_skills(skill_lists: list[list[Skill]]) -> list[Skill]:
     for skill_list in skill_lists:
         for skill in skill_list:
             if skill.name in skills_by_name:
-                logger.debug(
+                logger.info(
                     f"Overriding skill '{skill.name}' from earlier source "
                     "with later source"
                 )
@@ -367,7 +384,7 @@ def merge_skills(skill_lists: list[list[Skill]]) -> list[Skill]:
 
 
 @skills_router.post("", response_model=SkillsResponse)
-async def get_skills(request: SkillsRequest) -> SkillsResponse:
+def get_skills(request: SkillsRequest) -> SkillsResponse:
     """Load and merge skills from all configured sources.
 
     Skills are loaded from multiple sources and merged with the following
@@ -457,7 +474,7 @@ async def get_skills(request: SkillsRequest) -> SkillsResponse:
 
 
 @skills_router.post("/sync", response_model=SyncResponse)
-async def sync_skills() -> SyncResponse:
+def sync_skills() -> SyncResponse:
     """Force refresh of public skills from GitHub repository.
 
     This triggers a git pull on the cached skills repository to get
