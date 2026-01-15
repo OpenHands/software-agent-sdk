@@ -16,11 +16,13 @@ Usage:
     # Run the example
     python 34_browser_session_recording.py
 
-The recording will be saved to ./browser_recording.json and can be replayed with:
+The recording will be automatically saved to the persistence directory when
+browser_stop_recording is called. You can replay it with:
     - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player
     - Online viewer: https://www.rrweb.io/demo/
 """
 
+import glob
 import json
 import os
 
@@ -41,6 +43,10 @@ from openhands.tools.terminal import TerminalTool
 
 
 logger = get_logger(__name__)
+
+# Directory where browser recordings will be saved
+RECORDING_DIR = os.path.join(os.getcwd(), "browser_recordings")
+os.makedirs(RECORDING_DIR, exist_ok=True)
 
 # Configure LLM
 api_key = os.getenv("LLM_API_KEY")
@@ -71,14 +77,18 @@ def conversation_callback(event: Event):
         llm_messages.append(event.to_llm_message())
 
 
+# Create conversation with persistence_dir set to save browser recordings
 conversation = Conversation(
-    agent=agent, callbacks=[conversation_callback], workspace=cwd
+    agent=agent,
+    callbacks=[conversation_callback],
+    workspace=cwd,
+    persistence_dir=RECORDING_DIR,  # Browser recordings will be saved here
 )
 
 # The prompt instructs the agent to:
 # 1. Start recording the browser session
 # 2. Browse to a website and perform some actions
-# 3. Stop recording and save the recording
+# 3. Stop recording (auto-saves to file)
 PROMPT = """
 Please complete the following task to demonstrate browser session recording:
 
@@ -93,13 +103,10 @@ Please complete the following task to demonstrate browser session recording:
    - Get the page content
    - Scroll down to see more content
 
-4. Finally, use `browser_stop_recording` to stop the recording and retrieve the 
-   captured events.
+4. Finally, use `browser_stop_recording` to stop the recording.
+   The recording will be automatically saved to a file.
 
-5. Save the recording JSON to a file called 'browser_recording.json' in the 
-   current directory.
-
-Please report what was recorded (number of events, types of events, etc.).
+Please report what was recorded (number of events, pages recorded, etc.).
 """
 
 print("=" * 80)
