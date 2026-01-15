@@ -1,6 +1,5 @@
 import io
 import re
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
@@ -38,8 +37,7 @@ logger = get_logger(__name__)
 THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 
 
-@dataclass
-class SkillInfo:
+class SkillInfo(BaseModel):
     """Lightweight representation of a skill's essential information.
 
     This class provides a standardized, serializable format for skill metadata
@@ -47,12 +45,12 @@ class SkillInfo:
     """
 
     name: str
-    type: Literal["repo", "knowledge", "agent"]
+    type: Literal["repo", "knowledge", "agentskills"]
     content: str
-    triggers: list[str]
-    source: str | None
-    description: str | None
-    is_agentskills_format: bool
+    triggers: list[str] = Field(default_factory=list)
+    source: str | None = None
+    description: str | None = None
+    is_agentskills_format: bool = False
 
 
 class SkillResources(BaseModel):
@@ -578,15 +576,15 @@ class Skill(BaseModel):
         logger.debug(f"This skill requires user input: {variables}")
         return len(variables) > 0
 
-    def get_skill_type(self) -> Literal["repo", "knowledge", "agent"]:
+    def get_skill_type(self) -> Literal["repo", "knowledge", "agentskills"]:
         """Determine the type of this skill.
 
         Returns:
-            "agent" for AgentSkills format, "repo" for always-active skills,
+            "agentskills" for AgentSkills format, "repo" for always-active skills,
             "knowledge" for trigger-based skills.
         """
         if self.is_agentskills_format:
-            return "agent"
+            return "agentskills"
         elif self.trigger is None:
             return "repo"
         else:

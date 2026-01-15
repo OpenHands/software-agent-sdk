@@ -10,7 +10,7 @@ from openhands.sdk.context.skills import (
 from openhands.sdk.context.skills.skill import SkillInfo
 
 
-SkillType = Literal["repo", "knowledge", "agent"]
+SkillType = Literal["repo", "knowledge", "agentskills"]
 
 
 class TestSkillGetSkillType:
@@ -44,14 +44,14 @@ class TestSkillGetSkillType:
         assert skill.get_skill_type() == "knowledge"
 
     def test_agent_skill_type(self):
-        """Test that an AgentSkills format skill returns 'agent' type."""
+        """Test that an AgentSkills format skill returns 'agentskills' type."""
         skill = Skill(
             name="test-agent",
             content="Agent instructions",
             trigger=None,
             is_agentskills_format=True,
         )
-        assert skill.get_skill_type() == "agent"
+        assert skill.get_skill_type() == "agentskills"
 
     def test_agent_skill_type_with_trigger(self):
         """Test that AgentSkills format takes precedence over trigger type."""
@@ -61,8 +61,8 @@ class TestSkillGetSkillType:
             trigger=KeywordTrigger(keywords=["test"]),
             is_agentskills_format=True,
         )
-        # AgentSkills format should return 'agent' even with triggers
-        assert skill.get_skill_type() == "agent"
+        # AgentSkills format should return 'agentskills' even with triggers
+        assert skill.get_skill_type() == "agentskills"
 
 
 class TestSkillGetTriggers:
@@ -161,7 +161,7 @@ class TestSkillToSkillInfo:
 
         assert isinstance(info, SkillInfo)
         assert info.name == "pdf-tools"
-        assert info.type == "agent"
+        assert info.type == "agentskills"
         assert info.content == "PDF processing instructions"
         assert info.triggers == []
         assert info.source == "/skills/pdf-tools/SKILL.md"

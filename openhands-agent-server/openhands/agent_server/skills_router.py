@@ -78,7 +78,7 @@ class SkillInfo(BaseModel):
     """Skill information returned by the API."""
 
     name: str
-    type: Literal["repo", "knowledge", "agent"]
+    type: Literal["repo", "knowledge", "agentskills"]
     content: str
     triggers: list[str] = Field(default_factory=list)
     source: str | None = None

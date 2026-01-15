@@ -183,7 +183,7 @@ class TestGetSkillsEndpoint:
             assert response.status_code == 200
             data = response.json()
             skill_info = data["skills"][0]
-            assert skill_info["type"] == "agent"
+            assert skill_info["type"] == "agentskills"
             assert skill_info["is_agentskills_format"] is True
 
     def test_get_skills_response_sources(self, client):
