@@ -73,6 +73,14 @@ MODELS = {
         "display_name": "GPT-5.2",
         "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
     },
+    "gpt-5.2-high-reasoning": {
+        "id": "gpt-5.2-high-reasoning",
+        "display_name": "GPT-5.2 High Reasoning",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.2-2025-12-11",
+            "reasoning_effort": "high",
+        },
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
