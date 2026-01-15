@@ -321,7 +321,9 @@ def _try_reset_to_origin(repo_path: Path, branch: str, git: GitHelper) -> None:
         git.reset_hard(repo_path, f"origin/{branch}")
         logger.debug("Repository updated successfully")
     except GitCommandError as e:
-        logger.warning(f"Failed to reset to origin/{branch}: {e}. Using cached version.")
+        logger.warning(
+            f"Failed to reset to origin/{branch}: {e}. Using cached version."
+        )
 
 
 def _recover_from_detached_head(repo_path: Path, git: GitHelper) -> None:
@@ -346,7 +348,8 @@ def _recover_from_detached_head(repo_path: Path, git: GitHelper) -> None:
         return
 
     logger.debug(
-        f"Repository in detached HEAD state, checking out default branch: {default_branch}"
+        f"Repository in detached HEAD state, "
+        f"checking out default branch: {default_branch}"
     )
 
     try:
