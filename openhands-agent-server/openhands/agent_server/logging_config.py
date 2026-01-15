@@ -36,7 +36,13 @@ class UvicornAccessJsonFormatter(JsonFormatter):
             log_data["http.method"] = method
             log_data["http.url"] = full_path
             log_data["http.version"] = http_version
-            log_data["http.status_code"] = int(status_code)  # type: ignore[call-overload]
+            # status_code from uvicorn is typically an int, but handle edge cases
+            if isinstance(status_code, int):
+                log_data["http.status_code"] = status_code
+            elif isinstance(status_code, str) and status_code.isdigit():
+                log_data["http.status_code"] = int(status_code)
+            else:
+                log_data["http.status_code"] = status_code
 
 
 def get_uvicorn_logging_config() -> dict[str, Any]:
@@ -50,6 +56,7 @@ def get_uvicorn_logging_config() -> dict[str, Any]:
     4. Extracts HTTP fields into structured JSON attributes
     """
     use_json = ENV_JSON or IN_CI
+    log_level = logging.getLevelName(ENV_LOG_LEVEL)
 
     # Base configuration
     config: dict[str, Any] = {
@@ -58,7 +65,19 @@ def get_uvicorn_logging_config() -> dict[str, Any]:
         "incremental": False,
         "formatters": {},
         "handlers": {},
-        "loggers": {},
+        "loggers": {
+            # Common logger configurations - propagate to root
+            "uvicorn": {
+                "handlers": [],
+                "level": log_level,
+                "propagate": True,
+            },
+            "uvicorn.error": {
+                "handlers": [],
+                "level": log_level,
+                "propagate": True,
+            },
+        },
     }
 
     if use_json:
@@ -75,43 +94,18 @@ def get_uvicorn_logging_config() -> dict[str, Any]:
             "stream": "ext://sys.stderr",
         }
 
-        # Configure uvicorn loggers
-        config["loggers"] = {
-            "uvicorn": {
-                "handlers": [],
-                "level": logging.getLevelName(ENV_LOG_LEVEL),
-                "propagate": True,
-            },
-            "uvicorn.error": {
-                "handlers": [],
-                "level": logging.getLevelName(ENV_LOG_LEVEL),
-                "propagate": True,
-            },
-            # Access logger uses dedicated JSON handler with HTTP field extraction
-            "uvicorn.access": {
-                "handlers": ["access_json"],
-                "level": logging.getLevelName(ENV_LOG_LEVEL),
-                "propagate": False,  # Don't double-log
-            },
+        # Access logger uses dedicated JSON handler with HTTP field extraction
+        config["loggers"]["uvicorn.access"] = {
+            "handlers": ["access_json"],
+            "level": log_level,
+            "propagate": False,  # Don't double-log
         }
     else:
-        # Non-JSON mode: propagate all to root (uses Rich handler)
-        config["loggers"] = {
-            "uvicorn": {
-                "handlers": [],
-                "level": logging.getLevelName(ENV_LOG_LEVEL),
-                "propagate": True,
-            },
-            "uvicorn.error": {
-                "handlers": [],
-                "level": logging.getLevelName(ENV_LOG_LEVEL),
-                "propagate": True,
-            },
-            "uvicorn.access": {
-                "handlers": [],
-                "level": logging.getLevelName(ENV_LOG_LEVEL),
-                "propagate": True,
-            },
+        # Non-JSON mode: propagate access logs to root (uses Rich handler)
+        config["loggers"]["uvicorn.access"] = {
+            "handlers": [],
+            "level": log_level,
+            "propagate": True,
         }
 
     return config
