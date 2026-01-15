@@ -319,13 +319,15 @@ class EventService:
         # Send current state to the new subscriber immediately
         if self._conversation:
             state = self._conversation._state
-            # Create state snapshot while holding the lock to ensure consistency
+            # Create state snapshot while holding the lock to ensure consistency.
+            # ConversationStateUpdateEvent inherits from Event which has frozen=True
+            # in its model_config, making the snapshot immutable after creation.
             with state:
                 state_update_event = (
                     ConversationStateUpdateEvent.from_conversation_state(state)
                 )
 
-            # Send state update outside the lock - the event is an immutable snapshot,
+            # Send state update outside the lock - the event is frozen (immutable),
             # so we don't need to hold the lock during the async send operation.
             # This prevents potential deadlocks between the sync FIFOLock and async I/O.
             try:
@@ -631,12 +633,17 @@ class EventService:
             return
 
         state = self._conversation._state
-        # Create state snapshot while holding the lock to ensure consistency
+        # Create state snapshot while holding the lock to ensure consistency.
+        # ConversationStateUpdateEvent inherits from Event which has frozen=True
+        # in its model_config, making the snapshot immutable after creation.
         with state:
             state_update_event = ConversationStateUpdateEvent.from_conversation_state(
                 state
             )
-        # Publish outside the lock - the event is an immutable snapshot
+        # Publish outside the lock - the event is frozen (immutable).
+        # Note: _pub_sub iterates through subscribers sequentially. If any subscriber
+        # is slow, it will delay subsequent subscribers. For high-throughput scenarios,
+        # consider using asyncio.gather() for concurrent notification in the future.
         await self._pub_sub(state_update_event)
 
     async def __aenter__(self):
