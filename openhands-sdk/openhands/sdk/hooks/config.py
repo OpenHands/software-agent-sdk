@@ -10,7 +10,6 @@ from typing import Any
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
-from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = logging.getLogger(__name__)
@@ -170,11 +169,8 @@ class HookConfig(BaseModel):
         if not isinstance(data, dict):
             return data
 
-        has_legacy_format = False
-
         # Unwrap legacy format: {"hooks": {"PreToolUse": [...]}}
         if "hooks" in data:
-            has_legacy_format = True
             if len(data) != 1:
                 logger.warning(
                     'HookConfig legacy wrapper format should be {"hooks": {...}}. '
@@ -191,7 +187,6 @@ class HookConfig(BaseModel):
             is_pascal_case = snake_key != key
 
             if is_pascal_case:
-                has_legacy_format = True
                 # Validate that PascalCase key maps to a known field
                 if snake_key not in _VALID_HOOK_FIELDS:
                     valid_types = ", ".join(sorted(_VALID_HOOK_FIELDS))
@@ -208,23 +203,9 @@ class HookConfig(BaseModel):
             seen_fields.add(snake_key)
             normalized[snake_key] = value
 
-        # Preserve backwards compatibility without deprecating the legacy formats.
-        # We still emit a warning to encourage the snake_case format, but do not
-        # mark it for removal.
-        if has_legacy_format:
-            warn_deprecated(
-                "HookConfig legacy JSON format ('hooks' wrapper and/or "
-                "PascalCase keys)",
-                deprecated_in="0.0.0",
-                removed_in=None,
-                details=(
-                    "This format is still supported for interoperability. "
-                    "Preferred format uses snake_case keys directly: pre_tool_use, "
-                    "post_tool_use, user_prompt_submit, session_start, session_end, "
-                    "stop."
-                ),
-                stacklevel=7,
-            )
+        # Preserve backwards compatibility without deprecating any supported formats.
+        # The legacy 'hooks' wrapper and PascalCase keys are accepted for
+        # interoperability and should not emit a deprecation warning.
 
         return normalized
 
