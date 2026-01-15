@@ -818,6 +818,7 @@ PUBLIC_SKILLS_BRANCH = "main"
 def load_public_skills(
     repo_url: str = PUBLIC_SKILLS_REPO,
     branch: str = PUBLIC_SKILLS_BRANCH,
+    is_optional: bool = True,
 ) -> list[Skill]:
     """Load skills from the public OpenHands skills repository.
 
@@ -831,6 +832,9 @@ def load_public_skills(
         repo_url: URL of the skills repository. Defaults to the official
             OpenHands skills repository.
         branch: Branch name to load skills from. Defaults to 'main'.
+        is_optional: If True, logs at debug level when repository access fails.
+            If False, logs at warning level. Defaults to True since public
+            skills are optional.
 
     Returns:
         List of Skill objects loaded from the public repository.
@@ -847,20 +851,23 @@ def load_public_skills(
         >>> context = AgentContext(skills=public_skills)
     """
     all_skills = []
+    log_fn = logger.debug if is_optional else logger.warning
 
     try:
         # Get or update the local repository
         cache_dir = get_skills_cache_dir()
-        repo_path = update_skills_repository(repo_url, branch, cache_dir)
+        repo_path = update_skills_repository(
+            repo_url, branch, cache_dir, is_optional=is_optional
+        )
 
         if repo_path is None:
-            logger.warning("Failed to access public skills repository")
+            log_fn("Failed to access public skills repository")
             return all_skills
 
         # Load skills from the local repository
         skills_dir = repo_path / "skills"
         if not skills_dir.exists():
-            logger.warning(f"Skills directory not found in repository: {skills_dir}")
+            log_fn(f"Skills directory not found in repository: {skills_dir}")
             return all_skills
 
         # Find all .md files in the skills directory
@@ -884,7 +891,7 @@ def load_public_skills(
                 continue
 
     except Exception as e:
-        logger.warning(f"Failed to load public skills from {repo_url}: {str(e)}")
+        log_fn(f"Failed to load public skills from {repo_url}: {str(e)}")
 
     logger.info(
         f"Loaded {len(all_skills)} public skills: {[s.name for s in all_skills]}"

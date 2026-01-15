@@ -312,6 +312,7 @@ def update_skills_repository(
     repo_url: str,
     branch: str,
     cache_dir: Path,
+    is_optional: bool = False,
 ) -> Path | None:
     """Clone or update the local skills repository.
 
@@ -322,12 +323,16 @@ def update_skills_repository(
         repo_url: URL of the skills repository.
         branch: Branch name to checkout and track.
         cache_dir: Directory where the repository should be cached.
+        is_optional: If True, logs at debug level on failure instead of warning.
+            Use for optional repositories where failure is expected and acceptable.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-    return try_cached_clone_or_update(repo_url, repo_path, ref=branch, update=True)
+    return try_cached_clone_or_update(
+        repo_url, repo_path, ref=branch, update=True, is_optional=is_optional
+    )
 
 
 def discover_skill_resources(skill_dir: Path) -> SkillResources:

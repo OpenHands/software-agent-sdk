@@ -178,6 +178,7 @@ def try_cached_clone_or_update(
     update: bool = True,
     git_helper: GitHelper | None = None,
     lock_timeout: float = DEFAULT_LOCK_TIMEOUT,
+    is_optional: bool = False,
 ) -> Path | None:
     """Clone or update a git repository in a cache directory.
 
@@ -204,12 +205,15 @@ def try_cached_clone_or_update(
         update: If True and repo exists, fetch and update it. If False, skip fetch.
         git_helper: GitHelper instance for git operations. If None, creates one.
         lock_timeout: Timeout in seconds for acquiring the lock. Default is 5 minutes.
+        is_optional: If True, logs at debug level on failure instead of warning.
+            Use for optional repositories where failure is expected and acceptable.
 
     Returns:
         Path to the local repository if successful, None on failure.
         Returns None (not raises) on git errors to allow graceful degradation.
     """
     git = git_helper if git_helper is not None else GitHelper()
+    log_fn = logger.debug if is_optional else logger.warning
 
     # Ensure parent directory exists for both the repo and lock file
     repo_path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,15 +226,13 @@ def try_cached_clone_or_update(
         with lock.acquire(timeout=lock_timeout):
             return _do_clone_or_update(url, repo_path, ref, update, git)
     except Timeout:
-        logger.warning(
-            f"Timed out waiting for lock on {repo_path} after {lock_timeout}s"
-        )
+        log_fn(f"Timed out waiting for lock on {repo_path} after {lock_timeout}s")
         return None
     except GitCommandError as e:
-        logger.warning(f"Git operation failed: {e}")
+        log_fn(f"Git operation failed: {e}")
         return None
     except Exception as e:
-        logger.warning(f"Error managing repository: {str(e)}")
+        log_fn(f"Error managing repository: {str(e)}")
         return None
 
 
