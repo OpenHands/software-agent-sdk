@@ -154,18 +154,13 @@ class Agent(AgentBase):
             critic_result = self.critic.evaluate(
                 events=llm_convertible_events, git_patch=None
             )
-            logger.debug(
-                f"Critic evaluation: score={critic_result.score:.3f}, "
-                f"success={critic_result.success}, message={critic_result.message}"
+            logger.info(
+                f"✓ Critic evaluation: score={critic_result.score:.3f}, "
+                f"success={critic_result.success}"
             )
             return critic_result
         except Exception as e:
-            logger.warning(
-                f"Critic evaluation failed: {e}. "
-                f"Event type: {type(event).__name__}, "
-                f"Critic mode: {self.critic.mode}",
-                exc_info=True,  # Include stack trace in logs
-            )
+            logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
             return None
 
     def _execute_actions(
