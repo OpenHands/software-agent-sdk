@@ -138,9 +138,10 @@ class TestParsePluginSource:
 
     def test_ssh_with_custom_user(self):
         """Test SSH URLs with non-git usernames."""
-        source_type, url = parse_plugin_source("deploy@git.example.com:project/repo.git")
+        ssh_url = "deploy@git.example.com:project/repo.git"
+        source_type, url = parse_plugin_source(ssh_url)
         assert source_type == "git"
-        assert url == "deploy@git.example.com:project/repo.git"
+        assert url == ssh_url
 
 
 class TestExtractReadableName:
