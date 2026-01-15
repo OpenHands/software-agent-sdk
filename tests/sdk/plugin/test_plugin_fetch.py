@@ -16,12 +16,12 @@ from openhands.sdk.git.exceptions import GitCommandError
 from openhands.sdk.plugin import (
     Plugin,
     PluginFetchError,
-    parse_plugin_source,
 )
 from openhands.sdk.plugin.fetch import (
     _extract_readable_name,
     fetch_plugin,
     get_cache_path,
+    parse_plugin_source,
 )
 
 
