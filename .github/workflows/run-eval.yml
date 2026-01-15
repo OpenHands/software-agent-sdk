@@ -19,6 +19,7 @@ on:
                     - swebench
                     - swtbench
                     - commit0
+                    - multiswebench
                     - swebenchmultimodal
             sdk_ref:
                 description: SDK commit/ref to evaluate
