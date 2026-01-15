@@ -1,5 +1,7 @@
 """Example demonstrating critic-based evaluation of agent actions.
 
+This is EXPERIMENTAL.
+
 This shows how to configure an agent with a critic to evaluate action quality
 in real-time. The critic scores are displayed in the conversation visualizer.
 
