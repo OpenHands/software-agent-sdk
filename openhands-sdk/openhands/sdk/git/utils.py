@@ -1,4 +1,5 @@
 import logging
+import re
 import shlex
 import subprocess
 from pathlib import Path
@@ -217,3 +218,112 @@ def validate_git_repository(repo_dir: str | Path) -> Path:
             raise GitRepositoryError(f"Not a git repository: {repo_path}") from e
 
     return repo_path
+
+
+# ============================================================================
+# Git URL utilities
+# ============================================================================
+
+
+def is_git_url(source: str) -> bool:
+    """Check if a source string looks like a git URL.
+
+    Detects git URLs by their protocol/scheme rather than enumerating providers.
+    This handles any git hosting service (GitHub, GitLab, Codeberg, self-hosted, etc.)
+
+    Args:
+        source: String to check.
+
+    Returns:
+        True if the string appears to be a git URL, False otherwise.
+
+    Examples:
+        >>> is_git_url("https://github.com/owner/repo.git")
+        True
+        >>> is_git_url("git@github.com:owner/repo.git")
+        True
+        >>> is_git_url("/local/path")
+        False
+    """
+    # HTTPS/HTTP URLs to git repositories
+    if source.startswith(("https://", "http://")):
+        return True
+
+    # SSH format: git@host:path or user@host:path
+    if re.match(r"^[\w.-]+@[\w.-]+:", source):
+        return True
+
+    # Git protocol
+    if source.startswith("git://"):
+        return True
+
+    # File protocol (for testing)
+    if source.startswith("file://"):
+        return True
+
+    return False
+
+
+def normalize_git_url(url: str) -> str:
+    """Normalize a git URL by ensuring .git suffix for HTTPS URLs.
+
+    Args:
+        url: Git URL to normalize.
+
+    Returns:
+        Normalized URL with .git suffix for HTTPS/HTTP URLs.
+
+    Examples:
+        >>> normalize_git_url("https://github.com/owner/repo")
+        "https://github.com/owner/repo.git"
+        >>> normalize_git_url("https://github.com/owner/repo.git")
+        "https://github.com/owner/repo.git"
+        >>> normalize_git_url("git@github.com:owner/repo.git")
+        "git@github.com:owner/repo.git"
+    """
+    if url.startswith(("https://", "http://")) and not url.endswith(".git"):
+        url = url.rstrip("/")
+        url = f"{url}.git"
+    return url
+
+
+def extract_repo_name(source: str) -> str:
+    """Extract a human-readable repository name from a git URL or path.
+
+    Extracts the last path component (repo name) and sanitizes it for use
+    in directory names or display purposes.
+
+    Args:
+        source: Git URL or local path string.
+
+    Returns:
+        A sanitized name suitable for use in directory names (max 32 chars).
+
+    Examples:
+        >>> extract_repo_name("https://github.com/owner/my-repo.git")
+        "my-repo"
+        >>> extract_repo_name("git@github.com:owner/my-repo.git")
+        "my-repo"
+        >>> extract_repo_name("/path/to/local-repo")
+        "local-repo"
+    """
+    # Strip common prefixes to get to the path portion
+    name = source
+    for prefix in ("github:", "https://", "http://", "git://", "file://"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+
+    # Handle SSH format: user@host:path -> path
+    if "@" in name and ":" in name and "/" not in name.split(":")[0]:
+        name = name.split(":", 1)[1]
+
+    # Remove .git suffix and get last path component
+    name = name.rstrip("/").removesuffix(".git")
+    name = name.rsplit("/", 1)[-1]
+
+    # Sanitize: keep alphanumeric, dash, underscore only
+    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
+    name = re.sub(r"-+", "-", name).strip("-")
+
+    return name[:32] if name else "repo"

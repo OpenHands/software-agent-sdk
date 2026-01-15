@@ -13,12 +13,12 @@ from openhands.sdk.git.cached_repo import (
     _update_repository,
 )
 from openhands.sdk.git.exceptions import GitCommandError
+from openhands.sdk.git.utils import extract_repo_name
 from openhands.sdk.plugin import (
     Plugin,
     PluginFetchError,
 )
 from openhands.sdk.plugin.fetch import (
-    _extract_readable_name,
     fetch_plugin,
     get_cache_path,
     parse_plugin_source,
@@ -144,37 +144,37 @@ class TestParsePluginSource:
         assert url == ssh_url
 
 
-class TestExtractReadableName:
-    """Tests for _extract_readable_name function."""
+class TestExtractRepoName:
+    """Tests for extract_repo_name function (in git.utils)."""
 
     def test_github_shorthand(self):
         """Test extracting name from GitHub shorthand."""
-        name = _extract_readable_name("github:owner/my-plugin")
+        name = extract_repo_name("github:owner/my-plugin")
         assert name == "my-plugin"
 
     def test_https_url(self):
         """Test extracting name from HTTPS URL."""
-        name = _extract_readable_name("https://github.com/owner/my-plugin.git")
+        name = extract_repo_name("https://github.com/owner/my-plugin.git")
         assert name == "my-plugin"
 
     def test_ssh_url(self):
         """Test extracting name from SSH URL."""
-        name = _extract_readable_name("git@github.com:owner/my-plugin.git")
+        name = extract_repo_name("git@github.com:owner/my-plugin.git")
         assert name == "my-plugin"
 
     def test_local_path(self):
         """Test extracting name from local path."""
-        name = _extract_readable_name("/path/to/my-plugin")
+        name = extract_repo_name("/path/to/my-plugin")
         assert name == "my-plugin"
 
     def test_special_characters_sanitized(self):
         """Test that special characters are sanitized."""
-        name = _extract_readable_name("https://github.com/owner/my.special@plugin!.git")
+        name = extract_repo_name("https://github.com/owner/my.special@plugin!.git")
         assert name == "my-special-plugin"
 
     def test_long_name_truncated(self):
         """Test that long names are truncated."""
-        name = _extract_readable_name(
+        name = extract_repo_name(
             "github:owner/this-is-a-very-long-plugin-name-that-should-be-truncated"
         )
         assert len(name) <= 32

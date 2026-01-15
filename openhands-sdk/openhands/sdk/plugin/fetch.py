@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import hashlib
-import re
 from pathlib import Path
 
 from openhands.sdk.git.cached_repo import GitHelper, cached_clone_or_update
+from openhands.sdk.git.utils import extract_repo_name, is_git_url, normalize_git_url
 from openhands.sdk.logger import get_logger
 
 
@@ -61,8 +61,8 @@ def parse_plugin_source(source: str) -> tuple[str, str]:
 
     # Git URLs: detect by protocol/scheme rather than enumerating providers
     # This handles GitHub, GitLab, Bitbucket, Codeberg, self-hosted instances, etc.
-    if _is_git_url(source):
-        url = _normalize_git_url(source)
+    if is_git_url(source):
+        url = normalize_git_url(source)
         return ("git", url)
 
     # Local path: starts with /, ~, . or contains / without a URL scheme
@@ -77,39 +77,6 @@ def parse_plugin_source(source: str) -> tuple[str, str]:
         f"Unable to parse plugin source: {source}. "
         f"Expected formats: 'github:owner/repo', git URL, or local path"
     )
-
-
-def _is_git_url(source: str) -> bool:
-    """Check if a source string looks like a git URL.
-
-    Detects git URLs by their protocol/scheme rather than enumerating providers.
-    This handles any git hosting service (GitHub, GitLab, Codeberg, self-hosted, etc.)
-    """
-    # HTTPS/HTTP URLs to git repositories
-    if source.startswith(("https://", "http://")):
-        return True
-
-    # SSH format: git@host:path or user@host:path
-    if re.match(r"^[\w.-]+@[\w.-]+:", source):
-        return True
-
-    # Git protocol
-    if source.startswith("git://"):
-        return True
-
-    # File protocol (for testing)
-    if source.startswith("file://"):
-        return True
-
-    return False
-
-
-def _normalize_git_url(url: str) -> str:
-    """Normalize a git URL by ensuring .git suffix for HTTPS URLs."""
-    if url.startswith(("https://", "http://")) and not url.endswith(".git"):
-        url = url.rstrip("/")
-        url = f"{url}.git"
-    return url
 
 
 def get_cache_path(source: str, cache_dir: Path | None = None) -> Path:
@@ -130,47 +97,11 @@ def get_cache_path(source: str, cache_dir: Path | None = None) -> Path:
     # Create a hash of the source for the directory name
     source_hash = hashlib.sha256(source.encode()).hexdigest()[:16]
 
-    # Also include a readable portion of the source
-    # Extract repo name from various formats
-    readable_name = _extract_readable_name(source)
+    # Extract repo name for human-readable cache directory name
+    readable_name = extract_repo_name(source)
 
     cache_name = f"{readable_name}-{source_hash}"
     return cache_dir / cache_name
-
-
-def _extract_readable_name(source: str) -> str:
-    """Extract a human-readable name from a source URL/path.
-
-    Extracts the last path component (repo name) and sanitizes it.
-    The hash in get_cache_path() ensures uniqueness, so this just needs
-    to be human-readable for debugging/browsing cache directories.
-
-    Args:
-        source: Plugin source string (URL or path).
-
-    Returns:
-        A sanitized name suitable for use in directory names (max 32 chars).
-    """
-    # Strip common prefixes to get to the path portion
-    name = source
-    for prefix in ("github:", "https://", "http://", "git://", "file://"):
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
-
-    # Handle SSH format: user@host:path -> path
-    if "@" in name and ":" in name and "/" not in name.split(":")[0]:
-        name = name.split(":", 1)[1]
-
-    # Remove .git suffix and get last path component
-    name = name.rstrip("/").removesuffix(".git")
-    name = name.rsplit("/", 1)[-1]
-
-    # Sanitize: keep alphanumeric, dash, underscore only
-    name = re.sub(r"[^a-zA-Z0-9_-]", "-", name)
-    name = re.sub(r"-+", "-", name).strip("-")
-
-    return name[:32] if name else "plugin"
 
 
 def _resolve_local_source(url: str, subpath: str | None) -> Path:
