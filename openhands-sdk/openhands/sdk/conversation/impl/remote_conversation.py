@@ -228,11 +228,12 @@ class RemoteEventsList(EventsListBase):
         with self._lock:
             # Check if event already exists to avoid duplicates
             if event.id not in self._cached_event_ids:
-                # Use bisect to insert in sorted order by timestamp
+                # Use bisect with key function for O(log N) insertion
                 # This ensures events are always ordered correctly even if
                 # WebSocket delivers them out of order
-                timestamps = [e.timestamp for e in self._cached_events]
-                insert_pos = bisect.bisect_right(timestamps, event.timestamp)
+                insert_pos = bisect.bisect_right(
+                    self._cached_events, event.timestamp, key=lambda e: e.timestamp
+                )
                 self._cached_events.insert(insert_pos, event)
                 self._cached_event_ids.add(event.id)
                 logger.debug(
