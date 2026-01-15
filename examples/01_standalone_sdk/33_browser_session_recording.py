@@ -14,7 +14,7 @@ Usage:
     export LLM_MODEL=anthropic/claude-sonnet-4-5-20250929
 
     # Run the example
-    python 34_browser_session_recording.py
+    python 33_browser_session_recording.py
 
 The recording will be automatically saved to the persistence directory when
 browser_stop_recording is called. You can replay it with:
@@ -78,7 +78,7 @@ conversation = Conversation(
     agent=agent, 
     callbacks=[conversation_callback], 
     workspace=cwd,
-    persistence_dir = "./.conversations"
+    persistence_dir="./.conversations"
 )
 
 # The prompt instructs the agent to:
@@ -115,8 +115,14 @@ print("\n" + "=" * 80)
 print("Conversation finished!")
 print("=" * 80)
 
+persistence_dir = conversation.state.persistence_dir
+assert persistence_dir
+
 # Check if the recording file was created
-recording_file = os.path.join(cwd, "browser_recording.json")
+files = os.listdir(os.path.join(persistence_dir, "observations"))
+recording_file = files[0] if len(files) > 0 else ""
+
+recording_file = os.path.join(persistence_dir, f"observations/{recording_file}")
 if os.path.exists(recording_file):
     with open(recording_file) as f:
         recording_data = json.load(f)
@@ -136,7 +142,6 @@ if os.path.exists(recording_file):
 
     print("\nTo replay this recording, you can use:")
     print("  - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player")
-    print("  - Online viewer: https://www.rrweb.io/demo/")
 else:
     print(f"\n✗ Recording file not found at: {recording_file}")
     print("  The agent may not have completed the recording task.")
