@@ -204,6 +204,9 @@ class ConversationService:
         2. Loads the plugin's skills, hooks, and MCP configuration
         3. Merges plugin content into the agent's context
 
+        Note: This method performs blocking I/O (git clones, network requests).
+        Call via asyncio.to_thread() from async contexts.
+
         Args:
             request: The original start conversation request with plugin_source set
 
@@ -217,6 +220,18 @@ class ConversationService:
             return request
 
         try:
+            # Validate plugin_source format
+            if not request.plugin_source.strip():
+                raise PluginFetchError("plugin_source cannot be empty")
+
+            # Validate plugin_path for path traversal attacks
+            if request.plugin_path:
+                safe_path = Path(request.plugin_path)
+                if ".." in safe_path.parts:
+                    raise PluginFetchError(
+                        "plugin_path cannot contain parent directory references"
+                    )
+
             # Fetch the plugin (handles caching internally)
             logger.info(f"Fetching plugin from: {request.plugin_source}")
             plugin_path = Plugin.fetch(
@@ -243,10 +258,14 @@ class ConversationService:
             # Re-raise fetch errors as-is
             raise
         except Exception as e:
-            # Wrap other errors in PluginFetchError
+            # Wrap other errors in PluginFetchError with exception type for debugging
             raise PluginFetchError(
-                f"Failed to load plugin from {request.plugin_source}: {e}"
+                f"Failed to load plugin from {request.plugin_source}: "
+                f"{type(e).__name__}: {e}"
             ) from e
+
+    # Resource limits to prevent DoS from malicious plugins
+    MAX_PLUGIN_SKILLS = 100
 
     def _merge_plugin_into_request(
         self, request: StartConversationRequest, plugin: Plugin
@@ -259,17 +278,27 @@ class ConversationService:
 
         Returns:
             Updated request with plugin content merged
+
+        Raises:
+            PluginFetchError: If the plugin exceeds resource limits
         """
         agent = request.agent
         updates: dict = {}
 
         # Merge skills into agent context
         if plugin.skills:
+            # Validate resource limits to prevent DoS
+            if len(plugin.skills) > self.MAX_PLUGIN_SKILLS:
+                raise PluginFetchError(
+                    f"Plugin has too many skills "
+                    f"({len(plugin.skills)} > {self.MAX_PLUGIN_SKILLS})"
+                )
+
             existing_context = agent.agent_context
             existing_skills = existing_context.skills if existing_context else []
 
-            # Plugin skills are added with highest precedence (at the end)
-            # Build a dict to deduplicate by name, with plugin skills winning
+            # Merge skills: plugin skills override existing skills with the same name.
+            # New plugin skills are appended at the end (dict maintains insertion order).
             skills_by_name = {s.name: s for s in existing_skills}
             for plugin_skill in plugin.skills:
                 if plugin_skill.name in skills_by_name:
@@ -361,9 +390,9 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
-        # Load plugin if specified
+        # Load plugin if specified (run in thread pool to avoid blocking event loop)
         if request.plugin_source:
-            request = self._load_and_merge_plugin(request)
+            request = await asyncio.to_thread(self._load_and_merge_plugin, request)
 
         stored = StoredConversation(id=conversation_id, **request.model_dump())
         event_service = await self._start_event_service(stored)

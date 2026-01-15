@@ -1617,3 +1617,142 @@ class TestPluginLoading:
 
         # Request should be unchanged
         assert result is request
+
+    def test_load_and_merge_plugin_whitespace_source(self, conversation_service):
+        """Test that plugin loading fails for whitespace-only source."""
+        from openhands.sdk.plugin import PluginFetchError
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="   ",  # Whitespace-only
+        )
+
+        with pytest.raises(PluginFetchError, match="plugin_source cannot be empty"):
+            conversation_service._load_and_merge_plugin(request)
+
+    def test_load_and_merge_plugin_path_traversal(self, conversation_service):
+        """Test that plugin loading fails for path traversal attempts."""
+        from openhands.sdk.plugin import PluginFetchError
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:test/plugin",
+            plugin_path="../../../etc/passwd",  # Path traversal attempt
+        )
+
+        with pytest.raises(
+            PluginFetchError, match="cannot contain parent directory references"
+        ):
+            conversation_service._load_and_merge_plugin(request)
+
+    def test_load_and_merge_plugin_path_traversal_nested(self, conversation_service):
+        """Test that plugin loading fails for nested path traversal attempts."""
+        from openhands.sdk.plugin import PluginFetchError
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:test/plugin",
+            plugin_path="plugins/../../../secret",  # Nested path traversal
+        )
+
+        with pytest.raises(
+            PluginFetchError, match="cannot contain parent directory references"
+        ):
+            conversation_service._load_and_merge_plugin(request)
+
+    @patch("openhands.agent_server.conversation_service.Plugin")
+    def test_load_and_merge_plugin_error_includes_exception_type(
+        self, mock_plugin_class, conversation_service
+    ):
+        """Test that wrapped exceptions include the exception type name."""
+        from openhands.sdk.plugin import PluginFetchError
+
+        mock_plugin_class.fetch.return_value = Path("/tmp/test-plugin")
+        mock_plugin_class.load.side_effect = TypeError("unexpected type error")
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+            plugin_source="github:test/plugin",
+        )
+
+        with pytest.raises(PluginFetchError) as exc_info:
+            conversation_service._load_and_merge_plugin(request)
+
+        # Verify error message includes exception type name
+        assert "TypeError:" in str(exc_info.value)
+        assert "unexpected type error" in str(exc_info.value)
+
+    def test_merge_plugin_into_request_too_many_skills(self, conversation_service):
+        """Test that merging a plugin with too many skills raises an error."""
+        from openhands.sdk.context.skills import Skill
+        from openhands.sdk.plugin import Plugin, PluginFetchError
+        from openhands.sdk.plugin.types import PluginManifest
+
+        # Create a plugin with more than MAX_PLUGIN_SKILLS skills
+        too_many_skills = [
+            Skill(name=f"skill-{i}", content=f"Skill {i} content")
+            for i in range(conversation_service.MAX_PLUGIN_SKILLS + 1)
+        ]
+
+        plugin = Plugin(
+            manifest=PluginManifest(
+                name="too-many-skills-plugin",
+                version="1.0.0",
+                description="A plugin with too many skills",
+            ),
+            path="/tmp/too-many-skills-plugin",
+            skills=too_many_skills,
+            hooks=None,
+            mcp_config=None,
+            agents=[],
+            commands=[],
+        )
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+        )
+
+        with pytest.raises(PluginFetchError, match="too many skills"):
+            conversation_service._merge_plugin_into_request(request, plugin)
+
+    def test_merge_plugin_into_request_at_skill_limit(
+        self, conversation_service, mock_plugin
+    ):
+        """Test that merging a plugin at exactly MAX_PLUGIN_SKILLS succeeds."""
+        from openhands.sdk.context.skills import Skill
+        from openhands.sdk.plugin import Plugin
+        from openhands.sdk.plugin.types import PluginManifest
+
+        # Create a plugin with exactly MAX_PLUGIN_SKILLS skills
+        max_skills = [
+            Skill(name=f"skill-{i}", content=f"Skill {i} content")
+            for i in range(conversation_service.MAX_PLUGIN_SKILLS)
+        ]
+
+        plugin = Plugin(
+            manifest=PluginManifest(
+                name="max-skills-plugin",
+                version="1.0.0",
+                description="A plugin with max skills",
+            ),
+            path="/tmp/max-skills-plugin",
+            skills=max_skills,
+            hooks=None,
+            mcp_config=None,
+            agents=[],
+            commands=[],
+        )
+
+        request = StartConversationRequest(
+            agent=Agent(llm=LLM(model="gpt-4", usage_id="test-llm"), tools=[]),
+            workspace=LocalWorkspace(working_dir="/tmp/test"),
+        )
+
+        # Should not raise
+        result = conversation_service._merge_plugin_into_request(request, plugin)
+        assert len(result.agent.agent_context.skills) == conversation_service.MAX_PLUGIN_SKILLS
