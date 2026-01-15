@@ -29,10 +29,12 @@ class APIBasedCritic(CriticBase, CriticClient):
                 system_prompt_event = event
                 tools = event.tools
                 break
-        assert system_prompt_event is not None, (
-            "SystemPromptEvent is required for APIBasedCritic"
-        )
-        assert tools is not None, "Tools are required for APIBasedCritic"
+        if system_prompt_event is None:
+            raise ValueError(
+                "SystemPromptEvent is required for APIBasedCritic evaluation"
+            )
+        if tools is None:
+            raise ValueError("Tools are required for APIBasedCritic evaluation")
 
         # This will only retain events that are kept by the condenser
         view = View.from_events(events)
