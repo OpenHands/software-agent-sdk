@@ -10,22 +10,37 @@ from openhands.sdk.utils.cipher import Cipher
 
 
 # Environment variable constants
-SESSION_API_KEY_ENV = "SESSION_API_KEY"
+V0_SESSION_API_KEY_ENV = "SESSION_API_KEY"
+V1_SESSION_API_KEY_ENV = "OH_SESSION_API_KEYS_0"
 ENVIRONMENT_VARIABLE_PREFIX = "OH"
 _logger = logging.getLogger(__name__)
 
 
 def _default_session_api_keys():
-    # Legacy fallback for compability with old runtime API
+    """
+    This function exists as a fallback to using this old V0 environment
+    variable. If new V1_SESSION_API_KEYS_0 environment variable exists,
+    it is read automatically by the EnvParser and this function is never
+    called.
+    """
     result = []
-    session_api_key = os.getenv(SESSION_API_KEY_ENV)
+    session_api_key = os.getenv(V0_SESSION_API_KEY_ENV)
     if session_api_key:
         result.append(session_api_key)
     return result
 
 
 def _default_secret_key() -> SecretStr | None:
-    session_api_key = os.getenv(SESSION_API_KEY_ENV)
+    """
+    If the OH_SECRET_KEY environment variable is present, it is read by the EnvParser
+    and this function is never called. Otherwise, we fall back to using the first
+    available session_api_key - which we read from the environment.
+    We check both the V0 and V1 variables for this.
+    """
+    session_api_key = os.getenv(V0_SESSION_API_KEY_ENV)
+    if session_api_key:
+        return SecretStr(session_api_key)
+    session_api_key = os.getenv(V1_SESSION_API_KEY_ENV)
     if session_api_key:
         return SecretStr(session_api_key)
     return None
@@ -77,7 +92,10 @@ class Config(BaseModel):
         description=(
             "List of valid session API keys used to authenticate incoming requests. "
             "Empty list implies the server will be unsecured. Any key in this list "
-            "will be accepted for authentication."
+            "will be accepted for authentication. Multiple keys are supported to "
+            "enable key rotation without service disruption - new keys can be added "
+            "to the list, then clients are updated with the new key, and finally the "
+            "old key is removed from the list. "
         ),
     )
     allow_cors_origins: list[str] = Field(

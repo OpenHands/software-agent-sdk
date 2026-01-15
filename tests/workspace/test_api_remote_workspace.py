@@ -108,6 +108,34 @@ def test_different_timeout_values():
             workspace.cleanup()
 
 
+def test_startup_wait_timeout_default_and_override():
+    """Ensure startup_wait_timeout can be configured."""
+    from openhands.workspace import APIRemoteWorkspace
+
+    with patch.object(APIRemoteWorkspace, "_start_or_attach_to_runtime") as mock_init:
+        mock_init.return_value = None
+        default_ws = APIRemoteWorkspace(
+            runtime_api_url="https://example.com",
+            runtime_api_key="test-key",
+            server_image="test-image",
+        )
+        assert default_ws.startup_wait_timeout == 300.0
+        default_ws._runtime_id = None
+        default_ws.cleanup()
+
+    with patch.object(APIRemoteWorkspace, "_start_or_attach_to_runtime") as mock_init:
+        mock_init.return_value = None
+        custom_ws = APIRemoteWorkspace(
+            runtime_api_url="https://example.com",
+            runtime_api_key="test-key",
+            server_image="test-image",
+            startup_wait_timeout=600.0,
+        )
+        assert custom_ws.startup_wait_timeout == 600.0
+        custom_ws._runtime_id = None
+        custom_ws.cleanup()
+
+
 def test_forward_env_default_is_empty():
     """Test that forward_env defaults to an empty list."""
     from openhands.workspace import APIRemoteWorkspace

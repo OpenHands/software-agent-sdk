@@ -141,6 +141,40 @@ curl -X POST \\
 4. **body**: Provide a clear, actionable comment.
    Be specific about what should be changed.
 
+### Priority Levels for Review Comments:
+
+**IMPORTANT**: Each inline comment MUST start with a priority label to help the PR
+author understand the importance of each suggestion. Use one of these prefixes:
+
+- **🔴 Critical**: Must be fixed before merging. Security vulnerabilities, bugs that
+  will cause failures, data loss risks, or breaking changes.
+- **🟠 Important**: Should be addressed. Logic errors, performance issues, missing
+  error handling, or significant code quality concerns.
+- **🟡 Suggestion**: Nice to have improvements. Better naming, code organization,
+  or minor optimizations that would improve the code.
+- **🟢 Nit**: Minor stylistic preferences. Formatting, comment wording, or trivial
+  improvements that are optional.
+
+**Example comment with priority:**
+```
+🟠 Important: This function doesn't handle the case when `user` is None, which could
+cause an AttributeError in production.
+
+```suggestion
+if user is None:
+    raise ValueError("User cannot be None")
+```
+```
+
+**Another example:**
+```
+🟢 Nit: Consider using a more descriptive variable name for clarity.
+
+```suggestion
+user_count = len(users)
+```
+```
+
 ### Multi-Line Comments and Suggestions:
 
 When your comment or suggestion spans multiple lines, you MUST specify a line range
@@ -263,6 +297,8 @@ user_count = len(users)
 - Only post comments for actual issues or important suggestions
 - Use the suggestion syntax for small, concrete code changes
 - Be constructive and specific about what should be changed
+- **Always include a priority label** (🔴 Critical, 🟠 Important, 🟡 Suggestion, 🟢 Nit)
+  at the start of each inline comment
 - If there are no issues, post a single review with an approval message (no inline
   comments needed)
 
