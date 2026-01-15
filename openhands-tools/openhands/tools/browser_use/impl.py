@@ -437,9 +437,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         return await self._server._start_recording()
 
     async def stop_recording(self) -> str:
-        """Stop recording and return the recorded events as JSON."""
+        """Stop recording and save events to file.
+
+        Recording is automatically saved to a timestamped JSON file in the
+        full_output_save_dir if configured. Returns a summary message.
+        """
         await self._ensure_initialized()
-        return await self._server._stop_recording()
+        return await self._server._stop_recording(save_dir=self.full_output_save_dir)
 
     async def close_browser(self) -> str:
         """Close the browser session."""

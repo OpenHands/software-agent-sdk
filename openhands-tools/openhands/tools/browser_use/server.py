@@ -446,26 +446,25 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             logger.exception("Error starting recording", exc_info=e)
             return f"Error starting recording: {str(e)}"
 
-    async def _stop_recording(self) -> str:
-        """Stop rrweb recording and return events as JSON.
+    async def _stop_recording(self, save_dir: str | None = None) -> str:
+        """Stop rrweb recording and save events to a file.
 
-        Returns a JSON object with:
-        - events: Array of rrweb events (combined from all pages visited)
-        - count: Number of events captured
-        - using_stub: Whether the fallback stub was used (CDN unavailable)
-        - event_types: Summary of event types captured
-        - pages_recorded: Number of pages that were recorded
+        Args:
+            save_dir: Directory to save the recording file. If provided, events
+                are saved to a timestamped JSON file in this directory.
+
+        Returns:
+            A summary message (not the full events - those are saved to file).
         """
         import json
+        import os
+        from datetime import datetime
 
         if not self.browser_session:
-            return '{"error": "No browser session active"}'
+            return "Error: No browser session active"
 
         if not self._is_recording:
-            return json.dumps({
-                "error": "Not recording",
-                "hint": "Call browser_start_recording first"
-            })
+            return "Error: Not recording. Call browser_start_recording first."
 
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
@@ -530,14 +529,29 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             self._is_recording = False
             await self._set_recording_flag(False)
 
-            # Prepare result
-            result_data = {
-                "events": all_events,
-                "count": len(all_events),
-                "using_stub": self._recording_using_stub,
-                "event_types": event_types,
-                "pages_recorded": pages_recorded
-            }
+            # Save recording to file if save_dir is provided
+            saved_path = None
+            if save_dir and all_events:
+                os.makedirs(save_dir, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"browser_recording_{timestamp}.json"
+                saved_path = os.path.join(save_dir, filename)
+
+                recording_data = {
+                    "events": all_events,
+                    "metadata": {
+                        "count": len(all_events),
+                        "pages_recorded": pages_recorded,
+                        "event_types": event_types,
+                        "using_stub": self._recording_using_stub,
+                        "timestamp": timestamp,
+                    }
+                }
+
+                with open(saved_path, "w") as f:
+                    json.dump(recording_data, f)
+
+                logger.info(f"Recording saved to: {saved_path}")
 
             # Clear Python-side storage
             self._recording_events = []
@@ -548,14 +562,18 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 logger.warning(f"Recording stopped (fallback stub): {len(all_events)} events from {pages_recorded} page(s)")
             else:
                 logger.info(f"Recording stopped: {len(all_events)} events from {pages_recorded} page(s)")
-            logger.debug(f"Event types: {event_types}")
 
-            return json.dumps(result_data)
+            # Return a concise summary message (not the full events)
+            summary = f"Recording stopped. Captured {len(all_events)} events from {pages_recorded} page(s)."
+            if saved_path:
+                summary += f" Saved to: {saved_path}"
+
+            return summary
 
         except Exception as e:
             self._is_recording = False
             logger.exception("Error stopping recording", exc_info=e)
-            return json.dumps({"error": str(e)})
+            return f"Error stopping recording: {str(e)}"
 
     async def _get_storage(self) -> str:
         """Get browser storage (cookies, local storage, session storage)."""
