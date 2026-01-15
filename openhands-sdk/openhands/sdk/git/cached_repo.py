@@ -415,33 +415,45 @@ def _recover_from_detached_head(repo_path: Path, git: GitHelper) -> None:
 def _checkout_ref(repo_path: Path, ref: str, git: GitHelper) -> None:
     """Checkout a specific ref (branch, tag, or commit).
 
-    For branches: fetches the ref, checks out, and resets to origin.
-    For tags/commits: checks out directly (reset to origin will be skipped).
+    Handles each ref type with appropriate semantics:
+
+    - **Branches**: Checks out the branch and resets to ``origin/{branch}`` to
+      ensure the local branch matches the remote state.
+
+    - **Tags**: Checks out in detached HEAD state. Tags are immutable, so no
+      reset is performed.
+
+    - **Commits**: Checks out in detached HEAD state. For shallow clones, the
+      commit must be reachable from fetched history.
 
     Args:
         repo_path: Path to the repository.
-        ref: Branch, tag, or commit to checkout.
+        ref: Branch name, tag name, or commit SHA to checkout.
         git: GitHelper instance.
 
     Raises:
-        GitCommandError: If checkout fails (the critical operation).
+        GitCommandError: If checkout fails (ref doesn't exist or isn't reachable).
     """
     logger.debug(f"Checking out ref: {ref}")
-
-    # Try to fetch the specific ref. This may fail for:
-    # - Commits (expected - they don't have refspecs)
-    # - Network issues (unexpected but non-critical since we already fetched)
-    try:
-        git.fetch(repo_path, ref=ref)
-    except GitCommandError:
-        logger.debug(f"Could not fetch ref '{ref}' specifically (may be a commit/tag)")
 
     # Checkout is the critical operation - let it raise if it fails
     git.checkout(repo_path, ref)
 
-    # Try to reset to origin (makes sense for branches, not for tags/commits)
+    # Determine what we checked out by examining HEAD state
+    current_branch = git.get_current_branch(repo_path)
+
+    if current_branch is None:
+        # Detached HEAD means we checked out a tag or commit - nothing more to do
+        logger.debug(f"Checked out {ref} (detached HEAD - tag or commit)")
+        return
+
+    # We're on a branch - reset to sync with origin
     try:
-        git.reset_hard(repo_path, f"origin/{ref}")
+        git.reset_hard(repo_path, f"origin/{current_branch}")
+        logger.debug(f"Branch {current_branch} reset to origin/{current_branch}")
     except GitCommandError:
-        # Expected for tags and commits - origin/{ref} doesn't exist for them
-        logger.debug(f"Reset to origin/{ref} skipped (ref is likely a tag or commit)")
+        # Branch may not exist on origin (e.g., local-only branch)
+        logger.debug(
+            f"Could not reset to origin/{current_branch} "
+            f"(branch may not exist on remote)"
+        )

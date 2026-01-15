@@ -265,11 +265,12 @@ class TestUpdateRepository:
     def test_update_with_ref_checks_out(self, tmp_path: Path):
         """Test update with ref checks out that ref."""
         mock_git = create_autospec(GitHelper)
+        mock_git.get_current_branch.return_value = None  # Assume tag/commit (detached)
 
         _update_repository(tmp_path, "v1.0.0", mock_git)
 
-        # fetch is called twice: once in _update_repository, once in _checkout_ref
-        assert mock_git.fetch.call_count == 2
+        # fetch is called once in _update_repository (checkout_ref no longer fetches)
+        mock_git.fetch.assert_called_once_with(tmp_path)
         mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
 
     def test_update_detached_head_recovers_to_default_branch(self, tmp_path: Path):
@@ -343,37 +344,55 @@ class TestUpdateRepository:
 
 
 class TestCheckoutRef:
-    """Tests for _checkout_ref function."""
+    """Tests for _checkout_ref function.
 
-    def test_checkout_fetches_and_checks_out(self, tmp_path: Path):
-        """Test checkout fetches ref and checks out."""
+    The function detects ref type AFTER checkout by checking HEAD state:
+    - Detached HEAD (None from get_current_branch) = tag or commit
+    - On a branch = reset to origin/{branch}
+    """
+
+    def test_checkout_branch_resets_to_origin(self, tmp_path: Path):
+        """Test checkout of a branch resets to origin."""
         mock_git = create_autospec(GitHelper)
+        mock_git.get_current_branch.return_value = "main"  # On a branch
+
+        _checkout_ref(tmp_path, "main", mock_git)
+
+        mock_git.checkout.assert_called_once_with(tmp_path, "main")
+        mock_git.get_current_branch.assert_called_once_with(tmp_path)
+        mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
+
+    def test_checkout_tag_skips_reset(self, tmp_path: Path):
+        """Test checkout of a tag (detached HEAD) skips reset."""
+        mock_git = create_autospec(GitHelper)
+        mock_git.get_current_branch.return_value = None  # Detached HEAD
 
         _checkout_ref(tmp_path, "v1.0.0", mock_git)
 
-        mock_git.fetch.assert_called_once_with(tmp_path, ref="v1.0.0")
         mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
-        mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/v1.0.0")
+        mock_git.get_current_branch.assert_called_once_with(tmp_path)
+        mock_git.reset_hard.assert_not_called()
 
-    def test_checkout_handles_fetch_error(self, tmp_path: Path):
-        """Test checkout continues if fetch fails (e.g., for commits)."""
+    def test_checkout_commit_skips_reset(self, tmp_path: Path):
+        """Test checkout of a commit SHA (detached HEAD) skips reset."""
         mock_git = create_autospec(GitHelper)
-        mock_git.fetch.side_effect = GitCommandError(
-            "Not a branch", command=["git", "fetch"], exit_code=1
-        )
+        mock_git.get_current_branch.return_value = None  # Detached HEAD
 
-        _checkout_ref(tmp_path, "abc123", mock_git)
+        _checkout_ref(tmp_path, "abc123def", mock_git)
 
-        mock_git.checkout.assert_called_once_with(tmp_path, "abc123")
+        mock_git.checkout.assert_called_once_with(tmp_path, "abc123def")
+        mock_git.reset_hard.assert_not_called()
 
-    def test_checkout_handles_reset_error(self, tmp_path: Path):
-        """Test checkout continues if reset fails (e.g., for tags)."""
+    def test_checkout_branch_handles_reset_error(self, tmp_path: Path):
+        """Test checkout continues if reset fails (e.g., branch not on remote)."""
         mock_git = create_autospec(GitHelper)
+        mock_git.get_current_branch.return_value = "local-only"
         mock_git.reset_hard.side_effect = GitCommandError(
-            "Not a branch", command=["git", "fetch"], exit_code=1
+            "Not found", command=["git", "reset"], exit_code=1
         )
 
-        _checkout_ref(tmp_path, "v1.0.0", mock_git)
+        # Should not raise - reset failure is logged but not fatal
+        _checkout_ref(tmp_path, "local-only", mock_git)
 
         mock_git.checkout.assert_called_once()
 
