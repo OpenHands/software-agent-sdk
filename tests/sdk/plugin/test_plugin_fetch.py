@@ -256,9 +256,8 @@ class TestUpdateRepository:
         mock_git = create_autospec(GitHelper)
         mock_git.get_current_branch.return_value = "main"
 
-        result = _update_repository(tmp_path, None, mock_git)
+        _update_repository(tmp_path, None, mock_git)
 
-        assert result is True
         mock_git.fetch.assert_called_once_with(tmp_path)
         mock_git.get_current_branch.assert_called_once_with(tmp_path)
         mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
@@ -267,45 +266,80 @@ class TestUpdateRepository:
         """Test update with ref checks out that ref."""
         mock_git = create_autospec(GitHelper)
 
-        result = _update_repository(tmp_path, "v1.0.0", mock_git)
+        _update_repository(tmp_path, "v1.0.0", mock_git)
 
-        assert result is True
         # fetch is called twice: once in _update_repository, once in _checkout_ref
         assert mock_git.fetch.call_count == 2
         mock_git.checkout.assert_called_once_with(tmp_path, "v1.0.0")
 
-    def test_update_handles_detached_head(self, tmp_path: Path):
-        """Test update handles detached HEAD state (no reset)."""
+    def test_update_detached_head_recovers_to_default_branch(self, tmp_path: Path):
+        """Test update recovers from detached HEAD by checking out default branch.
+
+        When a repo is in detached HEAD state (e.g., from a previous checkout of a
+        tag) and update is called without a ref, it should:
+        1. Detect the detached HEAD state
+        2. Determine the remote's default branch via origin/HEAD
+        3. Checkout and reset to that default branch
+
+        This ensures that `fetch(source, update=True)` without a ref means "get the
+        latest from the default branch", not "stay stuck on whatever was previously
+        checked out".
+        """
         mock_git = create_autospec(GitHelper)
-        mock_git.get_current_branch.return_value = None
+        mock_git.get_current_branch.return_value = None  # Detached HEAD
+        mock_git.get_default_branch.return_value = "main"
 
-        result = _update_repository(tmp_path, None, mock_git)
+        _update_repository(tmp_path, None, mock_git)
 
-        assert result is True
         mock_git.fetch.assert_called_once()
+        mock_git.get_current_branch.assert_called_once()
+        mock_git.get_default_branch.assert_called_once_with(tmp_path)
+        mock_git.checkout.assert_called_once_with(tmp_path, "main")
+        mock_git.reset_hard.assert_called_once_with(tmp_path, "origin/main")
+
+    def test_update_detached_head_no_default_branch_logs_warning(self, tmp_path: Path):
+        """Test update logs warning when detached HEAD and default branch unknown.
+
+        If origin/HEAD is not set (can happen with some git configurations), we
+        can't determine the default branch. In this case, log a warning and use
+        the cached version as-is.
+        """
+        mock_git = create_autospec(GitHelper)
+        mock_git.get_current_branch.return_value = None  # Detached HEAD
+        mock_git.get_default_branch.return_value = None  # Can't determine default
+
+        _update_repository(tmp_path, None, mock_git)
+
+        mock_git.fetch.assert_called_once()
+        mock_git.get_default_branch.assert_called_once()
+        # Should not attempt checkout since we don't know the target
+        mock_git.checkout.assert_not_called()
         mock_git.reset_hard.assert_not_called()
 
-    def test_update_returns_false_on_fetch_error(self, tmp_path: Path):
-        """Test update returns False on fetch failure (uses cached version)."""
+    def test_update_continues_on_fetch_error(self, tmp_path: Path):
+        """Test update logs warning on fetch failure but doesn't raise."""
         mock_git = create_autospec(GitHelper)
         mock_git.fetch.side_effect = GitCommandError(
             "Network error", command=["git", "fetch"], exit_code=1
         )
 
-        result = _update_repository(tmp_path, None, mock_git)
+        # Should not raise - graceful degradation
+        _update_repository(tmp_path, None, mock_git)
 
-        assert result is False
+        # Fetch was attempted
+        mock_git.fetch.assert_called_once()
+        # No further operations since fetch failed
+        mock_git.get_current_branch.assert_not_called()
 
-    def test_update_returns_false_on_checkout_error(self, tmp_path: Path):
-        """Test update returns False on checkout failure."""
+    def test_update_continues_on_checkout_error(self, tmp_path: Path):
+        """Test update logs warning on checkout failure but doesn't raise."""
         mock_git = create_autospec(GitHelper)
         mock_git.checkout.side_effect = GitCommandError(
             "Invalid ref", command=["git", "checkout"], exit_code=1
         )
 
-        result = _update_repository(tmp_path, "nonexistent", mock_git)
-
-        assert result is False
+        # Should not raise - graceful degradation
+        _update_repository(tmp_path, "nonexistent", mock_git)
 
 
 class TestCheckoutRef:
@@ -787,3 +821,92 @@ class TestGitHelperErrors:
             mock_run.side_effect = subprocess.TimeoutExpired(cmd=["git"], timeout=1)
             with pytest.raises(GitCommandError, match="timed out"):
                 git.get_current_branch(repo, timeout=1)
+
+
+class TestGetDefaultBranch:
+    """Tests for GitHelper.get_default_branch method."""
+
+    def test_get_default_branch_returns_main(self, tmp_path: Path):
+        """Test get_default_branch extracts branch name from origin/HEAD."""
+        git = GitHelper()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with patch("openhands.sdk.git.utils.subprocess.run") as mock_run:
+            mock_result = subprocess.CompletedProcess(
+                args=["git"],
+                returncode=0,
+                stdout="refs/remotes/origin/main\n",
+                stderr="",
+            )
+            mock_run.return_value = mock_result
+
+            result = git.get_default_branch(repo)
+
+            assert result == "main"
+            # Verify the correct command was called
+            call_args = mock_run.call_args[0][0]
+            assert call_args == ["git", "symbolic-ref", "refs/remotes/origin/HEAD"]
+
+    def test_get_default_branch_returns_master(self, tmp_path: Path):
+        """Test get_default_branch works with master as default branch."""
+        git = GitHelper()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with patch("openhands.sdk.git.utils.subprocess.run") as mock_run:
+            mock_result = subprocess.CompletedProcess(
+                args=["git"],
+                returncode=0,
+                stdout="refs/remotes/origin/master\n",
+                stderr="",
+            )
+            mock_run.return_value = mock_result
+
+            result = git.get_default_branch(repo)
+
+            assert result == "master"
+
+    def test_get_default_branch_returns_none_when_not_set(self, tmp_path: Path):
+        """Test get_default_branch returns None when origin/HEAD is not set.
+
+        This can happen with:
+        - Bare clones
+        - Repos where origin/HEAD was never configured
+        - Some git server configurations
+        """
+        git = GitHelper()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with patch("openhands.sdk.git.utils.subprocess.run") as mock_run:
+            mock_result = subprocess.CompletedProcess(
+                args=["git"],
+                returncode=1,
+                stdout="",
+                stderr="fatal: ref refs/remotes/origin/HEAD is not a symbolic ref",
+            )
+            mock_run.return_value = mock_result
+
+            result = git.get_default_branch(repo)
+
+            assert result is None
+
+    def test_get_default_branch_returns_none_on_unexpected_format(self, tmp_path: Path):
+        """Test get_default_branch returns None for unexpected output format."""
+        git = GitHelper()
+        repo = tmp_path / "repo"
+        repo.mkdir()
+
+        with patch("openhands.sdk.git.utils.subprocess.run") as mock_run:
+            mock_result = subprocess.CompletedProcess(
+                args=["git"],
+                returncode=0,
+                stdout="unexpected-format\n",  # Doesn't start with expected prefix
+                stderr="",
+            )
+            mock_run.return_value = mock_result
+
+            result = git.get_default_branch(repo)
+
+            assert result is None
