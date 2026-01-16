@@ -537,23 +537,7 @@ class Marketplace(BaseModel):
         except json.JSONDecodeError as e:
             raise ValueError(f"Invalid JSON in {manifest_path}: {e}") from e
 
-        return cls._from_dict(data, str(marketplace_dir))
-
-    @classmethod
-    def _from_dict(cls, data: dict[str, Any], path: str | None = None) -> Marketplace:
-        """Create a Marketplace from a dictionary.
-
-        Args:
-            data: Dictionary containing marketplace data.
-            path: Optional path to the marketplace directory.
-
-        Returns:
-            Marketplace instance.
-
-        Raises:
-            ValidationError: If required fields are missing or invalid.
-        """
-        return cls.model_validate({**data, "path": path})
+        return cls.model_validate({**data, "path": str(marketplace_dir)})
 
     def get_plugin(self, name: str) -> MarketplacePluginEntry | None:
         """Get a plugin entry by name.
