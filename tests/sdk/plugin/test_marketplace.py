@@ -540,6 +540,40 @@ class TestMarketplaceIntegration:
         assert entry.description == manifest.description
         assert entry.author.name == manifest.author.name
 
+    def test_to_plugin_manifest(self):
+        """Test converting MarketplacePluginEntry to PluginManifest."""
+        entry = MarketplacePluginEntry(
+            name="my-plugin",
+            source="./plugins/my-plugin",
+            version="2.0.0",
+            description="My awesome plugin",
+            author={"name": "Author Name", "email": "author@example.com"},
+            license="MIT",
+            keywords=["testing", "example"],
+        )
+
+        manifest = entry.to_plugin_manifest()
+
+        assert manifest.name == "my-plugin"
+        assert manifest.version == "2.0.0"
+        assert manifest.description == "My awesome plugin"
+        assert manifest.author.name == "Author Name"
+        assert manifest.author.email == "author@example.com"
+
+    def test_to_plugin_manifest_defaults(self):
+        """Test to_plugin_manifest uses defaults for missing fields."""
+        entry = MarketplacePluginEntry(
+            name="minimal-plugin",
+            source="./plugins/minimal",
+        )
+
+        manifest = entry.to_plugin_manifest()
+
+        assert manifest.name == "minimal-plugin"
+        assert manifest.version == "1.0.0"  # Default
+        assert manifest.description == ""  # Default
+        assert manifest.author is None
+
     def test_resolve_plugin_source_invalid_source_object(self, tmp_path: Path):
         """Test resolve_plugin_source raises error for invalid source object."""
         marketplace_dir = tmp_path / "invalid-source"
@@ -566,3 +600,20 @@ class TestMarketplaceIntegration:
 
         with pytest.raises(ValueError, match="Invalid plugin source"):
             marketplace.resolve_plugin_source(plugin)
+
+    def test_skill_compatible_fields(self):
+        """Test that MarketplacePluginEntry has fields compatible with Skill."""
+        # The Skill class has `license` and `description` fields per AgentSkills standard
+        # MarketplacePluginEntry should have matching fields for consistency
+        entry = MarketplacePluginEntry(
+            name="skill-compatible-plugin",
+            source="./plugins/test",
+            description="Plugin with skill-compatible fields",
+            license="Apache-2.0",
+            keywords=["skill", "compatible"],
+        )
+
+        # These fields align with Skill definitions
+        assert entry.license == "Apache-2.0"
+        assert entry.description == "Plugin with skill-compatible fields"
+        assert entry.keywords == ["skill", "compatible"]

@@ -268,59 +268,93 @@ class MarketplacePluginEntry(BaseModel):
 
     Represents a single plugin available in the marketplace with its
     metadata and source location.
+
+    This schema extends the core PluginManifest fields (name, version,
+    description, author) with marketplace-specific fields (source, category,
+    tags) and optional inline component definitions.
+
+    The `license` and `keywords` fields align with the AgentSkills standard
+    (https://agentskills.io/specification) used by Skill definitions.
+
+    Related schemas:
+        - PluginManifest: Core plugin metadata (plugin.json)
+        - Skill: Individual skill definitions with license, description
+        - Plugin: Loaded plugin with skills, commands, agents, hooks
     """
 
+    # Core fields (shared with PluginManifest)
     name: str = Field(
         description="Plugin identifier (kebab-case, no spaces). "
         "Users see this when installing: /plugin install <name>@marketplace"
     )
+    version: str | None = Field(default=None, description="Plugin version")
+    description: str | None = Field(default=None, description="Brief plugin description")
+    author: PluginAuthor | None = Field(default=None, description="Plugin author information")
+
+    # Marketplace-specific: source location
     source: str | MarketplacePluginSource = Field(
         description="Where to fetch the plugin from. Can be a relative path string "
         "(e.g., './plugins/my-plugin') or a source object for GitHub/git URLs"
     )
-    description: str | None = Field(default=None, description="Brief plugin description")
-    version: str | None = Field(default=None, description="Plugin version")
-    author: PluginAuthor | None = Field(default=None, description="Plugin author information")
+
+    # Discovery and categorization (aligns with Skill.license for compatibility)
+    license: str | None = Field(
+        default=None,
+        description="SPDX license identifier (e.g., MIT, Apache-2.0). "
+        "Aligns with AgentSkills standard used by Skill definitions.",
+    )
+    keywords: list[str] = Field(
+        default_factory=list,
+        description="Tags for plugin discovery and categorization. "
+        "Aligns with AgentSkills standard used by Skill definitions.",
+    )
+    category: str | None = Field(
+        default=None, description="Plugin category for organization"
+    )
+    tags: list[str] = Field(default_factory=list, description="Tags for searchability")
+
+    # Repository/project links
     homepage: str | None = Field(
         default=None, description="Plugin homepage or documentation URL"
     )
     repository: str | None = Field(
         default=None, description="Source code repository URL"
     )
-    license: str | None = Field(
-        default=None, description="SPDX license identifier (e.g., MIT, Apache-2.0)"
-    )
-    keywords: list[str] = Field(
-        default_factory=list, description="Tags for plugin discovery and categorization"
-    )
-    category: str | None = Field(
-        default=None, description="Plugin category for organization"
-    )
-    tags: list[str] = Field(default_factory=list, description="Tags for searchability")
+
+    # Marketplace behavior control
     strict: bool = Field(
         default=True,
         description="If True, plugin source must contain plugin.json. "
         "If False, marketplace entry defines everything about the plugin.",
     )
+
     # Inline plugin component definitions (when strict=False)
+    # These correspond to the component types loaded by Plugin.load()
     commands: str | list[str] | None = Field(
-        default=None, description="Custom paths to command files or directories"
+        default=None,
+        description="Custom paths to command files or directories. "
+        "Loaded as CommandDefinition objects by Plugin.",
     )
     agents: str | list[str] | None = Field(
-        default=None, description="Custom paths to agent files"
+        default=None,
+        description="Custom paths to agent files. "
+        "Loaded as AgentDefinition objects by Plugin.",
     )
     hooks: str | dict[str, Any] | None = Field(
-        default=None, description="Custom hooks configuration or path to hooks file"
+        default=None,
+        description="Custom hooks configuration or path to hooks file. "
+        "Loaded as HookConfig by Plugin.",
     )
     mcp_servers: dict[str, Any] | None = Field(
         default=None,
         alias="mcpServers",
-        description="MCP server configurations",
+        description="MCP server configurations. "
+        "Corresponds to Plugin.mcp_config loaded from .mcp.json.",
     )
     lsp_servers: dict[str, Any] | None = Field(
         default=None,
         alias="lspServers",
-        description="LSP server configurations",
+        description="LSP server configurations.",
     )
 
     model_config = {"extra": "allow", "populate_by_name": True}
@@ -349,6 +383,22 @@ class MarketplacePluginEntry(BaseModel):
             data["source"] = MarketplacePluginSource.model_validate(data["source"])
 
         return cls.model_validate(data)
+
+    def to_plugin_manifest(self) -> PluginManifest:
+        """Convert marketplace entry to a PluginManifest.
+
+        Useful when strict=False and the marketplace entry defines the
+        plugin metadata directly without a separate plugin.json file.
+
+        Returns:
+            PluginManifest with the core fields from this entry.
+        """
+        return PluginManifest(
+            name=self.name,
+            version=self.version or "1.0.0",
+            description=self.description or "",
+            author=self.author,
+        )
 
 
 class MarketplaceMetadata(BaseModel):
