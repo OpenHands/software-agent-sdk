@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
 
 import frontmatter
 from pydantic import BaseModel, Field
@@ -14,6 +14,23 @@ from pydantic import BaseModel, Field
 # Directories to check for marketplace manifest
 MARKETPLACE_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
 MARKETPLACE_MANIFEST_FILE = "marketplace.json"
+
+# Type aliases for marketplace plugin entry configurations
+# These provide better documentation than dict[str, Any] while remaining flexible
+
+#: MCP server configuration dict. Keys are server names, values are server configs.
+#: Each server config should have 'command' (str) and optional 'args' (list[str]), 'env' (dict).
+#: See https://gofastmcp.com/clients/client#configuration-format
+McpServersDict: TypeAlias = dict[str, dict[str, Any]]
+
+#: LSP server configuration dict. Keys are server names, values are server configs.
+#: Each server config should have 'command' (str) and optional 'args' (list[str]).
+LspServersDict: TypeAlias = dict[str, dict[str, Any]]
+
+#: Hooks configuration dict matching HookConfig.to_dict() structure.
+#: Should have 'hooks' key with event types mapping to list of matchers.
+#: See openhands.sdk.hooks.HookConfig for the full structure.
+HooksConfigDict: TypeAlias = dict[str, Any]
 
 
 class PluginAuthor(BaseModel):
@@ -340,21 +357,25 @@ class MarketplacePluginEntry(BaseModel):
         description="Custom paths to agent files. "
         "Loaded as AgentDefinition objects by Plugin.",
     )
-    hooks: str | dict[str, Any] | None = Field(
+    hooks: str | HooksConfigDict | None = Field(
         default=None,
-        description="Custom hooks configuration or path to hooks file. "
-        "Loaded as HookConfig by Plugin.",
+        description="Hooks configuration - either a path to hooks.json file (str) "
+        "or inline configuration dict. Loaded as HookConfig by Plugin. "
+        "See openhands.sdk.hooks.HookConfig for the expected structure.",
     )
-    mcp_servers: dict[str, Any] | None = Field(
+    mcp_servers: McpServersDict | None = Field(
         default=None,
         alias="mcpServers",
-        description="MCP server configurations. "
-        "Corresponds to Plugin.mcp_config loaded from .mcp.json.",
+        description="MCP server configurations keyed by server name. "
+        "Each server config should have 'command' and optional 'args', 'env'. "
+        "Corresponds to Plugin.mcp_config loaded from .mcp.json. "
+        "See https://gofastmcp.com/clients/client#configuration-format",
     )
-    lsp_servers: dict[str, Any] | None = Field(
+    lsp_servers: LspServersDict | None = Field(
         default=None,
         alias="lspServers",
-        description="LSP server configurations.",
+        description="LSP server configurations keyed by server name. "
+        "Each server config should have 'command' and optional 'args'.",
     )
 
     model_config = {"extra": "allow", "populate_by_name": True}
@@ -434,8 +455,8 @@ class Marketplace(BaseModel):
             "name": "DevTools Team",
             "email": "devtools@example.com"
         },
+        "description": "Internal development tools",
         "metadata": {
-            "description": "Internal development tools",
             "version": "1.0.0",
             "pluginRoot": "./plugins"
         },
@@ -463,6 +484,10 @@ class Marketplace(BaseModel):
     )
     owner: MarketplaceOwner = Field(
         description="Marketplace maintainer information"
+    )
+    description: str | None = Field(
+        default=None,
+        description="Brief marketplace description. Can also be in metadata.description.",
     )
     plugins: list[MarketplacePluginEntry] = Field(
         default_factory=list, description="List of available plugins"
