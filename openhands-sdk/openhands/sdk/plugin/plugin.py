@@ -293,10 +293,13 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
 
     try:
         hook_config = HookConfig.load(path=hooks_json)
-        # load() returns empty config on error, check if it has hooks
-        if hook_config.hooks:
-            return hook_config
-        return None
+        # If hooks.json exists but is invalid, HookConfig.load() returns an empty
+        # config and logs the validation error. Keep that distinct from "file not
+        # present" (None).
+        if hook_config.is_empty():
+            logger.info(f"No hooks configured in {hooks_json}")
+            return HookConfig()
+        return hook_config
     except Exception as e:
         logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
         return None
