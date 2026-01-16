@@ -116,6 +116,29 @@ class TestHookConfig:
             assert len(hooks) == 1
             assert hooks[0].command == "test-hook.sh"
 
+
+    def test_load_discovers_agent_finish_script_in_working_dir(self):
+        """Test that load() discovers .openhands/agent_finish.sh in working_dir.
+
+        This should create a STOP hook that runs the script (10 minute timeout).
+        """
+        with tempfile.TemporaryDirectory() as tmpdir:
+            import os
+
+            hooks_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(hooks_dir)
+            finish_script = os.path.join(hooks_dir, "agent_finish.sh")
+            with open(finish_script, "w") as f:
+                f.write("#!/bin/bash\necho done\n")
+
+            config = HookConfig.load(working_dir=tmpdir)
+
+            assert config.has_hooks_for_event(HookEventType.STOP)
+            hooks = config.get_hooks_for_event(HookEventType.STOP, None)
+            assert len(hooks) == 1
+            assert hooks[0].command == "bash .openhands/agent_finish.sh || true"
+            assert hooks[0].timeout == 600
+
     def test_get_hooks_filters_by_tool_name(self):
         """Test that hooks are filtered by tool name."""
         data = {

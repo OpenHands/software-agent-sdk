@@ -92,33 +92,58 @@ class HookConfig(BaseModel):
             working_dir: Project directory for discovering .openhands/hooks.json.
                 Falls back to cwd if not provided.
         """
+        base_dir = Path(working_dir) if working_dir else Path.cwd()
+
+        config_path: Path | None = None
         if path is None:
             # Search for hooks.json in standard locations
-            base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
                 base_dir / ".openhands" / "hooks.json",
                 Path.home() / ".openhands" / "hooks.json",
             ]
             for search_path in search_paths:
                 if search_path.exists():
-                    path = search_path
+                    config_path = search_path
                     break
+        else:
+            config_path = Path(path)
+            # If pointing at a standard repo config file, infer repo root
+            if (
+                config_path.name == "hooks.json"
+                and config_path.parent.name == ".openhands"
+                and config_path.parent.parent.exists()
+            ):
+                base_dir = config_path.parent.parent
 
-        if path is None:
-            return cls()
+        config = cls()
 
-        path = Path(path)
-        if not path.exists():
-            return cls()
+        if config_path is not None and config_path.exists():
+            try:
+                with open(config_path) as f:
+                    data = json.load(f)
+                config = cls.from_dict(data)
+            except (json.JSONDecodeError, OSError) as e:
+                # Log warning but don't fail - just return empty config
+                logger.warning(f"Failed to load hooks from {config_path}: {e}")
 
-        try:
-            with open(path) as f:
-                data = json.load(f)
-            return cls.from_dict(data)
-        except (json.JSONDecodeError, OSError) as e:
-            # Log warning but don't fail - just return empty config
-            logger.warning(f"Failed to load hooks from {path}: {e}")
-            return cls()
+        # Backward-compatible, file-based repo hook: .openhands/agent_finish.sh
+        # This maps to the STOP hook event (called when the agent finishes).
+        agent_finish_script = base_dir / ".openhands" / "agent_finish.sh"
+        if agent_finish_script.exists():
+            config.hooks.setdefault(HookEventType.STOP.value, []).append(
+                HookMatcher(
+                    matcher="*",
+                    hooks=[
+                        HookDefinition(
+                            type=HookType.COMMAND,
+                            command="bash .openhands/agent_finish.sh || true",
+                            timeout=600,
+                        )
+                    ],
+                )
+            )
+
+        return config
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HookConfig":
