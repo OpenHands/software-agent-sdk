@@ -79,6 +79,9 @@ class LocalConversation(BaseConversation):
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         cipher: Cipher | None = None,
+        plugin_source: str | None = None,
+        plugin_ref: str | None = None,
+        plugin_path: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -111,11 +114,71 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
+            plugin_source: Plugin source to fetch and load. Supports:
+                - Any git URL (GitHub, GitLab, Bitbucket, etc.)
+                - GitHub shorthand "github:owner/repo"
+                - Local filesystem path
+                The plugin's skills and MCP config will be merged into the agent.
+            plugin_ref: Optional branch, tag, or commit for the plugin.
+            plugin_path: Optional subdirectory path within the plugin repository.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+
+        # Load and merge plugin if specified (before using agent)
+        plugin_hook_config: HookConfig | None = None
+        if plugin_source:
+            from openhands.sdk.plugin import Plugin, PluginFetchError
+
+            # Validate plugin_path for path traversal and absolute path attacks
+            if plugin_path:
+                safe_path = Path(plugin_path)
+                if safe_path.is_absolute():
+                    raise PluginFetchError(
+                        "plugin_path must be a relative path, not absolute"
+                    )
+                if ".." in safe_path.parts:
+                    raise PluginFetchError(
+                        "plugin_path cannot contain parent directory references"
+                    )
+
+            # Fetch and load the plugin
+            plugin_dir = Plugin.fetch(
+                source=plugin_source,
+                ref=plugin_ref,
+                subpath=plugin_path,
+            )
+            plugin = Plugin.load(plugin_dir)
+
+            # Merge plugin into agent
+            new_context, new_mcp = plugin.merge_into(
+                agent.agent_context,
+                agent.mcp_config,
+                max_skills=100,  # Defense-in-depth limit
+            )
+            agent = agent.model_copy(
+                update={"agent_context": new_context, "mcp_config": new_mcp}
+            )
+
+            # Extract hooks from plugin
+            plugin_hook_config = plugin.hooks
+
+        # Combine hook configs: plugin hooks merged with any explicitly provided hooks
+        if plugin_hook_config and hook_config:
+            # Merge: base hooks first, plugin hooks second
+            merged_hooks: dict[str, list] = {}
+            all_event_types = set(hook_config.hooks.keys()) | set(
+                plugin_hook_config.hooks.keys()
+            )
+            for event_type in all_event_types:
+                base_matchers = hook_config.hooks.get(event_type, [])
+                plugin_matchers = plugin_hook_config.hooks.get(event_type, [])
+                merged_hooks[event_type] = base_matchers + plugin_matchers
+            hook_config = HookConfig(hooks=merged_hooks)
+        elif plugin_hook_config:
+            hook_config = plugin_hook_config
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):

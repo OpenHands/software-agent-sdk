@@ -67,6 +67,9 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        plugin_source: str | None = None,
+        plugin_ref: str | None = None,
+        plugin_path: str | None = None,
     ) -> "LocalConversation": ...
 
     @overload
@@ -109,6 +112,9 @@ class Conversation:
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: dict[str, SecretValue] | dict[str, str] | None = None,
+        plugin_source: str | None = None,
+        plugin_ref: str | None = None,
+        plugin_path: str | None = None,
     ) -> BaseConversation:
         from openhands.sdk.conversation.impl.local_conversation import LocalConversation
         from openhands.sdk.conversation.impl.remote_conversation import (
@@ -116,11 +122,17 @@ class Conversation:
         )
 
         if isinstance(workspace, RemoteWorkspace):
-            # For RemoteConversation, persistence_dir should not be used
-            # Only check if it was explicitly set to something other than the default
+            # For RemoteConversation, persistence_dir and plugin fields should not be
+            # used. Plugin loading for remote conversations happens on the server side
+            # via StartConversationRequest.
             if persistence_dir is not None:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
+                )
+            if plugin_source is not None:
+                raise ValueError(
+                    "plugin_source should not be set when using RemoteConversation. "
+                    "Use StartConversationRequest.plugin_source on the server instead."
                 )
             return RemoteConversation(
                 agent=agent,
@@ -149,4 +161,7 @@ class Conversation:
             workspace=workspace,
             persistence_dir=persistence_dir,
             secrets=secrets,
+            plugin_source=plugin_source,
+            plugin_ref=plugin_ref,
+            plugin_path=plugin_path,
         )
