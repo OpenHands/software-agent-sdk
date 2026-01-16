@@ -99,9 +99,9 @@ class TestMarketplacePluginEntry:
         assert entry.tags == ["automation"]
         assert entry.strict is False
 
-    def test_entry_from_dict_with_string_author(self):
-        """Test from_dict handles author as string."""
-        entry = MarketplacePluginEntry.from_dict(
+    def test_entry_with_string_author(self):
+        """Test model_validate handles author as string."""
+        entry = MarketplacePluginEntry.model_validate(
             {
                 "name": "my-plugin",
                 "source": "./plugins/my-plugin",
@@ -111,9 +111,9 @@ class TestMarketplacePluginEntry:
         assert entry.author.name == "John Doe"
         assert entry.author.email == "john@example.com"
 
-    def test_entry_from_dict_with_github_source(self):
-        """Test from_dict handles GitHub source object."""
-        entry = MarketplacePluginEntry.from_dict(
+    def test_entry_with_github_source(self):
+        """Test model_validate handles GitHub source object."""
+        entry = MarketplacePluginEntry.model_validate(
             {
                 "name": "github-plugin",
                 "source": {"source": "github", "repo": "company/plugin"},
@@ -123,9 +123,9 @@ class TestMarketplacePluginEntry:
         assert entry.source.source == "github"
         assert entry.source.repo == "company/plugin"
 
-    def test_entry_from_dict_camel_case_fields(self):
-        """Test from_dict handles camelCase field names."""
-        entry = MarketplacePluginEntry.from_dict(
+    def test_entry_camel_case_fields(self):
+        """Test model_validate handles camelCase field names."""
+        entry = MarketplacePluginEntry.model_validate(
             {
                 "name": "mcp-plugin",
                 "source": "./plugins/mcp",
@@ -358,7 +358,9 @@ class TestMarketplace:
         manifest_file = manifest_dir / "marketplace.json"
         manifest_file.write_text('{"owner": {"name": "Team"}}')
 
-        with pytest.raises(ValueError, match="missing required field: 'name'"):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match=r"name\n.*Field required"):
             Marketplace.load(marketplace_dir)
 
     def test_load_marketplace_missing_owner(self, tmp_path: Path):
@@ -371,7 +373,9 @@ class TestMarketplace:
         manifest_file = manifest_dir / "marketplace.json"
         manifest_file.write_text('{"name": "test-marketplace"}')
 
-        with pytest.raises(ValueError, match="missing required field: 'owner'"):
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match=r"owner\n.*Field required"):
             Marketplace.load(marketplace_dir)
 
     def test_get_plugin(self, tmp_path: Path):

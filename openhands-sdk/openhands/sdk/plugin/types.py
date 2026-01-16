@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, TypeAlias
 
 import frontmatter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # Directories to check for marketplace manifest
@@ -382,30 +382,21 @@ class MarketplacePluginEntry(BaseModel):
 
     model_config = {"extra": "allow", "populate_by_name": True}
 
+    @field_validator("author", mode="before")
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> MarketplacePluginEntry:
-        """Create a MarketplacePluginEntry from a dictionary.
+    def _parse_author(cls, v: Any) -> Any:
+        """Parse author from string format 'Name <email>' if needed."""
+        if isinstance(v, str):
+            return PluginAuthor.from_string(v)
+        return v
 
-        Handles conversion of author strings to PluginAuthor objects and
-        source objects to MarketplacePluginSource.
-
-        Args:
-            data: Dictionary containing plugin entry data.
-
-        Returns:
-            MarketplacePluginEntry instance.
-        """
-        data = data.copy()
-
-        # Handle author field - can be string or object
-        if "author" in data and isinstance(data["author"], str):
-            data["author"] = PluginAuthor.from_string(data["author"]).model_dump()
-
-        # Handle source field - can be string (path) or object
-        if "source" in data and isinstance(data["source"], dict):
-            data["source"] = MarketplacePluginSource.model_validate(data["source"])
-
-        return cls.model_validate(data)
+    @field_validator("source", mode="before")
+    @classmethod
+    def _parse_source(cls, v: Any) -> Any:
+        """Parse source dict to MarketplacePluginSource if needed."""
+        if isinstance(v, dict):
+            return MarketplacePluginSource.model_validate(v)
+        return v
 
     def to_plugin_manifest(self) -> PluginManifest:
         """Convert marketplace entry to a PluginManifest.
@@ -560,43 +551,9 @@ class Marketplace(BaseModel):
             Marketplace instance.
 
         Raises:
-            ValueError: If required fields are missing or invalid.
+            ValidationError: If required fields are missing or invalid.
         """
-        data = data.copy()
-
-        # Validate required fields
-        if "name" not in data:
-            raise ValueError("Marketplace manifest missing required field: 'name'")
-        if "owner" not in data:
-            raise ValueError("Marketplace manifest missing required field: 'owner'")
-
-        # Parse owner
-        owner_data = data["owner"]
-        if not isinstance(owner_data, dict):
-            raise ValueError(
-                f"Invalid owner field: expected object, got {type(owner_data).__name__}"
-            )
-        data["owner"] = MarketplaceOwner.model_validate(owner_data)
-
-        # Parse metadata
-        if "metadata" in data and isinstance(data["metadata"], dict):
-            data["metadata"] = MarketplaceMetadata.model_validate(data["metadata"])
-
-        # Parse plugins
-        plugins_data = data.get("plugins", [])
-        if not isinstance(plugins_data, list):
-            raise ValueError(
-                f"Invalid plugins field: expected array, got {type(plugins_data).__name__}"
-            )
-        data["plugins"] = [
-            MarketplacePluginEntry.from_dict(p) if isinstance(p, dict) else p
-            for p in plugins_data
-        ]
-
-        # Set path
-        data["path"] = path
-
-        return cls.model_validate(data)
+        return cls.model_validate({**data, "path": path})
 
     def get_plugin(self, name: str) -> MarketplacePluginEntry | None:
         """Get a plugin entry by name.
