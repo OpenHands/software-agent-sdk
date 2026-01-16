@@ -19,10 +19,12 @@ class MCPClient(AsyncMCPClient):
     """
 
     _executor: AsyncExecutor
+    _closed: bool
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._executor = AsyncExecutor()
+        self._closed = False
 
     def call_async_from_sync(
         self,
@@ -56,8 +58,12 @@ class MCPClient(AsyncMCPClient):
         Synchronously close the MCP client and cleanup resources.
 
         This will attempt to call the async close() method if available,
-        then shutdown the background event loop.
+        then shutdown the background event loop. Safe to call multiple times.
         """
+        if self._closed:
+            return
+        self._closed = True
+
         # Best-effort: try async close if parent provides it
         if hasattr(self, "close") and inspect.iscoroutinefunction(self.close):
             try:
