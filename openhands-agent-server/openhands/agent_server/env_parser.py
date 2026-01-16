@@ -283,10 +283,13 @@ class DiscriminatedUnionEnvParser(EnvParser):
                 kind = next(iter(self.parsers.keys()))
             else:
                 return MISSING
-        assert isinstance(kind, str)
+        # Type narrowing: kind is str here (from os.environ.get or dict keys)
+        kind = cast(str, kind)
+        # Intentionally raise KeyError for invalid KIND - typos should fail early
         parser = self.parsers[kind]
         parser_result = parser.from_env(key)
-        assert isinstance(parser_result, dict)
+        # Type narrowing: discriminated union parsers always return dicts
+        parser_result = cast(dict, parser_result)
         parser_result["kind"] = kind
         return parser_result
 
