@@ -1761,9 +1761,10 @@ class TestPluginLoading:
         )
 
     def test_merge_plugin_with_hooks_logs_warning(self, conversation_service, caplog):
-        """Test that plugins with hooks log a warning since hooks aren't implemented."""
+        """Test that plugins with hooks log a warning."""
         import logging
 
+        from openhands.sdk.hooks import HookConfig
         from openhands.sdk.plugin import Plugin
         from openhands.sdk.plugin.types import PluginManifest
 
@@ -1775,7 +1776,7 @@ class TestPluginLoading:
             ),
             path="/tmp/hooks-plugin",
             skills=[],
-            hooks={"on_message": "handler"},  # Has hooks configured
+            hooks=HookConfig(hooks={"on_message": []}),  # Has hooks configured
             mcp_config=None,
             agents=[],
             commands=[],
@@ -1803,6 +1804,7 @@ class TestPluginLoading:
         """Test plugin with only hooks returns unchanged request after warning."""
         import logging
 
+        from openhands.sdk.hooks import HookConfig
         from openhands.sdk.plugin import Plugin
         from openhands.sdk.plugin.types import PluginManifest
 
@@ -1815,7 +1817,7 @@ class TestPluginLoading:
             ),
             path="/tmp/only-hooks-plugin",
             skills=[],
-            hooks={"pre_run": "validate_request"},
+            hooks=HookConfig(hooks={"pre_run": []}),
             mcp_config=None,
             agents=[],
             commands=[],
@@ -1838,7 +1840,7 @@ class TestPluginLoading:
         assert result.agent.agent_context is None
 
     def test_merge_plugin_mcp_config_overrides_same_key(self, conversation_service):
-        """Test that plugin MCP config properly overrides existing config with same key."""
+        """Test that plugin MCP config overrides existing config with same key."""
         from openhands.sdk.plugin import Plugin
         from openhands.sdk.plugin.types import PluginManifest
 
