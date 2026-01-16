@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import json
 import os
 import threading
@@ -219,13 +220,25 @@ class RemoteEventsList(EventsListBase):
         logger.debug(f"Full sync completed, {len(events)} events cached")
 
     def add_event(self, event: Event) -> None:
-        """Add a new event to the local cache (called by WebSocket callback)."""
+        """Add a new event to the local cache (called by WebSocket callback).
+
+        Events are inserted in sorted order by timestamp to maintain correct
+        temporal ordering regardless of WebSocket delivery order.
+        """
         with self._lock:
             # Check if event already exists to avoid duplicates
             if event.id not in self._cached_event_ids:
-                self._cached_events.append(event)
+                # Use bisect with key function for O(log N) insertion
+                # This ensures events are always ordered correctly even if
+                # WebSocket delivers them out of order
+                insert_pos = bisect.bisect_right(
+                    self._cached_events, event.timestamp, key=lambda e: e.timestamp
+                )
+                self._cached_events.insert(insert_pos, event)
                 self._cached_event_ids.add(event.id)
-                logger.debug(f"Added event {event.id} to local cache")
+                logger.debug(
+                    f"Added event {event.id} to local cache at position {insert_pos}"
+                )
 
     def append(self, event: Event) -> None:
         """Add a new event to the list (for compatibility with EventLog interface)."""
