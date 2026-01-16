@@ -47,7 +47,7 @@ class Condensation(Event):
             text.append("\n[Summary of Events Being Forgotten]\n", style="bold")
             text.append(f"{self.summary}\n")
         return text
-    
+
     @property
     def summary_event(self) -> CondensationSummaryEvent:
         """Generates a CondensationSummaryEvent.
@@ -61,7 +61,7 @@ class Condensation(Event):
         """
         if self.summary is None:
             raise ValueError("No summary present to generate CondensationSummaryEvent.")
-        
+
         # Create a deterministic ID for the summary event.
         # This ID will be unique amongst all auto-generated IDs (by virtue of the
         # "-summary" suffix).
@@ -94,6 +94,7 @@ class Condensation(Event):
             summary_event = self.summary_event
             output.insert(self.summary_offset, summary_event)
         return output
+
 
 class CondensationRequest(Event):
     """This action is used to request a condensation of the conversation history.
