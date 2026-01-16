@@ -177,3 +177,131 @@ def test_remote_events_list_empty(mock_client, conversation_id):
 
     with pytest.raises(IndexError):
         _ = events_list[0]
+
+
+def test_remote_events_list_maintains_timestamp_order(mock_client, conversation_id):
+    """Test that events are inserted in sorted order by timestamp.
+
+    This tests the fix for the race condition where WebSocket might deliver
+    events out of order (e.g., ActionEvent arriving before MessageEvent).
+    """
+    mock_response = create_mock_api_response([])
+    mock_client.request.return_value = mock_response
+
+    events_list = RemoteEventsList(mock_client, conversation_id)
+
+    # Create events with specific timestamps (out of order)
+    event1 = MessageEvent(
+        id="event-1",
+        timestamp="2024-01-01T10:00:00",  # First chronologically
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+    )
+    event2 = MessageEvent(
+        id="event-2",
+        timestamp="2024-01-01T10:00:02",  # Third chronologically
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="Response")]),
+    )
+    event3 = MessageEvent(
+        id="event-3",
+        timestamp="2024-01-01T10:00:01",  # Second chronologically
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="Action")]),
+    )
+
+    # Add events in wrong order (simulating WebSocket out-of-order delivery)
+    events_list.add_event(event2)  # Add third event first
+    events_list.add_event(event1)  # Add first event second
+    events_list.add_event(event3)  # Add second event last
+
+    # Events should be sorted by timestamp regardless of insertion order
+    assert len(events_list) == 3
+    assert events_list[0].id == "event-1"  # 10:00:00
+    assert events_list[1].id == "event-3"  # 10:00:01
+    assert events_list[2].id == "event-2"  # 10:00:02
+
+
+def test_remote_events_list_timestamp_order_with_existing_events(
+    mock_client, conversation_id
+):
+    """Test that new events are inserted in correct position among existing events."""
+    # Start with some events already loaded
+    initial_events: list[Event] = [
+        MessageEvent(
+            id="initial-1",
+            timestamp="2024-01-01T10:00:00",
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="First")]),
+        ),
+        MessageEvent(
+            id="initial-2",
+            timestamp="2024-01-01T10:00:02",
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text="Third")]),
+        ),
+    ]
+
+    mock_response = create_mock_api_response(initial_events)
+    mock_client.request.return_value = mock_response
+
+    events_list = RemoteEventsList(mock_client, conversation_id)
+    assert len(events_list) == 2
+
+    # Add an event that should be inserted in the middle
+    middle_event = MessageEvent(
+        id="middle",
+        timestamp="2024-01-01T10:00:01",  # Between initial-1 and initial-2
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="Middle")]),
+    )
+    events_list.add_event(middle_event)
+
+    assert len(events_list) == 3
+    assert events_list[0].id == "initial-1"
+    assert events_list[1].id == "middle"
+    assert events_list[2].id == "initial-2"
+
+
+def test_remote_events_list_identical_timestamps_stable_order(
+    mock_client, conversation_id
+):
+    """Test that events with identical timestamps maintain insertion order."""
+    mock_response = create_mock_api_response([])
+    mock_client.request.return_value = mock_response
+
+    events_list = RemoteEventsList(mock_client, conversation_id)
+
+    # Create events with identical timestamps
+    same_timestamp = "2024-01-01T10:00:00"
+    event1 = MessageEvent(
+        id="event-1",
+        timestamp=same_timestamp,
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="First")]),
+    )
+    event2 = MessageEvent(
+        id="event-2",
+        timestamp=same_timestamp,
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="Second")]),
+    )
+    event3 = MessageEvent(
+        id="event-3",
+        timestamp=same_timestamp,
+        source="agent",
+        llm_message=Message(role="assistant", content=[TextContent(text="Third")]),
+    )
+
+    # Add events in order
+    events_list.add_event(event1)
+    events_list.add_event(event2)
+    events_list.add_event(event3)
+
+    # Events with identical timestamps should maintain insertion order.
+    # bisect_right ensures new events are inserted after existing ones
+    # with the same timestamp.
+    assert len(events_list) == 3
+    assert events_list[0].id == "event-1"
+    assert events_list[1].id == "event-2"
+    assert events_list[2].id == "event-3"
