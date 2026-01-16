@@ -10,6 +10,7 @@ from openhands.sdk.plugin import (
     MarketplaceOwner,
     MarketplacePluginEntry,
     MarketplacePluginSource,
+    PluginAuthor,
 )
 
 
@@ -50,7 +51,9 @@ class TestMarketplacePluginSource:
 
     def test_source_with_ref(self):
         """Test source with branch/tag reference."""
-        source = MarketplacePluginSource(source="github", repo="owner/repo", ref="v1.0.0")
+        source = MarketplacePluginSource(
+            source="github", repo="owner/repo", ref="v1.0.0"
+        )
         assert source.ref == "v1.0.0"
 
     def test_source_with_path(self):
@@ -79,7 +82,7 @@ class TestMarketplacePluginEntry:
             source="./plugins/enterprise",
             description="Enterprise workflow tools",
             version="2.1.0",
-            author={"name": "Enterprise Team", "email": "team@example.com"},
+            author=PluginAuthor(name="Enterprise Team", email="team@example.com"),
             homepage="https://docs.example.com",
             repository="https://github.com/company/enterprise-plugin",
             license="MIT",
@@ -91,7 +94,7 @@ class TestMarketplacePluginEntry:
         assert entry.name == "enterprise-tools"
         assert entry.description == "Enterprise workflow tools"
         assert entry.version == "2.1.0"
-        assert entry.author.name == "Enterprise Team"
+        assert entry.author is not None and entry.author.name == "Enterprise Team"
         assert entry.homepage == "https://docs.example.com"
         assert entry.license == "MIT"
         assert entry.keywords == ["enterprise", "workflow"]
@@ -108,6 +111,7 @@ class TestMarketplacePluginEntry:
                 "author": "John Doe <john@example.com>",
             }
         )
+        assert entry.author is not None
         assert entry.author.name == "John Doe"
         assert entry.author.email == "john@example.com"
 
@@ -142,16 +146,14 @@ class TestMarketplaceMetadata:
 
     def test_basic_metadata(self):
         """Test basic metadata."""
-        metadata = MarketplaceMetadata(
-            description="Internal tools", version="1.0.0"
-        )
+        metadata = MarketplaceMetadata(description="Internal tools", version="1.0.0")
         assert metadata.description == "Internal tools"
         assert metadata.version == "1.0.0"
         assert metadata.plugin_root is None
 
     def test_metadata_with_plugin_root(self):
-        """Test metadata with plugin_root."""
-        metadata = MarketplaceMetadata(plugin_root="./plugins")
+        """Test metadata with plugin_root (using snake_case via model_validate)."""
+        metadata = MarketplaceMetadata.model_validate({"plugin_root": "./plugins"})
         assert metadata.plugin_root == "./plugins"
 
     def test_metadata_camel_case_alias(self):
@@ -314,7 +316,7 @@ class TestMarketplace:
         assert plugin.name == "enterprise-tools"
         assert plugin.description == "Enterprise tools"
         assert plugin.version == "2.1.0"
-        assert plugin.author.name == "Enterprise Team"
+        assert plugin.author is not None and plugin.author.name == "Enterprise Team"
         assert plugin.homepage == "https://docs.example.com"
         assert plugin.license == "MIT"
         assert plugin.keywords == ["enterprise", "workflow"]
@@ -401,8 +403,10 @@ class TestMarketplace:
         marketplace = Marketplace.load(marketplace_dir)
 
         # Test finding existing plugins
-        assert marketplace.get_plugin("plugin-a").name == "plugin-a"
-        assert marketplace.get_plugin("plugin-b").source == "./b"
+        plugin_a = marketplace.get_plugin("plugin-a")
+        plugin_b = marketplace.get_plugin("plugin-b")
+        assert plugin_a is not None and plugin_a.name == "plugin-a"
+        assert plugin_b is not None and plugin_b.source == "./b"
         assert marketplace.get_plugin("plugin-c") is not None
 
         # Test non-existent plugin
@@ -524,24 +528,26 @@ class TestMarketplaceIntegration:
         # Both should support name, version, description, author
         from openhands.sdk.plugin import PluginManifest
 
+        author = PluginAuthor(name="Test Author")
         entry = MarketplacePluginEntry(
             name="test-plugin",
             source="./plugins/test",
             version="1.0.0",
             description="A test plugin",
-            author={"name": "Test Author"},
+            author=author,
         )
 
         manifest = PluginManifest(
             name="test-plugin",
             version="1.0.0",
             description="A test plugin",
-            author={"name": "Test Author"},
+            author=author,
         )
 
         assert entry.name == manifest.name
         assert entry.version == manifest.version
         assert entry.description == manifest.description
+        assert entry.author is not None and manifest.author is not None
         assert entry.author.name == manifest.author.name
 
     def test_to_plugin_manifest(self):
@@ -551,7 +557,7 @@ class TestMarketplaceIntegration:
             source="./plugins/my-plugin",
             version="2.0.0",
             description="My awesome plugin",
-            author={"name": "Author Name", "email": "author@example.com"},
+            author=PluginAuthor(name="Author Name", email="author@example.com"),
             license="MIT",
             keywords=["testing", "example"],
         )
@@ -561,6 +567,7 @@ class TestMarketplaceIntegration:
         assert manifest.name == "my-plugin"
         assert manifest.version == "2.0.0"
         assert manifest.description == "My awesome plugin"
+        assert manifest.author is not None
         assert manifest.author.name == "Author Name"
         assert manifest.author.email == "author@example.com"
 
@@ -607,8 +614,8 @@ class TestMarketplaceIntegration:
 
     def test_skill_compatible_fields(self):
         """Test that MarketplacePluginEntry has fields compatible with Skill."""
-        # The Skill class has `license` and `description` fields per AgentSkills standard
-        # MarketplacePluginEntry should have matching fields for consistency
+        # The Skill class has `license` and `description` fields per AgentSkills
+        # standard. MarketplacePluginEntry should have matching fields.
         entry = MarketplacePluginEntry(
             name="skill-compatible-plugin",
             source="./plugins/test",

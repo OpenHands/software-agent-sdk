@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, TypeAlias
+from typing import Any
 
 import frontmatter
 from pydantic import BaseModel, Field, field_validator
@@ -19,20 +19,20 @@ MARKETPLACE_MANIFEST_FILE = "marketplace.json"
 # These provide better documentation than dict[str, Any] while remaining flexible
 
 #: MCP server configuration dict. Keys are server names, values are server configs.
-#: Each server config should have 'command' (str) and optional 'args' (list[str]), 'env' (dict).
+#: Each config should have 'command' (str), optional 'args' (list[str]), 'env'.
 #: See https://gofastmcp.com/clients/client#configuration-format
-McpServersDict: TypeAlias = dict[str, dict[str, Any]]
+type McpServersDict = dict[str, dict[str, Any]]
 
 #: LSP server configuration dict. Keys are server names, values are server configs.
 #: Each server config should have 'command' (str) and optional 'args' (list[str]),
 #: 'extensionToLanguage' (dict mapping file extensions to language IDs).
-#: See https://github.com/OpenHands/software-agent-sdk/issues/1745 for LSP support status.
-LspServersDict: TypeAlias = dict[str, dict[str, Any]]
+#: See https://github.com/OpenHands/software-agent-sdk/issues/1745 for LSP support.
+type LspServersDict = dict[str, dict[str, Any]]
 
 #: Hooks configuration dict matching HookConfig.to_dict() structure.
 #: Should have 'hooks' key with event types mapping to list of matchers.
 #: See openhands.sdk.hooks.HookConfig for the full structure.
-HooksConfigDict: TypeAlias = dict[str, Any]
+type HooksConfigDict = dict[str, Any]
 
 
 class PluginAuthor(BaseModel):
@@ -258,7 +258,9 @@ class MarketplaceOwner(BaseModel):
     """
 
     name: str = Field(description="Name of the maintainer or team")
-    email: str | None = Field(default=None, description="Contact email for the maintainer")
+    email: str | None = Field(
+        default=None, description="Contact email for the maintainer"
+    )
 
 
 class MarketplacePluginSource(BaseModel):
@@ -307,8 +309,12 @@ class MarketplacePluginEntry(BaseModel):
         "Users see this when installing: /plugin install <name>@marketplace"
     )
     version: str | None = Field(default=None, description="Plugin version")
-    description: str | None = Field(default=None, description="Brief plugin description")
-    author: PluginAuthor | None = Field(default=None, description="Plugin author information")
+    description: str | None = Field(
+        default=None, description="Brief plugin description"
+    )
+    author: PluginAuthor | None = Field(
+        default=None, description="Plugin author information"
+    )
 
     # Marketplace-specific: source location
     source: str | MarketplacePluginSource = Field(
@@ -475,12 +481,10 @@ class Marketplace(BaseModel):
         description="Marketplace identifier (kebab-case, no spaces). "
         "Users see this when installing plugins: /plugin install tool@<marketplace>"
     )
-    owner: MarketplaceOwner = Field(
-        description="Marketplace maintainer information"
-    )
+    owner: MarketplaceOwner = Field(description="Marketplace maintainer information")
     description: str | None = Field(
         default=None,
-        description="Brief marketplace description. Can also be in metadata.description.",
+        description="Brief marketplace description. Can also be in metadata.",
     )
     plugins: list[MarketplacePluginEntry] = Field(
         default_factory=list, description="List of available plugins"
@@ -489,7 +493,8 @@ class Marketplace(BaseModel):
         default=None, description="Optional marketplace metadata"
     )
     path: str | None = Field(
-        default=None, description="Path to the marketplace directory (set after loading)"
+        default=None,
+        description="Path to the marketplace directory (set after loading)",
     )
 
     model_config = {"extra": "allow"}
@@ -525,10 +530,11 @@ class Marketplace(BaseModel):
                 break
 
         if manifest_path is None:
+            dirs = " or ".join(MARKETPLACE_MANIFEST_DIRS)
             raise FileNotFoundError(
                 f"Marketplace manifest not found. "
-                f"Expected {MARKETPLACE_MANIFEST_FILE} in "
-                f"{' or '.join(MARKETPLACE_MANIFEST_DIRS)} directory under {marketplace_dir}"
+                f"Expected {MARKETPLACE_MANIFEST_FILE} in {dirs} "
+                f"directory under {marketplace_dir}"
             )
 
         try:
