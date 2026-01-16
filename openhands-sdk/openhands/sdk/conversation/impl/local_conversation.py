@@ -172,16 +172,22 @@ class LocalConversation(BaseConversation):
 
         # Combine hook configs: plugin hooks merged with any explicitly provided hooks
         if plugin_hook_config and hook_config:
-            # Merge: base hooks first, plugin hooks second
-            merged_hooks: dict[str, list] = {}
-            all_event_types = set(hook_config.hooks.keys()) | set(
-                plugin_hook_config.hooks.keys()
+            # Merge: base hooks first, plugin hooks second (concatenate lists)
+            hook_config = HookConfig(
+                pre_tool_use=hook_config.pre_tool_use + plugin_hook_config.pre_tool_use,
+                post_tool_use=(
+                    hook_config.post_tool_use + plugin_hook_config.post_tool_use
+                ),
+                user_prompt_submit=(
+                    hook_config.user_prompt_submit
+                    + plugin_hook_config.user_prompt_submit
+                ),
+                session_start=(
+                    hook_config.session_start + plugin_hook_config.session_start
+                ),
+                session_end=hook_config.session_end + plugin_hook_config.session_end,
+                stop=hook_config.stop + plugin_hook_config.stop,
             )
-            for event_type in all_event_types:
-                base_matchers = hook_config.hooks.get(event_type, [])
-                plugin_matchers = plugin_hook_config.hooks.get(event_type, [])
-                merged_hooks[event_type] = base_matchers + plugin_matchers
-            hook_config = HookConfig(hooks=merged_hooks)
         elif plugin_hook_config:
             hook_config = plugin_hook_config
 

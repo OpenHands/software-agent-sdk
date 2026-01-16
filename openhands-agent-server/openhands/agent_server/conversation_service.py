@@ -280,10 +280,23 @@ class ConversationService:
             updated_request = request.model_copy(update={"agent": updated_agent})
 
             # Log hooks if present
-            if plugin.hooks:
+            if plugin.hooks and not plugin.hooks.is_empty():
+                # List which event types have hooks configured
+                event_types = [
+                    name
+                    for name in [
+                        "pre_tool_use",
+                        "post_tool_use",
+                        "user_prompt_submit",
+                        "session_start",
+                        "session_end",
+                        "stop",
+                    ]
+                    if getattr(plugin.hooks, name, [])
+                ]
                 logger.info(
                     f"Loaded hooks from plugin '{plugin.name}': "
-                    f"{list(plugin.hooks.hooks.keys())} event types"
+                    f"{event_types} event types"
                 )
 
             return updated_request, plugin.hooks
