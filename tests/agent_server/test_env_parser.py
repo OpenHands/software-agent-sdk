@@ -1147,7 +1147,7 @@ def test_to_env_function_with_boolean_values():
 
 
 def test_discriminated_union_single_kind_uses_parser_directly(clean_env):
-    """Test that DiscriminatedUnionEnvParser uses the parser directly when there's 
+    """Test that DiscriminatedUnionEnvParser uses the parser directly when there's
     only one kind."""
     # Create a single parser
     single_parser = ModelEnvParser(
@@ -1189,7 +1189,7 @@ def test_discriminated_union_multiple_kinds_requires_kind(clean_env):
 
 
 def test_discriminated_union_multiple_kinds_with_kind_set(clean_env):
-    """Test that DiscriminatedUnionEnvParser works correctly when KIND is 
+    """Test that DiscriminatedUnionEnvParser works correctly when KIND is
     explicitly set."""
     # Create multiple parsers
     dog_parser = ModelEnvParser(
