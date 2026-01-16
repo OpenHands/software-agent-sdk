@@ -24,14 +24,6 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "claude-haiku-4-5-20251001": {
-        "id": "claude-haiku-4-5-20251001",
-        "display_name": "Claude Haiku 4.5",
-        "llm_config": {
-            "model": "litellm_proxy/claude-haiku-4-5-20251001",
-            "temperature": 0.0,
-        },
-    },
     "gpt-5-mini-2025-08-07": {
         "id": "gpt-5-mini-2025-08-07",
         "display_name": "GPT-5 Mini",
@@ -39,11 +31,6 @@ MODELS = {
             "model": "litellm_proxy/gpt-5-mini-2025-08-07",
             "temperature": 1.0,
         },
-    },
-    "deepseek-chat": {
-        "id": "deepseek-chat",
-        "display_name": "DeepSeek Chat",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-chat"},
     },
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",

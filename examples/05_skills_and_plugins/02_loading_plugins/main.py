@@ -69,10 +69,23 @@ for skill in plugin.skills:
         print(f"    Triggers: {skill.trigger}")
 
 # Hooks
-print(f"\nHooks: {'Configured' if plugin.hooks else 'None'}")
-if plugin.hooks:
-    for event_type, matchers in plugin.hooks.hooks.items():
-        print(f"  - {event_type}: {len(matchers)} matcher(s)")
+hook_config = plugin.hooks
+has_hooks = hook_config is not None and not hook_config.is_empty()
+print(f"\nHooks: {'Configured' if has_hooks else 'None'}")
+if has_hooks:
+    assert hook_config is not None
+    if hook_config.pre_tool_use:
+        print(f"  - PreToolUse: {len(hook_config.pre_tool_use)} matcher(s)")
+    if hook_config.post_tool_use:
+        print(f"  - PostToolUse: {len(hook_config.post_tool_use)} matcher(s)")
+    if hook_config.user_prompt_submit:
+        print(f"  - UserPromptSubmit: {len(hook_config.user_prompt_submit)} matcher(s)")
+    if hook_config.session_start:
+        print(f"  - SessionStart: {len(hook_config.session_start)} matcher(s)")
+    if hook_config.session_end:
+        print(f"  - SessionEnd: {len(hook_config.session_end)} matcher(s)")
+    if hook_config.stop:
+        print(f"  - Stop: {len(hook_config.stop)} matcher(s)")
 
 # MCP Config
 print(f"\nMCP Config: {'Configured' if plugin.mcp_config else 'None'}")

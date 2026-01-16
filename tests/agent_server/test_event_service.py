@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -12,11 +13,15 @@ from openhands.agent_server.models import (
     EventSortOrder,
     StoredConversation,
 )
+from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, Conversation, Message
+from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import Event
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -1317,3 +1322,191 @@ class TestEventServiceStartWithRunningStatus:
                 if isinstance(call[0][0], AgentErrorEvent)
             ]
             assert len(error_event_calls) == 0
+
+
+class TestEventServiceConcurrentSubscriptions:
+    """Test cases for concurrent subscription handling without deadlocks.
+
+    These tests verify that the fix for moving async operations outside the
+    FIFOLock context prevents deadlocks when multiple subscribers are active
+    or when subscribers are slow.
+    """
+
+    @pytest.fixture
+    def mock_conversation_with_real_lock(self):
+        """Create a mock conversation with a real FIFOLock for testing concurrency."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        # Use a real FIFOLock to test actual locking behavior
+        real_lock = FIFOLock()
+        state._lock = real_lock
+        state.__enter__ = lambda self: (real_lock.acquire(), self)[1]
+        state.__exit__ = lambda self, *args: real_lock.release()
+
+        # Set up minimal state attributes needed for ConversationStateUpdateEvent
+        state.events = []
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.model_dump = MagicMock(
+            return_value={
+                "execution_status": "idle",
+                "events": [],
+            }
+        )
+
+        conversation._state = state
+        return conversation
+
+    @pytest.mark.asyncio
+    async def test_concurrent_subscriptions_no_deadlock(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test that multiple concurrent subscriptions don't cause deadlocks.
+
+        This test creates multiple subscribers that are subscribed concurrently
+        and verifies that all subscriptions complete without hanging.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        received_events: list[list[Event]] = [[] for _ in range(3)]
+
+        class TestSubscriber(Subscriber[Event]):
+            def __init__(self, index: int):
+                self.index = index
+
+            async def __call__(self, event: Event):
+                received_events[self.index].append(event)
+
+        # Subscribe multiple subscribers concurrently
+        subscribers = [TestSubscriber(i) for i in range(3)]
+
+        # Use asyncio.wait_for to detect deadlocks with a timeout
+        async def subscribe_all():
+            tasks = [event_service.subscribe_to_events(sub) for sub in subscribers]
+            return await asyncio.gather(*tasks)
+
+        # This should complete within 2 seconds if there's no deadlock
+        subscriber_ids = await asyncio.wait_for(subscribe_all(), timeout=2.0)
+
+        # Verify all subscriptions succeeded
+        assert len(subscriber_ids) == 3
+        for sub_id in subscriber_ids:
+            assert sub_id is not None
+
+        # Verify all subscribers received the initial state event
+        for i, events in enumerate(received_events):
+            assert len(events) == 1, f"Subscriber {i} should have received 1 event"
+            assert isinstance(events[0], ConversationStateUpdateEvent)
+
+    @pytest.mark.asyncio
+    async def test_slow_subscriber_does_not_block_lock(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test that a slow subscriber doesn't hold the lock during I/O.
+
+        This test verifies that the lock is released before the async send
+        operation, allowing other operations to proceed even if a subscriber
+        is slow.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        state = mock_conversation_with_real_lock._state
+        lock_held_during_sleep = False
+
+        class SlowSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                nonlocal lock_held_during_sleep
+                # Check if lock is held during the async operation
+                # If the fix is correct, the lock should NOT be held here
+                lock_held_during_sleep = state._lock.locked()
+                await asyncio.sleep(0.1)  # Simulate slow I/O
+
+        slow_subscriber = SlowSubscriber()
+
+        # Subscribe with the slow subscriber
+        await asyncio.wait_for(
+            event_service.subscribe_to_events(slow_subscriber),
+            timeout=2.0,
+        )
+
+        # The lock should NOT be held during the async sleep
+        # (it's released before the await subscriber() call)
+        assert not lock_held_during_sleep, (
+            "Lock should not be held during async subscriber call"
+        )
+
+    @pytest.mark.asyncio
+    async def test_subscription_during_state_update(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test that subscriptions and state updates can interleave without deadlock.
+
+        This test simulates a scenario where a subscription happens while
+        a state update is being published, verifying no deadlock occurs.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        events_received: list[Event] = []
+
+        class CollectorSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                events_received.append(event)
+                # Simulate some async work
+                await asyncio.sleep(0.01)
+
+        # First, subscribe a collector
+        collector = CollectorSubscriber()
+        await event_service.subscribe_to_events(collector)
+
+        # Now trigger a state update while potentially another subscription happens
+        async def subscribe_new():
+            new_subscriber = CollectorSubscriber()
+            return await event_service.subscribe_to_events(new_subscriber)
+
+        async def publish_update():
+            await event_service._publish_state_update()
+
+        # Run both concurrently - this should not deadlock
+        results = await asyncio.wait_for(
+            asyncio.gather(subscribe_new(), publish_update(), return_exceptions=True),
+            timeout=2.0,
+        )
+
+        # Verify no exceptions occurred
+        for result in results:
+            if isinstance(result, Exception):
+                pytest.fail(f"Unexpected exception: {result}")
+
+    @pytest.mark.asyncio
+    async def test_multiple_state_updates_with_slow_subscribers(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test multiple rapid state updates with slow subscribers don't deadlock.
+
+        This test verifies that even with slow subscribers, multiple state
+        updates can be processed without the lock causing contention issues.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        events_received: list[Event] = []
+
+        class SlowCollectorSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                events_received.append(event)
+                await asyncio.sleep(0.05)  # Simulate slow processing
+
+        # Subscribe a slow collector
+        slow_collector = SlowCollectorSubscriber()
+        await event_service.subscribe_to_events(slow_collector)
+
+        # Clear the initial state event
+        events_received.clear()
+
+        # Trigger multiple state updates rapidly
+        async def rapid_updates():
+            for _ in range(5):
+                await event_service._publish_state_update()
+
+        # This should complete without deadlock
+        await asyncio.wait_for(rapid_updates(), timeout=5.0)
+
+        # Verify all updates were received
+        assert len(events_received) == 5, (
+            f"Expected 5 events, got {len(events_received)}"
+        )
