@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import frontmatter
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # Directories to check for marketplace manifest
@@ -283,6 +283,15 @@ class MarketplacePluginSource(BaseModel):
 
     model_config = {"extra": "allow"}
 
+    @model_validator(mode="after")
+    def validate_source_fields(self) -> MarketplacePluginSource:
+        """Validate that required fields are present based on source type."""
+        if self.source == "github" and not self.repo:
+            raise ValueError("GitHub source requires 'repo' field")
+        if self.source == "url" and not self.url:
+            raise ValueError("URL source requires 'url' field")
+        return self
+
 
 class MarketplacePluginEntry(BaseModel):
     """Plugin entry in a marketplace.
@@ -354,7 +363,9 @@ class MarketplacePluginEntry(BaseModel):
     )
 
     # Inline plugin component definitions (when strict=False)
-    # These correspond to the component types loaded by Plugin.load()
+    # These fields are part of the marketplace schema for future use.
+    # Currently, Plugin.load() reads these from the plugin directory itself.
+    # TODO: Support loading inline definitions from marketplace entries.
     commands: str | list[str] | None = Field(
         default=None,
         description="Custom paths to command files or directories. "
@@ -559,7 +570,9 @@ class Marketplace(BaseModel):
                 return plugin
         return None
 
-    def resolve_plugin_source(self, plugin: MarketplacePluginEntry) -> str:
+    def resolve_plugin_source(
+        self, plugin: MarketplacePluginEntry
+    ) -> tuple[str, str | None, str | None]:
         """Resolve a plugin's source to a full path or URL.
 
         Handles relative paths and plugin_root from metadata.
@@ -568,7 +581,10 @@ class Marketplace(BaseModel):
             plugin: Plugin entry to resolve source for.
 
         Returns:
-            Resolved source string (path or URL).
+            Tuple of (source, ref, subpath) where:
+            - source: Resolved source string (path or URL)
+            - ref: Branch, tag, or commit reference (None for local paths)
+            - subpath: Subdirectory path within the repo (None if not specified)
 
         Raises:
             ValueError: If source object is invalid.
@@ -578,18 +594,18 @@ class Marketplace(BaseModel):
         # Handle complex source objects (GitHub, git URLs)
         if isinstance(source, MarketplacePluginSource):
             if source.source == "github" and source.repo:
-                return f"github:{source.repo}"
+                return (f"github:{source.repo}", source.ref, source.path)
             if source.source == "url" and source.url:
-                return source.url
+                return (source.url, source.ref, source.path)
             raise ValueError(
                 f"Invalid plugin source for '{plugin.name}': "
-                f"source type '{source.source}' requires "
-                f"{'repo' if source.source == 'github' else 'url'} field"
+                f"source type '{source.source}' is missing required field. "
+                f"'github' sources require 'repo', 'url' sources require 'url'"
             )
 
         # Source is a string path - check if it's absolute or a URL
         if source.startswith(("/", "~")) or "://" in source:
-            return source
+            return (source, None, None)
 
         # Relative path: apply plugin_root if configured
         if self.metadata and self.metadata.plugin_root:
@@ -600,4 +616,4 @@ class Marketplace(BaseModel):
         if self.path and not source.startswith(("/", "~")):
             source = str(Path(self.path) / source.lstrip("./"))
 
-        return source
+        return (source, None, None)

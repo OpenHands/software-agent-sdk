@@ -63,6 +63,16 @@ class TestMarketplacePluginSource:
         )
         assert source.path == "plugins/my-plugin"
 
+    def test_github_source_missing_repo_raises_error(self):
+        """Test that GitHub source without repo raises validation error."""
+        with pytest.raises(ValueError, match="GitHub source requires 'repo' field"):
+            MarketplacePluginSource(source="github")
+
+    def test_url_source_missing_url_raises_error(self):
+        """Test that URL source without url raises validation error."""
+        with pytest.raises(ValueError, match="URL source requires 'url' field"):
+            MarketplacePluginSource(source="url")
+
 
 class TestMarketplacePluginEntry:
     """Tests for MarketplacePluginEntry model."""
@@ -433,9 +443,11 @@ class TestMarketplace:
         marketplace = Marketplace.load(marketplace_dir)
         plugin = marketplace.plugins[0]
 
-        resolved = marketplace.resolve_plugin_source(plugin)
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
         # Should resolve to absolute path
-        assert str(marketplace_dir / "plugins/local") == resolved
+        assert str(marketplace_dir / "plugins/local") == source
+        assert ref is None
+        assert subpath is None
 
     def test_resolve_plugin_source_with_plugin_root(self, tmp_path: Path):
         """Test resolve_plugin_source with plugin_root metadata."""
@@ -461,9 +473,11 @@ class TestMarketplace:
         marketplace = Marketplace.load(marketplace_dir)
         plugin = marketplace.plugins[0]
 
-        resolved = marketplace.resolve_plugin_source(plugin)
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
         # Should prepend plugin_root and resolve to absolute path
-        assert resolved.endswith("plugins/simple")
+        assert source.endswith("plugins/simple")
+        assert ref is None
+        assert subpath is None
 
     def test_resolve_plugin_source_github(self, tmp_path: Path):
         """Test resolve_plugin_source with GitHub source."""
@@ -489,8 +503,44 @@ class TestMarketplace:
         marketplace = Marketplace.load(marketplace_dir)
         plugin = marketplace.plugins[0]
 
-        resolved = marketplace.resolve_plugin_source(plugin)
-        assert resolved == "github:owner/repo"
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
+        assert source == "github:owner/repo"
+        assert ref is None
+        assert subpath is None
+
+    def test_resolve_plugin_source_github_with_ref_and_path(self, tmp_path: Path):
+        """Test resolve_plugin_source with GitHub source including ref and path."""
+        marketplace_dir = tmp_path / "github-full-resolve"
+        marketplace_dir.mkdir()
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir()
+
+        manifest_file = manifest_dir / "marketplace.json"
+        manifest_file.write_text(
+            """{
+            "name": "github-marketplace",
+            "owner": {"name": "Test Team"},
+            "plugins": [
+                {
+                    "name": "github-plugin",
+                    "source": {
+                        "source": "github",
+                        "repo": "owner/monorepo",
+                        "ref": "v1.0.0",
+                        "path": "plugins/my-plugin"
+                    }
+                }
+            ]
+        }"""
+        )
+
+        marketplace = Marketplace.load(marketplace_dir)
+        plugin = marketplace.plugins[0]
+
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
+        assert source == "github:owner/monorepo"
+        assert ref == "v1.0.0"
+        assert subpath == "plugins/my-plugin"
 
     def test_resolve_plugin_source_url(self, tmp_path: Path):
         """Test resolve_plugin_source with URL source."""
@@ -516,8 +566,44 @@ class TestMarketplace:
         marketplace = Marketplace.load(marketplace_dir)
         plugin = marketplace.plugins[0]
 
-        resolved = marketplace.resolve_plugin_source(plugin)
-        assert resolved == "https://gitlab.com/org/repo.git"
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
+        assert source == "https://gitlab.com/org/repo.git"
+        assert ref is None
+        assert subpath is None
+
+    def test_resolve_plugin_source_url_with_ref_and_path(self, tmp_path: Path):
+        """Test resolve_plugin_source with URL source including ref and path."""
+        marketplace_dir = tmp_path / "url-full-resolve"
+        marketplace_dir.mkdir()
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir()
+
+        manifest_file = manifest_dir / "marketplace.json"
+        manifest_file.write_text(
+            """{
+            "name": "url-marketplace",
+            "owner": {"name": "Test Team"},
+            "plugins": [
+                {
+                    "name": "url-plugin",
+                    "source": {
+                        "source": "url",
+                        "url": "https://gitlab.com/org/repo.git",
+                        "ref": "main",
+                        "path": "packages/plugin"
+                    }
+                }
+            ]
+        }"""
+        )
+
+        marketplace = Marketplace.load(marketplace_dir)
+        plugin = marketplace.plugins[0]
+
+        source, ref, subpath = marketplace.resolve_plugin_source(plugin)
+        assert source == "https://gitlab.com/org/repo.git"
+        assert ref == "main"
+        assert subpath == "packages/plugin"
 
 
 class TestMarketplaceIntegration:
@@ -585,8 +671,8 @@ class TestMarketplaceIntegration:
         assert manifest.description == ""  # Default
         assert manifest.author is None
 
-    def test_resolve_plugin_source_invalid_source_object(self, tmp_path: Path):
-        """Test resolve_plugin_source raises error for invalid source object."""
+    def test_invalid_github_source_missing_repo(self, tmp_path: Path):
+        """Test that invalid GitHub source (missing repo) raises error at load time."""
         marketplace_dir = tmp_path / "invalid-source"
         marketplace_dir.mkdir()
         manifest_dir = marketplace_dir / ".plugin"
@@ -606,11 +692,38 @@ class TestMarketplaceIntegration:
         }"""
         )
 
-        marketplace = Marketplace.load(marketplace_dir)
-        plugin = marketplace.plugins[0]
+        from pydantic import ValidationError
 
-        with pytest.raises(ValueError, match="Invalid plugin source"):
-            marketplace.resolve_plugin_source(plugin)
+        with pytest.raises(
+            ValidationError, match="GitHub source requires 'repo' field"
+        ):
+            Marketplace.load(marketplace_dir)
+
+    def test_invalid_url_source_missing_url(self, tmp_path: Path):
+        """Test that invalid URL source (missing url) raises error at load time."""
+        marketplace_dir = tmp_path / "invalid-url-source"
+        marketplace_dir.mkdir()
+        manifest_dir = marketplace_dir / ".plugin"
+        manifest_dir.mkdir()
+
+        manifest_file = manifest_dir / "marketplace.json"
+        manifest_file.write_text(
+            """{
+            "name": "invalid-marketplace",
+            "owner": {"name": "Test Team"},
+            "plugins": [
+                {
+                    "name": "bad-plugin",
+                    "source": {"source": "url"}
+                }
+            ]
+        }"""
+        )
+
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError, match="URL source requires 'url' field"):
+            Marketplace.load(marketplace_dir)
 
     def test_skill_compatible_fields(self):
         """Test that MarketplacePluginEntry has fields compatible with Skill."""
