@@ -278,7 +278,11 @@ class DiscriminatedUnionEnvParser(EnvParser):
     def from_env(self, key: str) -> JsonType:
         kind = os.environ.get(f"{key}_KIND", MISSING)
         if kind is MISSING:
-            return MISSING
+            # If there is exactly one kind, use it directly
+            if len(self.parsers) == 1:
+                kind = next(iter(self.parsers.keys()))
+            else:
+                return MISSING
         assert isinstance(kind, str)
         parser = self.parsers[kind]
         parser_result = parser.from_env(key)
