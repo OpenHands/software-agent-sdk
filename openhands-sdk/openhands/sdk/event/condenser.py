@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic import Field
 from rich.text import Text
 
@@ -22,8 +24,9 @@ class Condensation(Event):
     summary_offset: int | None = Field(
         default=None,
         ge=0,
-        description="An optional offset to the start of the resulting view"
-        " indicating where the summary should be inserted.",
+        description="An optional offset to the start of the resulting view (after"
+        " forgotten events have been removed) indicating where the summary should be"
+        " inserted. If not provided, the summary will not be inserted into the view.",
     )
     llm_response_id: EventID = Field(
         description=(
@@ -44,6 +47,23 @@ class Condensation(Event):
             text.append("\n[Summary of Events Being Forgotten]\n", style="bold")
             text.append(f"{self.summary}\n")
         return text
+    
+    @property
+    def summary_event(self) -> CondensationSummaryEvent | None:
+        """Generates a CondensationSummaryEvent if a summary is present.
+
+        Since summary events are not part of the main event store and are generated
+        dynamically, this property ensures the created event has a unique and consistent
+        ID based on the condensation event's ID.
+        """
+        if self.summary is None:
+            return None
+        
+        return CondensationSummaryEvent(
+            id=self.id + "-summary",
+            summary=self.summary,
+            source=self.source,
+        )
 
 
 class CondensationRequest(Event):
