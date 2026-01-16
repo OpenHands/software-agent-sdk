@@ -19,7 +19,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation
-from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
+from openhands.sdk.hooks import HookConfig
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -48,52 +48,109 @@ with tempfile.TemporaryDirectory() as tmpdir:
     log_file = workspace / "tool_usage.log"
     summary_file = workspace / "summary.txt"
 
-    # Configure ALL hook types using typed fields (recommended approach)
-    hook_config = HookConfig(
-        pre_tool_use=[
-            HookMatcher(
-                matcher="terminal",
-                hooks=[
-                    HookDefinition(
-                        command=str(SCRIPT_DIR / "block_dangerous.sh"),
-                        timeout=10,
-                    )
+    # Configure ALL hook types using .from_dict() with untyped dictionary
+    hook_config = HookConfig.from_dict(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "terminal",
+                        "hooks": [
+                            {
+                                "command": str(SCRIPT_DIR / "block_dangerous.sh"),
+                                "timeout": 10,
+                            }
+                        ],
+                    }
                 ],
-            )
-        ],
-        post_tool_use=[
-            HookMatcher(
-                matcher="*",
-                hooks=[
-                    HookDefinition(
-                        command=(f"LOG_FILE={log_file} {SCRIPT_DIR / 'log_tools.sh'}"),
-                        timeout=5,
-                    )
+                "PostToolUse": [
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {
+                                "command": (
+                                    f"LOG_FILE={log_file} {SCRIPT_DIR / 'log_tools.sh'}"
+                                ),
+                                "timeout": 5,
+                            }
+                        ],
+                    }
                 ],
-            )
-        ],
-        user_prompt_submit=[
-            HookMatcher(
-                hooks=[
-                    HookDefinition(
-                        command=str(SCRIPT_DIR / "inject_git_context.sh"),
-                    )
+                "UserPromptSubmit": [
+                    {
+                        "hooks": [
+                            {
+                                "command": str(SCRIPT_DIR / "inject_git_context.sh"),
+                            }
+                        ],
+                    }
                 ],
-            )
-        ],
-        stop=[
-            HookMatcher(
-                hooks=[
-                    HookDefinition(
-                        command=(
-                            f"SUMMARY_FILE={summary_file} "
-                            f"{SCRIPT_DIR / 'require_summary.sh'}"
-                        ),
-                    )
+                "Stop": [
+                    {
+                        "hooks": [
+                            {
+                                "command": (
+                                    f"SUMMARY_FILE={summary_file} "
+                                    f"{SCRIPT_DIR / 'require_summary.sh'}"
+                                ),
+                            }
+                        ],
+                    }
                 ],
-            )
-        ],
+            }
+        }
     )
+
+    # Alternative: Typed approach (commented out)
+    # This is the recommended approach for better type safety and IDE support
+    # hook_config = HookConfig(
+    #     pre_tool_use=[
+    #         HookMatcher(
+    #             matcher="terminal",
+    #             hooks=[
+    #                 HookDefinition(
+    #                     command=str(SCRIPT_DIR / "block_dangerous.sh"),
+    #                     timeout=10,
+    #                 )
+    #             ],
+    #         )
+    #     ],
+    #     post_tool_use=[
+    #         HookMatcher(
+    #             matcher="*",
+    #             hooks=[
+    #                 HookDefinition(
+    #                     command=(
+    #                         f"LOG_FILE={log_file} "
+    #                         f"{SCRIPT_DIR / 'log_tools.sh'}"
+    #                     ),
+    #                     timeout=5,
+    #                 )
+    #             ],
+    #         )
+    #     ],
+    #     user_prompt_submit=[
+    #         HookMatcher(
+    #             hooks=[
+    #                 HookDefinition(
+    #                     command=str(SCRIPT_DIR / "inject_git_context.sh"),
+    #                 )
+    #             ],
+    #         )
+    #     ],
+    #     stop=[
+    #         HookMatcher(
+    #             hooks=[
+    #                 HookDefinition(
+    #                     command=(
+    #                         f"SUMMARY_FILE={summary_file} "
+    #                         f"{SCRIPT_DIR / 'require_summary.sh'}"
+    #                     ),
+    #                 )
+    #             ],
+    #         )
+    #     ],
+    # )
 
     agent = get_default_agent(llm=llm)
     conversation = Conversation(
