@@ -41,8 +41,8 @@ async def _list_tools_and_keep_connected(client: MCPClient) -> list[ToolDefiniti
     """
     tools: list[ToolDefinition] = []
 
-    # Enter the context manager to establish connection
-    await client.__aenter__()
+    # Establish connection (will be closed via sync_close() when done)
+    await client.connect()
 
     if not client.is_connected():
         raise RuntimeError("MCP client failed to connect")
@@ -52,10 +52,8 @@ async def _list_tools_and_keep_connected(client: MCPClient) -> list[ToolDefiniti
         tool_sequence = MCPToolDefinition.create(mcp_tool=mcp_tool, mcp_client=client)
         tools.extend(tool_sequence)
 
-    # NOTE: We intentionally do NOT call __aexit__ here.
-    # The connection stays open for subsequent tool calls.
+    # Connection stays open for subsequent tool calls.
     # It will be closed when client.sync_close() is called.
-
     return tools
 
 
@@ -95,8 +93,11 @@ def create_mcp_tools(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
     except Exception:
-        # Clean up on any error
-        client.sync_close()
+        # Clean up on any error (don't mask the original exception)
+        try:
+            client.sync_close()
+        except Exception:
+            pass
         raise
 
     logger.info(f"Created {len(tools)} MCP tools: {[t.name for t in tools]}")

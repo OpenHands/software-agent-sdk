@@ -53,7 +53,10 @@ class MCPToolExecutor(ToolExecutor):
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
         """Execute the MCP tool call using the already-connected client."""
         if not self.client.is_connected():
-            raise RuntimeError(f"MCP client not connected for {self.tool_name}")
+            raise RuntimeError(
+                f"MCP client not connected for tool '{self.tool_name}'. "
+                "The connection may have been closed or failed to establish."
+            )
         try:
             logger.debug(
                 f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
@@ -90,6 +93,12 @@ class MCPToolExecutor(ToolExecutor):
         Typically called once when the conversation ends.
         """
         self.client.sync_close()
+
+    def __enter__(self) -> "MCPToolExecutor":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
 
 
 _mcp_dynamic_action_type: dict[str, type[Schema]] = {}
