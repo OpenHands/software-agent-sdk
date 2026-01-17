@@ -21,16 +21,16 @@ RRWEB_LOADER_SCRIPT = """
 
     // Initialize storage for events (per-page, will be flushed to backend)
     window.__rrweb_events = window.__rrweb_events || [];
-    window.__rrweb_using_stub = false;
     // Flag to indicate if we should auto-start recording (set by backend)
     window.__rrweb_should_record = window.__rrweb_should_record || false;
+    // Flag to track if rrweb failed to load
+    window.__rrweb_load_failed = false;
 
     function loadRrweb() {
         var s = document.createElement('script');
         s.src = '""" + RRWEB_CDN_URL + """';
         s.onload = function() {
             window.__rrweb_ready = true;
-            window.__rrweb_using_stub = false;
             console.log('[rrweb] Loaded successfully from CDN');
             // Auto-start recording if flag is set (for cross-page continuity)
             if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
@@ -38,111 +38,8 @@ RRWEB_LOADER_SCRIPT = """
             }
         };
         s.onerror = function() {
-            console.error('[rrweb] Failed to load from CDN, creating minimal stub');
-            window.__rrweb_using_stub = true;
-            // Create a minimal stub that captures basic events and DOM mutations
-            window.rrweb = {
-                record: function(opts) {
-                    console.log('[rrweb-stub] Recording started');
-                    var emitFn = opts.emit;
-
-                    // Emit a meta event (type 4)
-                    emitFn({
-                        type: 4,
-                        data: {
-                            href: location.href,
-                            width: window.innerWidth,
-                            height: window.innerHeight
-                        },
-                        timestamp: Date.now()
-                    });
-
-                    // Emit a full snapshot (type 2) - capture current DOM
-                    function serializeNode(node, id) {
-                        var obj = {id: id, type: node.nodeType};
-                        if (node.nodeType === 1) { // Element
-                            obj.tagName = node.tagName.toLowerCase();
-                            obj.attributes = {};
-                            for (var i = 0; i < node.attributes.length; i++) {
-                                obj.attributes[node.attributes[i].name] = node.attributes[i].value;
-                            }
-                            obj.childNodes = [];
-                            var childId = id * 100;
-                            for (var j = 0; j < node.childNodes.length && j < 50; j++) {
-                                obj.childNodes.push(serializeNode(node.childNodes[j], childId + j));
-                            }
-                        } else if (node.nodeType === 3) { // Text
-                            obj.textContent = node.textContent ? node.textContent.slice(0, 1000) : '';
-                        }
-                        return obj;
-                    }
-
-                    emitFn({
-                        type: 2,
-                        data: {
-                            node: serializeNode(document.documentElement, 1),
-                            initialOffset: {top: window.scrollY, left: window.scrollX}
-                        },
-                        timestamp: Date.now()
-                    });
-
-                    // Set up mutation observer for incremental snapshots (type 3)
-                    var observer = new MutationObserver(function(mutations) {
-                        mutations.forEach(function(mutation) {
-                            emitFn({
-                                type: 3,
-                                data: {
-                                    source: 0, // Mutation
-                                    texts: [],
-                                    attributes: [],
-                                    removes: [],
-                                    adds: [{parentId: 1, node: {type: 3, textContent: 'mutation'}}]
-                                },
-                                timestamp: Date.now()
-                            });
-                        });
-                    });
-                    observer.observe(document.body || document.documentElement, {
-                        childList: true,
-                        subtree: true,
-                        attributes: true,
-                        characterData: true
-                    });
-
-                    // Capture scroll events (type 3, source 3)
-                    var scrollHandler = function() {
-                        emitFn({
-                            type: 3,
-                            data: {source: 3, x: window.scrollX, y: window.scrollY},
-                            timestamp: Date.now()
-                        });
-                    };
-                    window.addEventListener('scroll', scrollHandler);
-
-                    // Capture mouse move events (type 3, source 1)
-                    var mouseHandler = function(e) {
-                        emitFn({
-                            type: 3,
-                            data: {source: 1, positions: [{x: e.clientX, y: e.clientY, timeOffset: 0}]},
-                            timestamp: Date.now()
-                        });
-                    };
-                    document.addEventListener('mousemove', mouseHandler, {passive: true});
-
-                    // Return a stop function
-                    return function() {
-                        console.log('[rrweb-stub] Recording stopped');
-                        observer.disconnect();
-                        window.removeEventListener('scroll', scrollHandler);
-                        document.removeEventListener('mousemove', mouseHandler);
-                    };
-                }
-            };
-            window.__rrweb_ready = true;
-            // Auto-start for stub too
-            if (window.__rrweb_should_record && !window.__rrweb_stopFn) {
-                startRecordingInternal();
-            }
+            console.error('[rrweb] Failed to load from CDN');
+            window.__rrweb_load_failed = true;
         };
         (document.head || document.documentElement).appendChild(s);
     }
@@ -189,7 +86,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
     # Recording state stored on Python side to persist across page navigations
     _recording_events: list[dict] = []
     _is_recording: bool = False
-    _recording_using_stub: bool = False
 
     def set_inject_scripts(self, scripts: list[str]) -> None:
         """Set scripts to be injected into every new document.
@@ -248,10 +144,9 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     "expression": """
                         (function() {
                             var events = window.__rrweb_events || [];
-                            var using_stub = !!window.__rrweb_using_stub;
                             // Clear browser-side events after flushing
                             window.__rrweb_events = [];
-                            return JSON.stringify({events: events, using_stub: using_stub});
+                            return JSON.stringify({events: events});
                         })();
                     """,
                     "returnByValue": True,
@@ -263,8 +158,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             events = data.get("events", [])
             if events:
                 self._recording_events.extend(events)
-                if data.get("using_stub"):
-                    self._recording_using_stub = True
                 logger.debug(f"Flushed {len(events)} recording events from browser")
             return len(events)
         except Exception as e:
@@ -316,10 +209,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                             window.__rrweb_events.push(event);
                         }
                     });
-                    return {
-                        status: 'started',
-                        using_stub: !!window.__rrweb_using_stub
-                    };
+                    return {status: 'started'};
                 })();
             """
 
@@ -334,8 +224,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 status = value.get("status") if isinstance(value, dict) else value
 
                 if status == "started":
-                    if value.get("using_stub"):
-                        self._recording_using_stub = True
                     logger.debug("Recording restarted on new page")
                     return
 
@@ -370,7 +258,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
         # Reset Python-side storage for new recording session
         self._recording_events = []
         self._is_recording = True
-        self._recording_using_stub = False
 
         try:
             cdp_session = await self.browser_session.get_or_create_cdp_session()
@@ -381,6 +268,8 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             start_recording_js = """
                 (function() {
                     if (window.__rrweb_stopFn) return {status: 'already_recording'};
+                    // Check if rrweb failed to load from CDN
+                    if (window.__rrweb_load_failed) return {status: 'load_failed'};
                     // rrweb UMD module exports to window.rrweb (not rrwebRecord)
                     var recordFn = (typeof rrweb !== 'undefined' && rrweb.record) ||
                                    (typeof rrwebRecord !== 'undefined' && rrwebRecord.record);
@@ -392,11 +281,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                             window.__rrweb_events.push(event);
                         }
                     });
-                    return {
-                        status: 'started',
-                        using_stub: !!window.__rrweb_using_stub,
-                        event_count: window.__rrweb_events.length
-                    };
+                    return {status: 'started'};
                 })();
             """
 
@@ -411,16 +296,21 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                 status = value.get("status") if isinstance(value, dict) else value
 
                 if status == "started":
-                    using_stub = value.get("using_stub", False) if isinstance(value, dict) else False
-                    self._recording_using_stub = using_stub
-                    if using_stub:
-                        logger.warning("Recording started using fallback stub (CDN load failed)")
-                        return "Recording started (using fallback recorder - CDN unavailable)"
                     logger.info("Recording started successfully with rrweb")
                     return "Recording started"
 
                 elif status == "already_recording":
                     return "Already recording"
+
+                elif status == "load_failed":
+                    # rrweb CDN load failed - inform agent and don't retry
+                    self._is_recording = False
+                    await self._set_recording_flag(False)
+                    logger.error("Unable to start recording: rrweb failed to load from CDN")
+                    return (
+                        "Error: Unable to start recording. The rrweb library failed to load "
+                        "from CDN. Please check network connectivity and try again."
+                    )
 
                 elif status == "not_loaded":
                     if attempt < RRWEB_START_MAX_RETRIES - 1:
@@ -432,12 +322,14 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     continue
 
                 else:
+                    self._is_recording = False
                     return f"Unknown status: {status}"
 
             # All retries exhausted
             self._is_recording = False
+            await self._set_recording_flag(False)
             return (
-                "rrweb not loaded after retries. "
+                "Error: Unable to start recording. rrweb did not load after retries. "
                 "Please navigate to a page first and try again."
             )
 
@@ -475,7 +367,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                     "expression": """
                         (function() {
                             var events = window.__rrweb_events || [];
-                            var using_stub = !!window.__rrweb_using_stub;
 
                             // Stop the recording if active
                             if (window.__rrweb_stopFn) {
@@ -487,10 +378,7 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                             window.__rrweb_should_record = false;
                             window.__rrweb_events = [];
 
-                            return JSON.stringify({
-                                events: events,
-                                using_stub: using_stub
-                            });
+                            return JSON.stringify({events: events});
                         })();
                     """,
                     "returnByValue": True,
@@ -500,8 +388,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
             current_page_data = json.loads(result.get("result", {}).get("value", "{}"))
             current_page_events = current_page_data.get("events", [])
-            if current_page_data.get("using_stub"):
-                self._recording_using_stub = True
 
             # Combine events from Python storage with current page
             all_events = self._recording_events + current_page_events
@@ -543,7 +429,6 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
                         "count": len(all_events),
                         "pages_recorded": pages_recorded,
                         "event_types": event_types,
-                        "using_stub": self._recording_using_stub,
                         "timestamp": timestamp,
                     }
                 }
@@ -555,13 +440,8 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
 
             # Clear Python-side storage
             self._recording_events = []
-            self._recording_using_stub = False
 
-            # Log summary
-            if self._recording_using_stub:
-                logger.warning(f"Recording stopped (fallback stub): {len(all_events)} events from {pages_recorded} page(s)")
-            else:
-                logger.info(f"Recording stopped: {len(all_events)} events from {pages_recorded} page(s)")
+            logger.info(f"Recording stopped: {len(all_events)} events from {pages_recorded} page(s)")
 
             # Return a concise summary message (not the full events)
             summary = f"Recording stopped. Captured {len(all_events)} events from {pages_recorded} page(s)."
