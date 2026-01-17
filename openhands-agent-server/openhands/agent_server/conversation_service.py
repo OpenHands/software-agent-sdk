@@ -1,7 +1,6 @@
 import asyncio
 import importlib
 import logging
-import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -26,8 +25,6 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.hooks import HookConfig
-from openhands.sdk.plugin import Plugin, PluginFetchError
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -44,13 +41,6 @@ def _compose_conversation_info(
         created_at=stored.created_at,
         updated_at=stored.updated_at,
     )
-
-
-# Defense-in-depth limit against malicious REST API calls with oversized plugins.
-# This is an arbitrary limit that catches the most obvious DoS vector (skill count).
-# Note: This protection is incomplete - we don't limit hook count, skill file sizes,
-# or MCP config complexity. A more comprehensive resource limiting strategy is needed.
-MAX_PLUGIN_SKILLS = 100
 
 
 @dataclass
@@ -201,120 +191,12 @@ class ConversationService:
         # Create task to run in background without awaiting
         asyncio.create_task(_notify_and_log_errors())
 
-    # Plugin Loading
-
-    def _load_and_merge_plugin(
-        self, request: StartConversationRequest
-    ) -> tuple[StartConversationRequest, HookConfig | None]:
-        """Fetch and load a plugin, merging its content into the request.
-
-        This method:
-        1. Fetches the plugin from the specified source (caching locally)
-        2. Loads the plugin's skills, hooks, and MCP configuration
-        3. Merges plugin content into the agent's context using SDK merge functions
-
-        Note: This method performs blocking I/O (git clones, network requests).
-        Call via asyncio.to_thread() from async contexts.
-
-        Args:
-            request: The original start conversation request with plugin_source set
-
-        Returns:
-            Tuple of (updated request with merged content, hook_config from plugin)
-
-        Raises:
-            PluginFetchError: If the plugin cannot be fetched or loaded
-        """
-        if not request.plugin_source or not request.plugin_source.strip():
-            return request, None
-
-        try:
-            # Validate plugin_path for path traversal and absolute path attacks
-            if request.plugin_path:
-                safe_path = Path(request.plugin_path)
-                if safe_path.is_absolute():
-                    raise PluginFetchError(
-                        "plugin_path must be a relative path, not absolute"
-                    )
-                if ".." in safe_path.parts:
-                    raise PluginFetchError(
-                        "plugin_path cannot contain parent directory references"
-                    )
-
-            # Fetch and load the plugin
-            logger.debug(f"Fetching plugin from: {request.plugin_source}")
-            plugin_path = Plugin.fetch(
-                source=request.plugin_source,
-                ref=request.plugin_ref,
-                subpath=request.plugin_path,
-            )
-            logger.debug(f"Loading plugin from: {plugin_path}")
-            plugin = Plugin.load(plugin_path)
-
-            logger.info(
-                f"Loaded plugin '{plugin.name}': "
-                f"{len(plugin.skills)} skills, "
-                f"hooks={'yes' if plugin.hooks else 'no'}, "
-                f"mcp_config={'yes' if plugin.mcp_config else 'no'}"
-            )
-
-            # Skip merge if plugin is empty
-            if not plugin.skills and not plugin.mcp_config and not plugin.hooks:
-                return request, None
-
-            # Merge plugin content into agent using SDK method
-            try:
-                new_context, new_mcp = plugin.merge_into(
-                    request.agent.agent_context,
-                    request.agent.mcp_config,
-                    max_skills=MAX_PLUGIN_SKILLS,
-                )
-            except ValueError as e:
-                # Skill limit exceeded
-                raise PluginFetchError(str(e)) from e
-
-            # Update the request with merged content
-            updated_agent = request.agent.model_copy(
-                update={"agent_context": new_context, "mcp_config": new_mcp}
-            )
-            updated_request = request.model_copy(update={"agent": updated_agent})
-
-            # Log hooks if present
-            if plugin.hooks and not plugin.hooks.is_empty():
-                # List which event types have hooks configured
-                event_types = [
-                    name
-                    for name in [
-                        "pre_tool_use",
-                        "post_tool_use",
-                        "user_prompt_submit",
-                        "session_start",
-                        "session_end",
-                        "stop",
-                    ]
-                    if getattr(plugin.hooks, name, [])
-                ]
-                logger.info(
-                    f"Loaded hooks from plugin '{plugin.name}': "
-                    f"{event_types} event types"
-                )
-
-            return updated_request, plugin.hooks
-
-        except PluginFetchError:
-            # Re-raise fetch errors as-is
-            raise
-        except Exception as e:
-            # Log full stack trace at debug level for troubleshooting
-            logger.debug(
-                f"Plugin loading failed with unexpected error:\n"
-                f"{traceback.format_exc()}"
-            )
-            # Wrap in PluginFetchError with exception type for debugging
-            raise PluginFetchError(
-                f"Failed to load plugin from {request.plugin_source}: "
-                f"{type(e).__name__}: {e}"
-            ) from e
+    # NOTE: _load_and_merge_plugin() has been removed.
+    # Plugin loading now happens automatically during AgentContext initialization
+    # when the request is deserialized. To load a plugin, use:
+    #   {"agent": {"agent_context": {"plugin_source": "github:owner/repo"}}}
+    # Skills and MCP config are merged by AgentContext._load_plugin validator.
+    # Hooks are extracted via agent_context.plugin_hooks in start_conversation().
 
     # Write Methods
 
@@ -360,12 +242,26 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
-        # Load plugin if specified (run in thread pool to avoid blocking event loop)
+        # Extract hooks from plugin if loaded via AgentContext
+        # Plugin loading happens automatically during AgentContext initialization
+        # (when the request is deserialized), so we just need to extract hooks.
         hook_config = None
-        if request.plugin_source:
-            request, hook_config = await asyncio.to_thread(
-                self._load_and_merge_plugin, request
-            )
+        if request.agent.agent_context and request.agent.agent_context.plugin_hooks:
+            hook_config = request.agent.agent_context.plugin_hooks
+            if not hook_config.is_empty():
+                event_types = [
+                    name
+                    for name in [
+                        "pre_tool_use",
+                        "post_tool_use",
+                        "user_prompt_submit",
+                        "session_start",
+                        "session_end",
+                        "stop",
+                    ]
+                    if getattr(hook_config, name, [])
+                ]
+                logger.info(f"Loaded hooks from plugin: {event_types} event types")
 
         stored = StoredConversation(
             id=conversation_id, hook_config=hook_config, **request.model_dump()

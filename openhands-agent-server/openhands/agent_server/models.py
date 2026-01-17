@@ -107,26 +107,9 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
-    plugin_source: str | None = Field(
-        default=None,
-        description=(
-            "Plugin source to fetch and load for this conversation. Supports: "
-            "(1) Any git URL (GitHub, GitLab, Bitbucket, Codeberg, self-hosted, etc.) "
-            "e.g., 'https://gitlab.com/org/repo', 'git@bitbucket.org:team/repo.git'; "
-            "(2) GitHub shorthand 'github:owner/repo' as a convenience; "
-            "(3) Local filesystem path (e.g., '/path/to/plugin'). "
-            "The plugin's skills, hooks, and MCP configuration will be merged into "
-            "the conversation."
-        ),
-    )
-    plugin_ref: str | None = Field(
-        default=None,
-        description="Optional branch, tag, or commit for the plugin.",
-    )
-    plugin_path: str | None = Field(
-        default=None,
-        description="Optional subdirectory path within the plugin repository.",
-    )
+    # NOTE: plugin_source, plugin_ref, plugin_path have been moved to AgentContext.
+    # To load a plugin, set these fields on agent.agent_context instead:
+    #   {"agent": {"agent_context": {"plugin_source": "github:owner/repo"}}}
 
 
 class StoredConversation(StartConversationRequest):
