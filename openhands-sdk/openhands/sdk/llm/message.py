@@ -384,44 +384,65 @@ class Message(BaseModel):
             return items
 
         if self.role == "assistant":
-            # Emit prior assistant content as a single message item using output_text
+            # Emit prior assistant content as a single message item using output_text.
+            # IMPORTANT: If a reasoning item is present, OpenAI requires the following
+            # message item to include BOTH id and status; otherwise it errors.
             content_items: list[dict[str, Any]] = []
             for c in self.content:
                 if isinstance(c, TextContent) and c.text:
                     content_items.append({"type": "output_text", "text": c.text})
-            if content_items:
-                items.append(
-                    {
-                        "type": "message",
-                        "role": "assistant",
-                        "content": content_items,
-                    }
-                )
-            # Include prior turn's reasoning item exactly as received (if any)
+
+            can_emit_message_item = bool(content_items)
+            can_emit_reasoning_item = False
+
             if self.responses_reasoning_item is not None:
                 ri = self.responses_reasoning_item
-                # Only send back if we have an id; required by the param schema
-                if ri.id is not None:
-                    reasoning_item: dict[str, Any] = {
-                        "type": "reasoning",
-                        "id": ri.id,
-                        # Always include summary exactly as received (can be empty)
-                        "summary": [
-                            {"type": "summary_text", "text": s}
-                            for s in (ri.summary or [])
-                        ],
-                    }
-                    # Optional content passthrough
-                    if ri.content:
-                        reasoning_item["content"] = [
-                            {"type": "reasoning_text", "text": t} for t in ri.content
-                        ]
-                    # Optional fields as received
-                    if ri.encrypted_content:
-                        reasoning_item["encrypted_content"] = ri.encrypted_content
-                    if ri.status:
-                        reasoning_item["status"] = ri.status
-                    items.append(reasoning_item)
+                can_emit_reasoning_item = ri.id is not None
+
+                # If we would emit reasoning, ensure the following assistant message
+                # carries both id and status. If not, drop BOTH the reasoning item
+                # and the message item to avoid producing an orphan reasoning item.
+                if can_emit_reasoning_item and not (
+                    getattr(self, "responses_message_id", None)
+                    and getattr(self, "responses_message_status", None)
+                ):
+                    can_emit_reasoning_item = False
+                    can_emit_message_item = False
+
+            if can_emit_message_item:
+                message_item: dict[str, Any] = {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": content_items,
+                }
+                responses_message_id = getattr(self, "responses_message_id", None)
+                responses_message_status = getattr(
+                    self, "responses_message_status", None
+                )
+                if responses_message_id and responses_message_status:
+                    message_item["id"] = responses_message_id
+                    message_item["status"] = responses_message_status
+                items.append(message_item)
+
+            if can_emit_reasoning_item and self.responses_reasoning_item is not None:
+                ri = self.responses_reasoning_item
+                reasoning_item: dict[str, Any] = {
+                    "type": "reasoning",
+                    "id": ri.id,
+                    "summary": [
+                        {"type": "summary_text", "text": s} for s in (ri.summary or [])
+                    ],
+                }
+                if ri.content:
+                    reasoning_item["content"] = [
+                        {"type": "reasoning_text", "text": t} for t in ri.content
+                    ]
+                if ri.encrypted_content:
+                    reasoning_item["encrypted_content"] = ri.encrypted_content
+                if ri.status:
+                    reasoning_item["status"] = ri.status
+                items.append(reasoning_item)
+
             # Emit assistant tool calls so subsequent function_call_output
             # can match call_id
             if self.tool_calls:
