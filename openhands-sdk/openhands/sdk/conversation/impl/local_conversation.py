@@ -79,15 +79,13 @@ class LocalConversation(BaseConversation):
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
         cipher: Cipher | None = None,
-        plugin_source: str | None = None,
-        plugin_ref: str | None = None,
-        plugin_path: str | None = None,
         **_: object,
     ):
         """Initialize the conversation.
 
         Args:
-            agent: The agent to use for the conversation
+            agent: The agent to use for the conversation.
+                To load a plugin, set agent.agent_context.plugin_source.
             workspace: Working directory for agent operations and tool execution.
                 Can be a string path, Path object, or LocalWorkspace instance.
             persistence_dir: Directory for persisting conversation state and events.
@@ -98,11 +96,8 @@ class LocalConversation(BaseConversation):
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             hook_config: Optional hook configuration to auto-wire session hooks.
-                Note: In the agent-server API, hook_config is deliberately excluded
-                from StartConversationRequest - hooks can only come from plugins,
-                not directly from API users. This parameter exists in LocalConversation
-                for backward compatibility and advanced local use cases, but the
-                recommended pattern is to use plugin_source instead.
+                If not provided, hooks are extracted from agent.agent_context
+                .plugin_hooks when a plugin is loaded via AgentContext.
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -119,60 +114,21 @@ class LocalConversation(BaseConversation):
                    state. If provided, secrets are encrypted when saving and
                    decrypted when loading. If not provided, secrets are redacted
                    (lost) on serialization.
-            plugin_source: Plugin source to fetch and load. Supports:
-                - Any git URL (GitHub, GitLab, Bitbucket, etc.)
-                - GitHub shorthand "github:owner/repo"
-                - Local filesystem path
-                The plugin's skills and MCP config will be merged into the agent.
-            plugin_ref: Optional branch, tag, or commit for the plugin.
-            plugin_path: Optional subdirectory path within the plugin repository.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
 
-        # Load and merge plugin if specified (before using agent)
+        # Extract hooks from plugin (loaded via AgentContext) if not explicitly provided
+        # Plugin loading now happens automatically in AgentContext._load_plugin()
         plugin_hook_config: HookConfig | None = None
-        if plugin_source:
-            from openhands.sdk.plugin import Plugin, PluginFetchError
+        if agent.agent_context and agent.agent_context.plugin_hooks:
+            plugin_hook_config = agent.agent_context.plugin_hooks
 
-            # Validate plugin_path for path traversal and absolute path attacks
-            if plugin_path:
-                safe_path = Path(plugin_path)
-                if safe_path.is_absolute():
-                    raise PluginFetchError(
-                        "plugin_path must be a relative path, not absolute"
-                    )
-                if ".." in safe_path.parts:
-                    raise PluginFetchError(
-                        "plugin_path cannot contain parent directory references"
-                    )
-
-            # Fetch and load the plugin
-            plugin_dir = Plugin.fetch(
-                source=plugin_source,
-                ref=plugin_ref,
-                subpath=plugin_path,
-            )
-            plugin = Plugin.load(plugin_dir)
-
-            # Merge plugin into agent
-            new_context, new_mcp = plugin.merge_into(
-                agent.agent_context,
-                agent.mcp_config,
-                max_skills=100,  # Defense-in-depth limit
-            )
-            agent = agent.model_copy(
-                update={"agent_context": new_context, "mcp_config": new_mcp}
-            )
-
-            # Extract hooks from plugin
-            plugin_hook_config = plugin.hooks
-
-        # Combine hook configs: plugin hooks merged with any explicitly provided hooks
+        # Combine hook configs: explicit hook_config + plugin hooks
         if plugin_hook_config and hook_config:
-            # Merge: base hooks first, plugin hooks second (concatenate lists)
+            # Merge: explicit hooks first, plugin hooks second (concatenate lists)
             hook_config = HookConfig(
                 pre_tool_use=hook_config.pre_tool_use + plugin_hook_config.pre_tool_use,
                 post_tool_use=(
