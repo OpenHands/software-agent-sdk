@@ -224,6 +224,10 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
     def _save_events_to_file(self, events: list[dict]) -> str | None:
         """Save events to a numbered JSON file.
         
+        Finds the next available filename by incrementing the counter until
+        an unused filename is found. This handles cases where files already
+        exist from previous recordings.
+        
         Args:
             events: List of rrweb events to save.
             
@@ -237,9 +241,14 @@ class CustomBrowserUseServer(LogSafeBrowserUseServer):
             return None
 
         os.makedirs(self._recording_save_dir, exist_ok=True)
-        self._recording_file_counter += 1
-        filename = f"{self._recording_file_counter}.json"
-        filepath = os.path.join(self._recording_save_dir, filename)
+        
+        # Find the next available filename
+        while True:
+            self._recording_file_counter += 1
+            filename = f"{self._recording_file_counter}.json"
+            filepath = os.path.join(self._recording_save_dir, filename)
+            if not os.path.exists(filepath):
+                break
 
         with open(filepath, "w") as f:
             json.dump(events, f)
