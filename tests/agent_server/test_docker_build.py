@@ -195,10 +195,7 @@ def test_base_slug_truncation_with_tag():
     assert all(c in "0123456789abcdef" for c in result[-12:])
 
     # Check the exact truncated output for determinism
-    assert (
-        result
-        == "very-lon_tag_very-long-tag-v1.2.3-alpha.1+build.123-cdb8db90d8c5"
-    )
+    assert result == "very-lon_tag_very-long-tag-v1.2.3-alpha.1+build.123-cdb8db90d8c5"
 
 
 def test_base_slug_truncation_no_tag():
