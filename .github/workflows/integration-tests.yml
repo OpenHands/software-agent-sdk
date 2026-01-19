@@ -188,7 +188,7 @@ jobs:
       run: |
         # Just check that the TypeScript client can connect
         # This doesn't need a real LLM key
-        npm run test -- --testPathPattern="index.test.ts" --passWithNoTests
+        npm run test -- --testPathPatterns="index.test.ts" --passWithNoTests
 
     - name: Cleanup
       if: always()
