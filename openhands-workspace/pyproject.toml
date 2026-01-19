@@ -10,6 +10,12 @@ dependencies = [
     "pydantic>=2.11.7",
 ]
 
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+Homepage = "https://github.com/OpenHands/software-agent-sdk"
+Documentation = "https://docs.openhands.dev/sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
+
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
