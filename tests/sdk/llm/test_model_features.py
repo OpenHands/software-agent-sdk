@@ -33,6 +33,9 @@ def test_model_matches(name, pattern, expected):
         # Anthropic Opus 4.5 (dash variant only)
         ("claude-opus-4-5", True),
         ("nova-2-lite", True),
+        # Gemini 3 family
+        ("gemini-3-pro-preview", True),
+        ("gemini-3-flash-preview", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),

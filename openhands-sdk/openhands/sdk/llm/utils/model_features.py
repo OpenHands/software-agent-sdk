@@ -63,6 +63,9 @@ REASONING_EFFORT_MODELS: list[str] = [
     "o4-mini-2025-04-16",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
+    # Gemini 3 family
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
     # Anthropic Opus 4.5
