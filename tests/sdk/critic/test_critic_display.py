@@ -21,19 +21,17 @@ def test_format_critic_result_with_json_message():
     # Should display overall score with 4 digits inline
     assert "0.5070" in text
 
-    # Sentiments should be normalized and shown as percentages
-    # sentiment_neutral and sentiment_positive should be normalized
-    # Total sentiment: 0.7613 + 0.1857 = 0.9470
-    # neutral: 0.7613/0.9470 = ~80.4%, positive: 0.1857/0.9470 = ~19.6%
+    # Only highest sentiment should be shown with raw probability
+    # sentiment_neutral is highest (0.76)
     assert "neutral" in text
-    assert "positive" in text
-    # Check for percentage format
-    assert "%" in text
+    assert "0.76" in text
 
-    # Other metrics should be shown with 2 digit precision
+    # Other metrics above 0.2 threshold should be shown
     assert "direction_change" in text
-    assert "success" in text
-    assert "correction" in text
+    # "success" should NOT be shown (redundant with critic score)
+    assert "success:" not in text
+    # "correction" should NOT be shown (below 0.2 threshold)
+    assert "correction" not in text
 
 
 def test_format_critic_result_with_plain_message():
@@ -75,14 +73,12 @@ def test_visualize_consistency():
 
     # Should contain overall score
     assert "0.8000" in formatted
-    # Should contain success metric
-    assert "success" in formatted
-    # Sentiments should be normalized
-    # Total: 0.7 + 0.2 = 0.9
-    # positive: 0.7/0.9 = 77.8%, neutral: 0.2/0.9 = 22.2%
+    # "success" should NOT appear as a metric (redundant with critic score)
+    assert "success:" not in formatted
+    # Only highest sentiment should be shown
+    # sentiment_positive (0.7) is higher than sentiment_neutral (0.2)
     assert "positive" in formatted
-    assert "neutral" in formatted
-    assert "%" in formatted
+    assert "0.70" in formatted
 
 
 def test_format_critic_result_sorting():
@@ -99,19 +95,19 @@ def test_format_critic_result_sorting():
     text = formatted.plain
 
     # Metrics should be sorted in descending order
-    # high (0.9), medium (0.5), low (0.1) should appear
-    # very_low (0.01) should be filtered out (below DISPLAY_THRESHOLD of 0.1)
+    # With DISPLAY_THRESHOLD of 0.2:
+    # high (0.9) and medium (0.5) should appear
+    # low (0.1) and very_low (0.01) should be filtered out (below 0.2)
     assert "high" in text
     assert "medium" in text
-    assert "low" in text
+    assert "low" not in text  # Below 0.2 threshold
     assert "very_low" not in text  # Below threshold
 
-    # Verify sorting order: high should appear before medium, medium before low
+    # Verify sorting order: high should appear before medium
     high_pos = text.find("high")
     medium_pos = text.find("medium")
-    low_pos = text.find("low:")  # Use "low:" to avoid matching "very_low"
 
-    assert high_pos < medium_pos < low_pos
+    assert high_pos < medium_pos
 
 
 def test_color_highlighting():
@@ -120,20 +116,21 @@ def test_color_highlighting():
         "critical": 0.85,  # Should be red bold (>= 0.7)
         "important": 0.65,  # Should be red (>= 0.5)
         "notable": 0.40,  # Should be yellow (>= 0.3)
-        "medium": 0.15,  # Should be white (>= 0.1)
-        "minimal": 0.02,  # Should be filtered out (< 0.1)
+        "medium": 0.15,  # Below 0.2 threshold
+        "minimal": 0.02,  # Below 0.2 threshold
     }
     critic_result = CriticResult(score=0.5, message=json.dumps(probs_dict))
 
     formatted = critic_result.visualize
 
     # Check that the Text object has the expected content (2 decimal places now)
+    # With DISPLAY_THRESHOLD = 0.2, only critical, important, notable should appear
     text = formatted.plain
     assert "critical" in text
     assert "important" in text
     assert "notable" in text
-    assert "medium" in text
-    assert "minimal" not in text  # Below threshold, should be filtered
+    assert "medium" not in text  # Below 0.2 threshold
+    assert "minimal" not in text  # Below 0.2 threshold
 
     # Verify spans contain style information
     # Rich Text objects have spans with (start, end, style) tuples

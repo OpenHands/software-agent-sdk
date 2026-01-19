@@ -9,7 +9,7 @@ class CriticResult(BaseModel):
     """A critic result is a score and a message."""
 
     THRESHOLD: ClassVar[float] = 0.5
-    DISPLAY_THRESHOLD: ClassVar[float] = 0.1  # Only show scores above this threshold
+    DISPLAY_THRESHOLD: ClassVar[float] = 0.2  # Only show scores above this threshold
 
     score: float = Field(
         description="A predicted probability of success between 0 and 1.",
@@ -48,43 +48,34 @@ class CriticResult(BaseModel):
                         else:
                             other_metrics[field] = prob
 
-                    # Normalize and display sentiments if present
+                    # Display only the highest sentiment if present
                     if sentiments:
-                        sentiment_sum = sum(sentiments.values())
-                        if sentiment_sum > 0:
-                            content.append(" | ", style="dim")
-                            content.append("Sentiment: ", style="bold")
+                        # Get the sentiment with highest probability
+                        top_sentiment = max(sentiments.items(), key=lambda x: x[1])
+                        field, prob = top_sentiment
 
-                            # Sort sentiments by probability
-                            sorted_sentiments = sorted(
-                                sentiments.items(), key=lambda x: x[1], reverse=True
-                            )
+                        content.append(" | ", style="dim")
 
-                            for i, (field, prob) in enumerate(sorted_sentiments):
-                                # Normalize to percentage
-                                normalized = (prob / sentiment_sum) * 100
+                        # Shorten names: sentiment_neutral -> neutral
+                        short_name = field.replace("sentiment_", "")
 
-                                # Shorten names: sentiment_neutral -> neutral
-                                short_name = field.replace("sentiment_", "")
+                        # Color code based on probability
+                        if prob >= 0.7:
+                            style = "cyan bold"
+                        elif prob >= 0.5:
+                            style = "cyan"
+                        else:
+                            style = "dim"
 
-                                # Color code based on normalized percentage
-                                if normalized >= 60:
-                                    style = "cyan bold"
-                                elif normalized >= 30:
-                                    style = "cyan"
-                                else:
-                                    style = "dim"
-
-                                if i > 0:
-                                    content.append(", ", style="dim")
-                                content.append(f"{short_name} ", style="white")
-                                content.append(f"{normalized:.1f}%", style=style)
+                        content.append(f"{short_name} ", style="white")
+                        content.append(f"{prob:.2f}", style=style)
 
                     # Filter and display other significant metrics
+                    # Exclude "success" as it's redundant with the critic score
                     significant_metrics = {
                         k: v
                         for k, v in other_metrics.items()
-                        if v >= self.DISPLAY_THRESHOLD
+                        if v >= self.DISPLAY_THRESHOLD and k != "success"
                     }
 
                     if significant_metrics:
