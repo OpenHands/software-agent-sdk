@@ -46,7 +46,7 @@ You may find that occasionally we are opinionated about several things:
 - **Avoid hidden assumptions**: don’t rely on particular env vars, workspace layouts, request
   contexts, or runtime quirks that only exist in one app.
   - Workspaces *do* encode environment specifics (local/Docker/remote), but keep those assumptions
-    explicit (params + validation) and contained to the `workspace` / `agent-server` layers.
+    explicit (params + validation) and contained to the `workspace` layer.
 - **No client-specific code paths**: avoid logic that only makes sense for one
   downstream app.
   - It’s fine to have multiple workspace implementations; it’s not fine for SDK core behavior to
@@ -54,7 +54,7 @@ You may find that occasionally we are opinionated about several things:
 - **Keep the agent loop stable**: treat stability as a feature; be cautious with control-flow
   changes and "small" behavior tweaks.
 - **Compatibility is part of the API**: if something could break downstream clients, call it
-  out explicitly and consider a migration path.
+  out explicitly and consider a migration path. We have a deprecation mechanism you may want to use.
 
 If you’re not sure whether a change crosses these lines, please ask early. We’re happy to help think
 through the shape of a clean interface.
