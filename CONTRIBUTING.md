@@ -16,7 +16,7 @@ stable and consistent.
 
 ## A lesson we learned (why we care about architecture)
 
-In earlier iterations, we repeatedly ran into a failure mode: downstream-application needs
+In earlier iterations, we repeatedly ran into a failure mode: needs from downstream applications
 (or assumptions) would leak into core logic.
 
 That kind of coupling can feel convenient in the moment, but it tends to create subtle
