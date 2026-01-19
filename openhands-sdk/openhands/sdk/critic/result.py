@@ -9,6 +9,7 @@ class CriticResult(BaseModel):
     """A critic result is a score and a message."""
 
     THRESHOLD: ClassVar[float] = 0.5
+    DISPLAY_THRESHOLD: ClassVar[float] = 0.1  # Only show scores above this threshold
 
     score: float = Field(
         description="A predicted probability of success between 0 and 1.",
@@ -26,43 +27,103 @@ class CriticResult(BaseModel):
     def visualize(self) -> Text:
         """Return Rich Text representation of the critic result."""
         content = Text()
-        content.append("\nCritic Score:\n", style="bold")
+        content.append("\nCritic Score: ", style="bold")
 
-        # Display main score
+        # Display main score inline
         score_style = "green" if self.success else "yellow"
-        content.append(f"  Overall: {self.score:.4f}\n", style=score_style)
+        content.append(f"{self.score:.4f}", style=score_style)
 
         # Parse and display detailed probabilities if available in message
         if self.message:
             try:
                 probs_dict = json.loads(self.message[self.message.find("{") :])
                 if isinstance(probs_dict, dict):
-                    # Sort by probability (descending)
-                    sorted_probs = sorted(
-                        probs_dict.items(), key=lambda x: x[1], reverse=True
-                    )
+                    # Separate sentiments from other metrics
+                    sentiments = {}
+                    other_metrics = {}
 
-                    # Display each field on a separate line with color coding
-                    for field, prob in sorted_probs:
-                        # Color code based on probability
-                        if prob >= 0.7:
-                            prob_style = "red bold"
-                        elif prob >= 0.5:
-                            prob_style = "red"
-                        elif prob >= 0.3:
-                            prob_style = "yellow"
-                        elif prob >= 0.1:
-                            prob_style = "white"
+                    for field, prob in probs_dict.items():
+                        if field.startswith("sentiment_"):
+                            sentiments[field] = prob
                         else:
-                            prob_style = "dim"
+                            other_metrics[field] = prob
 
-                        content.append(f"  {field}: ", style="white")
-                        content.append(f"{prob:.4f}\n", style=prob_style)
+                    # Normalize and display sentiments if present
+                    if sentiments:
+                        sentiment_sum = sum(sentiments.values())
+                        if sentiment_sum > 0:
+                            content.append(" | ", style="dim")
+                            content.append("Sentiment: ", style="bold")
+
+                            # Sort sentiments by probability
+                            sorted_sentiments = sorted(
+                                sentiments.items(), key=lambda x: x[1], reverse=True
+                            )
+
+                            for i, (field, prob) in enumerate(sorted_sentiments):
+                                # Normalize to percentage
+                                normalized = (prob / sentiment_sum) * 100
+
+                                # Shorten names: sentiment_neutral -> neutral
+                                short_name = field.replace("sentiment_", "")
+
+                                # Color code based on normalized percentage
+                                if normalized >= 60:
+                                    style = "cyan bold"
+                                elif normalized >= 30:
+                                    style = "cyan"
+                                else:
+                                    style = "dim"
+
+                                if i > 0:
+                                    content.append(", ", style="dim")
+                                content.append(f"{short_name} ", style="white")
+                                content.append(f"{normalized:.1f}%", style=style)
+
+                    # Filter and display other significant metrics
+                    significant_metrics = {
+                        k: v
+                        for k, v in other_metrics.items()
+                        if v >= self.DISPLAY_THRESHOLD
+                    }
+
+                    if significant_metrics:
+                        # Sort by probability (descending)
+                        sorted_metrics = sorted(
+                            significant_metrics.items(),
+                            key=lambda x: x[1],
+                            reverse=True,
+                        )
+
+                        content.append("\n  ", style="dim")
+
+                        # Display metrics in a compact format (multiple per line)
+                        for i, (field, prob) in enumerate(sorted_metrics):
+                            # Color code based on probability
+                            if prob >= 0.7:
+                                prob_style = "red bold"
+                            elif prob >= 0.5:
+                                prob_style = "red"
+                            elif prob >= 0.3:
+                                prob_style = "yellow"
+                            else:
+                                prob_style = "white"
+
+                            if i > 0:
+                                content.append(" • ", style="dim")
+                            content.append(f"{field}: ", style="dim")
+                            content.append(f"{prob:.2f}", style=prob_style)
+
+                        content.append("\n")
+                    else:
+                        content.append("\n")
                 else:
                     # If not a dict, display the message as-is
-                    content.append(f"  {self.message}\n")
+                    content.append(f"\n  {self.message}\n")
             except (json.JSONDecodeError, ValueError):
                 # If JSON parsing fails, display the message as-is
-                content.append(f"  {self.message}\n")
+                content.append(f"\n  {self.message}\n")
+        else:
+            content.append("\n")
 
         return content

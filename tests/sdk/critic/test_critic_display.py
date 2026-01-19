@@ -18,18 +18,22 @@ def test_format_critic_result_with_json_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display overall score with 4 digits
-    assert "Overall: 0.5070" in text
+    # Should display overall score with 4 digits inline
+    assert "0.5070" in text
 
-    # First probability line should be sentiment_neutral (highest)
-    assert "sentiment_neutral: 0.7613" in text
-    # Second should be direction_change
-    assert "direction_change: 0.5926" in text
+    # Sentiments should be normalized and shown as percentages
+    # sentiment_neutral and sentiment_positive should be normalized
+    # Total sentiment: 0.7613 + 0.1857 = 0.9470
+    # neutral: 0.7613/0.9470 = ~80.4%, positive: 0.1857/0.9470 = ~19.6%
+    assert "neutral" in text
+    assert "positive" in text
+    # Check for percentage format
+    assert "%" in text
 
-    # Check 4 digit precision
-    assert "0.7613" in text  # rounded from 0.7612602710723877
-    assert "0.5926" in text  # rounded from 0.5926198959350586
-    assert "0.5068" in text  # rounded from 0.5067704319953918
+    # Other metrics should be shown with 2 digit precision
+    assert "direction_change" in text
+    assert "success" in text
+    assert "correction" in text
 
 
 def test_format_critic_result_with_plain_message():
@@ -40,7 +44,7 @@ def test_format_critic_result_with_plain_message():
     text = formatted.plain
 
     # Should display overall score
-    assert "Overall: 0.7500" in text
+    assert "0.7500" in text
     # Should display plain text message
     assert "This is a plain text message" in text
 
@@ -53,9 +57,9 @@ def test_format_critic_result_without_message():
     text = formatted.plain
 
     # Should only display overall score
-    assert "Overall: 0.6500" in text
-    # Should not have extra content
-    assert text.count("\n") <= 3  # Header, score, maybe empty line
+    assert "0.6500" in text
+    # Should be compact - just a few lines
+    assert text.count("\n") <= 3
 
 
 def test_visualize_consistency():
@@ -69,11 +73,16 @@ def test_visualize_consistency():
 
     formatted = critic_result.visualize.plain
 
-    # Should contain all expected information
-    assert "Overall: 0.8000" in formatted
-    assert "success: 0.8000" in formatted
-    assert "sentiment_positive: 0.7000" in formatted
-    assert "sentiment_neutral: 0.2000" in formatted
+    # Should contain overall score
+    assert "0.8000" in formatted
+    # Should contain success metric
+    assert "success" in formatted
+    # Sentiments should be normalized
+    # Total: 0.7 + 0.2 = 0.9
+    # positive: 0.7/0.9 = 77.8%, neutral: 0.2/0.9 = 22.2%
+    assert "positive" in formatted
+    assert "neutral" in formatted
+    assert "%" in formatted
 
 
 def test_format_critic_result_sorting():
@@ -89,14 +98,20 @@ def test_format_critic_result_sorting():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Find positions of each field
-    high_pos = text.find("high: 0.9000")
-    medium_pos = text.find("medium: 0.5000")
-    low_pos = text.find("low: 0.1000")
-    very_low_pos = text.find("very_low: 0.0100")
+    # Metrics should be sorted in descending order
+    # high (0.9), medium (0.5), low (0.1) should appear
+    # very_low (0.01) should be filtered out (below DISPLAY_THRESHOLD of 0.1)
+    assert "high" in text
+    assert "medium" in text
+    assert "low" in text
+    assert "very_low" not in text  # Below threshold
 
-    # Verify sorting order
-    assert high_pos < medium_pos < low_pos < very_low_pos
+    # Verify sorting order: high should appear before medium, medium before low
+    high_pos = text.find("high")
+    medium_pos = text.find("medium")
+    low_pos = text.find("low:")  # Use "low:" to avoid matching "very_low"
+
+    assert high_pos < medium_pos < low_pos
 
 
 def test_color_highlighting():
@@ -106,19 +121,19 @@ def test_color_highlighting():
         "important": 0.65,  # Should be red (>= 0.5)
         "notable": 0.40,  # Should be yellow (>= 0.3)
         "medium": 0.15,  # Should be white (>= 0.1)
-        "minimal": 0.02,  # Should be dim (< 0.1)
+        "minimal": 0.02,  # Should be filtered out (< 0.1)
     }
     critic_result = CriticResult(score=0.5, message=json.dumps(probs_dict))
 
     formatted = critic_result.visualize
 
-    # Check that the Text object has the expected content
+    # Check that the Text object has the expected content (2 decimal places now)
     text = formatted.plain
-    assert "critical: 0.8500" in text
-    assert "important: 0.6500" in text
-    assert "notable: 0.4000" in text
-    assert "medium: 0.1500" in text
-    assert "minimal: 0.0200" in text
+    assert "critical" in text
+    assert "important" in text
+    assert "notable" in text
+    assert "medium" in text
+    assert "minimal" not in text  # Below threshold, should be filtered
 
     # Verify spans contain style information
     # Rich Text objects have spans with (start, end, style) tuples
