@@ -218,6 +218,10 @@ class DesktopService:
     def get_vnc_url(self, base: str = "http://localhost:8003") -> str | None:
         """Get the noVNC URL for desktop access with authentication token.
 
+        With websockify TokenFile plugin, the token is passed as a query
+        parameter on the WebSocket connection. noVNC connects to the websockify
+        endpoint and includes the token in the WebSocket URL query string.
+
         Args:
             base: Base URL for the noVNC server
 
@@ -229,9 +233,7 @@ class DesktopService:
         if self.connection_token is None:
             return None
         return (
-            f"{base}/vnc.html?"
-            f"path={base.split('://', 1)[-1]}/websockify&"
-            f"token={self.connection_token}&"
+            f"{base}/vnc.html?path=websockify&token={self.connection_token}&"
             f"autoconnect=1&resize=remote"
         )
 
