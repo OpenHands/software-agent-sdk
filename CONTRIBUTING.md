@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping improve the OpenHands Software Agent SDK.
+Thank you for helping improve the OpenHands Software Agent SDK.
 
 This repo is a foundation. We want the SDK to stay stable and extensible so that many
 applications can build on it safely.
@@ -10,7 +10,7 @@ Downstream applications we actively keep in mind:
 - OpenHands app-server (client)
 - OpenHands SaaS (client)
 
-The SDK itself has a Python interface. Separately, the
+The SDK itself has a Python interface. In addition, the
 [agent-server](https://docs.openhands.dev/sdk/guides/agent-server/overview) is the
 REST/WebSocket server component that exposes the SDK for remote execution and integrations.
 Changes should keep both interfaces stable and consistent.
@@ -24,40 +24,41 @@ That kind of coupling can feel convenient in the moment, but it tends to create 
 breakage elsewhere: different environments, different workspaces, different execution modes,
 and different evaluation setups.
 
-Over time we learned the real issue wasn’t individual bugs—it was architecture.
+The architecture of OpenHands V0 was too monolithic to support multiple applications built into it,
+as CLI, evaluation scripts, web server were, and built on it, as OpenHands Cloud was.
 
 This SDK exists (as a separate, rebuilt foundation) to avoid that failure mode.
 
-## Principles we review PRs against
+## Principles we review PRs with
 
-We’re friendly and pragmatic, but we *are* opinionated about several things:
+We welcome all contributions, big or small, to improve or extend the software agent SDK.
 
-- **SDK-first**: the SDK is the product; downstream apps are clients.
-- **No client-specific code paths in core**: avoid logic that only makes sense for one
-  downstream app.
-- **No “which app am I in?” switches**: avoid branching behavior on downstream app identity;
-  model differences as configuration, capabilities, or clean interfaces.
+You may find that occasionally we are opinionated about several things:
+
+- **OpenHands SDK is its own thing**: its downstream are client applications.
 - **Prefer interfaces over special cases**: if a client needs something, add or improve a
   clean, reusable interface/extension point instead of adding a shortcut.
 - **Extensibility over one-off patches**: design features so multiple clients can adopt them
   without rewriting core logic.
 - **Avoid hidden assumptions**: don’t rely on particular env vars, workspace layouts, request
   contexts, or runtime quirks that only exist in one app.
+  - NOTE
+- **No client-specific code paths**: avoid logic that only makes sense for one
+  downstream app.
+  - NOTE
 - **Keep the agent loop stable**: treat stability as a feature; be cautious with control-flow
   changes and "small" behavior tweaks.
 - **Compatibility is part of the API**: if something could break downstream clients, call it
   out explicitly and consider a migration path.
-- **Simple beats clever**: we’d rather merge a straightforward, composable design than a fast
-  patch that increases coupling.
 
-If you’re not sure whether a change crosses these lines, ask early—we’re happy to help think
+If you’re not sure whether a change crosses these lines, please ask early. We’re happy to help think
 through the shape of a clean interface.
 
 ## Practical pointers
 
-This file is mostly about principles. For the mechanics, see:
-- [DEVELOPMENT.md](DEVELOPMENT.md)
-- [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)
+This file is mostly about principles. For the mechanics, please see:
+- [AGENTS.md](AGENTS.md) for AI agents
+- [DEVELOPMENT.md](DEVELOPMENT.md) for humans
 
 ## Questions / discussion
 
