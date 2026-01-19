@@ -13,7 +13,7 @@ dependencies = [
 [project.urls]
 Source = "https://github.com/OpenHands/software-agent-sdk"
 Homepage = "https://github.com/OpenHands/software-agent-sdk"
-Documentation = "https://github.com/OpenHands/software-agent-sdk#readme"
+Documentation = "https://docs.openhands.dev/sdk"
 "Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
