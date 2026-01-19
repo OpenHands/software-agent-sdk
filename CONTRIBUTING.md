@@ -27,6 +27,9 @@ and different evaluation setups.
 The architecture of OpenHands V0 was too monolithic to support multiple applications built into it,
 as CLI, evaluation scripts, web server were, and built on it, as OpenHands Cloud was.
 
+If you’re interested in the deeper background and lessons learned, see our write-up:
+[OpenHands: An Open Platform for AI Software Developers as Generalist Agents (arXiv:2511.03690)](https://arxiv.org/abs/2511.03690)
+
 This SDK exists (as a separate, rebuilt foundation) to avoid that failure mode.
 
 ## Principles we review PRs with
