@@ -507,6 +507,7 @@ describe('Conversation Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('agent-created');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
         const expectedContent = 'Hello from the agent!';
 
         const agent = new Agent({
@@ -523,7 +524,7 @@ describe('Conversation Integration Tests', () => {
 
         // Ask the agent to create a file
         await conversation.sendMessage(
-          `Create a file called "${fileName}" in the workspace with exactly this content: "${expectedContent}". Use the terminal tool to create the file with echo.`
+          `Create a file at "${fullPath}" with exactly this content: "${expectedContent}". Use the terminal tool to create the file with echo.`
         );
         await conversation.run();
 
@@ -560,6 +561,7 @@ describe('Conversation Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('to-read');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
         const fileContent = 'This file contains the secret number: 42';
 
         // Create the file first
@@ -573,11 +575,7 @@ describe('Conversation Integration Tests', () => {
         });
 
         // Create file via workspace
-        await workspace.uploadText(
-          fileContent,
-          `${config.agentWorkspaceDir}/${fileName}`,
-          fileName
-        );
+        await workspace.uploadText(fileContent, fullPath, fileName);
         await sleep(500);
 
         const receivedEvents: Event[] = [];
@@ -592,7 +590,7 @@ describe('Conversation Integration Tests', () => {
 
         // Ask the agent to read the file and tell us what's in it
         await conversation.sendMessage(
-          `Read the file "${fileName}" in the workspace and tell me what secret number is mentioned in it.`
+          `Read the file at "${fullPath}" and tell me what secret number is mentioned in it.`
         );
         await conversation.run();
 

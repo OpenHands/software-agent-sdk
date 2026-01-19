@@ -42,6 +42,7 @@ describe('End-to-End Integration Tests', () => {
 
         const fileName = uniqueFileName('e2e-create');
         const expectedContent = 'Hello from e2e test';
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
         const agent = new Agent({ llm: createTestLLMConfig() });
         const workspace = new Workspace({
@@ -53,7 +54,7 @@ describe('End-to-End Integration Tests', () => {
         await conversation.start({ maxIterations: 20 });
 
         await conversation.sendMessage(
-          `Create a file named "${fileName}" containing exactly this text: "${expectedContent}". ` +
+          `Create a file at "${fullPath}" containing exactly this text: "${expectedContent}". ` +
             `Use echo command to create it.`
         );
         await conversation.run();
@@ -80,6 +81,7 @@ describe('End-to-End Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('e2e-python', 'py');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
         const agent = new Agent({ llm: createTestLLMConfig() });
         const workspace = new Workspace({
@@ -91,7 +93,7 @@ describe('End-to-End Integration Tests', () => {
         await conversation.start({ maxIterations: 20 });
 
         await conversation.sendMessage(
-          `Create a Python file named "${fileName}" that defines a function called "add" ` +
+          `Create a Python file at "${fullPath}" that defines a function called "add" ` +
             `which takes two parameters and returns their sum.`
         );
         await conversation.run();
@@ -119,6 +121,7 @@ describe('End-to-End Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('e2e-json', 'json');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
         const agent = new Agent({ llm: createTestLLMConfig() });
         const workspace = new Workspace({
@@ -130,7 +133,7 @@ describe('End-to-End Integration Tests', () => {
         await conversation.start({ maxIterations: 20 });
 
         await conversation.sendMessage(
-          `Create a JSON file named "${fileName}" with an object containing: ` +
+          `Create a JSON file at "${fullPath}" with an object containing: ` +
             `name="test", version="1.0.0", and tags array with "typescript" and "testing".`
         );
         await conversation.run();
@@ -163,6 +166,7 @@ describe('End-to-End Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('e2e-modify');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
         const originalContent = 'Line 1\nLine 2\nLine 3';
 
         // Create original file
@@ -178,7 +182,7 @@ describe('End-to-End Integration Tests', () => {
         await conversation.start({ maxIterations: 25 });
 
         await conversation.sendMessage(
-          `Read the file "${fileName}" and add a new line "Line 4" at the end.`
+          `Read the file at "${fullPath}" and add a new line "Line 4" at the end.`
         );
         await conversation.run();
 
@@ -204,6 +208,7 @@ describe('End-to-End Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('e2e-append');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
         const originalContent = 'Original content.';
 
         writeWorkspaceFile(fileName, originalContent);
@@ -218,7 +223,7 @@ describe('End-to-End Integration Tests', () => {
         await conversation.start({ maxIterations: 20 });
 
         await conversation.sendMessage(
-          `Append the text " Appended content." to the file "${fileName}" using echo with >>.`
+          `Append the text " Appended content." to the file at "${fullPath}" using echo with >>.`
         );
         await conversation.run();
 
@@ -246,6 +251,7 @@ describe('End-to-End Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('e2e-delete');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
         writeWorkspaceFile(fileName, 'Content to delete');
 
         expect(workspaceFileExists(fileName)).toBe(true);
@@ -259,7 +265,7 @@ describe('End-to-End Integration Tests', () => {
         const conversation = new Conversation(agent, workspace);
         await conversation.start({ maxIterations: 15 });
 
-        await conversation.sendMessage(`Delete the file "${fileName}" using the rm command.`);
+        await conversation.sendMessage(`Delete the file at "${fullPath}" using the rm command.`);
         await conversation.run();
 
         await waitForAgentIdle(async () => await conversation.state.getAgentStatus(), {
@@ -284,6 +290,8 @@ describe('End-to-End Integration Tests', () => {
 
         const dirName = uniqueDirName('e2e-dir');
         const fileName = 'test.txt';
+        const fullDirPath = `${config.agentWorkspaceDir}/${dirName}`;
+        const fullFilePath = `${fullDirPath}/${fileName}`;
 
         const agent = new Agent({ llm: createTestLLMConfig() });
         const workspace = new Workspace({
@@ -295,8 +303,8 @@ describe('End-to-End Integration Tests', () => {
         await conversation.start({ maxIterations: 20 });
 
         await conversation.sendMessage(
-          `Create a directory called "${dirName}" and create a file "${fileName}" ` +
-            `inside it with the content "File in directory".`
+          `Create a directory at "${fullDirPath}" and create a file at "${fullFilePath}" ` +
+            `with the content "File in directory".`
         );
         await conversation.run();
 
@@ -313,9 +321,9 @@ describe('End-to-End Integration Tests', () => {
 
         // Cleanup
         deleteWorkspaceFile(filePath);
-        const fullDirPath = path.join(config.hostWorkspaceDir, dirName);
-        if (fs.existsSync(fullDirPath)) {
-          fs.rmSync(fullDirPath, { recursive: true });
+        const hostDirPath = path.join(config.hostWorkspaceDir, dirName);
+        if (fs.existsSync(hostDirPath)) {
+          fs.rmSync(hostDirPath, { recursive: true });
         }
 
         await conversation.close();
@@ -379,6 +387,7 @@ describe('End-to-End Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         const fileName = uniqueFileName('e2e-multistep', 'txt');
+        const fullPath = `${config.agentWorkspaceDir}/${fileName}`;
 
         const agent = new Agent({ llm: createTestLLMConfig() });
         const workspace = new Workspace({
@@ -391,7 +400,7 @@ describe('End-to-End Integration Tests', () => {
 
         await conversation.sendMessage(
           `Do the following steps:
-          1. Create a file called "${fileName}" with the content "Step 1 done"
+          1. Create a file at "${fullPath}" with the content "Step 1 done"
           2. Append " - Step 2 done" to the file
           3. Read the file and confirm it contains both steps`
         );
@@ -466,6 +475,8 @@ describe('End-to-End Integration Tests', () => {
 
         const fileName1 = uniqueFileName('e2e-cont1');
         const fileName2 = uniqueFileName('e2e-cont2');
+        const fullPath1 = `${config.agentWorkspaceDir}/${fileName1}`;
+        const fullPath2 = `${config.agentWorkspaceDir}/${fileName2}`;
 
         const agent = new Agent({ llm: createTestLLMConfig() });
         const workspace = new Workspace({
@@ -478,7 +489,7 @@ describe('End-to-End Integration Tests', () => {
 
         // First task
         await conversation.sendMessage(
-          `Create a file called "${fileName1}" with content "First file".`
+          `Create a file at "${fullPath1}" with content "First file".`
         );
         await conversation.run();
 
@@ -490,7 +501,7 @@ describe('End-to-End Integration Tests', () => {
 
         // Second task in same conversation
         await conversation.sendMessage(
-          `Now create another file called "${fileName2}" with content "Second file".`
+          `Now create another file at "${fullPath2}" with content "Second file".`
         );
         await conversation.run();
 

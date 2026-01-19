@@ -132,7 +132,8 @@ describe('HttpClient Integration Tests', () => {
           },
         });
 
-        expect(response.status).toBe(200);
+        // Accept both 200 and 201 (Created) as valid responses for resource creation
+        expect([200, 201]).toContain(response.status);
         expect(response.data).toBeDefined();
         expect(response.data.id).toBeDefined();
       },
