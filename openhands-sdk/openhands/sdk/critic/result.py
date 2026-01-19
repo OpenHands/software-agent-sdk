@@ -55,6 +55,7 @@ class CriticResult(BaseModel):
                         field, prob = top_sentiment
 
                         content.append(" | ", style="dim")
+                        content.append("predicted user sentiment: ", style="bold")
 
                         # Shorten names: sentiment_neutral -> neutral
                         short_name = field.replace("sentiment_", "")
