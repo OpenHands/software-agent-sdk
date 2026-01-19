@@ -62,8 +62,23 @@ export interface GenerateTitleResponse {
   title: string;
 }
 
+export interface StaticSecret {
+  kind: 'StaticSecret';
+  value: string;
+  description?: string;
+}
+
+export interface LookupSecret {
+  kind: 'LookupSecret';
+  source: string;
+  key: string;
+  description?: string;
+}
+
+export type SecretObject = StaticSecret | LookupSecret;
+
 export interface UpdateSecretsRequest {
-  secrets: Record<string, string>;
+  secrets: Record<string, SecretObject>;
 }
 
 export interface ConversationSearchRequest {

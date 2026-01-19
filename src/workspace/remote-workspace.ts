@@ -43,7 +43,6 @@ export class RemoteWorkspace {
     console.debug(`Executing remote command: ${command}`);
 
     try {
-      // Step 1: Start the bash command
       const payload: any = {
         command,
         timeout: Math.floor(timeout),
@@ -53,75 +52,19 @@ export class RemoteWorkspace {
         payload.cwd = cwd;
       }
 
-      const startResponse = await this.client.post('/api/bash/execute_bash_command', payload, {
-        timeout: (timeout + 5) * 1000,
+      // The API waits for the command to complete and returns the result directly
+      const response = await this.client.post('/api/bash/execute_bash_command', payload, {
+        timeout: (timeout + 10) * 1000, // Add buffer for network latency
       });
 
-      const bashCommand = startResponse.data;
-      const commandId = bashCommand.id;
-
-      console.debug(`Started command with ID: ${commandId}`);
-
-      // Step 2: Poll for output until command completes
-      const startTime = Date.now();
-      const stdoutParts: string[] = [];
-      const stderrParts: string[] = [];
-      let exitCode: number | null = null;
-
-      while ((Date.now() - startTime) / 1000 < timeout) {
-        // Search for all events
-        const searchResponse = await this.client.get('/api/bash/bash_events/search', {
-          params: {
-            command_id__eq: commandId,
-            sort_order: 'TIMESTAMP',
-            limit: 100,
-          },
-          timeout: timeout * 1000,
-        });
-
-        const searchResult = searchResponse.data;
-
-        // Filter for BashOutput events for this command
-        for (const event of searchResult.items || []) {
-          if (event.kind === 'BashOutput') {
-            if (event.stdout) {
-              stdoutParts.push(event.stdout);
-            }
-            if (event.stderr) {
-              stderrParts.push(event.stderr);
-            }
-            if (event.exit_code !== undefined && event.exit_code !== null) {
-              exitCode = event.exit_code;
-            }
-          }
-        }
-
-        // If we have an exit code, the command is complete
-        if (exitCode !== null) {
-          break;
-        }
-
-        // Wait a bit before polling again
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-
-      // If we timed out waiting for completion
-      if (exitCode === null) {
-        console.warn(`Command timed out after ${timeout} seconds: ${command}`);
-        exitCode = -1;
-        stderrParts.push(`Command timed out after ${timeout} seconds`);
-      }
-
-      // Combine all output parts
-      const stdout = stdoutParts.join('');
-      const stderr = stderrParts.join('');
+      const bashOutput = response.data;
 
       return {
         command,
-        exit_code: exitCode,
-        stdout,
-        stderr,
-        timeout_occurred: exitCode === -1 && stderr.includes('timed out'),
+        exit_code: bashOutput.exit_code ?? 0,
+        stdout: bashOutput.stdout || '',
+        stderr: bashOutput.stderr || '',
+        timeout_occurred: false,
       };
     } catch (error) {
       console.error(`Remote command execution failed: ${error}`);
@@ -162,11 +105,12 @@ export class RemoteWorkspace {
       }
 
       formData.append('file', blob, finalFileName);
-      formData.append('destination_path', destinationPath);
 
+      // The API expects the path in the URL, not in the form data
+      const encodedPath = encodeURIComponent(destinationPath);
       const response = await this.client.request({
         method: 'POST',
-        url: '/api/file/upload',
+        url: `/api/file/upload/${encodedPath}`,
         data: formData,
         timeout: 60000,
       });

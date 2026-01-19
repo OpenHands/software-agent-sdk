@@ -72,6 +72,9 @@ export type {
   GenerateTitleRequest,
   GenerateTitleResponse,
   UpdateSecretsRequest,
+  StaticSecret,
+  LookupSecret,
+  SecretObject,
   ConversationSearchRequest,
   ConversationSearchResponse,
 } from './models/conversation';

@@ -166,13 +166,16 @@ export class RemoteConversation {
   }
 
   async updateSecrets(secrets: Record<string, SecretValue>): Promise<void> {
-    // Convert SecretValue functions to strings
-    const secretStrings: Record<string, string> = {};
+    // Convert SecretValue functions to StaticSecret objects
+    const secretObjects: Record<string, { kind: 'StaticSecret'; value: string }> = {};
     for (const [key, value] of Object.entries(secrets)) {
-      secretStrings[key] = typeof value === 'function' ? value() : value;
+      secretObjects[key] = {
+        kind: 'StaticSecret',
+        value: typeof value === 'function' ? value() : value,
+      };
     }
 
-    const request: UpdateSecretsRequest = { secrets: secretStrings };
+    const request: UpdateSecretsRequest = { secrets: secretObjects };
     await this.client.post(`/api/conversations/${this.id}/secrets`, request);
   }
 

@@ -78,8 +78,8 @@ describe('HttpClient Integration Tests', () => {
       async () => {
         if (SKIP_TESTS) return;
 
-        // Try to search conversations (may return empty, that's OK)
-        const response = await client.get('/api/conversations', {
+        // Use the search endpoint which supports query params
+        const response = await client.get('/api/conversations/search', {
           params: { limit: 10 },
         });
 
@@ -95,7 +95,8 @@ describe('HttpClient Integration Tests', () => {
         if (SKIP_TESTS) return;
 
         try {
-          await client.get('/api/conversations/non-existent-id-12345');
+          // Use a valid UUID format but non-existent ID
+          await client.get('/api/conversations/00000000-0000-0000-0000-000000000000');
           fail('Expected HttpError to be thrown');
         } catch (error) {
           expect(error).toBeInstanceOf(HttpError);
