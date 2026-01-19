@@ -27,4 +27,7 @@ module.exports = {
   verbose: true,
   // Setup files
   setupFilesAfterEnv: ['<rootDir>/src/__tests__/integration/setup.ts'],
+  // Force exit after all tests complete to handle WebSocket connections
+  // that may not be fully closed
+  forceExit: true,
 };
