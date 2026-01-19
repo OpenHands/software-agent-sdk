@@ -2,7 +2,7 @@
 
 Thanks for helping improve the OpenHands Software Agent SDK.
 
-This repo is a foundation. We want the SDK to stay solid and composable so that many
+This repo is a foundation. We want the SDK to stay stable and extensible so that many
 applications can build on it safely.
 
 Downstream applications we actively keep in mind:
