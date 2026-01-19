@@ -9,6 +9,7 @@ from pathlib import Path
 
 from openhands.agent_server.config import get_default_config
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 
 
 logger = get_logger(__name__)
@@ -28,7 +29,7 @@ class DesktopService:
             return True
 
         # --- Env defaults (match bash behavior) ---
-        env = os.environ.copy()
+        env = sanitized_env()
         display = env.get("DISPLAY", ":1")
         user = env.get("USER") or env.get("USERNAME") or "openhands"
         home = Path(env.get("HOME") or f"/home/{user}")
@@ -68,6 +69,7 @@ class DesktopService:
                     capture_output=True,
                     text=True,
                     timeout=3,
+                    env=env,
                 ).returncode
                 == 0
             )
@@ -105,6 +107,7 @@ class DesktopService:
                     capture_output=True,
                     text=True,
                     timeout=3,
+                    env=env,
                 ).returncode
                 == 0
             )
@@ -180,7 +183,11 @@ class DesktopService:
         # Check if VNC server is running
         try:
             result = subprocess.run(
-                ["pgrep", "-f", "Xvnc"], capture_output=True, text=True, timeout=3
+                ["pgrep", "-f", "Xvnc"],
+                capture_output=True,
+                text=True,
+                timeout=3,
+                env=sanitized_env(),
             )
             return result.returncode == 0
         except Exception:

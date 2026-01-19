@@ -5,6 +5,7 @@ import subprocess
 from typing import Literal
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
 
@@ -19,6 +20,7 @@ def _is_tmux_available() -> bool:
             capture_output=True,
             text=True,
             timeout=5.0,
+            env=sanitized_env(),
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):
@@ -40,6 +42,7 @@ def _is_powershell_available() -> bool:
             capture_output=True,
             text=True,
             timeout=5.0,
+            env=sanitized_env(),
         )
         return result.returncode == 0
     except (subprocess.TimeoutExpired, FileNotFoundError):

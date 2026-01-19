@@ -16,6 +16,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 
 
 logger = get_logger(__name__)
@@ -194,6 +195,7 @@ class BashEventService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 shell=True,
+                env=sanitized_env(),
             )
 
             # Track output order and buffers

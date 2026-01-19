@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from openhands.sdk.tool import ToolExecutor
+from openhands.sdk.utils import sanitized_env
 
 
 if TYPE_CHECKING:
@@ -149,7 +150,12 @@ class GlobExecutor(ToolExecutor[GlobAction, GlobObservation]):
 
         # Execute ripgrep
         result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, check=False
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=sanitized_env(),
         )
 
         # Parse output into file paths

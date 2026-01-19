@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from openhands.sdk.hooks.config import HookDefinition
 from openhands.sdk.hooks.types import HookDecision, HookEvent
+from openhands.sdk.utils import sanitized_env
 
 
 class HookResult(BaseModel):
@@ -50,7 +51,7 @@ class HookExecutor:
     ) -> HookResult:
         """Execute a single hook."""
         # Prepare environment
-        hook_env = os.environ.copy()
+        hook_env = sanitized_env()
         hook_env["OPENHANDS_PROJECT_DIR"] = self.working_dir
         hook_env["OPENHANDS_SESSION_ID"] = event.session_id or ""
         hook_env["OPENHANDS_EVENT_TYPE"] = event.event_type

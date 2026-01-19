@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 
 
 logger = get_logger(__name__)
@@ -160,6 +161,7 @@ class VSCodeService:
             cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
+            env=sanitized_env(),
         )
 
         # Wait for server to start (look for startup message)
