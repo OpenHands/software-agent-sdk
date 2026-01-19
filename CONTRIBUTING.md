@@ -42,10 +42,12 @@ You may find that occasionally we are opinionated about several things:
   without rewriting core logic.
 - **Avoid hidden assumptions**: don’t rely on particular env vars, workspace layouts, request
   contexts, or runtime quirks that only exist in one app.
-  - NOTE
+  - Workspaces *do* encode environment specifics (local/Docker/remote), but keep those assumptions
+    explicit (params + validation) and contained to the `workspace` / `agent-server` layers.
 - **No client-specific code paths**: avoid logic that only makes sense for one
   downstream app.
-  - NOTE
+  - It’s fine to have multiple workspace implementations; it’s not fine for SDK core behavior to
+    branch on whether the caller is CLI/app-server/SaaS. Prefer capabilities/config over app-identity.
 - **Keep the agent loop stable**: treat stability as a feature; be cautious with control-flow
   changes and "small" behavior tweaks.
 - **Compatibility is part of the API**: if something could break downstream clients, call it
