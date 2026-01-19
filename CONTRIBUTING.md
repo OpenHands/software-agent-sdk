@@ -29,7 +29,7 @@ This SDK exists (as a separate, rebuilt foundation) to avoid that failure mode.
 
 ## Principles we review PRs against
 
-We try to keep this repo friendly and pragmatic, but we *are* opinionated about a few things:
+We try to keep this repo friendly and pragmatic, but we *are* opinionated about several things:
 
 - **SDK-first**: the SDK is the product; downstream apps are clients.
 - **No client-specific code paths in core**: avoid logic that only makes sense for one
