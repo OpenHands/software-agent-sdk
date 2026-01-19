@@ -1,0 +1,197 @@
+name: Integration Tests
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  workflow_dispatch:
+    inputs:
+      llm_model:
+        description: 'LLM model to use for tests'
+        required: false
+        default: 'anthropic/claude-sonnet-4-5-20250929'
+
+env:
+  AGENT_SERVER_PORT: 8010
+  HOST_WORKSPACE_DIR: /tmp/agent-workspace
+  AGENT_WORKSPACE_DIR: /workspace
+
+jobs:
+  integration-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20.x
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build package
+      run: npm run build
+
+    - name: Create workspace directory
+      run: |
+        mkdir -p ${{ env.HOST_WORKSPACE_DIR }}
+        chmod 777 ${{ env.HOST_WORKSPACE_DIR }}
+
+    - name: Pull agent-server Docker image
+      run: |
+        docker pull ghcr.io/openhands/agent-server:main-python
+        docker images
+
+    - name: Start agent-server container
+      run: |
+        docker run -d \
+          --name agent-server \
+          -p ${{ env.AGENT_SERVER_PORT }}:8000 \
+          -v ${{ env.HOST_WORKSPACE_DIR }}:${{ env.AGENT_WORKSPACE_DIR }} \
+          -e LOG_JSON=true \
+          ghcr.io/openhands/agent-server:main-python
+
+        # Wait for container to start
+        sleep 5
+
+        # Check container is running
+        docker ps
+        docker logs agent-server
+
+    - name: Wait for agent-server to be ready
+      run: |
+        echo "Waiting for agent-server to be ready..."
+        max_retries=30
+        retry_count=0
+        while [ $retry_count -lt $max_retries ]; do
+          if curl -s http://localhost:${{ env.AGENT_SERVER_PORT }}/health > /dev/null 2>&1; then
+            echo "Agent server is ready!"
+            break
+          fi
+          echo "Retry $((retry_count + 1))/$max_retries..."
+          sleep 2
+          retry_count=$((retry_count + 1))
+        done
+
+        if [ $retry_count -eq $max_retries ]; then
+          echo "Agent server failed to start"
+          docker logs agent-server
+          exit 1
+        fi
+
+        # Show server info
+        curl http://localhost:${{ env.AGENT_SERVER_PORT }}/server_info
+
+    - name: Run integration tests
+      env:
+        AGENT_SERVER_URL: http://localhost:${{ env.AGENT_SERVER_PORT }}
+        HOST_WORKSPACE_DIR: ${{ env.HOST_WORKSPACE_DIR }}
+        AGENT_WORKSPACE_DIR: ${{ env.AGENT_WORKSPACE_DIR }}
+        LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+        LLM_MODEL: ${{ github.event.inputs.llm_model || secrets.LLM_MODEL || 'anthropic/claude-sonnet-4-5-20250929' }}
+        LLM_BASE_URL: ${{ secrets.LLM_BASE_URL }}
+        TEST_TIMEOUT: 180000
+      run: |
+        if [ -z "$LLM_API_KEY" ]; then
+          echo "⚠️ LLM_API_KEY secret not set - skipping integration tests"
+          echo "To run integration tests, set the LLM_API_KEY secret in repository settings"
+          exit 0
+        fi
+
+        npm run test:integration
+
+    - name: Upload test results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: integration-test-results
+        path: |
+          coverage/
+          junit.xml
+        retention-days: 7
+        if-no-files-found: ignore
+
+    - name: Show container logs on failure
+      if: failure()
+      run: |
+        echo "=== Agent Server Logs ==="
+        docker logs agent-server
+        echo ""
+        echo "=== Workspace Contents ==="
+        ls -la ${{ env.HOST_WORKSPACE_DIR }} || true
+
+    - name: Cleanup
+      if: always()
+      run: |
+        docker stop agent-server || true
+        docker rm agent-server || true
+        rm -rf ${{ env.HOST_WORKSPACE_DIR }} || true
+
+  # Separate job for quick smoke test without LLM
+  smoke-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Use Node.js 20.x
+      uses: actions/setup-node@v4
+      with:
+        node-version: 20.x
+        cache: 'npm'
+
+    - name: Install dependencies
+      run: npm ci
+
+    - name: Build package
+      run: npm run build
+
+    - name: Create workspace directory
+      run: |
+        mkdir -p /tmp/agent-workspace
+        chmod 777 /tmp/agent-workspace
+
+    - name: Pull and start agent-server
+      run: |
+        docker pull ghcr.io/openhands/agent-server:main-python
+        docker run -d \
+          --name agent-server \
+          -p 8010:8000 \
+          -v /tmp/agent-workspace:/workspace \
+          ghcr.io/openhands/agent-server:main-python
+
+        # Wait for server
+        sleep 10
+
+    - name: Smoke test - server health
+      run: |
+        # Test server is responding
+        curl -f http://localhost:8010/alive
+        curl -f http://localhost:8010/health
+        curl http://localhost:8010/server_info
+
+    - name: Smoke test - workspace command execution
+      env:
+        AGENT_SERVER_URL: http://localhost:8010
+        HOST_WORKSPACE_DIR: /tmp/agent-workspace
+        AGENT_WORKSPACE_DIR: /workspace
+        LLM_API_KEY: dummy-key-for-smoke-test
+        LLM_MODEL: dummy/model
+      run: |
+        # Just check that the TypeScript client can connect
+        # This doesn't need a real LLM key
+        npm run test -- --testPathPattern="index.test.ts" --passWithNoTests
+
+    - name: Cleanup
+      if: always()
+      run: |
+        docker stop agent-server || true
+        docker rm agent-server || true

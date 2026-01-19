@@ -66,6 +66,53 @@ state = conversation.state
 3. **Testing**: All functionality should be tested against a running OpenHands Agent Server instance
 4. **Documentation**: API changes should be reflected in the README.md and example code
 
+## Testing
+
+### Unit Tests
+
+Unit tests are located in `src/__tests__/` and test basic functionality without requiring external services:
+
+```bash
+npm test                  # Run unit tests
+npm run test:coverage     # Run with coverage report
+```
+
+### Integration Tests
+
+Integration tests are in `src/__tests__/integration/` and require a running agent-server in Docker:
+
+```bash
+# Set up environment
+export LLM_API_KEY="your-api-key"
+export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"
+
+# Start agent-server in Docker
+docker run -d --name agent-server -p 8010:8000 \
+  -v /tmp/agent-workspace:/workspace \
+  ghcr.io/openhands/agent-server:main-python
+
+# Run integration tests
+npm run test:integration
+```
+
+Integration tests cover:
+- **workspace.integration.test.ts**: Command execution, file upload/download
+- **conversation.integration.test.ts**: Conversation lifecycle, messaging, agent execution
+- **websocket.integration.test.ts**: Real-time event streaming
+- **http-client.integration.test.ts**: HTTP client functionality
+- **e2e.integration.test.ts**: End-to-end agent workflows
+
+### CI/CD
+
+The GitHub Action workflow `integration-tests.yml` automatically:
+1. Starts an agent-server container with a mounted workspace
+2. Runs all integration tests against the real server
+3. Reports results and logs on failure
+
+Required GitHub secrets:
+- `LLM_API_KEY`: API key for the LLM provider
+- `LLM_MODEL` (optional): Override the default model
+
 ## Agent Behavior Guidelines
 
 **IMPORTANT**: The agent should NEVER start the server or browse to view the app unless the user explicitly asks for it. This includes:

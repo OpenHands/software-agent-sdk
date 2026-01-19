@@ -306,6 +306,99 @@ npm run lint
 npm run format
 ```
 
+## Testing
+
+### Unit Tests
+
+Run unit tests (no external dependencies required):
+
+```bash
+npm test
+```
+
+### Integration Tests
+
+Integration tests require a running agent-server in Docker with a mounted workspace. These tests verify the full functionality against a real server.
+
+#### Prerequisites
+
+1. Docker installed and running
+2. LLM API key (e.g., Anthropic or OpenAI)
+
+#### Running Integration Tests Locally
+
+1. Create a workspace directory:
+   ```bash
+   mkdir -p /tmp/agent-workspace
+   chmod 777 /tmp/agent-workspace
+   ```
+
+2. Start the agent-server container:
+   ```bash
+   docker run -d \
+     --name agent-server \
+     -p 8010:8000 \
+     -v /tmp/agent-workspace:/workspace \
+     ghcr.io/openhands/agent-server:main-python
+   ```
+
+3. Wait for the server to be ready:
+   ```bash
+   # Check server health
+   curl http://localhost:8010/health
+   ```
+
+4. Run integration tests:
+   ```bash
+   export LLM_API_KEY="your-api-key"
+   export LLM_MODEL="anthropic/claude-sonnet-4-5-20250929"
+   npm run test:integration
+   ```
+
+5. Cleanup:
+   ```bash
+   docker stop agent-server && docker rm agent-server
+   ```
+
+#### Environment Variables
+
+| Variable | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `LLM_API_KEY` | Yes | - | API key for the LLM provider |
+| `LLM_MODEL` | Yes | - | LLM model name (e.g., `anthropic/claude-sonnet-4-5-20250929`) |
+| `LLM_BASE_URL` | No | - | Custom base URL for LLM API |
+| `AGENT_SERVER_URL` | No | `http://localhost:8010` | URL of the agent server |
+| `HOST_WORKSPACE_DIR` | No | `/tmp/agent-workspace` | Path to workspace on host |
+| `AGENT_WORKSPACE_DIR` | No | `/workspace` | Path to workspace inside container |
+| `TEST_TIMEOUT` | No | `120000` | Test timeout in milliseconds |
+
+#### Integration Test Coverage
+
+The integration tests cover:
+
+- **Workspace Operations**: Command execution, file upload/download, round-trip operations
+- **Conversation Lifecycle**: Creation, message sending, running agents, pausing
+- **Event Streaming**: WebSocket connections, event callbacks, different event types
+- **HTTP Client**: Health checks, GET/POST requests, error handling
+- **End-to-End Tasks**: File creation/modification/deletion via agent, multi-step tasks
+
+#### CI/CD
+
+Integration tests run automatically in GitHub Actions when:
+- Pushing to `main` or `develop` branches
+- Opening pull requests to these branches
+- Manually triggering the workflow
+
+The workflow requires the following secrets:
+- `LLM_API_KEY`: API key for the LLM provider
+- `LLM_MODEL` (optional): Override the default model
+
+### Running All Tests
+
+```bash
+npm run test:all
+```
+
 ## License
 
 MIT
