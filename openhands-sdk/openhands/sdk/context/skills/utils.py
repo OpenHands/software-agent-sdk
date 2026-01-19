@@ -5,14 +5,13 @@ from __future__ import annotations
 import json
 import os
 import re
-import shutil
-import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from fastmcp.mcp_config import MCPConfig
 
 from openhands.sdk.context.skills.exceptions import SkillValidationError
+from openhands.sdk.git.cached_repo import try_cached_clone_or_update
 from openhands.sdk.logger import get_logger
 
 
@@ -316,77 +315,19 @@ def update_skills_repository(
 ) -> Path | None:
     """Clone or update the local skills repository.
 
+    Uses the shared git caching infrastructure from openhands.sdk.git.cached_repo.
+    When updating, performs: fetch -> checkout ref -> reset --hard to origin/ref.
+
     Args:
         repo_url: URL of the skills repository.
-        branch: Branch name to use.
+        branch: Branch name to checkout and track.
         cache_dir: Directory where the repository should be cached.
 
     Returns:
         Path to the local repository if successful, None otherwise.
     """
     repo_path = cache_dir / "public-skills"
-
-    try:
-        if repo_path.exists() and (repo_path / ".git").exists():
-            logger.debug(f"Updating skills repository at {repo_path}")
-            try:
-                subprocess.run(
-                    ["git", "fetch", "origin"],
-                    cwd=repo_path,
-                    check=True,
-                    capture_output=True,
-                    timeout=30,
-                )
-                subprocess.run(
-                    ["git", "reset", "--hard", f"origin/{branch}"],
-                    cwd=repo_path,
-                    check=True,
-                    capture_output=True,
-                    timeout=10,
-                )
-                logger.debug("Skills repository updated successfully")
-            except subprocess.TimeoutExpired:
-                logger.warning("Git pull timed out, using existing cached repository")
-            except subprocess.CalledProcessError as e:
-                logger.warning(
-                    f"Failed to update repository: {e.stderr.decode()}, "
-                    f"using existing cached version"
-                )
-        else:
-            logger.info(f"Cloning public skills repository from {repo_url}")
-            if repo_path.exists():
-                shutil.rmtree(repo_path)
-
-            subprocess.run(
-                [
-                    "git",
-                    "clone",
-                    "--depth",
-                    "1",
-                    "--branch",
-                    branch,
-                    repo_url,
-                    str(repo_path),
-                ],
-                check=True,
-                capture_output=True,
-                timeout=60,
-            )
-            logger.debug(f"Skills repository cloned to {repo_path}")
-
-        return repo_path
-
-    except subprocess.TimeoutExpired:
-        logger.warning(f"Git operation timed out for {repo_url}")
-        return None
-    except subprocess.CalledProcessError as e:
-        logger.warning(
-            f"Failed to clone/update repository {repo_url}: {e.stderr.decode()}"
-        )
-        return None
-    except Exception as e:
-        logger.warning(f"Error managing skills repository: {str(e)}")
-        return None
+    return try_cached_clone_or_update(repo_url, repo_path, ref=branch, update=True)
 
 
 def discover_skill_resources(skill_dir: Path) -> SkillResources:

@@ -71,6 +71,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         description="If True, keep sandbox alive on cleanup instead of deleting",
     )
 
+    # Sandbox ID - can be provided to resume an existing sandbox
+    sandbox_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional sandbox ID to resume. If provided, the workspace will "
+            "attempt to resume the existing sandbox instead of creating a new one."
+        ),
+    )
+
     # Private state
     _sandbox_id: str | None = PrivateAttr(default=None)
     _session_api_key: str | None = PrivateAttr(default=None)
@@ -113,28 +122,15 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
             raise
 
     def _start_sandbox(self) -> None:
-        """Start a new sandbox via Cloud API."""
-        logger.info("Starting sandbox via OpenHands Cloud API...")
+        """Start a new sandbox or resume an existing one via Cloud API.
 
-        # Build request params
-        params: dict[str, str] = {}
-        if self.sandbox_spec_id:
-            params["sandbox_spec_id"] = self.sandbox_spec_id
-
-        # POST /api/v1/sandboxes to start a new sandbox
-        resp = self._send_api_request(
-            "POST",
-            f"{self.cloud_api_url}/api/v1/sandboxes",
-            params=params if params else None,
-            timeout=self.init_timeout,
-        )
-        data = resp.json()
-
-        self._sandbox_id = data["id"]
-        self._session_api_key = data.get("session_api_key")
-        logger.info(
-            f"Sandbox {self._sandbox_id} created, waiting for it to be ready..."
-        )
+        If sandbox_id is provided, attempts to resume the existing sandbox.
+        Otherwise, creates a new sandbox.
+        """
+        if self.sandbox_id:
+            self._resume_existing_sandbox()
+        else:
+            self._create_new_sandbox()
 
         # Wait for sandbox to become RUNNING
         self._wait_until_sandbox_ready()
@@ -158,6 +154,40 @@ class OpenHandsCloudWorkspace(RemoteWorkspace):
         # Verify client is properly initialized
         assert self.client is not None
         assert self.client.base_url == self.host
+
+    def _create_new_sandbox(self) -> None:
+        """Create a new sandbox via Cloud API."""
+        logger.info("Starting sandbox via OpenHands Cloud API...")
+
+        # Build request params
+        params: dict[str, str] = {}
+        if self.sandbox_spec_id:
+            params["sandbox_spec_id"] = self.sandbox_spec_id
+
+        # POST /api/v1/sandboxes to start a new sandbox
+        resp = self._send_api_request(
+            "POST",
+            f"{self.cloud_api_url}/api/v1/sandboxes",
+            params=params if params else None,
+            timeout=self.init_timeout,
+        )
+        data = resp.json()
+
+        self._sandbox_id = data["id"]
+        self._session_api_key = data.get("session_api_key")
+        logger.info(
+            f"Sandbox {self._sandbox_id} created, waiting for it to be ready..."
+        )
+
+    def _resume_existing_sandbox(self) -> None:
+        """Resume an existing sandbox by ID.
+
+        Sets the internal sandbox ID and calls the resume endpoint directly.
+        """
+        assert self.sandbox_id is not None
+        self._sandbox_id = self.sandbox_id
+        logger.info(f"Resuming existing sandbox {self._sandbox_id}...")
+        self._resume_sandbox()
 
     @tenacity.retry(
         stop=tenacity.stop_after_delay(300),

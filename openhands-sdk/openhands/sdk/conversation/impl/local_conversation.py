@@ -40,6 +40,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -77,6 +78,7 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        cipher: Cipher | None = None,
         **_: object,
     ):
         """Initialize the conversation.
@@ -105,6 +107,10 @@ class LocalConversation(BaseConversation):
                       a dict with keys: 'action_observation', 'action_error',
                       'monologue', 'alternating_pattern'. Values are integers
                       representing the number of repetitions before triggering.
+            cipher: Optional cipher for encrypting/decrypting secrets in persisted
+                   state. If provided, secrets are encrypted when saving and
+                   decrypted when loading. If not provided, secrets are redacted
+                   (lost) on serialization.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
@@ -134,6 +140,7 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            cipher=cipher,
         )
 
         # Default callback: persist every event to state

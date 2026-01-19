@@ -1,7 +1,7 @@
 import io
 import re
 from pathlib import Path
-from typing import Annotated, ClassVar, Union
+from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -35,6 +35,22 @@ logger = get_logger(__name__)
 # Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
 # These files are always active, so we want to keep them reasonably sized
 THIRD_PARTY_SKILL_MAX_CHARS = 10_000
+
+
+class SkillInfo(BaseModel):
+    """Lightweight representation of a skill's essential information.
+
+    This class provides a standardized, serializable format for skill metadata
+    that can be used across different components of the system.
+    """
+
+    name: str
+    type: Literal["repo", "knowledge", "agentskills"]
+    content: str
+    triggers: list[str] = Field(default_factory=list)
+    source: str | None = None
+    description: str | None = None
+    is_agentskills_format: bool = False
 
 
 class SkillResources(BaseModel):
@@ -90,10 +106,16 @@ TriggerType = Annotated[
 class Skill(BaseModel):
     """A skill provides specialized knowledge or functionality.
 
-    Skills use triggers to determine when they should be activated:
-    - None: Always active, for repository-specific guidelines
-    - KeywordTrigger: Activated when keywords appear in user messages
-    - TaskTrigger: Activated for specific tasks, may require user input
+    Skill behavior depends on format (is_agentskills_format) and trigger:
+
+    AgentSkills format (SKILL.md files):
+    - Always listed in <available_skills> with name, description, location
+    - Agent reads full content on demand (progressive disclosure)
+    - If has triggers: content is ALSO auto-injected when triggered
+
+    Legacy OpenHands format:
+    - With triggers: Listed in <available_skills>, content injected on trigger
+    - Without triggers (None): Full content in <REPO_CONTEXT>, always active
 
     This model supports both OpenHands-specific fields and AgentSkills standard
     fields (https://agentskills.io/specification) for cross-platform compatibility.
@@ -104,11 +126,11 @@ class Skill(BaseModel):
     trigger: TriggerType | None = Field(
         default=None,
         description=(
-            "Skills use triggers to determine when they should be activated. "
-            "None implies skill is always active. "
-            "Other implementations include KeywordTrigger (activated by a "
-            "keyword in a Message) and TaskTrigger (activated by specific tasks "
-            "and may require user input)"
+            "Trigger determines when skill content is auto-injected. "
+            "None = no auto-injection (for AgentSkills: agent reads on demand; "
+            "for legacy: full content always in system prompt). "
+            "KeywordTrigger = auto-inject when keywords appear in user messages. "
+            "TaskTrigger = auto-inject for specific tasks, may require user input."
         ),
     )
     source: str | None = Field(
@@ -129,6 +151,16 @@ class Skill(BaseModel):
     inputs: list[InputMetadata] = Field(
         default_factory=list,
         description="Input metadata for the skill (task skills only)",
+    )
+    is_agentskills_format: bool = Field(
+        default=False,
+        description=(
+            "Whether this skill was loaded from a SKILL.md file following the "
+            "AgentSkills standard. AgentSkills-format skills use progressive "
+            "disclosure: always listed in <available_skills> with name, "
+            "description, and location. If the skill also has triggers, content "
+            "is auto-injected when triggered AND agent can read file anytime."
+        ),
     )
 
     # AgentSkills standard fields (https://agentskills.io/specification)
@@ -303,7 +335,13 @@ class Skill(BaseModel):
             resources = discovered_resources
 
         return cls._create_skill_from_metadata(
-            agent_name, content, path, metadata_dict, mcp_tools, resources=resources
+            agent_name,
+            content,
+            path,
+            metadata_dict,
+            mcp_tools,
+            resources=resources,
+            is_agentskills_format=True,
         )
 
     @classmethod
@@ -356,6 +394,7 @@ class Skill(BaseModel):
         metadata_dict: dict,
         mcp_tools: dict | None = None,
         resources: SkillResources | None = None,
+        is_agentskills_format: bool = False,
     ) -> "Skill":
         """Create a Skill object from parsed metadata.
 
@@ -366,6 +405,7 @@ class Skill(BaseModel):
             metadata_dict: Parsed frontmatter metadata.
             mcp_tools: MCP tools configuration (from .mcp.json or frontmatter).
             resources: Discovered resource directories.
+            is_agentskills_format: Whether this skill follows the AgentSkills standard.
         """
         # Extract AgentSkills standard fields (Pydantic validators handle
         # transformation). Handle "allowed-tools" to "allowed_tools" key mapping.
@@ -412,6 +452,7 @@ class Skill(BaseModel):
                 inputs=inputs,
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
 
@@ -423,6 +464,7 @@ class Skill(BaseModel):
                 trigger=KeywordTrigger(keywords=keywords),
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
         else:
@@ -434,6 +476,7 @@ class Skill(BaseModel):
                 trigger=None,
                 mcp_tools=mcp_tools,
                 resources=resources,
+                is_agentskills_format=is_agentskills_format,
                 **agentskills_fields,
             )
 
@@ -532,6 +575,48 @@ class Skill(BaseModel):
         variables = self.extract_variables(self.content)
         logger.debug(f"This skill requires user input: {variables}")
         return len(variables) > 0
+
+    def get_skill_type(self) -> Literal["repo", "knowledge", "agentskills"]:
+        """Determine the type of this skill.
+
+        Returns:
+            "agentskills" for AgentSkills format, "repo" for always-active skills,
+            "knowledge" for trigger-based skills.
+        """
+        if self.is_agentskills_format:
+            return "agentskills"
+        elif self.trigger is None:
+            return "repo"
+        else:
+            return "knowledge"
+
+    def get_triggers(self) -> list[str]:
+        """Extract trigger keywords from this skill.
+
+        Returns:
+            List of trigger strings, or empty list if no triggers.
+        """
+        if isinstance(self.trigger, KeywordTrigger):
+            return self.trigger.keywords
+        elif isinstance(self.trigger, TaskTrigger):
+            return self.trigger.triggers
+        return []
+
+    def to_skill_info(self) -> SkillInfo:
+        """Convert this skill to a SkillInfo.
+
+        Returns:
+            SkillInfo containing the skill's essential information.
+        """
+        return SkillInfo(
+            name=self.name,
+            type=self.get_skill_type(),
+            content=self.content,
+            triggers=self.get_triggers(),
+            source=self.source,
+            description=self.description,
+            is_agentskills_format=self.is_agentskills_format,
+        )
 
 
 def load_skills_from_dir(
@@ -811,22 +896,28 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
     """Generate XML prompt block for available skills.
 
     Creates an `<available_skills>` XML block suitable for inclusion
-    in system prompts, following the AgentSkills format.
+    in system prompts, following the AgentSkills format from skills-ref.
 
     Args:
         skills: List of skills to include in the prompt
         max_description_length: Maximum length for descriptions (default 200)
 
     Returns:
-        XML string in AgentSkills format
+        XML string in AgentSkills format with name, description, and location
 
     Example:
-        >>> skills = [Skill(name="pdf-tools", content="...", description="...")]
+        >>> skills = [Skill(name="pdf-tools", content="...",
+        ...                 description="Extract text from PDF files.",
+        ...                 source="/path/to/skill")]
         >>> print(to_prompt(skills))
         <available_skills>
-          <skill name="pdf-tools">Extract text from PDF files.</skill>
+          <skill>
+            <name>pdf-tools</name>
+            <description>Extract text from PDF files.</description>
+            <location>/path/to/skill</location>
+          </skill>
         </available_skills>
-    """  # noqa: E501
+    """
     if not skills:
         return "<available_skills>\n  no available skills\n</available_skills>"
 
@@ -868,9 +959,17 @@ def to_prompt(skills: list[Skill], max_description_length: int = 200) -> str:
             description = description + truncation_msg
 
         # Escape XML special characters using standard library
-        xml_entities = {'"': "&quot;", "'": "&apos;"}
-        description = xml_escape(description, entities=xml_entities)
-        name = xml_escape(skill.name, entities=xml_entities)
-        lines.append(f'  <skill name="{name}">{description}</skill>')
+        description = xml_escape(description.strip())
+        name = xml_escape(skill.name.strip())
+
+        # Build skill element following AgentSkills format from skills-ref
+        lines.append("  <skill>")
+        lines.append(f"    <name>{name}</name>")
+        lines.append(f"    <description>{description}</description>")
+        if skill.source:
+            source = xml_escape(skill.source.strip())
+            lines.append(f"    <location>{source}</location>")
+        lines.append("  </skill>")
+
     lines.append("</available_skills>")
     return "\n".join(lines)

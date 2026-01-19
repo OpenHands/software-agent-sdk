@@ -1,6 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
+from urllib.request import urlopen
 
 import httpx
 from pydantic import PrivateAttr
@@ -147,3 +148,18 @@ class AsyncRemoteWorkspace(RemoteWorkspaceMixin):
         generator = self._git_diff_generator(path)
         result = await self._execute(generator)
         return result
+
+    @property
+    def alive(self) -> bool:
+        """Check if the remote workspace is alive by querying the health endpoint.
+
+        Returns:
+            True if the health endpoint returns a successful response, False otherwise.
+        """
+        try:
+            health_url = f"{self.host}/health"
+            with urlopen(health_url, timeout=5.0) as resp:
+                status = getattr(resp, "status", 200)
+                return 200 <= status < 300
+        except Exception:
+            return False

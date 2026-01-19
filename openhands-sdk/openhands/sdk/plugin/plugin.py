@@ -16,6 +16,7 @@ from openhands.sdk.context.skills.utils import (
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.plugin.fetch import fetch_plugin
 from openhands.sdk.plugin.types import (
     AgentDefinition,
     CommandDefinition,
@@ -82,6 +83,59 @@ class Plugin(BaseModel):
     def description(self) -> str:
         """Get the plugin description."""
         return self.manifest.description
+
+    @classmethod
+    def fetch(
+        cls,
+        source: str,
+        cache_dir: Path | None = None,
+        ref: str | None = None,
+        update: bool = True,
+        subpath: str | None = None,
+    ) -> Path:
+        """Fetch a plugin from a remote source and return the local cached path.
+
+        This method fetches plugins from remote sources (GitHub repositories, git URLs)
+        and caches them locally. Use the returned path with Plugin.load() to load
+        the plugin.
+
+        Args:
+            source: Plugin source - can be:
+                - "github:owner/repo" - GitHub repository shorthand
+                - "https://github.com/owner/repo.git" - Full git URL
+                - "/local/path" - Local path (returned as-is)
+            cache_dir: Directory for caching. Defaults to ~/.openhands/cache/plugins/
+            ref: Optional branch, tag, or commit to checkout.
+            update: If True and cache exists, update it. If False, use cached as-is.
+            subpath: Optional subdirectory path within the repo. If specified, the
+                returned path will point to this subdirectory instead of the
+                repository root.
+
+        Returns:
+            Path to the local plugin directory (ready for Plugin.load()).
+            If subpath is specified, returns the path to that subdirectory.
+
+        Raises:
+            PluginFetchError: If fetching fails or subpath doesn't exist.
+
+        Example:
+            >>> path = Plugin.fetch("github:owner/my-plugin")
+            >>> plugin = Plugin.load(path)
+
+            >>> # With specific version
+            >>> path = Plugin.fetch("github:owner/my-plugin", ref="v1.0.0")
+            >>> plugin = Plugin.load(path)
+
+            >>> # Fetch a plugin from a subdirectory
+            >>> path = Plugin.fetch("github:owner/monorepo", subpath="plugins/sub")
+            >>> plugin = Plugin.load(path)
+
+            >>> # Fetch and load in one step
+            >>> plugin = Plugin.load(Plugin.fetch("github:owner/my-plugin"))
+        """
+        return fetch_plugin(
+            source, cache_dir=cache_dir, ref=ref, update=update, subpath=subpath
+        )
 
     @classmethod
     def load(cls, plugin_path: str | Path) -> Plugin:
@@ -239,10 +293,13 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
 
     try:
         hook_config = HookConfig.load(path=hooks_json)
-        # load() returns empty config on error, check if it has hooks
-        if hook_config.hooks:
-            return hook_config
-        return None
+        # If hooks.json exists but is invalid, HookConfig.load() returns an empty
+        # config and logs the validation error. Keep that distinct from "file not
+        # present" (None).
+        if hook_config.is_empty():
+            logger.info(f"No hooks configured in {hooks_json}")
+            return HookConfig()
+        return hook_config
     except Exception as e:
         logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
         return None

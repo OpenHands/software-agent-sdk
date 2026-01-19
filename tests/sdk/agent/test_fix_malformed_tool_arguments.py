@@ -44,6 +44,19 @@ class JsonDecodingOptionalAction(Action):
     config: dict[str, int] | None = Field(default=None, description="Optional dict")
 
 
+class _NestedActionForMalformedArgs(Action):
+    """Action with nested structures for testing JSON decoding.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    nested_list: list[list[int]] = Field(description="Nested list")
+    nested_dict: dict[str, dict[str, str]] = Field(description="Nested dict")
+
+
 def test_decode_json_string_list():
     """Test that JSON string lists are decoded to native lists."""
     data = {
@@ -201,17 +214,12 @@ def test_json_string_with_wrong_type_rejected():
 
 def test_nested_structures():
     """Test that nested lists and dicts in JSON strings work."""
-
-    class NestedAction(Action):
-        nested_list: list[list[int]] = Field(description="Nested list")
-        nested_dict: dict[str, dict[str, str]] = Field(description="Nested dict")
-
     data = {
         "nested_list": "[[1, 2], [3, 4]]",
         "nested_dict": '{"outer": {"inner": "value"}}',
     }
-    fixed_data = fix_malformed_tool_arguments(data, NestedAction)
-    action = NestedAction.model_validate(fixed_data)
+    fixed_data = fix_malformed_tool_arguments(data, _NestedActionForMalformedArgs)
+    action = _NestedActionForMalformedArgs.model_validate(fixed_data)
 
     assert action.nested_list == [[1, 2], [3, 4]]
     assert action.nested_dict == {"outer": {"inner": "value"}}

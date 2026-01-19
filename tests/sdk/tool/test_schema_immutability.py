@@ -53,6 +53,34 @@ class SchemaImmutabilityMockObservation(Observation):
         return [TextContent(text=f"Result: {self.result}, Status: {self.status}")]
 
 
+class _SchemaImmutabilityCustomAction(Action):
+    """Custom action for testing schema inheritance immutability.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    custom_field: str = Field(description="Custom field")
+
+
+class _SchemaImmutabilityCustomObservation(Observation):
+    """Custom observation for testing schema inheritance immutability.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    custom_result: str = Field(description="Custom result")
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=self.custom_result)]
+
+
 def test_schema_is_frozen():
     """Test that Schema instances are frozen and cannot be modified."""
     schema = MockSchema(name="test", value=42)
@@ -273,22 +301,11 @@ def test_all_schema_classes_are_frozen():
 
 def test_schema_inheritance_preserves_immutability():
     """Test that classes inheriting from schema bases are also immutable."""
-
-    class SchemaImmutabilityCustomAction(Action):
-        custom_field: str = Field(description="Custom field")
-
-    class SchemaImmutabilityCustomObservation(Observation):
-        custom_result: str = Field(description="Custom result")
-
-        @property
-        def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-            return [TextContent(text=self.custom_result)]
-
     # Test that custom classes are also frozen
-    custom_action = SchemaImmutabilityCustomAction(custom_field="test")
+    custom_action = _SchemaImmutabilityCustomAction(custom_field="test")
     with pytest.raises(ValidationError, match="Instance is frozen"):
         custom_action.custom_field = "changed"
 
-    custom_obs = SchemaImmutabilityCustomObservation(custom_result="test")
+    custom_obs = _SchemaImmutabilityCustomObservation(custom_result="test")
     with pytest.raises(ValidationError, match="Instance is frozen"):
         custom_obs.custom_result = "changed"
