@@ -24,14 +24,6 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "claude-haiku-4-5-20251001": {
-        "id": "claude-haiku-4-5-20251001",
-        "display_name": "Claude Haiku 4.5",
-        "llm_config": {
-            "model": "litellm_proxy/claude-haiku-4-5-20251001",
-            "temperature": 0.0,
-        },
-    },
     "gpt-5-mini-2025-08-07": {
         "id": "gpt-5-mini-2025-08-07",
         "display_name": "GPT-5 Mini",
@@ -39,11 +31,6 @@ MODELS = {
             "model": "litellm_proxy/gpt-5-mini-2025-08-07",
             "temperature": 1.0,
         },
-    },
-    "deepseek-chat": {
-        "id": "deepseek-chat",
-        "display_name": "DeepSeek Chat",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-chat"},
     },
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
@@ -73,6 +60,14 @@ MODELS = {
         "display_name": "GPT-5.2",
         "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
     },
+    "gpt-5.2-high-reasoning": {
+        "id": "gpt-5.2-high-reasoning",
+        "display_name": "GPT-5.2 High Reasoning",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.2-2025-12-11",
+            "reasoning_effort": "high",
+        },
+    },
     "minimax-m2": {
         "id": "minimax-m2",
         "display_name": "MiniMax M2",
@@ -81,12 +76,14 @@ MODELS = {
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-v3.2"},
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
     },
     "qwen-3-coder": {
         "id": "qwen-3-coder",
         "display_name": "Qwen 3 Coder",
-        "llm_config": {"model": "litellm_proxy/qwen/qwen3-coder"},
+        "llm_config": {
+            "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
+        },
     },
 }
 

@@ -18,7 +18,7 @@ def test_llm_config_defaults():
     assert config.retry_multiplier == 8
     assert config.retry_min_wait == 8
     assert config.retry_max_wait == 64
-    assert config.timeout is None
+    assert config.timeout == 300  # Default timeout is 5 minutes
     assert config.max_message_chars == 30_000
     assert config.temperature == 0.0
     assert config.top_p == 1.0

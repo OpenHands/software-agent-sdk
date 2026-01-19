@@ -171,3 +171,25 @@ Co-authored-by: openhands <openhands@all-hands.dev>"
 git push -u origin <feature-name>
 ```
 </DOCUMENTATION_WORKFLOW>
+
+<REPO>
+<PROJECT_STRUCTURE>
+- `openhands-sdk/` core SDK; `openhands-tools/` built-in tools; `openhands-workspace/` workspace management; `openhands-agent-server/` server runtime; `examples/` runnable patterns; `tests/` split by domain (`tests/sdk`, `tests/tools`, `tests/agent_server`, etc.).
+- Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
+</PROJECT_STRUCTURE>
+
+<QUICK_COMMANDS>
+- Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
+- Lint/format: `make lint`, `make format`
+- Run tests: `uv run pytest`
+- Build agent-server: `make build-server` (output: `dist/agent-server/`)
+- Clean caches: `make clean`
+- Run an example: `uv run python examples/01_standalone_sdk/main.py`
+</QUICK_COMMANDS>
+
+<REPO_CONFIG_NOTES>
+- Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
+- Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
+- Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
+</REPO_CONFIG_NOTES>
+</REPO>
