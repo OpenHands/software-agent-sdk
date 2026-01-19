@@ -1,67 +1,55 @@
 # Contributing
 
-I would like to give you all some context.
+Thanks for helping improve the OpenHands Software Agent SDK.
 
-I will talk to John Mason, but it’s not about you or your PR, John Mason, sorry for hijacking this opportunity though! I think it’s fair that you should know it though. I apologize for the length.
+This repo is a foundation. We want the SDK to stay solid and composable so that many
+applications can build on it safely.
 
-## V0 flashbacks: Saas was not… OpenHands’ best friend
+Downstream applications we actively keep in mind:
+- OpenHands CLI (client)
+- OpenHands app-server (client)
+- OpenHands SaaS (client)
 
-We will soon hit 2 years in OpenHands’ existence. Most part of it was V0. In V0, so it happened, a little many times I found myself with some AI researcher or other open source contributors, debugging their reports or PRs, me saying, hey that should work, look at the code there, and they were like, nope not anymore. Digging into it, we found that it broke, alright, and looking more into it, it turned out the breakage came from the Saas. And the other one, came from the Saas. And the other.
+The SDK itself has a Python interface. Separately, the agent-server exposes the SDK over
+REST/WebSockets for remote execution and integrations. Changes should keep both interfaces
+stable and consistent.
 
-Some were easy fixes, some were close to impossible (without breaking the presumed goals of that code, anyway).
+## A lesson we learned (why we care about architecture)
 
-I lost count how many times implementing stuff for the Saas was traceable as the origin why the agent loop got messed up, or a bunch of asyncs were not playing nice with other use cases than the Saas server, or the agent controller no longer closed cleanly, breaking instances in some non-SWE bench evals.
+In earlier iterations, we repeatedly ran into a failure mode: downstream-application needs
+(or assumptions) would leak into core logic.
 
-Yep, over and over.
+That kind of coupling can feel convenient in the moment, but it tends to create subtle
+breakage elsewhere: different environments, different workspaces, different execution modes,
+and different evaluation setups.
 
-And to be clear, many times, far from all, but many times, people out there, people not in AH, people not working on the Saas, kept fixing them.
+Over time we learned the real issue wasn’t individual bugs—it was architecture.
 
-We figured there were deep architectural problems, attempting to support too much in a monolith, and rebuilt.
+This SDK exists (as a separate, rebuilt foundation) to avoid that failure mode.
 
-## OpenHands SDK
+## Principles we review PRs against
 
-We are in a different place today. One reason why the OpenHands SDK exists, as a separate repo and deeply rebuilt, is exactly that kind of thing.
+We try to keep this repo friendly and pragmatic, but we *are* opinionated about a few things:
 
-It’s what OpenHands maybe should have been, so that an application with the complexity of the Saas can be built on it and work well.
+- **SDK-first**: the SDK is the product; downstream apps are clients.
+- **No client-specific code paths in core**: avoid logic that only makes sense for one
+  downstream app.
+- **Prefer interfaces over special cases**: if a client needs something, add or improve a
+  clean, reusable interface/extension point instead of adding a shortcut.
+- **Extensibility over one-off patches**: design features so multiple clients can adopt them
+  without rewriting core logic.
+- **Avoid hidden assumptions**: don’t rely on particular env vars, workspace layouts, request
+  contexts, or runtime quirks that only exist in one app.
+- **Keep the agent loop stable**: treat stability as a feature; be cautious with control-flow
+  changes and "small" behavior tweaks.
+- **Compatibility is part of the API**: if something could break downstream clients, call it
+  out explicitly and consider a migration path.
+- **Simple beats clever**: we’d rather merge a straightforward, composable design than a fast
+  patch that increases coupling.
 
-It's a deep architectural rebuild precisely to isolate the agent loop from the client apps flows interfering with it. They should go through standard interfaces and common flows. Not weird shortcuts.
+If you’re not sure whether a change crosses these lines, ask early—we’re happy to help think
+through the shape of a clean interface.
 
-That’s also why some of us care about some code design guidelines, and yes, sometimes may want to mull over things a bit more.
+## Questions / discussion
 
-As Xingyao said - we’ve formed some habits, informal-ish processes, on how to accept significant changes in, and put them through the same workflow and testing as everyone else’s PRs.
-
-(Side note: this implies testing on the Open Source project(s), not only on the Saas. Validating Saas-only risks breaking things you don’t see, because of env vars/different workspaces or whatnot.)
-
-Please let me put this way: the OpenHands SDK is an Open Source project, on which client applications are built.
-
-- the CLI is a client application built on the SDK.
-- OH app-server is a client application built on the SDK.
-- the Saas is a client application built on the SDK.
-
-And so are others.
-
-I believe we’re hoping to see many more.
-
-(Tiny aside: The What and The How.)
-
-The SDK needs to work for them and their users, too, not just for the Saas and enterprises. That, I admit, matters a lot to me.
-
-The Saas is maybe the best client app in some sense - as a test of the SDK - because of its size and complexity. But the SDK is not an appendage of the Saas.
-
-I’m sure I’m not saying anything new if I say, that does mean how we do things to support the use cases you wish, matters too. Not only the what.
-
-I do think we are aligned on the what.
-
-It’s just some stuff about the how, that is not totally clear to me.
-
-Sorry for flashbacks, let’s move forward.
-
-Also, apologies for the length, and for being dense, questioning things that maybe should be simple. But we’re figuring it out.
-
-## Back to the PRs
-
-I believe we have a lot of work ahead of us on context management.
-
-Your PRs on this are actually in an interesting place at the intersection of context management, extensibility (the lack of which is why things broke in v0!) and ease of use.
-
-I’m confident we can find a good solution! Something we like and it’s aligned with CC, with OH CLI, and with what is to come.
+Join us on Slack: https://openhands.dev/joinslack
