@@ -185,9 +185,9 @@ export class RemoteWorkspace {
 
   async gitChanges(path: string): Promise<GitChange[]> {
     try {
-      const response = await this.client.get('/api/git/changes', {
-        params: { path },
-      });
+      // The API expects the path in the URL, not as a query parameter
+      const encodedPath = encodeURIComponent(path);
+      const response = await this.client.get(`/api/git/changes/${encodedPath}`);
       return response.data;
     } catch (error) {
       throw new Error(
@@ -198,9 +198,9 @@ export class RemoteWorkspace {
 
   async gitDiff(path: string): Promise<GitDiff> {
     try {
-      const response = await this.client.get('/api/git/diff', {
-        params: { path },
-      });
+      // The API expects the path in the URL, not as a query parameter
+      const encodedPath = encodeURIComponent(path);
+      const response = await this.client.get(`/api/git/diff/${encodedPath}`);
       return response.data;
     } catch (error) {
       throw new Error(

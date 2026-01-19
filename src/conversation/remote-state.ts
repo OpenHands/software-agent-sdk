@@ -7,6 +7,7 @@ import { RemoteEventsList } from '../events/remote-events-list';
 import {
   ConversationID,
   Event,
+  ConversationExecutionStatus,
   AgentExecutionStatus,
   ConfirmationPolicyBase,
   // ConversationStats, // Unused for now
@@ -96,19 +97,31 @@ export class RemoteState {
     return this.conversationId;
   }
 
-  async getAgentStatus(): Promise<AgentExecutionStatus> {
+  /**
+   * Get the current execution status of the conversation.
+   * This method handles both the new `execution_status` field and the legacy `agent_status` field.
+   */
+  async getExecutionStatus(): Promise<ConversationExecutionStatus> {
     const info = await this.getConversationInfo();
-    const statusStr = info.agent_status;
+    // Try new field first, fall back to legacy field
+    const statusStr = info.execution_status ?? info.agent_status;
     if (statusStr === undefined || statusStr === null) {
-      throw new Error(`agent_status missing in conversation info: ${JSON.stringify(info)}`);
+      throw new Error(`execution_status missing in conversation info: ${JSON.stringify(info)}`);
     }
     return statusStr;
   }
 
+  /**
+   * @deprecated Use getExecutionStatus() instead. This method is kept for backward compatibility.
+   */
+  async getAgentStatus(): Promise<AgentExecutionStatus> {
+    return this.getExecutionStatus();
+  }
+
   async setAgentStatus(value: AgentExecutionStatus): Promise<void> {
     throw new Error(
-      `Setting agent_status on RemoteState has no effect. ` +
-        `Remote agent status is managed server-side. Attempted to set: ${value}`
+      `Setting execution_status on RemoteState has no effect. ` +
+        `Remote execution status is managed server-side. Attempted to set: ${value}`
     );
   }
 

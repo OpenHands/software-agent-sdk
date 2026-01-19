@@ -110,7 +110,12 @@ export enum EventSortOrder {
   REVERSE_TIMESTAMP = 'REVERSE_TIMESTAMP',
 }
 
-export enum AgentExecutionStatus {
+/**
+ * Enum representing the current execution state of the conversation.
+ * Note: This was renamed from AgentExecutionStatus to ConversationExecutionStatus
+ * in the agent-server API.
+ */
+export enum ConversationExecutionStatus {
   IDLE = 'idle',
   RUNNING = 'running',
   PAUSED = 'paused',
@@ -118,7 +123,14 @@ export enum AgentExecutionStatus {
   FINISHED = 'finished',
   ERROR = 'error',
   STUCK = 'stuck',
+  DELETING = 'deleting',
 }
+
+/**
+ * @deprecated Use ConversationExecutionStatus instead. This alias is kept for backward compatibility.
+ */
+export const AgentExecutionStatus = ConversationExecutionStatus;
+export type AgentExecutionStatus = ConversationExecutionStatus;
 
 export interface ConversationStats {
   total_events: number;

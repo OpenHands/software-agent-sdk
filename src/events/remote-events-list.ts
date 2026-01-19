@@ -7,6 +7,28 @@ import { Event, ConversationCallbackType } from '../types/base';
 // import { EventSortOrder } from '../types/base'; // Unused for now
 import { EventPage } from '../types/base';
 
+/**
+ * Options for searching events
+ */
+export interface EventSearchOptions {
+  /** Maximum number of events to return per page */
+  limit?: number;
+  /** Page ID for pagination */
+  page_id?: string;
+  /** Filter by event kind/type (e.g., ActionEvent, MessageEvent) */
+  kind?: string;
+  /** Filter by event source (e.g., agent, user, environment) */
+  source?: string;
+  /** Filter by message content (case-insensitive) */
+  body?: string;
+  /** Sort order for events */
+  sort_order?: 'TIMESTAMP' | 'TIMESTAMP_DESC';
+  /** Filter: event timestamp >= this datetime (ISO 8601 format) */
+  timestamp__gte?: string;
+  /** Filter: event timestamp < this datetime (ISO 8601 format) */
+  timestamp__lt?: string;
+}
+
 export class RemoteEventsList {
   private client: HttpClient;
   private conversationId: string;
@@ -60,6 +82,51 @@ export class RemoteEventsList {
     });
 
     console.debug(`Full sync completed, ${events.length} events cached`);
+  }
+
+  /**
+   * Search events with optional filters.
+   * This method queries the server directly and does not use the cache.
+   */
+  async search(options: EventSearchOptions = {}): Promise<EventPage> {
+    const params: any = {
+      limit: options.limit ?? 100,
+    };
+
+    if (options.page_id) params.page_id = options.page_id;
+    if (options.kind) params.kind = options.kind;
+    if (options.source) params.source = options.source;
+    if (options.body) params.body = options.body;
+    if (options.sort_order) params.sort_order = options.sort_order;
+    if (options.timestamp__gte) params.timestamp__gte = options.timestamp__gte;
+    if (options.timestamp__lt) params.timestamp__lt = options.timestamp__lt;
+
+    const response = await this.client.get<EventPage>(
+      `/api/conversations/${this.conversationId}/events/search`,
+      { params }
+    );
+
+    return response.data;
+  }
+
+  /**
+   * Count events matching the given filters.
+   */
+  async count(options: Omit<EventSearchOptions, 'limit' | 'page_id' | 'sort_order'> = {}): Promise<number> {
+    const params: any = {};
+
+    if (options.kind) params.kind = options.kind;
+    if (options.source) params.source = options.source;
+    if (options.body) params.body = options.body;
+    if (options.timestamp__gte) params.timestamp__gte = options.timestamp__gte;
+    if (options.timestamp__lt) params.timestamp__lt = options.timestamp__lt;
+
+    const response = await this.client.get<number>(
+      `/api/conversations/${this.conversationId}/events/count`,
+      { params }
+    );
+
+    return response.data;
   }
 
   async addEvent(event: Event): Promise<void> {

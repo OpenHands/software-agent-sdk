@@ -24,7 +24,11 @@ import {
   GenerateTitleRequest,
   GenerateTitleResponse,
   UpdateSecretsRequest,
+  AskAgentRequest,
+  AskAgentResponse,
+  SetSecurityAnalyzerRequest,
 } from '../models/conversation';
+import { Success } from '../types/base';
 
 export interface RemoteConversationOptions {
   conversationId?: string;
@@ -163,6 +167,36 @@ export class RemoteConversation {
       request
     );
     return response.data.title;
+  }
+
+  /**
+   * Ask the agent a simple question without affecting conversation state.
+   * This is useful for getting quick answers or clarifications.
+   */
+  async askAgent(question: string): Promise<string> {
+    const request: AskAgentRequest = { question };
+    const response = await this.client.post<AskAgentResponse>(
+      `/api/conversations/${this.id}/ask_agent`,
+      request
+    );
+    return response.data.response;
+  }
+
+  /**
+   * Force condensation of the conversation history.
+   * This can help reduce memory usage for long conversations.
+   */
+  async condense(): Promise<void> {
+    await this.client.post<Success>(`/api/conversations/${this.id}/condense`);
+  }
+
+  /**
+   * Set the security analyzer for the conversation.
+   * The security analyzer evaluates action risks.
+   */
+  async setSecurityAnalyzer(securityAnalyzer: any | null): Promise<void> {
+    const request: SetSecurityAnalyzerRequest = { security_analyzer: securityAnalyzer };
+    await this.client.post(`/api/conversations/${this.id}/security_analyzer`, request);
   }
 
   async updateSecrets(secrets: Record<string, SecretValue>): Promise<void> {

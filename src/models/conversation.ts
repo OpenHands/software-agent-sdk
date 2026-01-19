@@ -5,6 +5,7 @@
 import {
   ConversationID,
   // Event, // Unused for now
+  ConversationExecutionStatus,
   AgentExecutionStatus,
   ConfirmationPolicyBase,
   ConversationStats,
@@ -14,7 +15,15 @@ import {
 
 export interface ConversationInfo {
   id: ConversationID;
-  agent_status: AgentExecutionStatus;
+  /**
+   * Current execution status of the conversation.
+   * Note: This field was renamed from agent_status to execution_status in the API.
+   */
+  execution_status: ConversationExecutionStatus;
+  /**
+   * @deprecated Use execution_status instead. This field is kept for backward compatibility.
+   */
+  agent_status?: AgentExecutionStatus;
   confirmation_policy: ConfirmationPolicyBase;
   activated_knowledge_skills: string[];
   agent: AgentBase;
@@ -25,8 +34,10 @@ export interface ConversationInfo {
   title?: string;
   created_at?: string;
   updated_at?: string;
-  // Add status as an alias for agent_status for backward compatibility
-  status?: AgentExecutionStatus;
+  /**
+   * @deprecated Use execution_status instead. This field is kept for backward compatibility.
+   */
+  status?: ConversationExecutionStatus;
   [key: string]: any;
 }
 
@@ -84,8 +95,20 @@ export interface UpdateSecretsRequest {
 export interface ConversationSearchRequest {
   page_id?: string;
   limit?: number;
-  status?: AgentExecutionStatus;
+  status?: ConversationExecutionStatus;
   sort_order?: string;
+}
+
+export interface AskAgentRequest {
+  question: string;
+}
+
+export interface AskAgentResponse {
+  response: string;
+}
+
+export interface SetSecurityAnalyzerRequest {
+  security_analyzer: any | null;
 }
 
 export interface ConversationSearchResponse {
