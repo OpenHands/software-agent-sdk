@@ -112,7 +112,9 @@ export class RemoteEventsList {
   /**
    * Count events matching the given filters.
    */
-  async count(options: Omit<EventSearchOptions, 'limit' | 'page_id' | 'sort_order'> = {}): Promise<number> {
+  async count(
+    options: Omit<EventSearchOptions, 'limit' | 'page_id' | 'sort_order'> = {}
+  ): Promise<number> {
     const params: any = {};
 
     if (options.kind) params.kind = options.kind;
