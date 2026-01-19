@@ -6,9 +6,9 @@ This repo is a foundation. We want the SDK to stay stable and extensible so that
 applications can build on it safely.
 
 Downstream applications we actively keep in mind:
-- OpenHands CLI (client)
-- OpenHands app-server (client)
-- OpenHands SaaS (client)
+- [OpenHands-CLI](https://github.com/OpenHands/OpenHands-CLI) (client)
+- [OpenHands app-server](https://github.com/OpenHands/OpenHands/blob/main/openhands/app_server/README.md) (client)
+- [OpenHands Enterprise](https://github.com/OpenHands/OpenHands/blob/main/enterprise/README.md) (client)
 
 The SDK itself has a Python interface. In addition, the
 [agent-server](https://docs.openhands.dev/sdk/guides/agent-server/overview) is the
