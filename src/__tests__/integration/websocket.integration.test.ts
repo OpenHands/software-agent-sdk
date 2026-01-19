@@ -382,18 +382,18 @@ describe('WebSocket Integration Tests', () => {
         wsClient.start();
         await sleep(1000);
 
-        // Ask agent to perform an action
+        // Ask agent to perform an action - use a simple task that reliably triggers actions
         await httpClient.post(`/api/conversations/${conversationId}/events`, {
           role: 'user',
-          content: [{ type: 'text', text: 'Run the command "pwd" in the terminal.' }],
+          content: [{ type: 'text', text: 'List the files in the current directory.' }],
           run: false,
         });
 
         await httpClient.post(`/api/conversations/${conversationId}/run`);
 
-        // Wait for action events
+        // Wait for action events with longer timeout for LLM-dependent tests
         await waitFor(() => actionEvents.length > 0, {
-          timeout: 90000,
+          timeout: 120000,
           interval: 500,
           message: 'No ActionEvents received',
         });
@@ -406,7 +406,7 @@ describe('WebSocket Integration Tests', () => {
 
         wsClient.stop();
       },
-      config?.testTimeout || 120000
+      config?.testTimeout || 180000
     );
 
     it(
@@ -444,18 +444,18 @@ describe('WebSocket Integration Tests', () => {
         wsClient.start();
         await sleep(1000);
 
-        // Ask agent to run a command (which produces observation)
+        // Ask agent to run a command (which produces observation) - use a simple task
         await httpClient.post(`/api/conversations/${conversationId}/events`, {
           role: 'user',
-          content: [{ type: 'text', text: 'Run "echo hello" in the terminal.' }],
+          content: [{ type: 'text', text: 'List the files in the current directory.' }],
           run: false,
         });
 
         await httpClient.post(`/api/conversations/${conversationId}/run`);
 
-        // Wait for observation events
+        // Wait for observation events with longer timeout for LLM-dependent tests
         await waitFor(() => observationEvents.length > 0, {
-          timeout: 90000,
+          timeout: 120000,
           interval: 500,
           message: 'No ObservationEvents received',
         });
@@ -468,7 +468,7 @@ describe('WebSocket Integration Tests', () => {
 
         wsClient.stop();
       },
-      config?.testTimeout || 120000
+      config?.testTimeout || 180000
     );
   });
 
