@@ -10,9 +10,10 @@ Downstream applications we actively keep in mind:
 - OpenHands app-server (client)
 - OpenHands SaaS (client)
 
-The SDK itself has a Python interface. Separately, the agent-server exposes the SDK over
-REST/WebSockets for remote execution and integrations. Changes should keep both interfaces
-stable and consistent.
+The SDK itself has a Python interface. Separately, the
+[agent-server](https://docs.openhands.dev/sdk/guides/agent-server/overview) is the
+REST/WebSocket server component that exposes the SDK for remote execution and integrations.
+Changes should keep both interfaces stable and consistent.
 
 ## A lesson we learned (why we care about architecture)
 
@@ -29,11 +30,13 @@ This SDK exists (as a separate, rebuilt foundation) to avoid that failure mode.
 
 ## Principles we review PRs against
 
-We try to keep this repo friendly and pragmatic, but we *are* opinionated about several things:
+We’re friendly and pragmatic, but we *are* opinionated about several things:
 
 - **SDK-first**: the SDK is the product; downstream apps are clients.
 - **No client-specific code paths in core**: avoid logic that only makes sense for one
   downstream app.
+- **No “which app am I in?” switches**: avoid branching behavior on downstream app identity;
+  model differences as configuration, capabilities, or clean interfaces.
 - **Prefer interfaces over special cases**: if a client needs something, add or improve a
   clean, reusable interface/extension point instead of adding a shortcut.
 - **Extensibility over one-off patches**: design features so multiple clients can adopt them
@@ -49,6 +52,12 @@ We try to keep this repo friendly and pragmatic, but we *are* opinionated about 
 
 If you’re not sure whether a change crosses these lines, ask early—we’re happy to help think
 through the shape of a clean interface.
+
+## Practical pointers
+
+This file is mostly about principles. For the mechanics, see:
+- [DEVELOPMENT.md](DEVELOPMENT.md)
+- [.github/PULL_REQUEST_TEMPLATE.md](.github/PULL_REQUEST_TEMPLATE.md)
 
 ## Questions / discussion
 
