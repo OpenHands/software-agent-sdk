@@ -27,7 +27,7 @@ class CriticResult(BaseModel):
     def visualize(self) -> Text:
         """Return Rich Text representation of the critic result."""
         content = Text()
-        content.append("\nCritic Score: ", style="bold")
+        content.append("\n\nCritic Score: ", style="bold")
 
         # Display main score inline
         score_style = "green" if self.success else "yellow"
