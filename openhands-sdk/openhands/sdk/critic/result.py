@@ -49,20 +49,6 @@ class CriticResult(BaseModel):
         else:
             return "red"
 
-    @staticmethod
-    def _get_confidence_label(prob: float) -> tuple[str, str]:
-        """Convert probability to confidence level label and style.
-
-        Returns:
-            Tuple of (confidence_label, style)
-        """
-        if prob >= 0.7:
-            return "very likely", "red bold"
-        elif prob >= 0.5:
-            return "likely", "yellow"
-        else:
-            return "possible", "dim"
-
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of the critic result."""
@@ -122,20 +108,25 @@ class CriticResult(BaseModel):
         features: list[dict[str, Any]],
         is_other: bool = False,
     ) -> None:
-        """Append features inline with confidence levels instead of raw probabilities."""
+        """Append features inline with likelihood percentages."""
         for i, feature in enumerate(features):
             display_name = feature.get("display_name", feature.get("name", "Unknown"))
             prob = feature.get("probability", 0.0)
+            percentage = prob * 100
 
-            # Get confidence label and style
+            # Get style based on probability
             if is_other:
-                confidence_label, confidence_style = "—", "white"
+                prob_style = "white"
+            elif prob >= 0.7:
+                prob_style = "red bold"
+            elif prob >= 0.5:
+                prob_style = "yellow"
             else:
-                confidence_label, confidence_style = self._get_confidence_label(prob)
+                prob_style = "dim"
 
             # Add dot separator between features
             if i > 0:
                 content.append(" · ", style="dim")
 
             content.append(f"{display_name}", style="white")
-            content.append(f" ({confidence_label})", style=confidence_style)
+            content.append(f" (likelihood {percentage:.0f}%)", style=prob_style)

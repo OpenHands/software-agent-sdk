@@ -193,21 +193,6 @@ def test_star_style():
     assert CriticResult._get_star_style(0.39) == "red"
 
 
-def test_confidence_levels():
-    """Test that probabilities map to correct confidence labels."""
-    # very likely (>= 0.7)
-    assert CriticResult._get_confidence_label(0.7)[0] == "very likely"
-    assert CriticResult._get_confidence_label(1.0)[0] == "very likely"
-
-    # likely (>= 0.5)
-    assert CriticResult._get_confidence_label(0.5)[0] == "likely"
-    assert CriticResult._get_confidence_label(0.69)[0] == "likely"
-
-    # possible (< 0.5)
-    assert CriticResult._get_confidence_label(0.0)[0] == "possible"
-    assert CriticResult._get_confidence_label(0.49)[0] == "possible"
-
-
 def test_visualize_with_categorized_features():
     """Test visualization with categorized features from metadata."""
     categorized = {
@@ -240,12 +225,12 @@ def test_visualize_with_categorized_features():
     assert "★★★☆☆" in text  # Score 0.65 rounds to 3 stars
     assert "(65.0%)" in text
 
-    # Should display issues with descriptive confidence levels
+    # Should display issues with likelihood percentages
     assert "Potential Issues:" in text
     assert "Loop Behavior" in text
-    assert "(very likely)" in text  # probability 0.85 >= 0.7
+    assert "(likelihood 85%)" in text
     assert "Insufficient Testing" in text
-    assert "(likely)" in text  # probability 0.57 >= 0.5
+    assert "(likelihood 57%)" in text
 
     # Should NOT display sentiment or follow-up (removed from CLI display)
     assert "Expected User Sentiment" not in text
