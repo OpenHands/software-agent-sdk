@@ -146,5 +146,5 @@ class CriticResult(BaseModel):
             if i > 0:
                 content.append(" · ", style="dim")
 
-            content.append(f"{display_name}: ", style="dim")
-            content.append(f"{prob:.2f}", style=prob_style)
+            content.append(f"{display_name} ", style="dim")
+            content.append(f"({prob:.2f})", style=prob_style)
