@@ -51,9 +51,12 @@ def select_chat_options(
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:
         if llm.extended_thinking_budget:
+            # Anthropic throws errors if thinking budget equals or exceeds max output
+            # tokens -- force the thinking budget lower if there's a conflict
+            budget_tokens = min(llm.extended_thinking_budget, llm.max_output_tokens - 1)
             out["thinking"] = {
                 "type": "enabled",
-                "budget_tokens": llm.extended_thinking_budget,
+                "budget_tokens": budget_tokens,
             }
             # Enable interleaved thinking
             # Merge default header with any user-provided headers; user wins on conflict

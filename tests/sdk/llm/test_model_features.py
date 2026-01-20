@@ -32,6 +32,10 @@ def test_model_matches(name, pattern, expected):
         ("o3", True),
         # Anthropic Opus 4.5 (dash variant only)
         ("claude-opus-4-5", True),
+        ("nova-2-lite", True),
+        # Gemini 3 family
+        ("gemini-3-pro-preview", True),
+        ("gemini-3-flash-preview", True),
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),
         ("gemini-1.5-pro", False),
@@ -250,13 +254,19 @@ def test_force_string_serializer_full_model_names():
         ("gpt-5.1", True),
         ("openai/gpt-5.1-codex-mini", True),
         ("gpt-5", True),
-        ("openai/gpt-5-mini", True),
+        # New GPT-5.2 family should support extended retention
+        ("gpt-5.2", True),
+        ("openai/gpt-5.2-chat-latest", True),
+        ("openai/gpt-5.2-pro", True),
+        ("openai/gpt-5-mini", False),
         ("gpt-4o", False),
         ("openai/gpt-4.1", True),
         ("litellm_proxy/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-4.1", True),
         ("litellm_proxy/openai/gpt-5", True),
-        ("litellm_proxy/openai/gpt-5-mini", True),
+        ("litellm_proxy/openai/gpt-5-mini", False),
+        ("openai/gpt-5.1-mini", False),
+        ("openai/gpt-5-mini-2025-08-07", False),
     ],
 )
 def test_prompt_cache_retention_support(model, expected_retention):
@@ -278,6 +288,11 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive
         ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        # DeepSeek reasoner model
+        ("deepseek/deepseek-reasoner", True),
+        ("DeepSeek/deepseek-reasoner", True),
+        # Models that should NOT match
+        ("deepseek/deepseek-chat", False),  # Different DeepSeek model
         ("kimi-k2-instruct", False),  # Different variant
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),

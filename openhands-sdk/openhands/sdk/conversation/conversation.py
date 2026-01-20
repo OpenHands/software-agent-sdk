@@ -1,19 +1,22 @@
+from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING, Self, overload
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation
-from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    StuckDetectionThresholds,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
+from openhands.sdk.secret import SecretValue
 from openhands.sdk.workspace import LocalWorkspace, RemoteWorkspace
 
 
@@ -54,8 +57,12 @@ class Conversation:
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -71,8 +78,12 @@ class Conversation:
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -88,8 +99,12 @@ class Conversation:
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
@@ -112,8 +127,10 @@ class Conversation:
                 conversation_id=conversation_id,
                 callbacks=callbacks,
                 token_callbacks=token_callbacks,
+                hook_config=hook_config,
                 max_iteration_per_run=max_iteration_per_run,
                 stuck_detection=stuck_detection,
+                stuck_detection_thresholds=stuck_detection_thresholds,
                 visualizer=visualizer,
                 workspace=workspace,
                 secrets=secrets,
@@ -124,8 +141,10 @@ class Conversation:
             conversation_id=conversation_id,
             callbacks=callbacks,
             token_callbacks=token_callbacks,
+            hook_config=hook_config,
             max_iteration_per_run=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            stuck_detection_thresholds=stuck_detection_thresholds,
             visualizer=visualizer,
             workspace=workspace,
             persistence_dir=persistence_dir,

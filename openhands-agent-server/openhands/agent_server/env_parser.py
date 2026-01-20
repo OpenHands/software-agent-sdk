@@ -17,7 +17,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, SecretStr, TypeAdapter
 
-from openhands.sdk.utils.models import DiscriminatedUnionMixin
+from openhands.sdk.utils.models import (
+    DiscriminatedUnionMixin,
+    get_known_concrete_subclasses,
+)
 
 
 # Define Missing type
@@ -269,6 +272,33 @@ class UnionEnvParser(EnvParser):
 
 
 @dataclass
+class DiscriminatedUnionEnvParser(EnvParser):
+    parsers: dict[str, EnvParser]
+
+    def from_env(self, key: str) -> JsonType:
+        kind = os.environ.get(f"{key}_KIND", MISSING)
+        if kind is MISSING:
+            # If there is exactly one kind, use it directly
+            if len(self.parsers) == 1:
+                kind = next(iter(self.parsers.keys()))
+            else:
+                return MISSING
+        # Type narrowing: kind is str here (from os.environ.get or dict keys)
+        kind = cast(str, kind)
+        # Intentionally raise KeyError for invalid KIND - typos should fail early
+        parser = self.parsers[kind]
+        parser_result = parser.from_env(key)
+        # Type narrowing: discriminated union parsers always return dicts
+        parser_result = cast(dict, parser_result)
+        parser_result["kind"] = kind
+        return parser_result
+
+    def to_env(self, key: str, value: Any, output: IO):
+        parser = self.parsers[value.kind]
+        parser.to_env(key, value, output)
+
+
+@dataclass
 class DelayedParser(EnvParser):
     """Delayed parser for circular dependencies"""
 
@@ -341,9 +371,16 @@ def get_env_parser(target_type: type, parsers: dict[type, EnvParser]) -> EnvPars
     if issubclass(target_type, DiscriminatedUnionMixin) and (
         inspect.isabstract(target_type) or ABC in target_type.__bases__
     ):
-        serializable_type = target_type.get_serializable_type()
-        if serializable_type != target_type:
-            return get_env_parser(target_type.get_serializable_type(), parsers)
+        delayed = DelayedParser()
+        parsers[target_type] = delayed  # Prevent circular dependency
+        sub_parsers = {
+            c.__name__: get_env_parser(c, parsers)
+            for c in get_known_concrete_subclasses(target_type)
+        }
+        parser = DiscriminatedUnionEnvParser(sub_parsers)
+        delayed.parser = parser
+        parsers[target_type] = parser
+        return parser
     if issubclass(target_type, BaseModel):  # type: ignore
         delayed = DelayedParser()
         parsers[target_type] = delayed  # Prevent circular dependency

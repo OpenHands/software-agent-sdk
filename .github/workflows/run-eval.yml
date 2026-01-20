@@ -1,5 +1,6 @@
 ---
 name: Run Eval
+run-name: Run Eval (${{ inputs.benchmark || 'swebench' }}) ${{ inputs.reason || github.event.label.name || 'release' }}
 
 on:
     pull_request_target:
@@ -8,17 +9,30 @@ on:
         types: [published]
     workflow_dispatch:
         inputs:
+            benchmark:
+                description: Benchmark to evaluate
+                required: false
+                default: swebench
+                type: choice
+                options:
+                    - gaia
+                    - swebench
+                    - swtbench
+                    - commit0
+                    - multiswebench
+                    - swebenchmultimodal
             sdk_ref:
                 description: SDK commit/ref to evaluate
                 required: true
                 default: main
             eval_limit:
-                description: Number of SWE-bench instances to run
-                required: true
+                description: Number of instances to run
+                required: false
                 default: '1'
                 type: choice
                 options:
                     - '1'
+                    - '100'
                     - '50'
                     - '200'
                     - '500'
@@ -41,6 +55,30 @@ on:
                 description: Benchmarks repo branch to use (for testing feature branches)
                 required: false
                 default: main
+                type: string
+            instance_ids:
+                description: Comma-separated instance IDs to evaluate (optional, overrides eval_limit for supported benchmarks)
+                required: false
+                default: ''
+            num_infer_workers:
+                description: Number of inference workers (optional, overrides benchmark default)
+                required: false
+                default: ''
+                type: string
+            num_eval_workers:
+                description: Number of evaluation workers (optional, overrides benchmark default)
+                required: false
+                default: ''
+                type: string
+            enable_conversation_event_logging:
+                description: 'Enable Datadog persistence for conversation events (default: false)'
+                required: false
+                default: false
+                type: boolean
+            max_retries:
+                description: Max retries per instance (passed to benchmarks)
+                required: false
+                default: '3'
                 type: string
 
 
@@ -135,7 +173,10 @@ jobs:
                     EVAL_LIMIT="${{ github.event.inputs.eval_limit }}"
                     SDK_REF="${{ github.event.inputs.sdk_ref }}"
                     # Convert ref to SHA for manual dispatch
-                    SDK_SHA=$(git rev-parse "$SDK_REF" 2>/dev/null || echo "$SDK_REF")
+                    # Resolve SHA robustly for both branch refs and raw SHAs (avoid double-prefix issues)
+                    SDK_SHA=$(git rev-parse --verify "$SDK_REF^{commit}" 2>/dev/null || \
+                              git rev-parse --verify "origin/$SDK_REF^{commit}" 2>/dev/null || \
+                              echo "$SDK_REF")
                     PR_NUMBER=""
                     REASON="${{ github.event.inputs.reason }}"
                     if [ -z "$REASON" ]; then
@@ -159,11 +200,18 @@ jobs:
                     fi
                   done
 
-                  echo "eval_limit=$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
-                  echo "sdk_sha=$SDK_SHA" >> "$GITHUB_OUTPUT"
-                  echo "models=$MODELS" >> "$GITHUB_OUTPUT"
-                  echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-                  echo "trigger_desc=$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
+                  # Sanitize values to avoid GITHUB_OUTPUT parse errors (e.g., raw SHAs)
+                  SDK_SHA=$(printf '%s' "$SDK_SHA" | tr -d '\n\r')
+                  EVAL_LIMIT=$(printf '%s' "$EVAL_LIMIT" | tr -d '\n\r')
+                  PR_NUMBER=$(printf '%s' "$PR_NUMBER" | tr -d '\n\r')
+                  MODELS=$(printf '%s' "$MODELS" | tr -d '\n\r')
+                  TRIGGER_DESCRIPTION=$(printf '%s' "$TRIGGER_DESCRIPTION" | tr -d '\n\r')
+
+                  printf 'eval_limit=%s\n' "$EVAL_LIMIT" >> "$GITHUB_OUTPUT"
+                  printf 'sdk_sha=%s\n' "$SDK_SHA" >> "$GITHUB_OUTPUT"
+                  printf 'models=%s\n' "$MODELS" >> "$GITHUB_OUTPUT"
+                  printf 'pr_number=%s\n' "$PR_NUMBER" >> "$GITHUB_OUTPUT"
+                  printf 'trigger_desc=%s\n' "$TRIGGER_DESCRIPTION" >> "$GITHUB_OUTPUT"
 
             - name: Resolve model configurations
               id: resolve-models
@@ -181,10 +229,17 @@ jobs:
                   EVAL_WORKFLOW: ${{ env.EVAL_WORKFLOW }}
                   EVAL_BRANCH: ${{ github.event.inputs.eval_branch || 'main' }}
                   BENCHMARKS_BRANCH: ${{ github.event.inputs.benchmarks_branch || 'main' }}
+                  BENCHMARK: ${{ github.event.inputs.benchmark || 'swebench' }}
                   TRIGGER_REASON: ${{ github.event.inputs.reason }}
                   PR_NUMBER: ${{ steps.params.outputs.pr_number }}
+                  INSTANCE_IDS: ${{ github.event.inputs.instance_ids || '' }}
+                  NUM_INFER_WORKERS: ${{ github.event.inputs.num_infer_workers || '' }}
+                  NUM_EVAL_WORKERS: ${{ github.event.inputs.num_eval_workers || '' }}
+                  ENABLE_CONVERSATION_EVENT_LOGGING: ${{ github.event.inputs.enable_conversation_event_logging || false }}
+                  MAX_RETRIES: ${{ github.event.inputs.max_retries || '3' }}
+                  TRIGGERED_BY: ${{ github.actor }}
               run: |
-                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
+                  echo "Dispatching evaluation workflow with SDK commit: $SDK_SHA (benchmark: $BENCHMARK, eval branch: $EVAL_BRANCH, benchmarks branch: $BENCHMARKS_BRANCH)"
                   PAYLOAD=$(jq -n \
                     --arg sdk "$SDK_SHA" \
                     --arg eval_limit "$EVAL_LIMIT" \
@@ -193,7 +248,14 @@ jobs:
                     --arg reason "$TRIGGER_REASON" \
                     --arg pr "$PR_NUMBER" \
                     --arg benchmarks "$BENCHMARKS_BRANCH" \
-                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks}}')
+                    --arg benchmark "$BENCHMARK" \
+                    --arg instance_ids "$INSTANCE_IDS" \
+                    --arg num_infer_workers "$NUM_INFER_WORKERS" \
+                    --arg num_eval_workers "$NUM_EVAL_WORKERS" \
+                    --argjson enable_conversation_event_logging "$ENABLE_CONVERSATION_EVENT_LOGGING" \
+                    --arg max_retries "$MAX_RETRIES" \
+                    --arg triggered_by "$TRIGGERED_BY" \
+                    '{ref: $ref, inputs: {sdk_commit: $sdk, eval_limit: $eval_limit, models_json: ($models | tostring), trigger_reason: $reason, pr_number: $pr, benchmarks_branch: $benchmarks, benchmark: $benchmark, instance_ids: $instance_ids, num_infer_workers: $num_infer_workers, num_eval_workers: $num_eval_workers, enable_conversation_event_logging: $enable_conversation_event_logging, max_retries: $max_retries, triggered_by: $triggered_by}}')
                   RESPONSE=$(curl -sS -o /tmp/dispatch.out -w "%{http_code}" -X POST \
                     -H "Authorization: token $PAT_TOKEN" \
                     -H "Accept: application/vnd.github+json" \
@@ -208,7 +270,7 @@ jobs:
             - name: Comment on PR
               env:
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-                  SDK_SHA: ${{ steps.get-sha.outputs.sdk_sha }}
+                  SDK_SHA: ${{ steps.params.outputs.sdk_sha }}
                   EVAL_LIMIT: ${{ steps.params.outputs.eval_limit }}
                   MODELS: ${{ steps.params.outputs.models }}
                   TRIGGER_DESC: ${{ steps.params.outputs.trigger_desc }}

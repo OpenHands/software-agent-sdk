@@ -13,7 +13,7 @@ from openhands.sdk.tool import (
     Observation,
 )
 from openhands.sdk.tool.schema import Action
-from openhands.sdk.utils.visualize import display_dict
+from openhands.sdk.utils.visualize import display_json
 
 
 logger = get_logger(__name__)
@@ -97,7 +97,7 @@ class MCPToolObservation(Observation):
                 # try to see if block.text is a JSON
                 try:
                     parsed = json.loads(block.text)
-                    text.append(display_dict(parsed))
+                    text.append(display_json(parsed))
                     continue
                 except (json.JSONDecodeError, TypeError):
                     text.append(block.text + "\n")

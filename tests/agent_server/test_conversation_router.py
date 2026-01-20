@@ -1178,6 +1178,112 @@ def test_generate_conversation_title_invalid_params(
         client.app.dependency_overrides.clear()
 
 
+def test_start_conversation_with_tool_module_qualnames(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """Test start_conversation endpoint with tool_module_qualnames field."""
+
+    # Mock the service response
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    # Override the dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [
+                    {"name": "glob"},
+                    {"name": "grep"},
+                    {"name": "planning_file_editor"},
+                ],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+            "tool_module_qualnames": {
+                "glob": "openhands.tools.glob.definition",
+                "grep": "openhands.tools.grep.definition",
+                "planning_file_editor": (
+                    "openhands.tools.planning_file_editor.definition"
+                ),
+            },
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+
+        # Verify service was called
+        mock_conversation_service.start_conversation.assert_called_once()
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert hasattr(request_arg, "tool_module_qualnames")
+        assert request_arg.tool_module_qualnames == {
+            "glob": "openhands.tools.glob.definition",
+            "grep": "openhands.tools.grep.definition",
+            "planning_file_editor": ("openhands.tools.planning_file_editor.definition"),
+        }
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_start_conversation_without_tool_module_qualnames(
+    client, mock_conversation_service, sample_conversation_info
+):
+    """Test start_conversation endpoint without tool_module_qualnames field."""
+
+    # Mock the service response
+    mock_conversation_service.start_conversation.return_value = (
+        sample_conversation_info,
+        True,
+    )
+
+    # Override the dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        request_data = {
+            "agent": {
+                "llm": {
+                    "model": "gpt-4o",
+                    "api_key": "test-key",
+                    "usage_id": "test-llm",
+                },
+                "tools": [{"name": "TerminalTool"}],
+            },
+            "workspace": {"working_dir": "/tmp/test"},
+        }
+
+        response = client.post("/api/conversations", json=request_data)
+
+        assert response.status_code == 201
+        data = response.json()
+        assert data["id"] == str(sample_conversation_info.id)
+
+        # Verify service was called
+        mock_conversation_service.start_conversation.assert_called_once()
+        call_args = mock_conversation_service.start_conversation.call_args
+        request_arg = call_args[0][0]
+        assert hasattr(request_arg, "tool_module_qualnames")
+        # Should default to empty dict
+        assert request_arg.tool_module_qualnames == {}
+    finally:
+        client.app.dependency_overrides.clear()
+
+
 def test_set_conversation_security_analyzer_success(
     client,
     sample_conversation_id,
@@ -1265,3 +1371,95 @@ def test_security_analyzer_endpoint_with_malformed_analyzer_data(
     assert response.status_code == 422
     response_data = response.json()
     assert "detail" in response_data
+
+
+def test_update_secrets_with_string_values(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test update_secrets endpoint accepts plain string values."""
+
+    # Mock the services
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.update_secrets.return_value = None
+
+    # Override dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        # Test with plain string secrets (should be auto-converted)
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/secrets",
+            json={
+                "secrets": {
+                    "API_KEY": "plain-secret-value",
+                    "TOKEN": "another-secret",
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+
+        # Verify the event service was called (secrets should be converted internally)
+        mock_event_service.update_secrets.assert_called_once()
+        call_args = mock_event_service.update_secrets.call_args
+
+        # Verify secrets were converted to proper SecretSource objects
+        secrets_dict = call_args[0][0]  # secrets parameter
+        assert "API_KEY" in secrets_dict
+        assert "TOKEN" in secrets_dict
+
+    finally:
+        client.app.dependency_overrides.clear()
+
+
+def test_update_secrets_with_mixed_formats(
+    client, mock_conversation_service, mock_event_service, sample_conversation_id
+):
+    """Test update_secrets endpoint accepts mixed secret formats."""
+
+    # Mock the services
+    mock_conversation_service.get_event_service.return_value = mock_event_service
+    mock_event_service.update_secrets.return_value = None
+
+    # Override dependency
+    client.app.dependency_overrides[get_conversation_service] = (
+        lambda: mock_conversation_service
+    )
+
+    try:
+        # Test with mixed formats: plain strings and proper SecretSource objects
+        response = client.post(
+            f"/api/conversations/{sample_conversation_id}/secrets",
+            json={
+                "secrets": {
+                    "PLAIN_SECRET": "plain-value",
+                    "STATIC_SECRET": {
+                        "kind": "StaticSecret",
+                        "value": "static-value",
+                    },
+                    "LOOKUP_SECRET": {
+                        "kind": "LookupSecret",
+                        "url": "https://example.com/secret",
+                    },
+                }
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {"success": True}
+
+        # Verify the event service was called
+        mock_event_service.update_secrets.assert_called_once()
+        call_args = mock_event_service.update_secrets.call_args
+
+        # Verify all secrets are present
+        secrets_dict = call_args[0][0]  # secrets parameter
+        assert "PLAIN_SECRET" in secrets_dict
+        assert "STATIC_SECRET" in secrets_dict
+        assert "LOOKUP_SECRET" in secrets_dict
+
+    finally:
+        client.app.dependency_overrides.clear()
