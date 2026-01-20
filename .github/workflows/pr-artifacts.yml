@@ -1,6 +1,7 @@
 name: PR Artifacts
 
 on:
+  workflow_dispatch:  # Manual trigger for testing
   pull_request:
     branches: [main]
   pull_request_review:
