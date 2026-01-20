@@ -70,4 +70,11 @@ class APIBasedCritic(CriticBase, CriticClient):
         sorted_probs = sorted(prob_map.probs.items(), key=lambda x: x[1], reverse=True)
         explanation.append(json.dumps(dict(sorted_probs)))
 
-        return CriticResult(score=score, message="; ".join(explanation))
+        # Collect event IDs for reproducibility
+        event_ids = [event.id for event in llm_convertible_events]
+
+        return CriticResult(
+            score=score,
+            message="; ".join(explanation),
+            metadata={"event_ids": event_ids},
+        )

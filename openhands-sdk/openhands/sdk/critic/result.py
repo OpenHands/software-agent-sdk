@@ -1,5 +1,5 @@
 import json
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 from rich.text import Text
@@ -17,6 +17,13 @@ class CriticResult(BaseModel):
         le=1.0,
     )
     message: str | None = Field(description="An optional message explaining the score.")
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional metadata about the critic evaluation. "
+            "Can include event_ids to reproduce the input sent to the critic model."
+        ),
+    )
 
     @property
     def success(self) -> bool:
