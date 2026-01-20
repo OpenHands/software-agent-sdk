@@ -164,25 +164,17 @@ def test_quality_assessment_levels():
 
 def test_confidence_levels():
     """Test that probabilities map to correct confidence labels."""
-    # High (>= 0.7)
-    assert CriticResult._get_confidence_label(0.7)[0] == "High"
-    assert CriticResult._get_confidence_label(1.0)[0] == "High"
+    # very likely (>= 0.7)
+    assert CriticResult._get_confidence_label(0.7)[0] == "very likely"
+    assert CriticResult._get_confidence_label(1.0)[0] == "very likely"
 
-    # Medium (>= 0.5)
-    assert CriticResult._get_confidence_label(0.5)[0] == "Medium"
-    assert CriticResult._get_confidence_label(0.69)[0] == "Medium"
+    # likely (>= 0.5)
+    assert CriticResult._get_confidence_label(0.5)[0] == "likely"
+    assert CriticResult._get_confidence_label(0.69)[0] == "likely"
 
-    # Low (< 0.5)
-    assert CriticResult._get_confidence_label(0.0)[0] == "Low"
-    assert CriticResult._get_confidence_label(0.49)[0] == "Low"
-
-
-def test_sentiment_emojis():
-    """Test that sentiments map to correct emojis."""
-    assert CriticResult._get_sentiment_emoji("Positive") == "😊"
-    assert CriticResult._get_sentiment_emoji("Neutral") == "😐"
-    assert CriticResult._get_sentiment_emoji("Negative") == "😟"
-    assert CriticResult._get_sentiment_emoji("Unknown") == ""
+    # possible (< 0.5)
+    assert CriticResult._get_confidence_label(0.0)[0] == "possible"
+    assert CriticResult._get_confidence_label(0.49)[0] == "possible"
 
 
 def test_visualize_with_categorized_features():
@@ -216,17 +208,17 @@ def test_visualize_with_categorized_features():
     assert "Critic thinks the task is" in text
     assert "likely successful" in text  # Score 0.65 >= 0.6
 
-    # Should display sentiment with emoji
-    assert "Expected User Response:" in text
-    assert "😐" in text
+    # Should display sentiment with confidence
+    assert "Expected User Sentiment:" in text
     assert "Neutral" in text
+    assert "(very likely)" in text  # probability 0.77 >= 0.7
 
-    # Should display issues with confidence levels
+    # Should display issues with descriptive confidence levels
     assert "Potential Issues:" in text
     assert "Loop Behavior" in text
-    assert "(High)" in text
+    assert "(very likely)" in text  # probability 0.85 >= 0.7
     assert "Insufficient Testing" in text
-    assert "(Medium)" in text
+    assert "(likely)" in text  # probability 0.57 >= 0.5
 
     # Should display follow-up patterns
     assert "Likely Follow-up:" in text
