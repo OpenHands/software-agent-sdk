@@ -1,0 +1,59 @@
+name: PR Artifacts
+
+on:
+  pull_request:
+    branches: [main]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  # Auto-remove .pr/ directory when a reviewer approves
+  cleanup-on-approval:
+    if: github.event_name == 'pull_request_review' && github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Check if fork PR
+        id: check-fork
+        run: |
+          if [ "${{ github.event.pull_request.head.repo.full_name }}" != "${{ github.event.pull_request.base.repo.full_name }}" ]; then
+            echo "is_fork=true" >> $GITHUB_OUTPUT
+            echo "::notice::Fork PR detected - skipping auto-cleanup (manual removal required)"
+          else
+            echo "is_fork=false" >> $GITHUB_OUTPUT
+          fi
+
+      - uses: actions/checkout@v5
+        if: steps.check-fork.outputs.is_fork == 'false'
+        with:
+          ref: ${{ github.event.pull_request.head.ref }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Remove .pr/ directory
+        if: steps.check-fork.outputs.is_fork == 'false'
+        run: |
+          if [ -d ".pr" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git rm -rf .pr/
+            git commit -m "chore: Remove PR-only artifacts [automated]"
+            git push
+            echo "::notice::Removed .pr/ directory"
+          else
+            echo "::notice::No .pr/ directory to remove"
+          fi
+
+  # Block merge if .pr/ directory still exists
+  block-merge-with-pr-artifacts:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for .pr/ directory
+        run: |
+          if [ -d ".pr" ]; then
+            echo "::error::.pr/ directory must be removed before merging. For non-fork PRs, this happens automatically on approval. For fork PRs, please remove manually."
+            exit 1
+          fi
