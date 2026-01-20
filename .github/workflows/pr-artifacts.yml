@@ -53,11 +53,47 @@ jobs:
     check-pr-artifacts:
         if: github.event_name == 'pull_request'
         runs-on: ubuntu-latest
+        permissions:
+            pull-requests: write
         steps:
             - uses: actions/checkout@v5
 
             - name: Check for .pr/ directory
+              id: check
               run: |
                   if [ -d ".pr" ]; then
+                    echo "exists=true" >> $GITHUB_OUTPUT
                     echo "::warning::.pr/ directory exists and will be automatically removed when the PR is approved. For fork PRs, manual removal is required before merging."
+                  else
+                    echo "exists=false" >> $GITHUB_OUTPUT
                   fi
+
+            - name: Post or update PR comment
+              if: steps.check.outputs.exists == 'true'
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      const marker = '<!-- pr-artifacts-notice -->';
+                      const body = `${marker}
+                      📁 **PR Artifacts Notice**
+
+                      This PR contains a \`.pr/\` directory with PR-specific documents. This directory will be **automatically removed** when the PR is approved.
+
+                      > For fork PRs: Manual removal is required before merging.
+                      `;
+
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: context.issue.number,
+                      });
+
+                      const existing = comments.find(c => c.body.includes(marker));
+                      if (!existing) {
+                        await github.rest.issues.createComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          issue_number: context.issue.number,
+                          body: body,
+                        });
+                      }
