@@ -57,7 +57,6 @@ class APIBasedCritic(CriticBase, CriticClient):
         response = self.classify_trace(formatted_messages, tools_for_api)
         prob_map = self.extract_prob_map(response)
 
-        score = 0.0
         explanation = []
 
         if "success" not in prob_map.probs:
