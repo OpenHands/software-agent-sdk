@@ -6,8 +6,10 @@ from starlette.types import ASGIApp
 
 
 class LocalhostCORSMiddleware(CORSMiddleware):
-    """Custom CORS middleware that allows any request from localhost/127.0.0.1 domains,
-    as well as the DOCKER_HOST_ADDR IP, while using standard CORS rules for other origins.
+    """Custom CORS middleware that allows any request from localhost/127.0.0.1 domains.
+
+    Also allows the DOCKER_HOST_ADDR IP, while using standard CORS rules for
+    other origins.
     """
 
     def __init__(self, app: ASGIApp, allow_origins: list[str]) -> None:
