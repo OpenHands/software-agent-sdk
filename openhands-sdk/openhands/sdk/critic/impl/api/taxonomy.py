@@ -81,7 +81,7 @@ def _softmax_normalize(probs: dict[str, float]) -> dict[str, float]:
 
 def categorize_features(
     probs_dict: dict[str, float],
-    display_threshold: float = 0.0,
+    display_threshold: float = 0.2,
 ) -> dict[str, Any]:
     """Categorize features from probability dictionary into taxonomy groups.
 
@@ -90,7 +90,7 @@ def categorize_features(
 
     Args:
         probs_dict: Dictionary of feature names to probability values
-        display_threshold: Minimum probability to include a feature (default: 0.0)
+        display_threshold: Minimum probability to include a feature (default: 0.2)
 
     Returns:
         Dictionary with categorized features ready for visualization:
