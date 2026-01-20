@@ -37,7 +37,7 @@ class CriticResult(BaseModel):
 
         # Display main score inline
         score_style = "green" if self.success else "yellow"
-        content.append(f"{self.score:.4f}", style=score_style)
+        content.append(f"{self.score:.2f}", style=score_style)
         content.append(" (0-1, higher is better)", style="dim")
 
         # Use categorized features from metadata if available
