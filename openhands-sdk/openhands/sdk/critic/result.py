@@ -85,32 +85,32 @@ class CriticResult(BaseModel):
         # Agent behavioral issues
         agent_issues = categorized.get("agent_behavioral_issues", [])
         if agent_issues:
-            content.append("\n")
-            content.append("- [Detected Agent Issues] ")
+            content.append("\n  ")
+            content.append("Detected Agent Issues: ", style="bold yellow")
             self._append_feature_list_inline(content, agent_issues)
             has_content = True
 
         # User follow-up patterns
         user_patterns = categorized.get("user_followup_patterns", [])
         if user_patterns:
-            content.append("\n")
-            content.append("- [Predicted User Follow-Up] ")
+            content.append("\n  ")
+            content.append("Predicted User Follow-Up: ", style="bold yellow")
             self._append_feature_list_inline(content, user_patterns)
             has_content = True
 
         # Infrastructure issues
         infra_issues = categorized.get("infrastructure_issues", [])
         if infra_issues:
-            content.append("\n")
-            content.append("- [Infra Issues] ")
+            content.append("\n  ")
+            content.append("Infra Issues: ", style="bold yellow")
             self._append_feature_list_inline(content, infra_issues)
             has_content = True
 
         # Other metrics
         other = categorized.get("other", [])
         if other:
-            content.append("\n")
-            content.append("- [Other] ")
+            content.append("\n  ")
+            content.append("Other: ", style="bold dim")
             self._append_feature_list_inline(content, other, is_other=True)
             has_content = True
 
