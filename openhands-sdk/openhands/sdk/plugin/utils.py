@@ -81,8 +81,6 @@ def merge_mcp_configs(
 
     # Merge mcpServers by server name (Claude Code compatible behavior)
     if "mcpServers" in plugin_config:
-        if "mcpServers" not in result:
-            result["mcpServers"] = {}
         result["mcpServers"] = {
             **result.get("mcpServers", {}),
             **plugin_config["mcpServers"],

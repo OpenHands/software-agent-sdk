@@ -546,33 +546,23 @@ class TestPluginFetchMethod:
 class TestRepoPathParameter:
     """Tests for repo_path parameter in fetch_plugin() and Plugin.fetch()."""
 
-    def test_fetch_local_path_with_repo_path(self, tmp_path: Path):
-        """Test fetching local path with repo_path returns the subdirectory."""
+    def test_fetch_local_path_with_repo_path_raises_error(self, tmp_path: Path):
+        """Test that repo_path is not supported for local sources."""
         plugin_dir = tmp_path / "monorepo"
         plugin_dir.mkdir()
         subplugin_dir = plugin_dir / "plugins" / "my-plugin"
         subplugin_dir.mkdir(parents=True)
 
-        result = fetch_plugin(str(plugin_dir), repo_path="plugins/my-plugin")
-        assert result == subplugin_dir.resolve()
+        with pytest.raises(PluginFetchError, match="repo_path is not supported for local"):
+            fetch_plugin(str(plugin_dir), repo_path="plugins/my-plugin")
 
-    def test_fetch_local_path_with_nonexistent_repo_path(self, tmp_path: Path):
-        """Test fetching local path with nonexistent repo_path raises error."""
-        plugin_dir = tmp_path / "monorepo"
+    def test_fetch_local_path_without_repo_path(self, tmp_path: Path):
+        """Test fetching local path works without repo_path."""
+        plugin_dir = tmp_path / "my-plugin"
         plugin_dir.mkdir()
 
-        with pytest.raises(PluginFetchError, match="Subdirectory.*not found"):
-            fetch_plugin(str(plugin_dir), repo_path="nonexistent/path")
-
-    def test_fetch_local_path_with_repo_path_leading_slash(self, tmp_path: Path):
-        """Test that leading slashes are stripped from repo_path."""
-        plugin_dir = tmp_path / "monorepo"
-        plugin_dir.mkdir()
-        subplugin_dir = plugin_dir / "plugins" / "my-plugin"
-        subplugin_dir.mkdir(parents=True)
-
-        result = fetch_plugin(str(plugin_dir), repo_path="/plugins/my-plugin/")
-        assert result == subplugin_dir.resolve()
+        result = fetch_plugin(str(plugin_dir))
+        assert result == plugin_dir.resolve()
 
     def test_fetch_github_with_repo_path(self, tmp_path: Path):
         """Test fetching from GitHub with repo_path returns subdirectory."""
@@ -641,15 +631,13 @@ class TestRepoPathParameter:
         call_kwargs = mock_git.clone.call_args[1]
         assert call_kwargs["branch"] == "v1.0.0"
 
-    def test_plugin_fetch_with_repo_path(self, tmp_path: Path):
-        """Test Plugin.fetch() with repo_path parameter."""
+    def test_plugin_fetch_local_with_repo_path_raises_error(self, tmp_path: Path):
+        """Test Plugin.fetch() raises error for local source with repo_path."""
         plugin_dir = tmp_path / "monorepo"
         plugin_dir.mkdir()
-        subplugin_dir = plugin_dir / "plugins" / "my-plugin"
-        subplugin_dir.mkdir(parents=True)
 
-        result = Plugin.fetch(str(plugin_dir), repo_path="plugins/my-plugin")
-        assert result == subplugin_dir.resolve()
+        with pytest.raises(PluginFetchError, match="repo_path is not supported for local"):
+            Plugin.fetch(str(plugin_dir), repo_path="plugins/my-plugin")
 
     def test_fetch_no_repo_path_returns_root(self, tmp_path: Path):
         """Test that fetch without repo_path returns repository root."""

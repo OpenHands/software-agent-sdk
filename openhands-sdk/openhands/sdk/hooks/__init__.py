@@ -6,6 +6,7 @@ during agent execution, enabling deterministic control over agent behavior.
 """
 
 from openhands.sdk.hooks.config import (
+    HOOK_EVENT_FIELDS,
     HookConfig,
     HookDefinition,
     HookMatcher,
@@ -21,6 +22,7 @@ from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 
 
 __all__ = [
+    "HOOK_EVENT_FIELDS",
     "HookConfig",
     "HookDefinition",
     "HookMatcher",

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from openhands.sdk.hooks import HookConfig
+from openhands.sdk.hooks import HOOK_EVENT_FIELDS, HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
@@ -46,20 +46,10 @@ def merge_hook_configs(configs: list[HookConfig]) -> HookConfig | None:
     if not configs:
         return None
 
-    # All hook event type fields in HookConfig
-    hook_fields = (
-        "pre_tool_use",
-        "post_tool_use",
-        "user_prompt_submit",
-        "session_start",
-        "session_end",
-        "stop",
-    )
-
-    # Collect all matchers by event type
-    collected: dict[str, list] = {field: [] for field in hook_fields}
+    # Collect all matchers by event type using the canonical field list
+    collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
     for config in configs:
-        for field in hook_fields:
+        for field in HOOK_EVENT_FIELDS:
             collected[field].extend(getattr(config, field))
 
     merged = HookConfig(**collected)

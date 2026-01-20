@@ -104,23 +104,22 @@ def get_cache_path(source: str, cache_dir: Path | None = None) -> Path:
     return cache_dir / cache_name
 
 
-def _resolve_local_source(url: str, subpath: str | None) -> Path:
+def _resolve_local_source(url: str) -> Path:
     """Resolve a local plugin source to a path.
 
     Args:
         url: Local path string (may contain ~ for home directory).
-        subpath: Optional subdirectory within the local path.
 
     Returns:
         Resolved absolute path to the plugin directory.
 
     Raises:
-        PluginFetchError: If path doesn't exist or subpath is invalid.
+        PluginFetchError: If path doesn't exist.
     """
     local_path = Path(url).expanduser().resolve()
     if not local_path.exists():
         raise PluginFetchError(f"Local plugin path does not exist: {local_path}")
-    return _apply_subpath(local_path, subpath, "local plugin path")
+    return local_path
 
 
 def _fetch_remote_source(
@@ -224,7 +223,12 @@ def fetch_plugin(
     source_type, url = parse_plugin_source(source)
 
     if source_type == "local":
-        return _resolve_local_source(url, repo_path)
+        if repo_path is not None:
+            raise PluginFetchError(
+                f"repo_path is not supported for local plugin sources. "
+                f"Specify the full path directly instead of source='{source}' + repo_path='{repo_path}'"
+            )
+        return _resolve_local_source(url)
 
     if cache_dir is None:
         cache_dir = DEFAULT_CACHE_DIR

@@ -22,8 +22,9 @@ def _pascal_to_snake(name: str) -> str:
     return result
 
 
-# Valid snake_case field names for hook events
-_VALID_HOOK_FIELDS: frozenset[str] = frozenset(
+# Valid snake_case field names for hook events.
+# This is the single source of truth for hook event types.
+HOOK_EVENT_FIELDS: frozenset[str] = frozenset(
     {
         "pre_tool_use",
         "post_tool_use",
@@ -188,8 +189,8 @@ class HookConfig(BaseModel):
 
             if is_pascal_case:
                 # Validate that PascalCase key maps to a known field
-                if snake_key not in _VALID_HOOK_FIELDS:
-                    valid_types = ", ".join(sorted(_VALID_HOOK_FIELDS))
+                if snake_key not in HOOK_EVENT_FIELDS:
+                    valid_types = ", ".join(sorted(HOOK_EVENT_FIELDS))
                     raise ValueError(
                         f"Unknown event type '{key}'. Valid types: {valid_types}"
                     )

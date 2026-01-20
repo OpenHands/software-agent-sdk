@@ -180,7 +180,7 @@ class TestPluginMergeInto:
         context = AgentContext(skills=[])
 
         # Should raise ValueError if limit is exceeded
-        with pytest.raises(ValueError, match="too many skills"):
+        with pytest.raises(ValueError, match="exceeds maximum"):
             mock_plugin_with_skills.merge_into(context, {}, max_skills=0)
 
     def test_merge_into_max_skills_with_existing_skills(self, mock_skill):
@@ -202,7 +202,7 @@ class TestPluginMergeInto:
         assert len(new_context.skills) == 3
 
         # Limit of 2 should fail (3 > 2)
-        with pytest.raises(ValueError, match="too many skills"):
+        with pytest.raises(ValueError, match="exceeds maximum"):
             plugin.merge_into(context, {}, max_skills=2)
 
     def test_merge_into_max_skills_with_override(self):

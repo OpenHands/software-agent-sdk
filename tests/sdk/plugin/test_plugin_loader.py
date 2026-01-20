@@ -442,7 +442,7 @@ class TestLoadPluginsMaxSkills:
         )
 
         plugins = [PluginSource(source=str(plugin_dir))]
-        with pytest.raises(ValueError, match="too many skills"):
+        with pytest.raises(ValueError, match="exceeds maximum"):
             load_plugins(plugins, basic_agent, max_skills=2)
 
 
