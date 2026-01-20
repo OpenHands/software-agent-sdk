@@ -65,3 +65,26 @@ class ConversationVisualizerBase(ABC):
             event: The event to visualize
         """
         pass
+
+    def create_sub_visualizer(
+        self,
+        agent_id: str,  # noqa: ARG002
+    ) -> "ConversationVisualizerBase | None":
+        """Create a visualizer for a sub-agent during delegation.
+
+        Override this method to support sub-agent visualization in multi-agent
+        delegation scenarios. The sub-visualizer will be used to display events
+        from the spawned sub-agent.
+
+        By default, returns None which means sub-agents will not have visualization.
+        Subclasses that support delegation (like DelegationVisualizer) should
+        override this method to create appropriate sub-visualizers.
+
+        Args:
+            agent_id: The identifier of the sub-agent being spawned
+
+        Returns:
+            A visualizer instance for the sub-agent, or None if sub-agent
+            visualization is not supported
+        """
+        return None

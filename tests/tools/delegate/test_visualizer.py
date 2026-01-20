@@ -211,3 +211,36 @@ def test_delegation_visualizer_observation_event():
     assert block is not None
     # The block contains the Rule as the first element with the title
     assert "Main Delegator Agent Observation" in str(block.renderables[0])
+
+
+def test_delegation_visualizer_create_sub_visualizer():
+    """Test create_sub_visualizer creates a new visualizer for sub-agents."""
+    parent_visualizer = DelegationVisualizer(
+        name="main_delegator",
+        highlight_regex={"test": "bold"},
+        skip_user_messages=True,
+    )
+
+    # Create sub-visualizer for a sub-agent
+    sub_visualizer = parent_visualizer.create_sub_visualizer("lodging_expert")
+
+    # Verify sub-visualizer is a DelegationVisualizer
+    assert isinstance(sub_visualizer, DelegationVisualizer)
+    # Verify sub-visualizer has the correct agent name
+    assert sub_visualizer._name == "lodging_expert"
+    # Verify settings are inherited from parent
+    assert sub_visualizer._highlight_patterns == {"test": "bold"}
+    assert sub_visualizer._skip_user_messages is True
+
+
+def test_delegation_visualizer_create_sub_visualizer_with_defaults():
+    """Test create_sub_visualizer works with default parent settings."""
+    parent_visualizer = DelegationVisualizer(name="parent")
+
+    sub_visualizer = parent_visualizer.create_sub_visualizer("child_agent")
+
+    assert isinstance(sub_visualizer, DelegationVisualizer)
+    assert sub_visualizer._name == "child_agent"
+    # Default values should be inherited
+    assert sub_visualizer._highlight_patterns is not None  # Has default patterns
+    assert sub_visualizer._skip_user_messages is False
