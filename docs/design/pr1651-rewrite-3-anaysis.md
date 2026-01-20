@@ -183,23 +183,30 @@ class PluginSource(BaseModel):
     )
     ref: str | None = Field(
         default=None,
-        description="Optional branch, tag, or commit for git sources"
+        description="Optional branch, tag, or commit (only for git sources)"
     )
-    subpath: str | None = Field(
+    repo_path: str | None = Field(
         default=None,
-        description="Optional subdirectory path within the repository "
-                    "(e.g., 'plugins/my-plugin' for monorepos)"
+        description="Subdirectory path within the git repository "
+                    "(e.g., 'plugins/my-plugin' for monorepos). "
+                    "Only relevant for git sources, not local paths."
     )
 ```
 
-**Note on `subpath`:** This is required when a git repository contains multiple plugins in subdirectories. For example:
+**Note on `repo_path`:** This parameter is only relevant when loading from a **git repository** (not local filesystem paths). It specifies a subdirectory within the repo where the plugin is located. Common use case is monorepos:
+
 ```
-my-plugins-repo/
+my-plugins-repo/                          # source="github:org/my-plugins-repo"
 ├── plugins/
-│   ├── security-plugin/    # subpath="plugins/security-plugin"
-│   ├── logging-plugin/     # subpath="plugins/logging-plugin"
-│   └── custom-tools/       # subpath="plugins/custom-tools"
+│   ├── security-plugin/                  # repo_path="plugins/security-plugin"
+│   ├── logging-plugin/                   # repo_path="plugins/logging-plugin"
+│   └── custom-tools/                     # repo_path="plugins/custom-tools"
 └── README.md
+```
+
+For local filesystem paths, just specify the full path in `source`:
+```python
+PluginSource(source="/path/to/my-plugin")  # No repo_path needed
 ```
 
 **Alternative simpler API (list of strings with optional structured form):**
@@ -277,7 +284,8 @@ def load_plugins(
     
     for spec in plugin_specs:
         # Fetch (downloads if needed, returns cached path)
-        path = Plugin.fetch(source=spec.source, ref=spec.ref, subpath=spec.subpath)
+        # Note: repo_path maps to Plugin.fetch()'s subpath parameter
+        path = Plugin.fetch(source=spec.source, ref=spec.ref, subpath=spec.repo_path)
         plugin = Plugin.load(path)
         
         # Merge skills and MCP using existing SDK utilities
@@ -373,7 +381,7 @@ POST /api/conversations/start
   "plugins": [
     {"source": "github:org/security-plugin", "ref": "v2.0.0"},
     {"source": "github:org/logging-plugin"},
-    {"source": "github:org/monorepo", "subpath": "plugins/custom-tools"},
+    {"source": "github:org/monorepo", "repo_path": "plugins/custom-tools"},
     {"source": "/local/path/to/custom-plugin"}
   ]
 }
@@ -491,8 +499,10 @@ conversation = Conversation(
     plugins=[
         PluginSource(source="github:org/security-plugin", ref="v2.0.0"),
         PluginSource(source="github:org/logging-plugin"),
-        # Plugin from monorepo with subpath
-        PluginSource(source="github:org/plugins-monorepo", subpath="plugins/custom-tools"),
+        # Plugin from monorepo - repo_path specifies subdirectory within git repo
+        PluginSource(source="github:org/plugins-monorepo", repo_path="plugins/custom-tools"),
+        # Local plugin - no repo_path needed, just full path in source
+        PluginSource(source="/local/path/to/my-plugin"),
     ]
 )
 
@@ -513,7 +523,7 @@ POST /api/conversations/start
   "plugins": [
     {"source": "github:org/security-plugin", "ref": "v2.0.0"},
     {"source": "github:org/logging-plugin"},
-    {"source": "github:org/plugins-monorepo", "subpath": "plugins/custom-tools"}
+    {"source": "github:org/plugins-monorepo", "repo_path": "plugins/custom-tools"}
   ]
 }
 ```
