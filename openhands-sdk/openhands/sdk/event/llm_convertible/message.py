@@ -5,6 +5,7 @@ from typing import ClassVar
 from pydantic import ConfigDict, Field
 from rich.text import Text
 
+from openhands.sdk.critic.result import CriticResult
 from openhands.sdk.event.base import N_CHAR_PREVIEW, EventID, LLMConvertibleEvent
 from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import (
@@ -49,6 +50,11 @@ class MessageEvent(LLMConvertibleEvent):
             "Optional identifier of the sender. "
             "Can be used to track message origin in multi-agent scenarios."
         ),
+    )
+
+    critic_result: CriticResult | None = Field(
+        default=None,
+        description="Optional critic evaluation of this message and preceding history.",
     )
 
     @property
@@ -100,6 +106,10 @@ class MessageEvent(LLMConvertibleEvent):
                 "\n\nPrompt Extension based on Agent Context:\n", style="bold"
             )
             content.append(" ".join(text_parts))
+
+        # Display critic result if available
+        if self.critic_result is not None:
+            content.append(self.critic_result.visualize)
 
         return content
 

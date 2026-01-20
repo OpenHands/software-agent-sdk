@@ -311,7 +311,21 @@ class EventService:
             with self._conversation.state as state:
                 run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
-            loop.run_in_executor(None, self._conversation.run)
+            conversation = self._conversation
+
+            async def _run_with_error_handling():
+                try:
+                    await loop.run_in_executor(None, conversation.run)
+                except Exception:
+                    logger.exception("Error during conversation run from send_message")
+
+            # Fire-and-forget: This task is intentionally not tracked because
+            # send_message() is designed to return immediately after queuing the
+            # message. The conversation run happens in the background and any
+            # errors are logged. Unlike the run() method which is explicitly
+            # awaited, this pattern allows clients to send messages without
+            # blocking on the full conversation execution.
+            loop.create_task(_run_with_error_handling())
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
@@ -500,8 +514,8 @@ class EventService:
             async def _run_and_publish():
                 try:
                     await loop.run_in_executor(None, conversation.run)
-                except Exception as e:
-                    logger.error(f"Error during conversation run: {e}")
+                except Exception:
+                    logger.exception("Error during conversation run")
                 finally:
                     # Clear task reference and publish state update
                     self._run_task = None
