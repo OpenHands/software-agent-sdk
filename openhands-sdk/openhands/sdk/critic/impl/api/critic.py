@@ -33,7 +33,11 @@ class APIBasedCritic(CriticBase, CriticClient):
             raise ValueError(
                 "SystemPromptEvent is required for APIBasedCritic evaluation"
             )
-        if tools is None:
+        if not tools:
+            raise ValueError(
+                "APIBasedCritic requires tools to be defined in SystemPromptEvent. "
+                "Ensure your agent configuration includes tool definitions."
+            )
             raise ValueError("Tools are required for APIBasedCritic evaluation")
 
         # This will only retain events that are kept by the condenser
