@@ -61,6 +61,6 @@ jobs:
             - name: Check for .pr/ directory
               run: |
                   if [ -d ".pr" ]; then
-                    echo "::error::.pr/ directory must be removed before merging. For non-fork PRs, this happens automatically on approval. For fork PRs, please remove manually."
+                    echo "::error::.pr/ directory must be removed before merging. For non-fork PRs, this happens automatically on approval, or you can remove it manually. For fork PRs, please remove manually."
                     exit 1
                   fi
