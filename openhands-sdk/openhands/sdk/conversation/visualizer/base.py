@@ -66,7 +66,10 @@ class ConversationVisualizerBase(ABC):
         """
         pass
 
-    def create_sub_visualizer(self, agent_id: str) -> "ConversationVisualizerBase | None":
+    def create_sub_visualizer(
+        self,
+        agent_id: str,  # noqa: ARG002
+    ) -> "ConversationVisualizerBase | None":
         """Create a visualizer for a sub-agent during delegation.
 
         Override this method to support sub-agent visualization in multi-agent

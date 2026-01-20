@@ -213,8 +213,8 @@ class DelegateExecutor(ToolExecutor):
             parent_name = None
             if hasattr(parent_conversation, "_visualizer"):
                 visualizer = parent_conversation._visualizer
-                if visualizer is not None and hasattr(visualizer, "_name"):
-                    parent_name = visualizer._name
+                if visualizer is not None:
+                    parent_name = getattr(visualizer, "_name", None)
 
             def run_task(
                 agent_id: str,
