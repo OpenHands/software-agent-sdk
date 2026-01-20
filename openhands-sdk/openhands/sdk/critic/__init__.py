@@ -5,12 +5,6 @@ from openhands.sdk.critic.impl import (
     EmptyPatchCritic,
     PassCritic,
 )
-from openhands.sdk.critic.impl.api.taxonomy import (
-    CATEGORY_DISPLAY_NAMES,
-    FEATURE_CATEGORIES,
-    categorize_features,
-    get_category,
-)
 from openhands.sdk.critic.result import CriticResult
 
 
@@ -21,8 +15,4 @@ __all__ = [
     "APIBasedCritic",
     "EmptyPatchCritic",
     "PassCritic",
-    "FEATURE_CATEGORIES",
-    "CATEGORY_DISPLAY_NAMES",
-    "get_category",
-    "categorize_features",
 ]
