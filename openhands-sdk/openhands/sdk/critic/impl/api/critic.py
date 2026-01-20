@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
+from openhands.sdk.critic.taxonomy import categorize_features
 
 
 if TYPE_CHECKING:
@@ -76,8 +77,14 @@ class APIBasedCritic(CriticBase, CriticClient):
         # Collect event IDs for reproducibility
         event_ids = [event.id for event in llm_convertible_events]
 
+        # Categorize features for visualization
+        categorized = categorize_features(prob_map.probs)
+
         return CriticResult(
             score=score,
             message="; ".join(explanation),
-            metadata={"event_ids": event_ids},
+            metadata={
+                "event_ids": event_ids,
+                "categorized_features": categorized,
+            },
         )
