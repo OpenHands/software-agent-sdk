@@ -307,7 +307,7 @@ class DiscriminatedUnionEnvParser(EnvParser):
         Returns:
             The unqualified class name (e.g., 'MyClass')
         """
-        import importlib
+# Move to top of file with other imports
 
         parts = full_class_name.rsplit(".", 1)
         module_name = parts[0]
