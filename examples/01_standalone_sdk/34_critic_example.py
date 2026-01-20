@@ -11,7 +11,6 @@ using the same base_url with /vllm suffix and "critic" as the model name.
 
 import os
 import re
-import sys
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.critic import APIBasedCritic
