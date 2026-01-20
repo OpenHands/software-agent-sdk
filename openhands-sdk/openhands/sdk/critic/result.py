@@ -93,7 +93,7 @@ class CriticResult(BaseModel):
         user_patterns = categorized.get("user_followup_patterns", [])
         if user_patterns:
             content.append("\n")
-            content.append("User Follow-Up: ", style="bold yellow")
+            content.append("Predicted User Follow-Up: ", style="bold yellow")
             self._append_feature_list_inline(content, user_patterns)
             has_content = True
 
