@@ -30,18 +30,24 @@ class CriticResult(BaseModel):
         return self.score >= CriticResult.THRESHOLD
 
     @staticmethod
-    def _get_quality_assessment(score: float) -> tuple[str, str]:
-        """Convert score to human-readable quality assessment.
+    def _get_star_rating(score: float) -> str:
+        """Convert score (0-1) to a 5-star rating string.
 
-        Returns:
-            Tuple of (label, style)
+        Each star represents 20% of the score.
         """
+        filled_stars = round(score * 5)
+        empty_stars = 5 - filled_stars
+        return "★" * filled_stars + "☆" * empty_stars
+
+    @staticmethod
+    def _get_star_style(score: float) -> str:
+        """Get the style for the star rating based on score."""
         if score >= 0.6:
-            return "likely successful", "green"
+            return "green"
         elif score >= 0.4:
-            return "uncertain", "yellow"
+            return "yellow"
         else:
-            return "likely unsuccessful", "red"
+            return "red"
 
     @staticmethod
     def _get_confidence_label(prob: float) -> tuple[str, str]:
@@ -61,16 +67,18 @@ class CriticResult(BaseModel):
     def visualize(self) -> Text:
         """Return Rich Text representation of the critic result."""
         content = Text()
-        content.append("\n\nCritic thinks the task is ", style="bold")
+        content.append("\n\nCritic: agent success likelihood ", style="bold")
 
-        # Display main score as human-readable quality
-        label, style = self._get_quality_assessment(self.score)
-        content.append(label, style=style)
+        # Display star rating with percentage
+        stars = self._get_star_rating(self.score)
+        style = self._get_star_style(self.score)
+        percentage = self.score * 100
+        content.append(stars, style=style)
+        content.append(f" ({percentage:.1f}%)", style="dim")
 
         # Use categorized features from metadata if available
         if self.metadata and "categorized_features" in self.metadata:
             categorized = self.metadata["categorized_features"]
-            self._append_sentiment(content, categorized)
             self._append_categorized_features(content, categorized)
         else:
             # Fallback: display message as-is
@@ -80,30 +88,6 @@ class CriticResult(BaseModel):
                 content.append("\n")
 
         return content
-
-    def _append_sentiment(self, content: Text, categorized: dict[str, Any]) -> None:
-        """Append sentiment information to content."""
-        sentiment = categorized.get("sentiment")
-        if not sentiment:
-            return
-
-        content.append(" | ", style="dim")
-        content.append("Expected User Sentiment: ", style="bold")
-
-        predicted = sentiment.get("predicted", "")
-        prob = sentiment.get("probability", 0.0)
-        confidence_label, _ = self._get_confidence_label(prob)
-
-        # Color sentiment based on type
-        if predicted == "Positive":
-            sentiment_style = "green"
-        elif predicted == "Negative":
-            sentiment_style = "red"
-        else:  # Neutral
-            sentiment_style = "yellow"
-
-        content.append(predicted, style=sentiment_style)
-        content.append(f" ({confidence_label})", style="dim")
 
     def _append_categorized_features(
         self, content: Text, categorized: dict[str, Any]
@@ -119,28 +103,12 @@ class CriticResult(BaseModel):
             self._append_feature_list_inline(content, agent_issues)
             has_content = True
 
-        # User follow-up patterns
-        user_patterns = categorized.get("user_followup_patterns", [])
-        if user_patterns:
-            content.append("\n  ")
-            content.append("Likely Follow-up: ", style="bold")
-            self._append_feature_list_inline(content, user_patterns)
-            has_content = True
-
         # Infrastructure issues
         infra_issues = categorized.get("infrastructure_issues", [])
         if infra_issues:
             content.append("\n  ")
             content.append("Infrastructure: ", style="bold")
             self._append_feature_list_inline(content, infra_issues)
-            has_content = True
-
-        # Other metrics
-        other = categorized.get("other", [])
-        if other:
-            content.append("\n  ")
-            content.append("Other: ", style="bold dim")
-            self._append_feature_list_inline(content, other, is_other=True)
             has_content = True
 
         if not has_content:

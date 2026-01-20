@@ -22,9 +22,10 @@ def test_format_critic_result_with_json_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display human-readable assessment
-    assert "Critic thinks the task is" in text
-    assert "uncertain" in text  # Score 0.507 maps to "uncertain"
+    # Should display star rating with percentage
+    assert "Critic: agent success likelihood" in text
+    assert "★★★☆☆" in text  # Score 0.507 rounds to 3 stars
+    assert "(50.7%)" in text
 
     # Without metadata, the raw JSON message is displayed as-is
     assert "sentiment_neutral" in text
@@ -40,9 +41,9 @@ def test_format_critic_result_with_plain_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display human-readable assessment
-    assert "Critic thinks the task is" in text
-    assert "likely successful" in text  # Score 0.75 maps to this
+    # Should display star rating
+    assert "Critic: agent success likelihood" in text
+    assert "★★★★☆" in text  # Score 0.75 rounds to 4 stars
     # Should display plain text message
     assert "This is a plain text message" in text
 
@@ -54,9 +55,9 @@ def test_format_critic_result_without_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display human-readable assessment
-    assert "Critic thinks the task is" in text
-    assert "likely successful" in text  # Score 0.65 maps to this
+    # Should display star rating
+    assert "Critic: agent success likelihood" in text
+    assert "★★★☆☆" in text  # Score 0.65 rounds to 3 stars
     # Should be compact - just a few lines
     assert text.count("\n") <= 3
 
@@ -76,9 +77,9 @@ def test_visualize_consistency():
 
     formatted = critic_result.visualize.plain
 
-    # Should display human-readable assessment
-    assert "Critic thinks the task is" in formatted
-    assert "likely successful" in formatted  # Score 0.8 maps to this
+    # Should display star rating
+    assert "Critic: agent success likelihood" in formatted
+    assert "★★★★☆" in formatted  # Score 0.8 rounds to 4 stars
     # Without metadata, the raw JSON message is displayed as-is
     assert "success" in formatted
     assert "sentiment_positive" in formatted
@@ -113,7 +114,7 @@ def test_color_highlighting():
     """Test that the visualize output has appropriate styling.
 
     When no metadata with categorized_features is provided, the raw JSON
-    message is displayed as-is. The quality assessment and header still have styling.
+    message is displayed as-is. The star rating and header still have styling.
     """
     probs_dict = {
         "critical": 0.85,
@@ -134,7 +135,7 @@ def test_color_highlighting():
     assert "medium" in text
     assert "minimal" in text
 
-    # Verify spans contain style information for the quality assessment and header
+    # Verify spans contain style information for the star rating and header
     # Rich Text objects have spans with (start, end, style) tuples
     spans = list(formatted.spans)
     assert len(spans) > 0, "Should have styled spans"
@@ -144,22 +145,52 @@ def test_color_highlighting():
     assert len(styles) > 1, "Should have multiple different styles"
 
 
-def test_quality_assessment_levels():
-    """Test that scores map to correct quality assessment levels (3 tiers)."""
-    # likely successful (>= 0.6)
-    assert CriticResult._get_quality_assessment(0.6)[0] == "likely successful"
-    assert CriticResult._get_quality_assessment(0.8)[0] == "likely successful"
-    assert CriticResult._get_quality_assessment(1.0)[0] == "likely successful"
+def test_star_rating():
+    """Test that scores map to correct star ratings.
+    
+    Each star represents 20%, using round() for conversion.
+    Python uses banker's rounding (round half to even).
+    """
+    # 5 stars
+    assert CriticResult._get_star_rating(1.0) == "★★★★★"
 
-    # uncertain (>= 0.4 and < 0.6)
-    assert CriticResult._get_quality_assessment(0.4)[0] == "uncertain"
-    assert CriticResult._get_quality_assessment(0.5)[0] == "uncertain"
-    assert CriticResult._get_quality_assessment(0.59)[0] == "uncertain"
+    # 4 stars
+    assert CriticResult._get_star_rating(0.9) == "★★★★☆"  # 4.5 rounds to 4 (banker's)
+    assert CriticResult._get_star_rating(0.8) == "★★★★☆"
+    assert CriticResult._get_star_rating(0.7) == "★★★★☆"  # 3.5 rounds to 4 (banker's)
 
-    # likely unsuccessful (< 0.4)
-    assert CriticResult._get_quality_assessment(0.0)[0] == "likely unsuccessful"
-    assert CriticResult._get_quality_assessment(0.2)[0] == "likely unsuccessful"
-    assert CriticResult._get_quality_assessment(0.39)[0] == "likely unsuccessful"
+    # 3 stars
+    assert CriticResult._get_star_rating(0.6) == "★★★☆☆"
+    assert CriticResult._get_star_rating(0.55) == "★★★☆☆"
+
+    # 2 stars
+    assert CriticResult._get_star_rating(0.5) == "★★☆☆☆"  # 2.5 rounds to 2 (banker's)
+    assert CriticResult._get_star_rating(0.4) == "★★☆☆☆"
+    assert CriticResult._get_star_rating(0.35) == "★★☆☆☆"
+
+    # 1 star
+    assert CriticResult._get_star_rating(0.3) == "★★☆☆☆"  # 1.5 rounds to 2 (banker's)
+    assert CriticResult._get_star_rating(0.2) == "★☆☆☆☆"
+    assert CriticResult._get_star_rating(0.15) == "★☆☆☆☆"
+
+    # 0 stars
+    assert CriticResult._get_star_rating(0.1) == "☆☆☆☆☆"  # 0.5 rounds to 0 (banker's)
+    assert CriticResult._get_star_rating(0.0) == "☆☆☆☆☆"
+
+
+def test_star_style():
+    """Test that star styles are correct based on score."""
+    # Green for >= 0.6
+    assert CriticResult._get_star_style(0.6) == "green"
+    assert CriticResult._get_star_style(1.0) == "green"
+
+    # Yellow for 0.4-0.6
+    assert CriticResult._get_star_style(0.4) == "yellow"
+    assert CriticResult._get_star_style(0.59) == "yellow"
+
+    # Red for < 0.4
+    assert CriticResult._get_star_style(0.0) == "red"
+    assert CriticResult._get_star_style(0.39) == "red"
 
 
 def test_confidence_levels():
@@ -204,14 +235,10 @@ def test_visualize_with_categorized_features():
 
     text = result.visualize.plain
 
-    # Should display human-readable assessment
-    assert "Critic thinks the task is" in text
-    assert "likely successful" in text  # Score 0.65 >= 0.6
-
-    # Should display sentiment with confidence
-    assert "Expected User Sentiment:" in text
-    assert "Neutral" in text
-    assert "(very likely)" in text  # probability 0.77 >= 0.7
+    # Should display star rating
+    assert "Critic: agent success likelihood" in text
+    assert "★★★☆☆" in text  # Score 0.65 rounds to 3 stars
+    assert "(65.0%)" in text
 
     # Should display issues with descriptive confidence levels
     assert "Potential Issues:" in text
@@ -220,6 +247,6 @@ def test_visualize_with_categorized_features():
     assert "Insufficient Testing" in text
     assert "(likely)" in text  # probability 0.57 >= 0.5
 
-    # Should display follow-up patterns
-    assert "Likely Follow-up:" in text
-    assert "Direction Change" in text
+    # Should NOT display sentiment or follow-up (removed from CLI display)
+    assert "Expected User Sentiment" not in text
+    assert "Likely Follow-up" not in text
