@@ -12,7 +12,6 @@ from openhands.sdk.context.skills import Skill
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.hooks.config import HookDefinition, HookMatcher
 from openhands.sdk.plugin import (
-    Plugin,
     PluginFetchError,
     PluginSource,
     load_plugins,
@@ -42,9 +41,7 @@ def basic_agent(mock_llm):
 def agent_with_context(mock_llm):
     """Create an agent with existing context."""
     context = AgentContext(
-        skills=[
-            Skill(name="existing-skill", content="Existing skill content", type="repo")
-        ]
+        skills=[Skill(name="existing-skill", content="Existing skill content")]
     )
     return Agent(
         llm=mock_llm,
@@ -115,7 +112,9 @@ class TestMergeHookConfigs:
     def test_merge_single_config(self):
         """Test merging a single config returns equivalent config."""
         config = HookConfig(
-            pre_tool_use=[HookMatcher(matcher="*", hooks=[HookDefinition(command="test")])]
+            pre_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="test")])
+            ]
         )
         result = merge_hook_configs([config])
         assert result is not None
@@ -125,10 +124,14 @@ class TestMergeHookConfigs:
     def test_merge_multiple_pre_tool_use(self):
         """Test merging multiple configs concatenates pre_tool_use."""
         config1 = HookConfig(
-            pre_tool_use=[HookMatcher(matcher="terminal", hooks=[HookDefinition(command="cmd1")])]
+            pre_tool_use=[
+                HookMatcher(matcher="terminal", hooks=[HookDefinition(command="cmd1")])
+            ]
         )
         config2 = HookConfig(
-            pre_tool_use=[HookMatcher(matcher="*", hooks=[HookDefinition(command="cmd2")])]
+            pre_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="cmd2")])
+            ]
         )
         result = merge_hook_configs([config1, config2])
         assert result is not None
@@ -139,10 +142,14 @@ class TestMergeHookConfigs:
     def test_merge_different_event_types(self):
         """Test merging configs with different event types."""
         config1 = HookConfig(
-            pre_tool_use=[HookMatcher(matcher="*", hooks=[HookDefinition(command="pre")])]
+            pre_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="pre")])
+            ]
         )
         config2 = HookConfig(
-            post_tool_use=[HookMatcher(matcher="*", hooks=[HookDefinition(command="post")])]
+            post_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="post")])
+            ]
         )
         result = merge_hook_configs([config1, config2])
         assert result is not None
@@ -152,15 +159,25 @@ class TestMergeHookConfigs:
     def test_merge_all_event_types(self):
         """Test merging configs covers all event types."""
         config1 = HookConfig(
-            pre_tool_use=[HookMatcher(matcher="*", hooks=[HookDefinition(command="c1")])],
-            session_start=[HookMatcher(matcher="*", hooks=[HookDefinition(command="c2")])],
+            pre_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="c1")])
+            ],
+            session_start=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="c2")])
+            ],
         )
         config2 = HookConfig(
-            post_tool_use=[HookMatcher(matcher="*", hooks=[HookDefinition(command="c3")])],
-            session_end=[HookMatcher(matcher="*", hooks=[HookDefinition(command="c4")])],
+            post_tool_use=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="c3")])
+            ],
+            session_end=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="c4")])
+            ],
         )
         config3 = HookConfig(
-            user_prompt_submit=[HookMatcher(matcher="*", hooks=[HookDefinition(command="c5")])],
+            user_prompt_submit=[
+                HookMatcher(matcher="*", hooks=[HookDefinition(command="c5")])
+            ],
             stop=[HookMatcher(matcher="*", hooks=[HookDefinition(command="c6")])],
         )
         result = merge_hook_configs([config1, config2, config3])
@@ -263,6 +280,7 @@ class TestLoadPluginsMultiplePlugins:
         ]
         updated_agent, _ = load_plugins(plugins, basic_agent)
 
+        assert updated_agent.agent_context is not None
         assert len(updated_agent.agent_context.skills) == 1
         assert "Second content" in updated_agent.agent_context.skills[0].content
 
@@ -293,14 +311,18 @@ class TestLoadPluginsMultiplePlugins:
             tmp_path / "plugin1",
             name="plugin1",
             hooks={
-                "hooks": {"PreToolUse": [{"matcher": "a", "hooks": [{"command": "c1"}]}]}
+                "hooks": {
+                    "PreToolUse": [{"matcher": "a", "hooks": [{"command": "c1"}]}]
+                }
             },
         )
         plugin2 = create_test_plugin(
             tmp_path / "plugin2",
             name="plugin2",
             hooks={
-                "hooks": {"PreToolUse": [{"matcher": "b", "hooks": [{"command": "c2"}]}]}
+                "hooks": {
+                    "PreToolUse": [{"matcher": "b", "hooks": [{"command": "c2"}]}]
+                }
             },
         )
 
@@ -332,6 +354,7 @@ class TestLoadPluginsMultiplePlugins:
         ]
         updated_agent, _ = load_plugins(plugins, basic_agent)
 
+        assert updated_agent.agent_context is not None
         skill_names = [s.name for s in updated_agent.agent_context.skills]
         assert "skill-a" in skill_names
         assert "skill-b" in skill_names
@@ -351,6 +374,7 @@ class TestLoadPluginsWithExistingContext:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, _ = load_plugins(plugins, agent_with_context)
 
+        assert updated_agent.agent_context is not None
         skill_names = [s.name for s in updated_agent.agent_context.skills]
         assert "existing-skill" in skill_names
         assert "new-skill" in skill_names
@@ -366,6 +390,7 @@ class TestLoadPluginsWithExistingContext:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, _ = load_plugins(plugins, agent_with_context)
 
+        assert updated_agent.agent_context is not None
         assert len(updated_agent.agent_context.skills) == 1
         assert "Plugin content" in updated_agent.agent_context.skills[0].content
 
@@ -401,6 +426,7 @@ class TestLoadPluginsMaxSkills:
         plugins = [PluginSource(source=str(plugin_dir))]
         updated_agent, _ = load_plugins(plugins, basic_agent, max_skills=10)
 
+        assert updated_agent.agent_context is not None
         assert len(updated_agent.agent_context.skills) == 2
 
     def test_max_skills_exceeded_raises_error(self, tmp_path: Path, basic_agent):

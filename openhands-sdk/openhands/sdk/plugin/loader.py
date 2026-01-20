@@ -37,8 +37,8 @@ def merge_hook_configs(configs: list[HookConfig]) -> HookConfig | None:
         A merged HookConfig with all matchers concatenated, or None if no configs.
 
     Example:
-        >>> config1 = HookConfig(pre_tool_use=[HookMatcher(matcher="*", hooks=[...])])
-        >>> config2 = HookConfig(pre_tool_use=[HookMatcher(matcher="terminal", hooks=[...])])
+        >>> config1 = HookConfig(pre_tool_use=[HookMatcher(matcher="*")])
+        >>> config2 = HookConfig(pre_tool_use=[HookMatcher(matcher="terminal")])
         >>> merged = merge_hook_configs([config1, config2])
         >>> len(merged.pre_tool_use)  # Both matchers combined
         2

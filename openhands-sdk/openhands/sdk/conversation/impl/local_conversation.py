@@ -36,6 +36,7 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.plugin import PluginSource, load_plugins, merge_hook_configs
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -64,6 +65,7 @@ class LocalConversation(BaseConversation):
         self,
         agent: AgentBase,
         workspace: str | Path | LocalWorkspace,
+        plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
@@ -85,9 +87,14 @@ class LocalConversation(BaseConversation):
 
         Args:
             agent: The agent to use for the conversation.
-                To load a plugin, set agent.agent_context.plugin_source.
             workspace: Working directory for agent operations and tool execution.
                 Can be a string path, Path object, or LocalWorkspace instance.
+            plugins: Optional list of plugins to load. Each plugin is specified
+                with a source (github:owner/repo, git URL, or local path),
+                optional ref (branch/tag/commit), and optional repo_path for
+                monorepos. Plugins are loaded in order with these merge
+                semantics: skills override by name (last wins), MCP config
+                override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
                 Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
@@ -96,8 +103,7 @@ class LocalConversation(BaseConversation):
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
             hook_config: Optional hook configuration to auto-wire session hooks.
-                If not provided, hooks are extracted from agent.agent_context
-                .plugin_hooks when a plugin is loaded via AgentContext.
+                If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -120,30 +126,28 @@ class LocalConversation(BaseConversation):
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
 
-        # Extract hooks from plugin (loaded via AgentContext) if not explicitly provided
-        # Plugin loading now happens automatically in AgentContext._load_plugin()
+        # Load plugins if specified (new recommended pattern)
         plugin_hook_config: HookConfig | None = None
-        if agent.agent_context and agent.agent_context.plugin_hooks:
-            plugin_hook_config = agent.agent_context.plugin_hooks
+        if plugins:
+            agent, plugin_hook_config = load_plugins(plugins, agent)
+            logger.info(f"Loaded {len(plugins)} plugin(s) via Conversation")
 
-        # Combine hook configs: explicit hook_config + plugin hooks
+        # Legacy: Extract hooks from plugin loaded via AgentContext.plugin_source
+        # This maintains backward compatibility during transition
+        if agent.agent_context and agent.agent_context.plugin_hooks:
+            legacy_hooks = agent.agent_context.plugin_hooks
+            # Combine with any hooks from load_plugins()
+            if plugin_hook_config:
+                plugin_hook_config = merge_hook_configs(
+                    [plugin_hook_config, legacy_hooks]
+                )
+            else:
+                plugin_hook_config = legacy_hooks
+
+        # Combine explicit hook_config with plugin hooks
         if plugin_hook_config and hook_config:
-            # Merge: explicit hooks first, plugin hooks second (concatenate lists)
-            hook_config = HookConfig(
-                pre_tool_use=hook_config.pre_tool_use + plugin_hook_config.pre_tool_use,
-                post_tool_use=(
-                    hook_config.post_tool_use + plugin_hook_config.post_tool_use
-                ),
-                user_prompt_submit=(
-                    hook_config.user_prompt_submit
-                    + plugin_hook_config.user_prompt_submit
-                ),
-                session_start=(
-                    hook_config.session_start + plugin_hook_config.session_start
-                ),
-                session_end=hook_config.session_end + plugin_hook_config.session_end,
-                stop=hook_config.stop + plugin_hook_config.stop,
-            )
+            # Merge: explicit hooks first, then plugin hooks (concatenate)
+            hook_config = merge_hook_configs([hook_config, plugin_hook_config])
         elif plugin_hook_config:
             hook_config = plugin_hook_config
 
