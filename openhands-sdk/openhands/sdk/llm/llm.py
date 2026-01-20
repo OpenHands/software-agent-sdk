@@ -29,6 +29,8 @@ if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.tool.tool import ToolDefinition
 
+from openhands.sdk.llm.auth.openai import transform_for_subscription
+
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
@@ -1122,56 +1124,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 input_items.extend(val)
 
         if self.is_subscription:
-            return self._transform_for_subscription(system_chunks, input_items)
+            return transform_for_subscription(system_chunks, input_items)
         return instructions, input_items
-
-    def _transform_for_subscription(
-        self, system_chunks: list[str], input_items: list[dict[str, Any]]
-    ) -> tuple[str, list[dict[str, Any]]]:
-        """Transform messages for Codex subscription transport.
-
-        Codex subscription endpoints reject complex/long `instructions`, so we:
-        1. Use a minimal default instruction string
-        2. Prepend system prompts to the first user message
-        3. Normalize message format to match OpenCode's Codex client
-        """
-        default_instructions = (
-            "You are OpenHands agent, a helpful AI assistant that can interact "
-            "with a computer to solve tasks."
-        )
-
-        # Prepend system prompts to first user message
-        if system_chunks:
-            merged = "\n\n---\n\n".join(system_chunks)
-            prefix_content = {
-                "type": "input_text",
-                "text": f"Context (system prompt):\n{merged}\n\n",
-            }
-            self._inject_system_prefix(input_items, prefix_content)
-
-        # Normalize: {"type": "message", ...} -> {"role": ..., "content": ...}
-        normalized = [
-            {"role": item.get("role"), "content": item.get("content") or []}
-            if item.get("type") == "message"
-            else item
-            for item in input_items
-        ]
-        return default_instructions, normalized
-
-    def _inject_system_prefix(
-        self, input_items: list[dict[str, Any]], prefix_content: dict[str, Any]
-    ) -> None:
-        """Inject system prefix into the first user message, or create one."""
-        for item in input_items:
-            if item.get("type") == "message" and item.get("role") == "user":
-                content = item.get("content")
-                if not isinstance(content, list):
-                    content = [content] if content else []
-                item["content"] = [prefix_content] + content
-                return
-
-        # No user message found, create a synthetic one
-        input_items.insert(0, {"role": "user", "content": [prefix_content]})
 
     def get_token_count(self, messages: list[Message]) -> int:
         logger.debug(

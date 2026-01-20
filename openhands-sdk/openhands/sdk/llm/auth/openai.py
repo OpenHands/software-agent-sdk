@@ -543,3 +543,73 @@ def subscription_login(
             **llm_kwargs,
         )
     )
+
+
+# =========================================================================
+# Message transformation utilities for subscription mode
+# =========================================================================
+
+DEFAULT_SUBSCRIPTION_INSTRUCTIONS = (
+    "You are OpenHands agent, a helpful AI assistant that can interact "
+    "with a computer to solve tasks."
+)
+
+
+def inject_system_prefix(
+    input_items: list[dict[str, Any]], prefix_content: dict[str, Any]
+) -> None:
+    """Inject system prefix into the first user message, or create one.
+
+    This modifies input_items in place.
+
+    Args:
+        input_items: List of input items (messages) to modify.
+        prefix_content: The content dict to prepend
+            (e.g., {"type": "input_text", "text": "..."}).
+    """
+    for item in input_items:
+        if item.get("type") == "message" and item.get("role") == "user":
+            content = item.get("content")
+            if not isinstance(content, list):
+                content = [content] if content else []
+            item["content"] = [prefix_content] + content
+            return
+
+    # No user message found, create a synthetic one
+    input_items.insert(0, {"role": "user", "content": [prefix_content]})
+
+
+def transform_for_subscription(
+    system_chunks: list[str], input_items: list[dict[str, Any]]
+) -> tuple[str, list[dict[str, Any]]]:
+    """Transform messages for Codex subscription transport.
+
+    Codex subscription endpoints reject complex/long `instructions`, so we:
+    1. Use a minimal default instruction string
+    2. Prepend system prompts to the first user message
+    3. Normalize message format to match OpenCode's Codex client
+
+    Args:
+        system_chunks: List of system prompt strings to merge.
+        input_items: List of input items (messages) to transform.
+
+    Returns:
+        A tuple of (instructions, normalized_input_items).
+    """
+    # Prepend system prompts to first user message
+    if system_chunks:
+        merged = "\n\n---\n\n".join(system_chunks)
+        prefix_content = {
+            "type": "input_text",
+            "text": f"Context (system prompt):\n{merged}\n\n",
+        }
+        inject_system_prefix(input_items, prefix_content)
+
+    # Normalize: {"type": "message", ...} -> {"role": ..., "content": ...}
+    normalized = [
+        {"role": item.get("role"), "content": item.get("content") or []}
+        if item.get("type") == "message"
+        else item
+        for item in input_items
+    ]
+    return DEFAULT_SUBSCRIPTION_INSTRUCTIONS, normalized
