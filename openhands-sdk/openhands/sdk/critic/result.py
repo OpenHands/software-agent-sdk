@@ -78,52 +78,54 @@ class CriticResult(BaseModel):
     def _append_categorized_features(
         self, content: Text, categorized: dict[str, Any]
     ) -> None:
-        """Append categorized features to content."""
+        """Append categorized features to content, each category on its own line."""
         has_content = False
 
         # Agent behavioral issues
         agent_issues = categorized.get("agent_behavioral_issues", [])
         if agent_issues:
             content.append("\n")
-            content.append("Detected Agent Behavioral Issues:\n", style="bold yellow")
-            self._append_feature_list(content, agent_issues)
+            content.append("Agent Issues: ", style="bold yellow")
+            self._append_feature_list_inline(content, agent_issues)
             has_content = True
 
         # User follow-up patterns
         user_patterns = categorized.get("user_followup_patterns", [])
         if user_patterns:
             content.append("\n")
-            content.append("Predicted User Follow-Up Patterns:\n", style="bold yellow")
-            self._append_feature_list(content, user_patterns)
+            content.append("User Follow-Up: ", style="bold yellow")
+            self._append_feature_list_inline(content, user_patterns)
             has_content = True
 
         # Infrastructure issues
         infra_issues = categorized.get("infrastructure_issues", [])
         if infra_issues:
             content.append("\n")
-            content.append("Detected Infrastructure Issues:\n", style="bold yellow")
-            self._append_feature_list(content, infra_issues)
+            content.append("Infra Issues: ", style="bold yellow")
+            self._append_feature_list_inline(content, infra_issues)
             has_content = True
 
         # Other metrics
         other = categorized.get("other", [])
         if other:
             content.append("\n")
-            content.append("Other Metrics:\n", style="bold dim")
-            self._append_feature_list(content, other, is_other=True)
+            content.append("Other: ", style="bold dim")
+            self._append_feature_list_inline(content, other, is_other=True)
             has_content = True
 
         if not has_content:
             content.append("\n")
+        else:
+            content.append("\n")
 
-    def _append_feature_list(
+    def _append_feature_list_inline(
         self,
         content: Text,
         features: list[dict[str, Any]],
         is_other: bool = False,
     ) -> None:
-        """Append a list of features with probabilities."""
-        for feature in features:
+        """Append features inline with dot separators."""
+        for i, feature in enumerate(features):
             display_name = feature.get("display_name", feature.get("name", "Unknown"))
             prob = feature.get("probability", 0.0)
 
@@ -139,5 +141,9 @@ class CriticResult(BaseModel):
             else:
                 prob_style = "dim"
 
-            content.append(f"  • {display_name}: ", style="dim")
-            content.append(f"{prob:.2f}\n", style=prob_style)
+            # Add dot separator between features
+            if i > 0:
+                content.append(" · ", style="dim")
+
+            content.append(f"{display_name}: ", style="dim")
+            content.append(f"{prob:.2f}", style=prob_style)
