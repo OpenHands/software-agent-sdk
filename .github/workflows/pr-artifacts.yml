@@ -10,7 +10,12 @@ on:
 
 jobs:
   # Auto-remove .pr/ directory when a reviewer approves
+  # Auto-remove .pr/ directory when a reviewer approves
     cleanup-on-approval:
+        concurrency:
+            group: cleanup-pr-artifacts-${{ github.event.pull_request.number }}
+            cancel-in-progress: false
+        if: github.event_name == 'pull_request_review' && github.event.review.state == 'approved'
         if: github.event_name == 'pull_request_review' && github.event.review.state == 'approved'
         runs-on: ubuntu-latest
         permissions:
