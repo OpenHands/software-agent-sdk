@@ -22,9 +22,11 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
         description=(
             "When to run critic evaluation:\n"
             "- 'finish_and_message': Evaluate on FinishAction and agent"
-            " MessageEvent (default)\n"
-            "- 'all_actions': Evaluate after every agent action"
+            " MessageEvent (default, minimal performance impact)\n"
+            "- 'all_actions': Evaluate after every agent action (WARNING: "
+            "significantly slower due to API calls on each action)"
         ),
+    )
     )
 
     @abc.abstractmethod
