@@ -17,6 +17,18 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
     optional git patch, and returns a score about the quality of agent's action.
     """
 
+    mode: Literal["finish_and_message", "all_actions"] = Field(
+        default="finish_and_message",
+        description=(
+            "When to run critic evaluation:\n"
+            "- 'finish_and_message': Evaluate on FinishAction and agent"
+            " MessageEvent (default, minimal performance impact)\n"
+            "- 'all_actions': Evaluate after every agent action (WARNING: "
+            "significantly slower due to API calls on each action)"
+        ),
+    )
+    )
+
     @abc.abstractmethod
     def evaluate(
         self, events: Sequence["LLMConvertibleEvent"], git_patch: str | None = None
