@@ -786,27 +786,29 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                 f"Expected Responses stream iterator, got {type(ret)}"
                             )
 
+                        stream_callback = on_token if user_enable_streaming else None
                         for event in ret:
-                            if user_enable_streaming and on_token is not None:
-                                if isinstance(
-                                    event,
-                                    (
-                                        OutputTextDeltaEvent,
-                                        RefusalDeltaEvent,
-                                        ReasoningSummaryTextDeltaEvent,
-                                    ),
-                                ):
-                                    delta = event.delta
-                                    if delta:
-                                        on_token(
-                                            ModelResponseStream(
-                                                choices=[
-                                                    StreamingChoices(
-                                                        delta=Delta(content=delta)
-                                                    )
-                                                ]
-                                            )
+                            if stream_callback is None:
+                                continue
+                            if isinstance(
+                                event,
+                                (
+                                    OutputTextDeltaEvent,
+                                    RefusalDeltaEvent,
+                                    ReasoningSummaryTextDeltaEvent,
+                                ),
+                            ):
+                                delta = event.delta
+                                if delta:
+                                    stream_callback(
+                                        ModelResponseStream(
+                                            choices=[
+                                                StreamingChoices(
+                                                    delta=Delta(content=delta)
+                                                )
+                                            ]
                                         )
+                                    )
 
                         completed_event = ret.completed_response
                         if completed_event is None:
