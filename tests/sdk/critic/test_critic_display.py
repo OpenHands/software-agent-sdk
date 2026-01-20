@@ -22,9 +22,9 @@ def test_format_critic_result_with_json_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display quality assessment instead of raw score
-    assert "Quality Assessment:" in text
-    assert "Fair" in text  # Score 0.507 maps to "Fair"
+    # Should display human-readable assessment
+    assert "Critic thinks the task is" in text
+    assert "might need some adjustments" in text  # Score 0.507 maps to this
 
     # Without metadata, the raw JSON message is displayed as-is
     assert "sentiment_neutral" in text
@@ -40,9 +40,9 @@ def test_format_critic_result_with_plain_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display quality assessment
-    assert "Quality Assessment:" in text
-    assert "Good" in text  # Score 0.75 maps to "Good"
+    # Should display human-readable assessment
+    assert "Critic thinks the task is" in text
+    assert "probably successful" in text  # Score 0.75 maps to this
     # Should display plain text message
     assert "This is a plain text message" in text
 
@@ -54,9 +54,9 @@ def test_format_critic_result_without_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display quality assessment
-    assert "Quality Assessment:" in text
-    assert "Good" in text  # Score 0.65 maps to "Good"
+    # Should display human-readable assessment
+    assert "Critic thinks the task is" in text
+    assert "probably successful" in text  # Score 0.65 maps to this
     # Should be compact - just a few lines
     assert text.count("\n") <= 3
 
@@ -76,9 +76,9 @@ def test_visualize_consistency():
 
     formatted = critic_result.visualize.plain
 
-    # Should display quality assessment
-    assert "Quality Assessment:" in formatted
-    assert "Excellent" in formatted  # Score 0.8 maps to "Excellent"
+    # Should display human-readable assessment
+    assert "Critic thinks the task is" in formatted
+    assert "likely successful" in formatted  # Score 0.8 maps to this
     # Without metadata, the raw JSON message is displayed as-is
     assert "success" in formatted
     assert "sentiment_positive" in formatted
@@ -146,25 +146,25 @@ def test_color_highlighting():
 
 def test_quality_assessment_levels():
     """Test that scores map to correct quality assessment levels."""
-    # Excellent (>= 0.8)
-    assert CriticResult._get_quality_assessment(0.8)[0] == "Excellent"
-    assert CriticResult._get_quality_assessment(1.0)[0] == "Excellent"
+    # likely successful (>= 0.8)
+    assert CriticResult._get_quality_assessment(0.8)[0] == "likely successful"
+    assert CriticResult._get_quality_assessment(1.0)[0] == "likely successful"
 
-    # Good (>= 0.6)
-    assert CriticResult._get_quality_assessment(0.6)[0] == "Good"
-    assert CriticResult._get_quality_assessment(0.79)[0] == "Good"
+    # probably successful (>= 0.6)
+    assert CriticResult._get_quality_assessment(0.6)[0] == "probably successful"
+    assert CriticResult._get_quality_assessment(0.79)[0] == "probably successful"
 
-    # Fair (>= 0.5)
-    assert CriticResult._get_quality_assessment(0.5)[0] == "Fair"
-    assert CriticResult._get_quality_assessment(0.59)[0] == "Fair"
+    # might need some adjustments (>= 0.5)
+    assert CriticResult._get_quality_assessment(0.5)[0] == "might need some adjustments"
+    assert CriticResult._get_quality_assessment(0.59)[0] == "might need some adjustments"
 
-    # Needs Improvement (>= 0.3)
-    assert CriticResult._get_quality_assessment(0.3)[0] == "Needs Improvement"
-    assert CriticResult._get_quality_assessment(0.49)[0] == "Needs Improvement"
+    # likely needs more work (>= 0.3)
+    assert CriticResult._get_quality_assessment(0.3)[0] == "likely needs more work"
+    assert CriticResult._get_quality_assessment(0.49)[0] == "likely needs more work"
 
-    # Poor (< 0.3)
-    assert CriticResult._get_quality_assessment(0.0)[0] == "Poor"
-    assert CriticResult._get_quality_assessment(0.29)[0] == "Poor"
+    # probably unsuccessful (< 0.3)
+    assert CriticResult._get_quality_assessment(0.0)[0] == "probably unsuccessful"
+    assert CriticResult._get_quality_assessment(0.29)[0] == "probably unsuccessful"
 
 
 def test_confidence_levels():
@@ -217,9 +217,9 @@ def test_visualize_with_categorized_features():
 
     text = result.visualize.plain
 
-    # Should display quality assessment
-    assert "Quality Assessment:" in text
-    assert "Good" in text
+    # Should display human-readable assessment
+    assert "Critic thinks the task is" in text
+    assert "probably successful" in text
 
     # Should display sentiment with emoji
     assert "Expected User Response:" in text

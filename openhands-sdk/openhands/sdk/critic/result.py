@@ -37,15 +37,15 @@ class CriticResult(BaseModel):
             Tuple of (label, emoji, style)
         """
         if score >= 0.8:
-            return "Excellent", "✓", "green bold"
+            return "likely successful", "✓", "green bold"
         elif score >= 0.6:
-            return "Good", "✓", "green"
+            return "probably successful", "✓", "green"
         elif score >= 0.5:
-            return "Fair", "~", "yellow"
+            return "might need some adjustments", "~", "yellow"
         elif score >= 0.3:
-            return "Needs Improvement", "!", "yellow"
+            return "likely needs more work", "!", "yellow"
         else:
-            return "Poor", "✗", "red"
+            return "probably unsuccessful", "✗", "red"
 
     @staticmethod
     def _get_confidence_label(prob: float) -> tuple[str, str]:
@@ -75,7 +75,7 @@ class CriticResult(BaseModel):
     def visualize(self) -> Text:
         """Return Rich Text representation of the critic result."""
         content = Text()
-        content.append("\n\nQuality Assessment: ", style="bold")
+        content.append("\n\nCritic thinks the task is ", style="bold")
 
         # Display main score as human-readable quality with emoji
         label, emoji, style = self._get_quality_assessment(self.score)
