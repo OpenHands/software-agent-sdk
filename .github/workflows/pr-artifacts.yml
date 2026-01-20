@@ -18,6 +18,7 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             contents: write
+            pull-requests: write
         steps:
             - name: Check if fork PR
               id: check-fork
@@ -36,6 +37,7 @@ jobs:
                   token: ${{ secrets.GITHUB_TOKEN }}
 
             - name: Remove .pr/ directory
+              id: remove
               if: steps.check-fork.outputs.is_fork == 'false'
               run: |
                   if [ -d ".pr" ]; then
@@ -44,10 +46,40 @@ jobs:
                     git rm -rf .pr/
                     git commit -m "chore: Remove PR-only artifacts [automated]"
                     git push
+                    echo "removed=true" >> $GITHUB_OUTPUT
                     echo "::notice::Removed .pr/ directory"
                   else
+                    echo "removed=false" >> $GITHUB_OUTPUT
                     echo "::notice::No .pr/ directory to remove"
                   fi
+
+            - name: Update PR comment after cleanup
+              if: steps.check-fork.outputs.is_fork == 'false' && steps.remove.outputs.removed == 'true'
+              uses: actions/github-script@v7
+              with:
+                  script: |
+                      const marker = '<!-- pr-artifacts-notice -->';
+                      const body = `${marker}
+                      ✅ **PR Artifacts Cleaned Up**
+
+                      The \`.pr/\` directory has been automatically removed.
+                      `;
+
+                      const { data: comments } = await github.rest.issues.listComments({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        issue_number: context.issue.number,
+                      });
+
+                      const existing = comments.find(c => c.body.includes(marker));
+                      if (existing) {
+                        await github.rest.issues.updateComment({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          comment_id: existing.id,
+                          body: body,
+                        });
+                      }
 
   # Warn if .pr/ directory exists (will be auto-removed on approval)
     check-pr-artifacts:
