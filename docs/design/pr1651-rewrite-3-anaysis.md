@@ -113,6 +113,19 @@ def _load_and_merge_plugin(
 **@openhands-ai pros for Conversation-level:**
 > "It keeps hooks + MCP in the same conceptual bucket as 'conversation runtime config'. It avoids redefining AgentContext's responsibility boundary in a way that could sprawl."
 
+### 4.4 Multiple Plugins Support
+
+**@enyst (inline comment on README.md example):**
+> "What if we have multiple plugins, which is normal for an extensible software? 🤔"
+
+**@enyst (inline comment on local_conversation.py):**
+> "Is this hooks from a single plugin or from more? ...now the question also becomes: why from one plugin and not more? We want the SDK to support multiple plugins, I believe. Could we maybe load this one plugin sent from the client app the same way we load any other plugin installed here?"
+
+**@jpshackelford (response):**
+> "I agree that we should be building to support multiple plugins, without a doubt. I'll make changes to address this."
+
+**Key insight:** The current implementation only supports a single plugin (`plugin_source`). Extensible software should support loading multiple plugins per conversation, with proper merging semantics for skills, hooks, and MCP config from all plugins.
+
 ---
 
 ## 5. What Was Objectionable in cd99dd7 (Original Implementation)
@@ -149,7 +162,7 @@ def _load_and_merge_plugin(
 
 Based on reviewer feedback, the ideal implementation would be:
 
-### 6.1 Plugin Parameters on Conversation (Not AgentContext)
+### 6.1 Plugin Parameters on Conversation (Not AgentContext) - With Multi-Plugin Support
 
 **Add to LocalConversation and Conversation factory:**
 ```python
@@ -158,9 +171,24 @@ def __init__(
     self,
     agent: AgentBase,
     workspace: str | Path | LocalWorkspace,
-    plugin_source: str | None = None,      # NEW
-    plugin_ref: str | None = None,          # NEW
-    plugin_path: str | None = None,         # NEW
+    plugins: list[PluginSource] | None = None,  # NEW: list of plugin specs
+    # ... existing params
+):
+
+# Where PluginSource is a structured type:
+class PluginSource(BaseModel):
+    source: str          # e.g., "github:owner/repo", git URL, or local path
+    ref: str | None = None       # branch, tag, or commit
+    path: str | None = None      # subdirectory within repo
+```
+
+**Alternative simpler API (list of strings with optional structured form):**
+```python
+def __init__(
+    self,
+    agent: AgentBase,
+    workspace: str | Path | LocalWorkspace,
+    plugin_sources: list[str | PluginSource] | None = None,  # NEW
     # ... existing params
 ):
 ```
@@ -171,30 +199,58 @@ def __init__(
 def Conversation(
     agent: Agent | AgentBase,
     workspace: str | Path | LocalWorkspace,
-    plugin_source: str | None = None,
-    plugin_ref: str | None = None,
-    plugin_path: str | None = None,
+    plugins: list[PluginSource] | None = None,
     # ... existing params
 ) -> LocalConversation:
 ```
 
-### 6.2 Plugin Loading Logic in SDK
+**Single plugin backward compatibility (optional):**
+```python
+# For simpler single-plugin cases, could also support:
+plugin_source: str | None = None,  # Convenience for single plugin
+plugin_ref: str | None = None,
+plugin_path: str | None = None,
+# These would be converted to plugins=[PluginSource(...)] internally
+```
+
+### 6.2 Plugin Loading Logic in SDK (Multi-Plugin Merging)
 
 **Move loading to LocalConversation (explicit, not validator-based):**
 ```python
 # In LocalConversation.__init__()
-if plugin_source:
-    plugin = self._load_plugin(plugin_source, plugin_ref, plugin_path)
-    # Merge skills into agent.agent_context
-    # Merge MCP config into agent.mcp_config
-    # Extract hooks for use in hook processor
+if plugins:
+    merged_skills = list(agent.agent_context.skills) if agent.agent_context else []
+    merged_mcp_config = dict(agent.mcp_config) if agent.mcp_config else {}
+    merged_hooks: dict[str, list[HookMatcher]] = {}
+    
+    for plugin_spec in plugins:
+        plugin = self._load_plugin(plugin_spec)
+        # Skills: later plugins override earlier (by name)
+        merged_skills = merge_skills(merged_skills, plugin.skills)
+        # MCP config: later plugins override earlier (by key)
+        merged_mcp_config = {**merged_mcp_config, **(plugin.mcp_config or {})}
+        # Hooks: concatenate (all hooks run, order matters for blocking)
+        merged_hooks = merge_hook_configs(merged_hooks, plugin.hooks)
+    
+    # Apply merged content
+    agent.agent_context = agent.agent_context.model_copy(update={"skills": merged_skills})
+    agent.mcp_config = merged_mcp_config
+    # merged_hooks used when creating hook processor
 ```
+
+**Merge semantics:**
+| Content | Merge Strategy | Rationale |
+|---------|---------------|-----------|
+| Skills | Override by name (last wins) | Duplicates confusing for LLM |
+| MCP Config | Override by key (last wins) | Server definitions should be unique |
+| Hooks | Concatenate (all run) | Multiple handlers is standard pattern |
 
 **Benefits over pydantic validator:**
 - No I/O side effects in model deserialization
 - Won't re-trigger plugin fetch on conversation resume
 - Explicit control over when plugin loading happens
 - Clear error handling path
+- Supports multiple plugins naturally
 
 ### 6.3 API Parity Between StartConversationRequest and LocalConversation
 
@@ -204,10 +260,27 @@ if plugin_source:
 class StartConversationRequest(BaseModel):
     agent: AgentBase
     workspace: LocalWorkspace
-    plugin_source: str | None = None      # NEW (matching LocalConversation)
-    plugin_ref: str | None = None
-    plugin_path: str | None = None
+    plugins: list[PluginSource] | None = None  # NEW (matching LocalConversation)
     # ... existing fields
+
+# PluginSource can be defined in SDK and imported
+class PluginSource(BaseModel):
+    source: str
+    ref: str | None = None
+    path: str | None = None
+```
+
+**Example API usage:**
+```json
+POST /api/conversations/start
+{
+  "agent": {...},
+  "plugins": [
+    {"source": "github:org/security-plugin", "ref": "v2.0.0"},
+    {"source": "github:org/logging-plugin"},
+    {"source": "/local/path/to/custom-plugin"}
+  ]
+}
 ```
 
 ### 6.4 ConversationService Delegates to SDK
@@ -245,6 +318,7 @@ stored = StoredConversation(
 | I/O in validators | ❌ Side effects | ✅ Explicit loading |
 | Resume behavior | ❌ May re-trigger fetch | ✅ No re-fetch |
 | Responsibility scope | ❌ AgentContext does too much | ✅ Single responsibility |
+| Multi-plugin support | ❌ Single plugin only | ✅ List of plugins |
 
 ### vs. cd99dd7 (Original)
 | Aspect | cd99dd7 | Go-Forward |
@@ -252,31 +326,61 @@ stored = StoredConversation(
 | API parity | ❌ Server-only | ✅ SDK + Server aligned |
 | Source of truth | ❌ Server implements | ✅ SDK is source of truth |
 | SDK usability | ❌ No plugin params | ✅ Full plugin support |
+| Multi-plugin support | ❌ Single plugin only | ✅ List of plugins |
 
 ---
 
 ## 8. Draft PR Comment (Not Posted)
 
 ```markdown
-## Proposed Changes: Move Back to Conversation-Based Plugin Loading
+## Proposed Changes: Move Back to Conversation-Based Plugin Loading (with Multi-Plugin Support)
 
-Based on the discussion, I understand reviewers prefer plugin configuration at the **Conversation level** rather than AgentContext. Here's my plan to revise the PR:
+Based on the discussion, I understand reviewers prefer plugin configuration at the **Conversation level** rather than AgentContext, and want support for **multiple plugins**. Here's my plan to revise the PR:
 
 ### Key Changes
-1. **Add plugin params to LocalConversation and Conversation factory** - `plugin_source`, `plugin_ref`, `plugin_path`
+1. **Add `plugins: list[PluginSource]` to LocalConversation and Conversation factory** - Supports multiple plugins per conversation
 2. **Move plugin loading from AgentContext to LocalConversation** - Explicit loading in `__init__()`, not pydantic validator
-3. **Restore plugin params on StartConversationRequest** - For API parity with LocalConversation
+3. **Restore plugin params on StartConversationRequest** - `plugins` list for API parity with LocalConversation
 4. **Remove plugin loading from AgentContext** - Clean up the conceptually-incorrect placement
+5. **Implement proper merge semantics for multiple plugins:**
+   - Skills: later plugins override earlier (by name)
+   - MCP config: later plugins override earlier (by key)
+   - Hooks: concatenate (all run, order matters for blocking)
 
 ### Why This Improves on cd99dd7 (Original)
 - **SDK is single source of truth** - Plugin loading logic in `LocalConversation`, not duplicated in `ConversationService`
 - **API parity** - Both SDK users (`Conversation()`) and server users (`StartConversationRequest`) have same plugin params
-- **No blocking I/O in validators** - Explicit `_load_plugin()` call vs hidden side effect
+- **No blocking I/O in validators** - Explicit `_load_plugins()` call vs hidden side effect
+- **Multi-plugin support** - Can load multiple plugins per conversation (the original only supported one)
+
+### Example Usage
+```python
+# SDK
+conversation = Conversation(
+    agent=agent,
+    workspace="./workspace",
+    plugins=[
+        PluginSource(source="github:org/security-plugin", ref="v2.0.0"),
+        PluginSource(source="github:org/logging-plugin"),
+    ]
+)
+
+# Agent Server API
+POST /api/conversations/start
+{
+  "agent": {...},
+  "plugins": [
+    {"source": "github:org/security-plugin", "ref": "v2.0.0"},
+    {"source": "github:org/logging-plugin"}
+  ]
+}
+```
 
 ### Conceptual Benefits
 - Hooks and MCP config are "conversation runtime" concerns, not "agent context"
 - AgentContext stays immutable and focused on LLM-facing context
 - Plugin refs stored per-conversation for reproducible restore
+- Extensible software can load multiple plugins (security, logging, domain-specific, etc.)
 
 Let me know if this direction aligns with what you had in mind.
 ```
@@ -285,10 +389,12 @@ Let me know if this direction aligns with what you had in mind.
 
 ## 9. Summary
 
-The reviewers' preference is clear: **plugin configuration belongs at the Conversation level**, not AgentContext. The original cd99dd7 had the right intuition but wrong execution (server-only, no SDK parity). The current AgentContext approach solved some consistency issues but introduced conceptual problems.
+The reviewers' preference is clear: **plugin configuration belongs at the Conversation level**, not AgentContext, and the SDK should support **multiple plugins per conversation**. The original cd99dd7 had the right intuition but wrong execution (server-only, no SDK parity, single plugin only). The current AgentContext approach solved some consistency issues but introduced conceptual problems.
 
 The go-forward plan combines the best of both:
 - Plugin params on Conversation (conceptually correct)
+- **`plugins: list[PluginSource]`** for multi-plugin support (extensibility)
 - Loading logic in SDK's LocalConversation (single source of truth)
 - API parity between StartConversationRequest and LocalConversation (developer experience)
 - Explicit loading, not pydantic validator (no side effects)
+- Clear merge semantics: skills override by name, MCP by key, hooks concatenate
