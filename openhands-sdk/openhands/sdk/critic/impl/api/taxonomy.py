@@ -2,6 +2,7 @@
 
 from typing import Any
 
+
 # Feature to category mapping
 FEATURE_CATEGORIES: dict[str, str] = {
     # General Context & Task Classification
@@ -79,7 +80,8 @@ def categorize_features(
                 "all": {"positive": 0.10, "neutral": 0.77, "negative": 0.13}
             },
             "agent_behavioral_issues": [
-                {"name": "loop_behavior", "display_name": "Loop Behavior", "probability": 0.85},
+                {"name": "loop_behavior", "display_name": "Loop Behavior",
+                    "probability": 0.85},
                 ...
             ],
             "user_followup_patterns": [...],
@@ -144,7 +146,12 @@ def categorize_features(
             result["other"].append(feature_entry)
 
     # Sort each category by probability (descending)
-    for key in ["agent_behavioral_issues", "user_followup_patterns", "infrastructure_issues", "other"]:
+    for key in [
+        "agent_behavioral_issues",
+        "user_followup_patterns",
+        "infrastructure_issues",
+        "other",
+    ]:
         result[key] = sorted(result[key], key=lambda x: x["probability"], reverse=True)
 
     return result

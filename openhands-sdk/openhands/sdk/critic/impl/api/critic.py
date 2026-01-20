@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
-from openhands.sdk.critic.taxonomy import categorize_features
+from openhands.sdk.critic.impl.api.taxonomy import categorize_features
 
 
 if TYPE_CHECKING:
