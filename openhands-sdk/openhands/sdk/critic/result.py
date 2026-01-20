@@ -29,16 +29,57 @@ class CriticResult(BaseModel):
         """Whether the agent is successful."""
         return self.score >= CriticResult.THRESHOLD
 
+    @staticmethod
+    def _get_quality_assessment(score: float) -> tuple[str, str, str]:
+        """Convert score to human-readable quality assessment.
+
+        Returns:
+            Tuple of (label, emoji, style)
+        """
+        if score >= 0.8:
+            return "Excellent", "✓", "green bold"
+        elif score >= 0.6:
+            return "Good", "✓", "green"
+        elif score >= 0.5:
+            return "Fair", "~", "yellow"
+        elif score >= 0.3:
+            return "Needs Improvement", "!", "yellow"
+        else:
+            return "Poor", "✗", "red"
+
+    @staticmethod
+    def _get_confidence_label(prob: float) -> tuple[str, str]:
+        """Convert probability to confidence level label and style.
+
+        Returns:
+            Tuple of (confidence_label, style)
+        """
+        if prob >= 0.7:
+            return "High", "red bold"
+        elif prob >= 0.5:
+            return "Medium", "yellow"
+        else:
+            return "Low", "dim"
+
+    @staticmethod
+    def _get_sentiment_emoji(sentiment: str) -> str:
+        """Get emoji for sentiment type."""
+        emoji_map = {
+            "Positive": "😊",
+            "Neutral": "😐",
+            "Negative": "😟",
+        }
+        return emoji_map.get(sentiment, "")
+
     @property
     def visualize(self) -> Text:
         """Return Rich Text representation of the critic result."""
         content = Text()
-        content.append("\n\nCritic Score: ", style="bold")
+        content.append("\n\nQuality Assessment: ", style="bold")
 
-        # Display main score inline
-        score_style = "green" if self.success else "yellow"
-        content.append(f"{self.score:.2f}", style=score_style)
-        content.append(" (0-1, higher is better)", style="dim")
+        # Display main score as human-readable quality with emoji
+        label, emoji, style = self._get_quality_assessment(self.score)
+        content.append(f"{emoji} {label}", style=style)
 
         # Use categorized features from metadata if available
         if self.metadata and "categorized_features" in self.metadata:
@@ -61,10 +102,10 @@ class CriticResult(BaseModel):
             return
 
         content.append(" | ", style="dim")
-        content.append("Predicted User Sentiment: ", style="bold")
+        content.append("Expected User Response: ", style="bold")
 
         predicted = sentiment.get("predicted", "")
-        prob = sentiment.get("probability", 0.0)
+        emoji = self._get_sentiment_emoji(predicted)
 
         # Color sentiment based on type
         if predicted == "Positive":
@@ -74,7 +115,7 @@ class CriticResult(BaseModel):
         else:  # Neutral
             sentiment_style = "yellow"
 
-        content.append(f"{predicted} ({prob:.2f})", style=sentiment_style)
+        content.append(f"{emoji} {predicted}", style=sentiment_style)
 
     def _append_categorized_features(
         self, content: Text, categorized: dict[str, Any]
@@ -86,7 +127,7 @@ class CriticResult(BaseModel):
         agent_issues = categorized.get("agent_behavioral_issues", [])
         if agent_issues:
             content.append("\n  ")
-            content.append("Detected Agent Issues: ", style="bold")
+            content.append("⚠ Potential Issues: ", style="bold yellow")
             self._append_feature_list_inline(content, agent_issues)
             has_content = True
 
@@ -94,7 +135,7 @@ class CriticResult(BaseModel):
         user_patterns = categorized.get("user_followup_patterns", [])
         if user_patterns:
             content.append("\n  ")
-            content.append("Predicted User Follow-Up: ", style="bold")
+            content.append("📝 Likely Follow-up: ", style="bold")
             self._append_feature_list_inline(content, user_patterns)
             has_content = True
 
@@ -102,7 +143,7 @@ class CriticResult(BaseModel):
         infra_issues = categorized.get("infrastructure_issues", [])
         if infra_issues:
             content.append("\n  ")
-            content.append("Infra Issues: ", style="bold")
+            content.append("🔧 Infrastructure: ", style="bold")
             self._append_feature_list_inline(content, infra_issues)
             has_content = True
 
@@ -125,26 +166,20 @@ class CriticResult(BaseModel):
         features: list[dict[str, Any]],
         is_other: bool = False,
     ) -> None:
-        """Append features inline with dot separators."""
+        """Append features inline with confidence levels instead of raw probabilities."""
         for i, feature in enumerate(features):
             display_name = feature.get("display_name", feature.get("name", "Unknown"))
             prob = feature.get("probability", 0.0)
 
-            # Determine color based on probability
+            # Get confidence label and style
             if is_other:
-                prob_style = "white"
-            elif prob >= 0.7:
-                prob_style = "red bold"
-            elif prob >= 0.5:
-                prob_style = "red"
-            elif prob >= 0.3:
-                prob_style = "yellow"
+                confidence_label, confidence_style = "—", "white"
             else:
-                prob_style = "dim"
+                confidence_label, confidence_style = self._get_confidence_label(prob)
 
             # Add dot separator between features
             if i > 0:
                 content.append(" · ", style="dim")
 
-            content.append(f"{display_name} ", style="dim")
-            content.append(f"({prob:.2f})", style=prob_style)
+            content.append(f"{display_name}", style="white")
+            content.append(f" ({confidence_label})", style=confidence_style)

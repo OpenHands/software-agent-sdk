@@ -7,7 +7,7 @@ def test_format_critic_result_with_json_message():
     """Test formatting critic result with JSON probabilities.
 
     When no metadata with categorized_features is provided, the raw JSON
-    message is displayed as-is.
+    message is displayed as-is in the fallback format.
     """
     probs_dict = {
         "sentiment_neutral": 0.7612602710723877,
@@ -22,8 +22,9 @@ def test_format_critic_result_with_json_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display overall score with 2 decimal places inline
-    assert "0.51" in text
+    # Should display quality assessment instead of raw score
+    assert "Quality Assessment:" in text
+    assert "Fair" in text  # Score 0.507 maps to "Fair"
 
     # Without metadata, the raw JSON message is displayed as-is
     assert "sentiment_neutral" in text
@@ -39,8 +40,9 @@ def test_format_critic_result_with_plain_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display overall score with 2 decimal places
-    assert "0.75" in text
+    # Should display quality assessment
+    assert "Quality Assessment:" in text
+    assert "Good" in text  # Score 0.75 maps to "Good"
     # Should display plain text message
     assert "This is a plain text message" in text
 
@@ -52,8 +54,9 @@ def test_format_critic_result_without_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should only display overall score with 2 decimal places
-    assert "0.65" in text
+    # Should display quality assessment
+    assert "Quality Assessment:" in text
+    assert "Good" in text  # Score 0.65 maps to "Good"
     # Should be compact - just a few lines
     assert text.count("\n") <= 3
 
@@ -73,8 +76,9 @@ def test_visualize_consistency():
 
     formatted = critic_result.visualize.plain
 
-    # Should contain overall score with 2 decimal places
-    assert "0.80" in formatted
+    # Should display quality assessment
+    assert "Quality Assessment:" in formatted
+    assert "Excellent" in formatted  # Score 0.8 maps to "Excellent"
     # Without metadata, the raw JSON message is displayed as-is
     assert "success" in formatted
     assert "sentiment_positive" in formatted
@@ -109,7 +113,7 @@ def test_color_highlighting():
     """Test that the visualize output has appropriate styling.
 
     When no metadata with categorized_features is provided, the raw JSON
-    message is displayed as-is. The score and header still have styling.
+    message is displayed as-is. The quality assessment and header still have styling.
     """
     probs_dict = {
         "critical": 0.85,
@@ -130,7 +134,7 @@ def test_color_highlighting():
     assert "medium" in text
     assert "minimal" in text
 
-    # Verify spans contain style information for the score and header
+    # Verify spans contain style information for the quality assessment and header
     # Rich Text objects have spans with (start, end, style) tuples
     spans = list(formatted.spans)
     assert len(spans) > 0, "Should have styled spans"
@@ -138,3 +142,97 @@ def test_color_highlighting():
     # Check that different styles are applied (just verify they exist)
     styles = {span.style for span in spans if span.style}
     assert len(styles) > 1, "Should have multiple different styles"
+
+
+def test_quality_assessment_levels():
+    """Test that scores map to correct quality assessment levels."""
+    # Excellent (>= 0.8)
+    assert CriticResult._get_quality_assessment(0.8)[0] == "Excellent"
+    assert CriticResult._get_quality_assessment(1.0)[0] == "Excellent"
+
+    # Good (>= 0.6)
+    assert CriticResult._get_quality_assessment(0.6)[0] == "Good"
+    assert CriticResult._get_quality_assessment(0.79)[0] == "Good"
+
+    # Fair (>= 0.5)
+    assert CriticResult._get_quality_assessment(0.5)[0] == "Fair"
+    assert CriticResult._get_quality_assessment(0.59)[0] == "Fair"
+
+    # Needs Improvement (>= 0.3)
+    assert CriticResult._get_quality_assessment(0.3)[0] == "Needs Improvement"
+    assert CriticResult._get_quality_assessment(0.49)[0] == "Needs Improvement"
+
+    # Poor (< 0.3)
+    assert CriticResult._get_quality_assessment(0.0)[0] == "Poor"
+    assert CriticResult._get_quality_assessment(0.29)[0] == "Poor"
+
+
+def test_confidence_levels():
+    """Test that probabilities map to correct confidence labels."""
+    # High (>= 0.7)
+    assert CriticResult._get_confidence_label(0.7)[0] == "High"
+    assert CriticResult._get_confidence_label(1.0)[0] == "High"
+
+    # Medium (>= 0.5)
+    assert CriticResult._get_confidence_label(0.5)[0] == "Medium"
+    assert CriticResult._get_confidence_label(0.69)[0] == "Medium"
+
+    # Low (< 0.5)
+    assert CriticResult._get_confidence_label(0.0)[0] == "Low"
+    assert CriticResult._get_confidence_label(0.49)[0] == "Low"
+
+
+def test_sentiment_emojis():
+    """Test that sentiments map to correct emojis."""
+    assert CriticResult._get_sentiment_emoji("Positive") == "😊"
+    assert CriticResult._get_sentiment_emoji("Neutral") == "😐"
+    assert CriticResult._get_sentiment_emoji("Negative") == "😟"
+    assert CriticResult._get_sentiment_emoji("Unknown") == ""
+
+
+def test_visualize_with_categorized_features():
+    """Test visualization with categorized features from metadata."""
+    categorized = {
+        "sentiment": {
+            "predicted": "Neutral",
+            "probability": 0.77,
+            "all": {"positive": 0.10, "neutral": 0.77, "negative": 0.13},
+        },
+        "agent_behavioral_issues": [
+            {"name": "loop_behavior", "display_name": "Loop Behavior", "probability": 0.85},
+            {"name": "insufficient_testing", "display_name": "Insufficient Testing", "probability": 0.57},
+        ],
+        "user_followup_patterns": [
+            {"name": "direction_change", "display_name": "Direction Change", "probability": 0.59},
+        ],
+        "infrastructure_issues": [],
+        "other": [],
+    }
+
+    result = CriticResult(
+        score=0.65,
+        message="test",
+        metadata={"categorized_features": categorized},
+    )
+
+    text = result.visualize.plain
+
+    # Should display quality assessment
+    assert "Quality Assessment:" in text
+    assert "Good" in text
+
+    # Should display sentiment with emoji
+    assert "Expected User Response:" in text
+    assert "😐" in text
+    assert "Neutral" in text
+
+    # Should display issues with confidence levels
+    assert "Potential Issues:" in text
+    assert "Loop Behavior" in text
+    assert "(High)" in text
+    assert "Insufficient Testing" in text
+    assert "(Medium)" in text
+
+    # Should display follow-up patterns
+    assert "Likely Follow-up:" in text
+    assert "Direction Change" in text
