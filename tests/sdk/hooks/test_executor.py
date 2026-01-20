@@ -4,8 +4,8 @@ import json
 
 import pytest
 
-from openhands.sdk.hooks.config import HookDefinition
-from openhands.sdk.hooks.executor import HookExecutor
+from openhands.sdk.hooks.config import HookDefinition, HookType
+from openhands.sdk.hooks.executor import HookExecutor, HookResult
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
 
 
@@ -117,3 +117,122 @@ class TestHookExecutor:
 
         assert result.blocked
         assert "error message" in result.stderr
+
+
+class TestCallbackHooks:
+    """Tests for callback-based hooks."""
+
+    @pytest.fixture
+    def executor(self, tmp_path):
+        """Create an executor with a temporary working directory."""
+        return HookExecutor(working_dir=str(tmp_path))
+
+    @pytest.fixture
+    def sample_event(self):
+        """Create a sample hook event."""
+        return HookEvent(
+            event_type=HookEventType.STOP,
+            session_id="test-session",
+        )
+
+    def test_callback_hook_returns_hook_result(self, executor, sample_event):
+        """Test that callback hooks can return HookResult directly."""
+
+        def my_callback(event: HookEvent) -> HookResult:
+            return HookResult(
+                success=True,
+                decision=HookDecision.ALLOW,
+                additional_context="Callback executed successfully",
+            )
+
+        hook = HookDefinition(
+            type=HookType.CALLBACK,
+            callback=my_callback,
+        )
+        result = executor.execute(hook, sample_event)
+
+        assert result.success
+        assert result.decision == HookDecision.ALLOW
+        assert result.additional_context == "Callback executed successfully"
+
+    def test_callback_hook_can_deny(self, executor, sample_event):
+        """Test that callback hooks can deny operations."""
+
+        def deny_callback(event: HookEvent) -> HookResult:
+            return HookResult(
+                success=True,
+                blocked=True,
+                decision=HookDecision.DENY,
+                reason="Not allowed by callback",
+            )
+
+        hook = HookDefinition(
+            type=HookType.CALLBACK,
+            callback=deny_callback,
+        )
+        result = executor.execute(hook, sample_event)
+
+        assert result.blocked
+        assert result.decision == HookDecision.DENY
+        assert result.reason == "Not allowed by callback"
+        assert not result.should_continue
+
+    def test_callback_hook_receives_event(self, executor, sample_event):
+        """Test that callback receives the event data."""
+        received_event = None
+
+        def capture_callback(event: HookEvent) -> HookResult:
+            nonlocal received_event
+            received_event = event
+            return HookResult(success=True)
+
+        hook = HookDefinition(
+            type=HookType.CALLBACK,
+            callback=capture_callback,
+        )
+        executor.execute(hook, sample_event)
+
+        assert received_event is not None
+        assert received_event.event_type == HookEventType.STOP
+        assert received_event.session_id == "test-session"
+
+    def test_callback_hook_exception_returns_error(self, executor, sample_event):
+        """Test that exceptions in callbacks are handled gracefully."""
+
+        def failing_callback(event: HookEvent) -> HookResult:
+            raise ValueError("Something went wrong")
+
+        hook = HookDefinition(
+            type=HookType.CALLBACK,
+            callback=failing_callback,
+        )
+        result = executor.execute(hook, sample_event)
+
+        assert not result.success
+        assert "Something went wrong" in result.error
+
+    def test_callback_hook_validation_requires_callback(self):
+        """Test that callback hook type requires a callback function."""
+        with pytest.raises(ValueError, match="callback is required"):
+            HookDefinition(type=HookType.CALLBACK)
+
+    def test_callback_hook_in_execute_all(self, executor, sample_event):
+        """Test that callback hooks work in execute_all."""
+
+        def allow_callback(event: HookEvent) -> HookResult:
+            return HookResult(success=True, decision=HookDecision.ALLOW)
+
+        def deny_callback(event: HookEvent) -> HookResult:
+            return HookResult(success=True, blocked=True, decision=HookDecision.DENY)
+
+        hooks = [
+            HookDefinition(type=HookType.CALLBACK, callback=allow_callback),
+            HookDefinition(type=HookType.CALLBACK, callback=deny_callback),
+            HookDefinition(type=HookType.CALLBACK, callback=allow_callback),
+        ]
+
+        results = executor.execute_all(hooks, sample_event, stop_on_block=True)
+
+        assert len(results) == 2  # Stopped after deny
+        assert results[0].decision == HookDecision.ALLOW
+        assert results[1].decision == HookDecision.DENY
