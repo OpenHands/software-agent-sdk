@@ -46,7 +46,10 @@ jobs:
                     git config user.email "github-actions[bot]@users.noreply.github.com"
                     git rm -rf .pr/
                     git commit -m "chore: Remove PR-only artifacts [automated]"
-                    git push
+                    git push || {
+                      echo "::error::Failed to push cleanup commit. Check branch protection rules."
+                      exit 1
+                    }
                     echo "removed=true" >> $GITHUB_OUTPUT
                     echo "::notice::Removed .pr/ directory"
                   else
