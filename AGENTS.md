@@ -121,7 +121,7 @@ When reviewing code, provide constructive feedback:
 <PR_ARTIFACTS>
 # PR-Specific Documents
 
-When working on a PR that requires design documents, analysis notes, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
 
 ## Usage
 
