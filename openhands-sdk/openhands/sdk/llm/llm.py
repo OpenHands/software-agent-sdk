@@ -772,6 +772,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         from litellm.responses.streaming_iterator import (
                             SyncResponsesAPIStreamingIterator,
                         )
+                        from litellm.types.llms.openai import (
+                            OutputTextDeltaEvent,
+                            ReasoningSummaryTextDeltaEvent,
+                            RefusalDeltaEvent,
+                            ResponseCompletedEvent,
+                        )
                         from litellm.types.utils import (
                             Delta,
                             ModelResponseStream,
@@ -785,14 +791,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
                         for event in ret:
                             if user_enable_streaming and on_token is not None:
-                                event_type = getattr(event, "type", None)
-                                if event_type in {
-                                    "response.output_text.delta",
-                                    "response.refusal.delta",
-                                    "response.reasoning_summary_text.delta",
-                                }:
-                                    delta = getattr(event, "delta", None)
-                                    if isinstance(delta, str) and delta:
+                                if isinstance(
+                                    event,
+                                    (
+                                        OutputTextDeltaEvent,
+                                        RefusalDeltaEvent,
+                                        ReasoningSummaryTextDeltaEvent,
+                                    ),
+                                ):
+                                    delta = event.delta
+                                    if delta:
                                         on_token(
                                             ModelResponseStream(
                                                 choices=[
@@ -803,17 +811,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                                             )
                                         )
 
-                        completed_event = getattr(ret, "completed_response", None)
+                        completed_event = ret.completed_response
                         if completed_event is None:
                             raise LLMNoResponseError(
                                 "Responses stream finished without a completed response"
                             )
-
-                        completed_resp = getattr(completed_event, "response", None)
-                        if not isinstance(completed_resp, ResponsesAPIResponse):
+                        if not isinstance(completed_event, ResponseCompletedEvent):
                             raise LLMNoResponseError(
                                 f"Unexpected completed event: {type(completed_event)}"
                             )
+
+                        completed_resp = completed_event.response
 
                         self._telemetry.on_response(completed_resp)
                         return completed_resp
