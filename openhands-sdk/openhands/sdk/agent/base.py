@@ -179,6 +179,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     critic: CriticBase | None = Field(
         default=None,
         description=(
+            "⚠️ EXPERIMENTAL: Optional critic to evaluate agent actions and messages "
+            "in real-time. API and behavior may change without notice. "
+            "May impact performance, especially in 'all_actions' mode."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+        default=None,
+        description=(
             "Optional critic to evaluate agent actions and messages in real-time."
         ),
         examples=[{"kind": "AgentFinishedCritic"}],
