@@ -175,11 +175,31 @@ def __init__(
     # ... existing params
 ):
 
-# Where PluginSource is a structured type:
+# Where PluginSource is a structured type (in openhands.sdk.plugin.types):
 class PluginSource(BaseModel):
-    source: str          # e.g., "github:owner/repo", git URL, or local path
-    ref: str | None = None       # branch, tag, or commit
-    path: str | None = None      # subdirectory within repo
+    """Specification for a plugin to load."""
+    source: str = Field(
+        description="Plugin source: 'github:owner/repo', any git URL, or local path"
+    )
+    ref: str | None = Field(
+        default=None,
+        description="Optional branch, tag, or commit for git sources"
+    )
+    subpath: str | None = Field(
+        default=None,
+        description="Optional subdirectory path within the repository "
+                    "(e.g., 'plugins/my-plugin' for monorepos)"
+    )
+```
+
+**Note on `subpath`:** This is required when a git repository contains multiple plugins in subdirectories. For example:
+```
+my-plugins-repo/
+├── plugins/
+│   ├── security-plugin/    # subpath="plugins/security-plugin"
+│   ├── logging-plugin/     # subpath="plugins/logging-plugin"
+│   └── custom-tools/       # subpath="plugins/custom-tools"
+└── README.md
 ```
 
 **Alternative simpler API (list of strings with optional structured form):**
@@ -257,7 +277,7 @@ def load_plugins(
     
     for spec in plugin_specs:
         # Fetch (downloads if needed, returns cached path)
-        path = Plugin.fetch(source=spec.source, ref=spec.ref, subpath=spec.path)
+        path = Plugin.fetch(source=spec.source, ref=spec.ref, subpath=spec.subpath)
         plugin = Plugin.load(path)
         
         # Merge skills and MCP using existing SDK utilities
@@ -341,11 +361,8 @@ class StartConversationRequest(BaseModel):
     plugins: list[PluginSource] | None = None  # NEW (matching LocalConversation)
     # ... existing fields
 
-# PluginSource can be defined in SDK and imported
-class PluginSource(BaseModel):
-    source: str
-    ref: str | None = None
-    path: str | None = None
+# PluginSource imported from SDK (openhands.sdk.plugin.types)
+from openhands.sdk.plugin.types import PluginSource
 ```
 
 **Example API usage:**
@@ -356,6 +373,7 @@ POST /api/conversations/start
   "plugins": [
     {"source": "github:org/security-plugin", "ref": "v2.0.0"},
     {"source": "github:org/logging-plugin"},
+    {"source": "github:org/monorepo", "subpath": "plugins/custom-tools"},
     {"source": "/local/path/to/custom-plugin"}
   ]
 }
@@ -473,6 +491,8 @@ conversation = Conversation(
     plugins=[
         PluginSource(source="github:org/security-plugin", ref="v2.0.0"),
         PluginSource(source="github:org/logging-plugin"),
+        # Plugin from monorepo with subpath
+        PluginSource(source="github:org/plugins-monorepo", subpath="plugins/custom-tools"),
     ]
 )
 
@@ -492,7 +512,8 @@ POST /api/conversations/start
   "agent": {...},
   "plugins": [
     {"source": "github:org/security-plugin", "ref": "v2.0.0"},
-    {"source": "github:org/logging-plugin"}
+    {"source": "github:org/logging-plugin"},
+    {"source": "github:org/plugins-monorepo", "subpath": "plugins/custom-tools"}
   ]
 }
 ```
