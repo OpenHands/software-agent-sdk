@@ -126,23 +126,11 @@ class LocalConversation(BaseConversation):
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
 
-        # Load plugins if specified (new recommended pattern)
+        # Load plugins if specified (recommended pattern)
         plugin_hook_config: HookConfig | None = None
         if plugins:
             agent, plugin_hook_config = load_plugins(plugins, agent)
             logger.info(f"Loaded {len(plugins)} plugin(s) via Conversation")
-
-        # Legacy: Extract hooks from plugin loaded via AgentContext.plugin_source
-        # This maintains backward compatibility during transition
-        if agent.agent_context and agent.agent_context.plugin_hooks:
-            legacy_hooks = agent.agent_context.plugin_hooks
-            # Combine with any hooks from load_plugins()
-            if plugin_hook_config:
-                plugin_hook_config = merge_hook_configs(
-                    [plugin_hook_config, legacy_hooks]
-                )
-            else:
-                plugin_hook_config = legacy_hooks
 
         # Combine explicit hook_config with plugin hooks
         if plugin_hook_config and hook_config:

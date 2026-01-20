@@ -144,7 +144,9 @@ class TestLocalConversationPlugins:
 
         explicit_hooks = HookConfig(
             pre_tool_use=[
-                HookMatcher(matcher="explicit-*", hooks=[HookDefinition(command="explicit-cmd")])
+                HookMatcher(
+                    matcher="explicit-*", hooks=[HookDefinition(command="explicit-cmd")]
+                )
             ]
         )
 
