@@ -1302,7 +1302,9 @@ def test_discriminated_union_full_class_name_invalid_class(clean_env):
     """Test that invalid class names raise AttributeError."""
     parser = DiscriminatedUnionEnvParser(parsers={})
 
-    os.environ["TEST_KIND"] = "tests.sdk.utils.test_discriminated_union.NonexistentClass"
+    os.environ["TEST_KIND"] = (
+        "tests.sdk.utils.test_discriminated_union.NonexistentClass"
+    )
     os.environ["TEST_NAME"] = "Test"
 
     with pytest.raises(AttributeError):
