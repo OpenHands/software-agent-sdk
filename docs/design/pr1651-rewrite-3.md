@@ -460,15 +460,23 @@ Remove from `openhands/sdk/context/agent_context.py`:
 
 All changes must pass existing lints and tests. New functionality requires corresponding test coverage.
 
+### 5.0 Fix CI - Remove Undocumented Examples (M0)
+
+**Goal**: Start with green CI by removing undocumented examples that fail the check-examples job.
+
+- [x] Remove `examples/05_skills_and_plugins/03_plugin_via_agent_context/` - This example was not documented in the docs repo and was causing check-examples CI failure. It will be replaced with the new `03_plugin_via_conversation` example in M6.
+
 ### 5.1 Rename subpath to repo_path in Plugin.fetch (M1)
 
 Clarify that the parameter is only relevant for git sources.
 
 #### 5.1.1 Update Plugin.fetch() Signature
 
-- [ ] `openhands-sdk/openhands/sdk/plugin/plugin.py` - Rename `subpath` to `repo_path`
-- [ ] `openhands-sdk/openhands/sdk/plugin/fetch.py` - Update internal usage
-- [ ] `tests/sdk/plugin/test_plugin_fetch.py` - Update tests to use `repo_path`
+- [x] `openhands-sdk/openhands/sdk/plugin/plugin.py` - Rename `subpath` to `repo_path`
+- [x] `openhands-sdk/openhands/sdk/plugin/fetch.py` - Update internal usage
+- [x] `tests/sdk/plugin/test_plugin_fetch.py` - Update tests to use `repo_path`
+- [x] `openhands-sdk/openhands/sdk/context/agent_context.py` - Also renamed `plugin_path` to `plugin_repo_path` for consistency (using `repo_path` alias for backward compatibility)
+- [x] `tests/sdk/context/test_agent_context_plugin.py` - Updated tests
 
 ### 5.2 PluginSource Model and Loader Utility (M2)
 
@@ -478,14 +486,14 @@ Foundation: Define the plugin specification model and loading utility.
 
 #### 5.2.1 PluginSource Model
 
-- [ ] `openhands-sdk/openhands/sdk/plugin/types.py` - Add `PluginSource` model
-- [ ] `openhands-sdk/openhands/sdk/plugin/__init__.py` - Export `PluginSource`
+- [x] `openhands-sdk/openhands/sdk/plugin/types.py` - Add `PluginSource` model
+- [x] `openhands-sdk/openhands/sdk/plugin/__init__.py` - Export `PluginSource`
 
 #### 5.2.2 Loader Utility
 
-- [ ] `openhands-sdk/openhands/sdk/plugin/loader.py` - Create with `load_plugins()` and `merge_hook_configs()`
-- [ ] `openhands-sdk/openhands/sdk/plugin/__init__.py` - Export `load_plugins`
-- [ ] `tests/sdk/plugin/test_plugin_loader.py` - Tests for:
+- [x] `openhands-sdk/openhands/sdk/plugin/loader.py` - Create with `load_plugins()` and `merge_hook_configs()`
+- [x] `openhands-sdk/openhands/sdk/plugin/__init__.py` - Export `load_plugins`, `merge_hook_configs`
+- [x] `tests/sdk/plugin/test_plugin_loader.py` - Tests for:
   - Loading single plugin
   - Loading multiple plugins with merge semantics
   - Skills override by name
@@ -500,20 +508,20 @@ Foundation: Define the plugin specification model and loading utility.
 
 #### 5.3.1 LocalConversation Changes
 
-- [ ] `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`
+- [x] `openhands-sdk/openhands/sdk/conversation/impl/local_conversation.py`
   - Add `plugins: list[PluginSource] | None = None` parameter
   - Call `load_plugins()` in `__init__()`
-  - Merge plugin hooks with explicit `hook_config`
+  - Merge plugin hooks with explicit `hook_config` using `merge_hook_configs()`
 
 #### 5.3.2 Conversation Factory Changes
 
-- [ ] `openhands-sdk/openhands/sdk/conversation/conversation.py`
+- [x] `openhands-sdk/openhands/sdk/conversation/conversation.py`
   - Add `plugins` parameter to overloads and implementation
   - Pass to `LocalConversation`
 
 #### 5.3.3 Tests
 
-- [ ] `tests/sdk/conversation/test_local_conversation_plugins.py`
+- [x] `tests/sdk/conversation/test_local_conversation_plugins.py`
   - Test plugin loading via Conversation factory
   - Test multiple plugins merge correctly
   - Test hook_config + plugin hooks combination
@@ -552,27 +560,28 @@ Foundation: Define the plugin specification model and loading utility.
 
 **Demo**: User can POST to `/api/conversations/start` with `plugins` array and they load on server.
 
-### 5.5 Remove Plugin Loading from AgentContext (M5)
+### 5.5 Deprecate Legacy Fields in AgentContext (M5)
 
-**Goal**: Clean up the now-obsolete AgentContext plugin approach.
+**Goal**: Mark the AgentContext plugin fields as deprecated (not remove them yet for backward compatibility).
 
-#### 5.5.1 AgentContext Cleanup
+> **Note**: Changed from "Remove" to "Deprecate" to maintain backward compatibility during migration period.
+
+#### 5.5.1 AgentContext Deprecation
 
 - [ ] `openhands-sdk/openhands/sdk/context/agent_context.py`
-  - Remove `plugin_source`, `plugin_ref`, `plugin_path` fields
-  - Remove `_loaded_plugin_mcp_config`, `_loaded_plugin_hooks` private attrs
-  - Remove `_load_plugin()` model validator
-  - Remove `plugin_mcp_config` and `plugin_hooks` properties
+  - Mark `plugin_source`, `plugin_ref`, `plugin_repo_path` fields as deprecated
+  - Add deprecation warnings when these fields are used
+  - Keep `plugin_mcp_config` and `plugin_hooks` properties working but deprecated
 
 #### 5.5.2 Agent Cleanup
 
 - [ ] `openhands-sdk/openhands/sdk/agent/base.py`
-  - Remove any plugin MCP merging in `initialize()` if present
+  - Add deprecation warning for plugin MCP merging in `initialize()` if present
 
 #### 5.5.3 Update Tests
 
-- [ ] Remove or update tests that used AgentContext plugin loading
-- [ ] `tests/sdk/context/test_agent_context_plugin.py` - Remove or repurpose
+- [ ] Update tests to use new `plugins` parameter instead of AgentContext plugin fields
+- [ ] Keep existing tests but expect deprecation warnings
 
 ### 5.6 Documentation and Examples (M6)
 
@@ -582,7 +591,7 @@ Foundation: Define the plugin specification model and loading utility.
 
 - [ ] `examples/05_skills_and_plugins/03_plugin_via_conversation/main.py` - New example
 - [ ] `examples/05_skills_and_plugins/03_plugin_via_conversation/README.md` - Documentation
-- [ ] Remove or update `examples/05_skills_and_plugins/03_plugin_via_agent_context/` if it exists
+- [ ] Coordinate with docs repo to document the new example
 
 #### 5.6.2 Integration Tests
 
