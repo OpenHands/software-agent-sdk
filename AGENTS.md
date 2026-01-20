@@ -153,6 +153,7 @@ mkdir -p .pr
 - Complex refactoring that benefits from written design rationale
 - Debugging sessions where you want to document your investigation
 - Feature implementations that need temporary planning docs
+- Temporary script that are intended to show reviewers that the feature works
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
 
