@@ -27,7 +27,6 @@ from openhands.sdk.event import (
     SystemPromptEvent,
     TokenEvent,
     UserRejectObservation,
-    WarningEvent,
 )
 from openhands.sdk.event.condenser import (
     Condensation,
@@ -138,10 +137,7 @@ class Agent(AgentBase):
         return False
 
     def _evaluate_with_critic(
-        self,
-        conversation: LocalConversation,
-        event: ActionEvent | MessageEvent,
-        on_event: ConversationCallbackType,
+        self, conversation: LocalConversation, event: ActionEvent | MessageEvent
     ) -> CriticResult | None:
         """Run critic evaluation on the current event and history."""
         if self.critic is None:
@@ -165,15 +161,6 @@ class Agent(AgentBase):
             return critic_result
         except Exception as e:
             logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
-            # Emit warning event so users can see critic failures in the conversation
-            warning_event = WarningEvent(
-                message=(
-                    f"Critic evaluation failed: {e}. "
-                    f"Event type: {type(event).__name__}, "
-                    f"Critic mode: {self.critic.mode}"
-                )
-            )
-            on_event(warning_event)
             return None
 
     def _execute_actions(
@@ -334,9 +321,7 @@ class Agent(AgentBase):
         )
         # Run critic evaluation if configured for finish_and_message mode
         if self.critic is not None and self.critic.mode == "finish_and_message":
-            critic_result = self._evaluate_with_critic(
-                conversation, msg_event, on_event
-            )
+            critic_result = self._evaluate_with_critic(conversation, msg_event)
             if critic_result is not None:
                 # Create new event with critic result
                 msg_event = msg_event.model_copy(
@@ -562,9 +547,7 @@ class Agent(AgentBase):
 
         # Run critic evaluation if configured
         if self._should_evaluate_with_critic(action):
-            critic_result = self._evaluate_with_critic(
-                conversation, action_event, on_event
-            )
+            critic_result = self._evaluate_with_critic(conversation, action_event)
             if critic_result is not None:
                 # Create new event with critic result
                 action_event = action_event.model_copy(
