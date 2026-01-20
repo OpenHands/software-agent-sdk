@@ -25,7 +25,12 @@ def get_required_env(name: str) -> str:
     value = os.getenv(name)
     if value:
         return value
-    sys.exit(
+    if value:
+        return value
+    raise ValueError(
+        f"Missing required environment variable: {name}. "
+        f"Set {name} before running this example."
+    )
         f"Missing required environment variable: {name}. "
         f"Set {name} before running this example."
     )
