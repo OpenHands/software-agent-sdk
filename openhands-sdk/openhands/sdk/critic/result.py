@@ -1,4 +1,3 @@
-import json
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
@@ -21,7 +20,7 @@ class CriticResult(BaseModel):
         default=None,
         description=(
             "Optional metadata about the critic evaluation. "
-            "Can include event_ids to reproduce the input sent to the critic model."
+            "Can include event_ids and categorized_features for visualization."
         ),
     )
 
@@ -40,89 +39,105 @@ class CriticResult(BaseModel):
         score_style = "green" if self.success else "yellow"
         content.append(f"{self.score:.4f}", style=score_style)
 
-        # Parse and display detailed probabilities if available in message
-        if self.message:
-            try:
-                probs_dict = json.loads(self.message[self.message.find("{") :])
-                if isinstance(probs_dict, dict):
-                    # Separate sentiments from other metrics
-                    sentiments = {}
-                    other_metrics = {}
-
-                    for field, prob in probs_dict.items():
-                        if field.startswith("sentiment_"):
-                            sentiments[field] = prob
-                        else:
-                            other_metrics[field] = prob
-
-                    # Display only the highest sentiment if present
-                    if sentiments:
-                        # Get the sentiment with highest probability
-                        top_sentiment = max(sentiments.items(), key=lambda x: x[1])
-                        field, prob = top_sentiment
-
-                        content.append(" | ", style="dim")
-                        content.append("predicted user sentiment: ", style="bold")
-
-                        # Shorten names: sentiment_neutral -> neutral
-                        short_name = field.replace("sentiment_", "")
-
-                        # Color code based on probability
-                        if prob >= 0.7:
-                            style = "cyan bold"
-                        elif prob >= 0.5:
-                            style = "cyan"
-                        else:
-                            style = "dim"
-
-                        content.append(f"{short_name} ", style="white")
-                        content.append(f"{prob:.2f}", style=style)
-
-                    # Filter and display other significant metrics
-                    # Exclude "success" as it's redundant with the critic score
-                    significant_metrics = {
-                        k: v
-                        for k, v in other_metrics.items()
-                        if v >= self.DISPLAY_THRESHOLD and k != "success"
-                    }
-
-                    if significant_metrics:
-                        # Sort by probability (descending)
-                        sorted_metrics = sorted(
-                            significant_metrics.items(),
-                            key=lambda x: x[1],
-                            reverse=True,
-                        )
-
-                        content.append("\n  ", style="dim")
-
-                        # Display metrics in a compact format (multiple per line)
-                        for i, (field, prob) in enumerate(sorted_metrics):
-                            # Color code based on probability
-                            if prob >= 0.7:
-                                prob_style = "red bold"
-                            elif prob >= 0.5:
-                                prob_style = "red"
-                            elif prob >= 0.3:
-                                prob_style = "yellow"
-                            else:
-                                prob_style = "white"
-
-                            if i > 0:
-                                content.append(" • ", style="dim")
-                            content.append(f"{field}: ", style="dim")
-                            content.append(f"{prob:.2f}", style=prob_style)
-
-                        content.append("\n")
-                    else:
-                        content.append("\n")
-                else:
-                    # If not a dict, display the message as-is
-                    content.append(f"\n  {self.message}\n")
-            except (json.JSONDecodeError, ValueError):
-                # If JSON parsing fails, display the message as-is
-                content.append(f"\n  {self.message}\n")
+        # Use categorized features from metadata if available
+        if self.metadata and "categorized_features" in self.metadata:
+            categorized = self.metadata["categorized_features"]
+            self._append_sentiment(content, categorized)
+            self._append_categorized_features(content, categorized)
         else:
-            content.append("\n")
+            # Fallback: display message as-is
+            if self.message:
+                content.append(f"\n  {self.message}\n")
+            else:
+                content.append("\n")
 
         return content
+
+    def _append_sentiment(self, content: Text, categorized: dict[str, Any]) -> None:
+        """Append sentiment information to content."""
+        sentiment = categorized.get("sentiment")
+        if not sentiment:
+            return
+
+        content.append(" | ", style="dim")
+        content.append("Predicted User Sentiment: ", style="bold")
+
+        predicted = sentiment.get("predicted", "")
+        prob = sentiment.get("probability", 0.0)
+
+        # Color sentiment based on type
+        if predicted == "Positive":
+            sentiment_style = "green"
+        elif predicted == "Negative":
+            sentiment_style = "red"
+        else:  # Neutral
+            sentiment_style = "yellow"
+
+        content.append(f"{predicted} ({prob:.2f})", style=sentiment_style)
+
+    def _append_categorized_features(
+        self, content: Text, categorized: dict[str, Any]
+    ) -> None:
+        """Append categorized features to content."""
+        has_content = False
+
+        # Agent behavioral issues
+        agent_issues = categorized.get("agent_behavioral_issues", [])
+        if agent_issues:
+            content.append("\n")
+            content.append("Detected Agent Behavioral Issues:\n", style="bold yellow")
+            self._append_feature_list(content, agent_issues)
+            has_content = True
+
+        # User follow-up patterns
+        user_patterns = categorized.get("user_followup_patterns", [])
+        if user_patterns:
+            content.append("\n")
+            content.append("Predicted User Follow-Up Patterns:\n", style="bold yellow")
+            self._append_feature_list(content, user_patterns)
+            has_content = True
+
+        # Infrastructure issues
+        infra_issues = categorized.get("infrastructure_issues", [])
+        if infra_issues:
+            content.append("\n")
+            content.append("Detected Infrastructure Issues:\n", style="bold yellow")
+            self._append_feature_list(content, infra_issues)
+            has_content = True
+
+        # Other metrics
+        other = categorized.get("other", [])
+        if other:
+            content.append("\n")
+            content.append("Other Metrics:\n", style="bold dim")
+            self._append_feature_list(content, other, is_other=True)
+            has_content = True
+
+        if not has_content:
+            content.append("\n")
+
+    def _append_feature_list(
+        self,
+        content: Text,
+        features: list[dict[str, Any]],
+        is_other: bool = False,
+    ) -> None:
+        """Append a list of features with probabilities."""
+        for feature in features:
+            display_name = feature.get("display_name", feature.get("name", "Unknown"))
+            prob = feature.get("probability", 0.0)
+
+            # Determine color based on probability
+            if is_other:
+                prob_style = "white"
+            elif prob >= 0.7:
+                prob_style = "red bold"
+            elif prob >= 0.5:
+                prob_style = "red"
+            elif prob >= 0.3:
+                prob_style = "yellow"
+            else:
+                prob_style = "dim"
+
+            content.append(f"  • {display_name}: ", style="dim")
+            content.append(f"{prob:.2f}\n", style=prob_style)
