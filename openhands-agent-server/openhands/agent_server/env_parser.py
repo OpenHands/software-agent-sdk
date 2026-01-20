@@ -2,6 +2,7 @@
 We couldn't use pydantic-settings for this as we need complex nested types
 and polymorphism."""
 
+import importlib
 import inspect
 import json
 import os
@@ -307,8 +308,6 @@ class DiscriminatedUnionEnvParser(EnvParser):
         Returns:
             The unqualified class name (e.g., 'MyClass')
         """
-# Move to top of file with other imports
-
         parts = full_class_name.rsplit(".", 1)
         module_name = parts[0]
         class_name = parts[1]
