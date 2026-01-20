@@ -27,6 +27,7 @@ from openhands.agent_server.env_parser import (
     BoolEnvParser,
     DelayedParser,
     DictEnvParser,
+    DiscriminatedUnionEnvParser,
     FloatEnvParser,
     IntEnvParser,
     ListEnvParser,
@@ -1138,3 +1139,84 @@ def test_to_env_function_with_boolean_values():
     assert "BOOL_TEST_ENABLED=1" in template
     assert "BOOL_TEST_DISABLED=0" in template
     assert "BOOL_TEST_MAYBE_IS_NONE=1" in template
+
+
+# ============================================================================
+# DISCRIMINATED UNION ENV PARSER TESTS
+# ============================================================================
+
+
+def test_discriminated_union_single_kind_uses_parser_directly(clean_env):
+    """Test that DiscriminatedUnionEnvParser uses the parser directly when there's
+    only one kind."""
+    # Create a single parser
+    single_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser(), "barking": BoolEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(parsers={"Dog": single_parser})
+
+    # Set up environment without KIND
+    os.environ["TEST_NAME"] = "Fido"
+    os.environ["TEST_BARKING"] = "1"
+
+    # Should use the single parser directly without requiring KIND
+    result = parser.from_env("TEST")
+    assert result == {"name": "Fido", "barking": True, "kind": "Dog"}
+
+
+def test_discriminated_union_multiple_kinds_requires_kind(clean_env):
+    """Test that DiscriminatedUnionEnvParser returns MISSING when there are multiple
+    kinds and no KIND is set."""
+    # Create multiple parsers
+    dog_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser(), "barking": BoolEnvParser()},
+        descriptions={},
+    )
+    cat_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(parsers={"Dog": dog_parser, "Cat": cat_parser})
+
+    # Set up environment without KIND
+    os.environ["TEST_NAME"] = "Fido"
+    os.environ["TEST_BARKING"] = "1"
+
+    # Should return MISSING because there are multiple kinds and no KIND is set
+    result = parser.from_env("TEST")
+    assert result is MISSING
+
+
+def test_discriminated_union_multiple_kinds_with_kind_set(clean_env):
+    """Test that DiscriminatedUnionEnvParser works correctly when KIND is
+    explicitly set."""
+    # Create multiple parsers
+    dog_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser(), "barking": BoolEnvParser()},
+        descriptions={},
+    )
+    cat_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(parsers={"Dog": dog_parser, "Cat": cat_parser})
+
+    # Set up environment with KIND
+    os.environ["TEST_KIND"] = "Dog"
+    os.environ["TEST_NAME"] = "Fido"
+    os.environ["TEST_BARKING"] = "1"
+
+    result = parser.from_env("TEST")
+    assert result == {"name": "Fido", "barking": True, "kind": "Dog"}
+
+
+def test_discriminated_union_zero_kinds_returns_missing(clean_env):
+    """Test that DiscriminatedUnionEnvParser returns MISSING when there are no kinds."""
+    parser = DiscriminatedUnionEnvParser(parsers={})
+
+    os.environ["TEST_NAME"] = "Fido"
+
+    # Should return MISSING because there are no parsers
+    result = parser.from_env("TEST")
+    assert result is MISSING

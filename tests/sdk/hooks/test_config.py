@@ -3,7 +3,7 @@
 import json
 import tempfile
 
-from openhands.sdk.hooks.config import HookConfig, HookMatcher
+from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.hooks.types import HookEventType
 
 
@@ -91,7 +91,7 @@ class TestHookConfig:
     def test_load_missing_file_returns_empty(self):
         """Test that loading missing file returns empty config."""
         config = HookConfig.load("/nonexistent/path/hooks.json")
-        assert config.hooks == {}
+        assert config.is_empty()
 
     def test_load_discovers_config_in_working_dir(self):
         """Test that load() discovers .openhands/hooks.json in working_dir."""
@@ -143,3 +143,89 @@ class TestHookConfig:
         )
         assert len(file_hooks) == 1
         assert file_hooks[0].command == "file-hook.sh"
+
+    def test_typed_field_instantiation(self):
+        """Test creating HookConfig with typed fields (recommended approach)."""
+        config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    matcher="terminal",
+                    hooks=[HookDefinition(command="block.sh", timeout=10)],
+                )
+            ],
+            post_tool_use=[HookMatcher(hooks=[HookDefinition(command="log.sh")])],
+        )
+
+        assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+        assert config.has_hooks_for_event(HookEventType.POST_TOOL_USE)
+        assert not config.has_hooks_for_event(HookEventType.STOP)
+
+        hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "terminal")
+        assert len(hooks) == 1
+        assert hooks[0].command == "block.sh"
+        assert hooks[0].timeout == 10
+
+    def test_json_round_trip(self):
+        """Test that model_dump produces JSON-compatible output for round-trip."""
+        config = HookConfig(
+            pre_tool_use=[
+                HookMatcher(
+                    matcher="terminal",
+                    hooks=[HookDefinition(command="test.sh")],
+                )
+            ]
+        )
+
+        # model_dump should produce snake_case format
+        output = config.model_dump(mode="json", exclude_defaults=True)
+        assert "pre_tool_use" in output
+        assert output["pre_tool_use"][0]["matcher"] == "terminal"
+        assert output["pre_tool_use"][0]["hooks"][0]["command"] == "test.sh"
+
+        # Should be able to reload from the output
+        reloaded = HookConfig.model_validate(output)
+        assert reloaded.pre_tool_use == config.pre_tool_use
+
+    def test_is_empty(self):
+        """Test is_empty() correctly identifies empty configs."""
+        empty_config = HookConfig()
+        assert empty_config.is_empty()
+
+        non_empty_config = HookConfig(
+            pre_tool_use=[HookMatcher(hooks=[HookDefinition(command="a.sh")])],
+        )
+        assert not non_empty_config.is_empty()
+
+    def test_legacy_format_is_still_supported(self):
+        """Test that legacy format remains supported without warnings."""
+        import warnings
+
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cfg = HookConfig.from_dict(
+                {"hooks": {"PreToolUse": [{"hooks": [{"command": "test.sh"}]}]}}
+            )
+
+        assert len(w) == 0
+        assert cfg.pre_tool_use[0].hooks[0].command == "test.sh"
+
+    def test_duplicate_keys_raises_error(self):
+        """Test that providing both PascalCase and snake_case raises error."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Duplicate hook event"):
+            HookConfig.from_dict(
+                {
+                    "PreToolUse": [{"hooks": [{"command": "a.sh"}]}],
+                    "pre_tool_use": [{"hooks": [{"command": "b.sh"}]}],
+                }
+            )
+
+    def test_unknown_event_type_raises_error(self):
+        """Test that typos in event types raise helpful errors."""
+        import pytest
+
+        with pytest.raises(ValueError, match="Unknown event type.*PreToolExecute"):
+            HookConfig.from_dict(
+                {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
+            )
