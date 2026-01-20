@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import pathlib
 from collections.abc import Mapping
-from pathlib import Path
-from typing import Any
 
-from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.skills import (
@@ -15,7 +13,6 @@ from openhands.sdk.context.skills import (
     load_user_skills,
     to_prompt,
 )
-from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm import Message, TextContent
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -84,29 +81,6 @@ class AgentContext(BaseModel):
         ),
     )
 
-    # Plugin loading fields
-    plugin_source: str | None = Field(
-        default=None,
-        description=(
-            "Plugin source: 'github:owner/repo', any git URL, or local path. "
-            "When set, the plugin is fetched and loaded during initialization. "
-            "Plugin skills are merged into self.skills, and MCP config/hooks "
-            "are exposed via plugin_mcp_config and plugin_hooks properties."
-        ),
-    )
-    plugin_ref: str | None = Field(
-        default=None,
-        description="Optional branch, tag, or commit for the plugin.",
-    )
-    plugin_path: str | None = Field(
-        default=None,
-        description="Optional subdirectory path within the plugin repository.",
-    )
-
-    # Private attributes for loaded plugin outputs
-    _loaded_plugin_mcp_config: dict[str, Any] | None = PrivateAttr(default=None)
-    _loaded_plugin_hooks: HookConfig | None = PrivateAttr(default=None)
-
     @field_validator("skills")
     @classmethod
     def _validate_skills(cls, v: list[Skill], _info):
@@ -163,77 +137,6 @@ class AgentContext(BaseModel):
         except Exception as e:
             logger.warning(f"Failed to load public skills: {str(e)}")
         return self
-
-    @model_validator(mode="after")
-    def _load_plugin(self):
-        """Load plugin from source if specified.
-
-        This validator fetches and loads a plugin when plugin_source is set.
-        Plugin skills are merged into self.skills (avoiding duplicates).
-        Plugin MCP config and hooks are stored in private attrs and exposed
-        via properties for downstream consumers.
-        """
-        if not self.plugin_source:
-            return self
-
-        # Validate plugin_path for security (reject absolute paths and ..)
-        if self.plugin_path:
-            safe_path = Path(self.plugin_path)
-            if safe_path.is_absolute() or ".." in safe_path.parts:
-                raise ValueError("plugin_path must be a relative path without ..")
-
-        try:
-            # Import here to avoid circular dependency
-            from openhands.sdk.plugin import Plugin
-
-            # Fetch and load the plugin
-            plugin_dir = Plugin.fetch(
-                source=self.plugin_source,
-                ref=self.plugin_ref,
-                repo_path=self.plugin_path,
-            )
-            plugin = Plugin.load(plugin_dir)
-
-            logger.info(
-                f"Loaded plugin '{plugin.name}' from {self.plugin_source}: "
-                f"{len(plugin.skills)} skills, "
-                f"hooks={'yes' if plugin.hooks else 'no'}, "
-                f"mcp_config={'yes' if plugin.mcp_config else 'no'}"
-            )
-
-            # Merge plugin skills into self.skills (plugin skills take precedence)
-            existing_names = {skill.name for skill in self.skills}
-            for skill in plugin.skills:
-                if skill.name not in existing_names:
-                    self.skills.append(skill)
-                else:
-                    # Plugin skill overrides existing skill with same name
-                    for i, existing_skill in enumerate(self.skills):
-                        if existing_skill.name == skill.name:
-                            self.skills[i] = skill
-                            logger.debug(
-                                f"Plugin skill '{skill.name}' overrides existing skill"
-                            )
-                            break
-
-            # Store MCP config and hooks for later extraction
-            self._loaded_plugin_mcp_config = plugin.mcp_config
-            self._loaded_plugin_hooks = plugin.hooks
-
-        except Exception as e:
-            logger.warning(f"Failed to load plugin from {self.plugin_source}: {e}")
-
-        return self
-
-    @property
-    def plugin_mcp_config(self) -> dict[str, Any] | None:
-        """Get MCP config from loaded plugin."""
-        return self._loaded_plugin_mcp_config
-
-    @property
-    def plugin_hooks(self) -> HookConfig | None:
-        """Get hooks from loaded plugin."""
-        return self._loaded_plugin_hooks
 
     def get_secret_infos(self) -> list[dict[str, str]]:
         """Get secret information (name and description) from the secrets field.

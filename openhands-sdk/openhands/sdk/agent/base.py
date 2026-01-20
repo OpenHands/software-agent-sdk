@@ -247,19 +247,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         tools: list[ToolDefinition] = []
 
-        # Compute effective MCP config by merging plugin config (if available)
-        # Plugin config takes precedence over base config
-        effective_mcp_config = self.mcp_config
-        if self.agent_context and self.agent_context.plugin_mcp_config:
-            effective_mcp_config = {
-                **self.mcp_config,
-                **self.agent_context.plugin_mcp_config,
-            }
-            logger.debug(
-                "Merged plugin MCP config into agent config "
-                f"(plugin keys: {list(self.agent_context.plugin_mcp_config.keys())})"
-            )
-
         # Use ThreadPoolExecutor to parallelize tool resolution
         with ThreadPoolExecutor(max_workers=4) as executor:
             futures = []
@@ -269,9 +256,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 future = executor.submit(resolve_tool, tool_spec, state)
                 futures.append(future)
 
-            # Submit MCP tools creation if configured (using effective config)
-            if effective_mcp_config:
-                future = executor.submit(create_mcp_tools, effective_mcp_config, 30)
+            # Submit MCP tools creation if configured
+            if self.mcp_config:
+                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
                 futures.append(future)
 
             # Collect results as they complete

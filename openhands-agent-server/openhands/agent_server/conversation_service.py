@@ -25,7 +25,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.plugin import load_plugins, merge_hook_configs
+from openhands.sdk.plugin import load_plugins
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -237,7 +237,6 @@ class ConversationService:
                 )
 
         # Load plugins using SDK utility (runs in thread pool for async)
-        # This is the new recommended pattern for plugin loading
         agent = request.agent
         hook_config = None
 
@@ -247,31 +246,6 @@ class ConversationService:
                 load_plugins, request.plugins, agent
             )
             logger.info(f"Loaded {len(request.plugins)} plugin(s) for conversation")
-
-        # Also support legacy AgentContext plugin loading
-        # Extract hooks from plugin if loaded via AgentContext (deprecated path)
-        if agent.agent_context and agent.agent_context.plugin_hooks:
-            context_hook_config = agent.agent_context.plugin_hooks
-            if context_hook_config and not context_hook_config.is_empty():
-                event_types = [
-                    name
-                    for name in [
-                        "pre_tool_use",
-                        "post_tool_use",
-                        "user_prompt_submit",
-                        "session_start",
-                        "session_end",
-                        "stop",
-                    ]
-                    if getattr(context_hook_config, name, [])
-                ]
-                logger.info(f"Loaded hooks from AgentContext plugin: {event_types}")
-
-                # Combine with hooks from plugins list (if any)
-                if hook_config:
-                    hook_config = merge_hook_configs([hook_config, context_hook_config])
-                else:
-                    hook_config = context_hook_config
 
         # Create stored conversation with updated agent and hook_config
         # Exclude plugins from stored data since they've been loaded
