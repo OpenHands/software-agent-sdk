@@ -232,6 +232,10 @@ def test_visualize_with_categorized_features():
     assert "Insufficient Testing" in text
     assert "(likelihood 57%)" in text
 
-    # Should NOT display sentiment or follow-up (removed from CLI display)
+    # Should display follow-up patterns
+    assert "Likely Follow-up:" in text
+    assert "Direction Change" in text
+    assert "(likelihood 59%)" in text
+
+    # Should NOT display sentiment (removed)
     assert "Expected User Sentiment" not in text
-    assert "Likely Follow-up" not in text
