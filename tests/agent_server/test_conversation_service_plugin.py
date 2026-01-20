@@ -1,13 +1,13 @@
-"""Tests for plugin loading in ConversationService.
+"""Tests for plugin handling in ConversationService.
 
-This module tests plugin loading via the `plugins` list parameter
+This module tests plugin handling via the `plugins` list parameter
 on StartConversationRequest.
 
 These tests verify that:
-1. Plugins are loaded from the `plugins` list using load_plugins()
-2. Hooks, skills, and MCP config are properly merged
-3. Plugin list is not persisted (only loaded content is)
-4. Explicit hook_config is merged with plugin hooks (explicit first)
+1. Plugin specs are passed through to StoredConversation (for lazy loading)
+2. Explicit hook_config is preserved (merging happens lazily in LocalConversation)
+3. Plugins ARE persisted (unlike the old eager loading model) since
+   LocalConversation loads them lazily on first run()/send_message()
 """
 
 import tempfile
@@ -154,7 +154,7 @@ async def test_start_conversation_without_plugin(conversation_service):
 
 @pytest.mark.asyncio
 async def test_start_conversation_with_plugins_list(conversation_service, tmp_path):
-    """Test start_conversation with plugins list parameter."""
+    """Test start_conversation passes plugins to StoredConversation for lazy loading."""
     # Create plugin with hooks and skills
     plugin_dir = create_test_plugin_dir(
         tmp_path,
@@ -205,19 +205,19 @@ async def test_start_conversation_with_plugins_list(conversation_service, tmp_pa
 
             await conversation_service.start_conversation(request)
 
-            # Verify plugin was loaded
+            # Verify plugins are passed through for lazy loading
             stored = mock_event_service_class.call_args.kwargs["stored"]
-            # Skills should be merged
-            assert len(stored.agent.agent_context.skills) == 1
-            assert stored.agent.agent_context.skills[0].name == "test-skill"
-            # Hooks should be extracted
-            assert stored.hook_config is not None
-            assert len(stored.hook_config.pre_tool_use) == 1
+            # Plugins should be stored (not loaded yet - lazy loading)
+            assert stored.plugins is not None
+            assert len(stored.plugins) == 1
+            assert stored.plugins[0].source == str(plugin_dir)
+            # Agent context NOT populated yet (lazy loading in LocalConversation)
+            assert stored.agent.agent_context is None
 
 
 @pytest.mark.asyncio
 async def test_start_conversation_with_multiple_plugins(conversation_service, tmp_path):
-    """Test start_conversation with multiple plugins."""
+    """Test start_conversation with multiple plugins stored for lazy loading."""
     # Create two plugins
     plugin1_dir = create_test_plugin_dir(
         tmp_path / "plugin1",
@@ -265,18 +265,20 @@ async def test_start_conversation_with_multiple_plugins(conversation_service, tm
 
             await conversation_service.start_conversation(request)
 
-            # Verify both plugins were loaded
+            # Verify both plugins are stored for lazy loading
             stored = mock_event_service_class.call_args.kwargs["stored"]
-            skill_names = [s.name for s in stored.agent.agent_context.skills]
-            assert "skill-a" in skill_names
-            assert "skill-b" in skill_names
+            assert stored.plugins is not None
+            assert len(stored.plugins) == 2
+            plugin_sources = [p.source for p in stored.plugins]
+            assert str(plugin1_dir) in plugin_sources
+            assert str(plugin2_dir) in plugin_sources
 
 
 @pytest.mark.asyncio
-async def test_plugins_not_persisted_in_stored_conversation(
+async def test_plugins_persisted_in_stored_conversation_for_lazy_loading(
     conversation_service, tmp_path
 ):
-    """Test that plugins list is not persisted (only loaded content is)."""
+    """Test that plugins ARE persisted for lazy loading by LocalConversation."""
     plugin_dir = create_test_plugin_dir(
         tmp_path,
         skills=[{"name": "test-skill", "content": "Test"}],
@@ -316,12 +318,12 @@ async def test_plugins_not_persisted_in_stored_conversation(
 
             await conversation_service.start_conversation(request)
 
-            # Verify plugins list is not in stored data
-            # (it's excluded since content is already loaded)
+            # Verify plugins ARE persisted (for lazy loading)
+            # LocalConversation will load them on first run()/send_message()
             stored = mock_event_service_class.call_args.kwargs["stored"]
-            # The stored object should not have plugins field set
-            # (since it was excluded in model_dump)
-            assert stored.plugins is None
+            assert stored.plugins is not None
+            assert len(stored.plugins) == 1
+            assert stored.plugins[0].source == str(plugin_dir)
 
 
 # Tests for explicit hook_config
@@ -388,10 +390,10 @@ async def test_start_conversation_with_explicit_hook_config(conversation_service
 
 
 @pytest.mark.asyncio
-async def test_start_conversation_merges_explicit_and_plugin_hooks(
+async def test_start_conversation_stores_both_hooks_and_plugins_for_lazy_merge(
     conversation_service, tmp_path
 ):
-    """Test that explicit hook_config is merged with plugin hooks."""
+    """Test that explicit hook_config and plugins are both stored (merging is lazy)."""
     # Create plugin with hooks
     plugin_dir = create_test_plugin_dir(
         tmp_path,
@@ -452,14 +454,17 @@ async def test_start_conversation_merges_explicit_and_plugin_hooks(
 
             await conversation_service.start_conversation(request)
 
-            # Verify hooks were merged (explicit + plugin)
+            # Verify both explicit hooks AND plugins are stored
+            # (merging happens lazily in LocalConversation._ensure_plugins_loaded)
             stored = mock_event_service_class.call_args.kwargs["stored"]
+
+            # Explicit hook_config is stored as-is (not merged yet)
             assert stored.hook_config is not None
-            # Should have 2 hook matchers (explicit first, then plugin)
-            assert len(stored.hook_config.pre_tool_use) == 2
-            # Explicit hooks should come first
-            explicit_cmd = stored.hook_config.pre_tool_use[0].hooks[0].command
-            assert explicit_cmd == "echo explicit"
-            # Plugin hooks should come second
-            plugin_cmd = stored.hook_config.pre_tool_use[1].hooks[0].command
-            assert plugin_cmd == "echo plugin"
+            assert len(stored.hook_config.pre_tool_use) == 1
+            assert (
+                stored.hook_config.pre_tool_use[0].hooks[0].command == "echo explicit"
+            )
+
+            # Plugins are stored for lazy loading
+            assert stored.plugins is not None
+            assert len(stored.plugins) == 1

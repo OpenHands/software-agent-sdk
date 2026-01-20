@@ -25,8 +25,6 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
-from openhands.sdk.hooks import HookConfig
-from openhands.sdk.plugin import load_plugins
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -237,32 +235,15 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
-        # Load plugins using SDK utility (runs in thread pool for async)
-        agent = request.agent
-        plugin_hooks = None
-
-        if request.plugins:
-            # Load plugins in thread pool to avoid blocking the event loop
-            agent, plugin_hooks = await asyncio.to_thread(
-                load_plugins, request.plugins, agent
-            )
-            logger.info(f"Loaded {len(request.plugins)} plugin(s) for conversation")
-
-        # Merge explicit hook_config with plugin hooks
-        # Explicit hooks run first (before plugin hooks)
-        final_hook_config = request.hook_config
-        if plugin_hooks and final_hook_config:
-            final_hook_config = HookConfig.merge([final_hook_config, plugin_hooks])
-        elif plugin_hooks:
-            final_hook_config = plugin_hooks
-
-        # Create stored conversation with updated agent and merged hook_config.
-        # Plugins are ephemeral input (fetched/loaded above), not persistent state.
+        # Plugin loading is now handled lazily by LocalConversation.
+        # Just pass the plugin specs through to StoredConversation.
+        # LocalConversation will:
+        # 1. Fetch and load plugins on first run()/send_message()
+        # 2. Resolve refs to commit SHAs for deterministic resume
+        # 3. Merge plugin skills/MCP/hooks into the agent
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(exclude={"plugins", "agent", "hook_config"}),
-            agent=agent,
-            hook_config=final_hook_config,
+            **request.model_dump(),
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

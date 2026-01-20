@@ -7,7 +7,10 @@ It also provides support for plugin marketplaces - directories that list
 available plugins with their metadata and source locations.
 """
 
-from openhands.sdk.plugin.fetch import PluginFetchError
+from openhands.sdk.plugin.fetch import (
+    PluginFetchError,
+    fetch_plugin_with_resolution,
+)
 from openhands.sdk.plugin.loader import load_plugins
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import (
@@ -21,6 +24,7 @@ from openhands.sdk.plugin.types import (
     PluginAuthor,
     PluginManifest,
     PluginSource,
+    ResolvedPluginSource,
 )
 from openhands.sdk.plugin.utils import merge_mcp_configs, merge_skills
 
@@ -32,10 +36,12 @@ __all__ = [
     "PluginManifest",
     "PluginAuthor",
     "PluginSource",
+    "ResolvedPluginSource",
     "AgentDefinition",
     "CommandDefinition",
     # Plugin loading
     "load_plugins",
+    "fetch_plugin_with_resolution",
     "merge_mcp_configs",
     "merge_skills",
     # Marketplace classes

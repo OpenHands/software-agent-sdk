@@ -36,7 +36,12 @@ from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
-from openhands.sdk.plugin import PluginSource, load_plugins
+from openhands.sdk.plugin import (
+    Plugin,
+    PluginSource,
+    ResolvedPluginSource,
+    fetch_plugin_with_resolution,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -60,6 +65,11 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
+    # Plugin lazy loading state
+    _plugin_specs: list[PluginSource] | None
+    _resolved_plugins: list[ResolvedPluginSource] | None
+    _plugins_loaded: bool
+    _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
 
     def __init__(
         self,
@@ -126,15 +136,12 @@ class LocalConversation(BaseConversation):
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
 
-        # Load plugins if specified (rebinds locals, does not mutate caller's objects)
-        if plugins:
-            agent, plugin_hooks = load_plugins(plugins, agent)
-            logger.info(f"Loaded {len(plugins)} plugin(s) via Conversation")
-            # Combine explicit hook_config with plugin hooks
-            if plugin_hooks and hook_config:
-                hook_config = HookConfig.merge([hook_config, plugin_hooks])
-            elif plugin_hooks:
-                hook_config = plugin_hooks
+        # Store plugin specs for lazy loading (no IO in constructor)
+        # Plugins will be loaded on first run() or send_message() call
+        self._plugin_specs = plugins
+        self._resolved_plugins = None
+        self._plugins_loaded = False
+        self._pending_hook_config = hook_config  # Will be combined with plugin hooks
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -191,18 +198,13 @@ class LocalConversation(BaseConversation):
 
         # Compose the base callback chain (visualizer -> user callbacks -> default)
         base_callback = BaseConversation.compose_callbacks(composed_list)
+        self._base_callback = base_callback  # Store for _ensure_plugins_loaded
 
-        # If hooks configured, wrap with hook processor that forwards to base chain
+        # Defer all hook setup to _ensure_plugins_loaded() for consistency
+        # This runs on first run()/send_message() call and handles both
+        # explicit hooks and plugin hooks in one place
         self._hook_processor = None
-        if hook_config is not None:
-            self._hook_processor, self._on_event = create_hook_callback(
-                hook_config=hook_config,
-                working_dir=str(self.workspace.working_dir),
-                session_id=str(desired_id),
-                original_callback=base_callback,
-            )
-        else:
-            self._on_event = base_callback
+        self._on_event = base_callback
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -227,9 +229,8 @@ class LocalConversation(BaseConversation):
         else:
             self._stuck_detector = None
 
-        if self._hook_processor is not None:
-            self._hook_processor.set_conversation_state(self._state)
-            self._hook_processor.run_session_start()
+        # Hook setup (including session_start) is deferred to _ensure_plugins_loaded()
+        # which runs on first run()/send_message() call
 
         with self._state:
             self.agent.init_state(self._state, on_event=self._on_event)
@@ -274,6 +275,112 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    @property
+    def resolved_plugins(self) -> list[ResolvedPluginSource] | None:
+        """Get the resolved plugin sources after plugins are loaded.
+
+        Returns None if plugins haven't been loaded yet, or if no plugins
+        were specified. Use this for persistence to ensure conversation
+        resume uses the exact same plugin versions.
+        """
+        return self._resolved_plugins
+
+    def _ensure_plugins_loaded(self) -> None:
+        """Lazy load plugins and set up hooks on first use.
+
+        This method is called automatically before run() and send_message().
+        It handles both plugin loading and hook initialization in one place
+        for consistency.
+
+        The method:
+        1. Fetches plugins from their sources (network IO for remote sources)
+        2. Resolves refs to commit SHAs for deterministic resume
+        3. Loads plugin contents (skills, MCP config, hooks)
+        4. Merges plugin contents into the agent
+        5. Sets up hook processor with combined hooks (explicit + plugin)
+        6. Runs session_start hooks
+        """
+        if self._plugins_loaded:
+            return
+
+        all_plugin_hooks: list[HookConfig] = []
+
+        # Load plugins if specified
+        if self._plugin_specs:
+            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            self._resolved_plugins = []
+
+            # Start with agent's existing context and MCP config
+            merged_context = self.agent.agent_context
+            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+            for spec in self._plugin_specs:
+                # Fetch plugin and get resolved commit SHA
+                path, resolved_ref = fetch_plugin_with_resolution(
+                    source=spec.source,
+                    ref=spec.ref,
+                    repo_path=spec.repo_path,
+                )
+
+                # Store resolved ref for persistence
+                resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
+                self._resolved_plugins.append(resolved)
+
+                # Load the plugin
+                plugin = Plugin.load(path)
+                logger.debug(
+                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+                )
+
+                # Merge plugin contents
+                merged_context = plugin.add_skills_to(merged_context)
+                merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+
+                # Collect hooks
+                if plugin.hooks and not plugin.hooks.is_empty():
+                    all_plugin_hooks.append(plugin.hooks)
+
+            # Update agent with merged content
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": merged_mcp,
+                }
+            )
+
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Combine explicit hook_config with plugin hooks
+        # Explicit hooks run first (before plugin hooks)
+        final_hook_config = self._pending_hook_config
+        if all_plugin_hooks:
+            plugin_hooks = HookConfig.merge(all_plugin_hooks)
+            if plugin_hooks is not None:
+                if final_hook_config is not None:
+                    final_hook_config = HookConfig.merge(
+                        [final_hook_config, plugin_hooks]
+                    )
+                else:
+                    final_hook_config = plugin_hooks
+
+        # Set up hook processor with the combined config
+        if final_hook_config is not None:
+            self._hook_processor, self._on_event = create_hook_callback(
+                hook_config=final_hook_config,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(self._state.id),
+                original_callback=self._base_callback,
+            )
+            self._hook_processor.set_conversation_state(self._state)
+            self._hook_processor.run_session_start()
+
+            # Re-initialize agent state with hook-wrapped callback
+            with self._state:
+                self.agent.init_state(self._state, on_event=self._on_event)
+
+        self._plugins_loaded = True
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
@@ -286,6 +393,9 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
+        # Ensure plugins are loaded before processing message
+        self._ensure_plugins_loaded()
+
         # Convert string to Message if needed
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -344,6 +454,8 @@ class LocalConversation(BaseConversation):
 
         Can be paused between steps
         """
+        # Ensure plugins are loaded before running
+        self._ensure_plugins_loaded()
 
         with self._state:
             if self._state.execution_status in [

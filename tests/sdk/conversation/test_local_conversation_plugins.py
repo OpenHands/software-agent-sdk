@@ -68,7 +68,11 @@ def create_test_plugin(
 
 
 class TestLocalConversationPlugins:
-    """Tests for plugin loading in LocalConversation."""
+    """Tests for plugin loading in LocalConversation.
+
+    Note: Plugins are lazy-loaded on first run()/send_message() call.
+    Tests trigger _ensure_plugins_loaded() to verify loading behavior.
+    """
 
     def test_create_conversation_with_plugins(self, tmp_path: Path, basic_agent):
         """Test creating LocalConversation with plugins parameter."""
@@ -87,10 +91,19 @@ class TestLocalConversationPlugins:
             visualizer=None,
         )
 
+        # Plugins are lazy loaded - trigger loading
+        conversation._ensure_plugins_loaded()
+
         # Agent should have been updated with plugin skills
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "test-skill" in skill_names
+
+        # Verify resolved plugins are tracked
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 1
+        assert conversation.resolved_plugins[0].source == str(plugin_dir)
+
         conversation.close()
 
     def test_conversation_with_multiple_plugins(self, tmp_path: Path, basic_agent):
@@ -118,10 +131,18 @@ class TestLocalConversationPlugins:
             visualizer=None,
         )
 
+        # Plugins are lazy loaded - trigger loading
+        conversation._ensure_plugins_loaded()
+
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "skill-a" in skill_names
         assert "skill-b" in skill_names
+
+        # Verify both plugins tracked
+        assert conversation.resolved_plugins is not None
+        assert len(conversation.resolved_plugins) == 2
+
         conversation.close()
 
     def test_plugin_hooks_combined_with_explicit_hooks(
@@ -158,15 +179,52 @@ class TestLocalConversationPlugins:
             visualizer=None,
         )
 
+        # Hooks are lazy loaded - trigger loading
+        conversation._ensure_plugins_loaded()
+
         # Both hook sources should be combined
         assert conversation._hook_processor is not None
         # We can verify hooks were processed by checking the hook_config passed
         # (The actual hook_processor is internal, but we trust the merging works)
         conversation.close()
 
+    def test_plugins_not_loaded_until_needed(self, tmp_path: Path, basic_agent):
+        """Test that plugins are not loaded in constructor (lazy loading)."""
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            skills=[{"name": "test-skill", "content": "Test skill content"}],
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(plugin_dir))],
+            visualizer=None,
+        )
+
+        # Before loading, plugins should not be applied
+        assert conversation._plugins_loaded is False
+        assert conversation.resolved_plugins is None
+        assert conversation.agent.agent_context is None
+
+        # After triggering load
+        conversation._ensure_plugins_loaded()
+
+        assert conversation._plugins_loaded is True
+        assert conversation.resolved_plugins is not None
+        assert conversation.agent.agent_context is not None
+
+        conversation.close()
+
 
 class TestConversationFactoryPlugins:
-    """Tests for plugin loading via Conversation factory."""
+    """Tests for plugin loading via Conversation factory.
+
+    Note: Plugins are lazy-loaded on first run()/send_message() call.
+    """
 
     def test_factory_passes_plugins_to_local_conversation(
         self, tmp_path: Path, basic_agent
@@ -188,6 +246,10 @@ class TestConversationFactoryPlugins:
         )
 
         assert isinstance(conversation, LocalConversation)
+
+        # Plugins are lazy loaded - trigger loading
+        conversation._ensure_plugins_loaded()
+
         assert conversation.agent.agent_context is not None
         skill_names = [s.name for s in conversation.agent.agent_context.skills]
         assert "factory-skill" in skill_names
@@ -211,6 +273,9 @@ class TestConversationFactoryPlugins:
             plugins=[PluginSource(source=str(plugin_dir))],
             visualizer=None,
         )
+
+        # Plugins are lazy loaded - trigger loading
+        conversation._ensure_plugins_loaded()
 
         assert conversation.agent.agent_context is not None
         assert len(conversation.agent.agent_context.skills) == 1

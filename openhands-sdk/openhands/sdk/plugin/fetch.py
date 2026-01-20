@@ -220,6 +220,47 @@ def fetch_plugin(
     Raises:
         PluginFetchError: If fetching fails or repo_path doesn't exist.
     """
+    path, _ = fetch_plugin_with_resolution(
+        source=source,
+        cache_dir=cache_dir,
+        ref=ref,
+        update=update,
+        repo_path=repo_path,
+        git_helper=git_helper,
+    )
+    return path
+
+
+def fetch_plugin_with_resolution(
+    source: str,
+    cache_dir: Path | None = None,
+    ref: str | None = None,
+    update: bool = True,
+    repo_path: str | None = None,
+    git_helper: GitHelper | None = None,
+) -> tuple[Path, str | None]:
+    """Fetch a plugin and return both the path and the resolved commit SHA.
+
+    This is similar to fetch_plugin() but also returns the actual commit SHA
+    that was checked out. This is useful for persistence - storing the resolved
+    SHA ensures that conversation resume gets exactly the same plugin version.
+
+    Args:
+        source: Plugin source (see fetch_plugin for formats).
+        cache_dir: Directory for caching. Defaults to ~/.openhands/cache/plugins/
+        ref: Optional branch, tag, or commit to checkout.
+        update: If True and cache exists, update it. If False, use cached version as-is.
+        repo_path: Subdirectory path within the git repository.
+        git_helper: GitHelper instance (for testing). Defaults to global instance.
+
+    Returns:
+        Tuple of (path, resolved_ref) where:
+        - path: Path to the local plugin directory
+        - resolved_ref: Commit SHA that was checked out (None for local sources)
+
+    Raises:
+        PluginFetchError: If fetching fails or repo_path doesn't exist.
+    """
     source_type, url = parse_plugin_source(source)
 
     if source_type == "local":
@@ -229,11 +270,66 @@ def fetch_plugin(
                 f"Specify the full path directly instead of "
                 f"source='{source}' + repo_path='{repo_path}'"
             )
-        return _resolve_local_source(url)
+        return _resolve_local_source(url), None
 
     if cache_dir is None:
         cache_dir = DEFAULT_CACHE_DIR
 
-    return _fetch_remote_source(
-        url, cache_dir, ref, update, repo_path, git_helper, source
+    git = git_helper if git_helper is not None else GitHelper()
+
+    plugin_path, resolved_ref = _fetch_remote_source_with_resolution(
+        url, cache_dir, ref, update, repo_path, git, source
     )
+    return plugin_path, resolved_ref
+
+
+def _fetch_remote_source_with_resolution(
+    url: str,
+    cache_dir: Path,
+    ref: str | None,
+    update: bool,
+    subpath: str | None,
+    git_helper: GitHelper,
+    source: str,
+) -> tuple[Path, str]:
+    """Fetch a remote plugin source and return path + resolved commit SHA.
+
+    Args:
+        url: Git URL to fetch.
+        cache_dir: Base directory for caching.
+        ref: Optional branch, tag, or commit to checkout.
+        update: Whether to update existing cache.
+        subpath: Optional subdirectory within the repository.
+        git_helper: GitHelper instance for git operations.
+        source: Original source string (for error messages).
+
+    Returns:
+        Tuple of (path, resolved_ref) where resolved_ref is the commit SHA.
+
+    Raises:
+        PluginFetchError: If fetching fails or subpath is invalid.
+    """
+    repo_cache_path = get_cache_path(url, cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    result = try_cached_clone_or_update(
+        url=url,
+        repo_path=repo_cache_path,
+        ref=ref,
+        update=update,
+        git_helper=git_helper,
+    )
+
+    if result is None:
+        raise PluginFetchError(f"Failed to fetch plugin from {source}")
+
+    # Get the actual commit SHA that was checked out
+    try:
+        resolved_ref = git_helper.get_head_commit(repo_cache_path)
+    except Exception as e:
+        logger.warning(f"Could not get commit SHA for {source}: {e}")
+        # Fall back to the requested ref if we can't get the SHA
+        resolved_ref = ref or "HEAD"
+
+    final_path = _apply_subpath(repo_cache_path, subpath, "plugin repository")
+    return final_path, resolved_ref

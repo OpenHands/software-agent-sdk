@@ -416,12 +416,14 @@ class EventService:
             self.stored.agent.model_dump(context={"expose_secrets": True}),
         )
 
-        # Create LocalConversation with hook_config if provided.
+        # Create LocalConversation with plugins and hook_config.
+        # Plugins are loaded lazily on first run()/send_message() call.
         # Hook execution semantics: OpenHands runs hooks sequentially with early-exit
         # on block (PreToolUse), unlike Claude Code's parallel execution model.
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
+            plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
             callbacks=[
