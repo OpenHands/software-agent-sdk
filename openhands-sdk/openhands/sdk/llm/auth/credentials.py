@@ -38,6 +38,7 @@ class OAuthCredentials(BaseModel):
     def is_expired(self) -> bool:
         """Check if the access token is expired."""
         # Add 60 second buffer to avoid edge cases
+        # Add 60 second buffer to avoid edge cases where token expires during request
         return self.expires_at < (int(time.time() * 1000) + 60_000)
 
 
