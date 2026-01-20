@@ -31,9 +31,6 @@ def get_required_env(name: str) -> str:
         f"Missing required environment variable: {name}. "
         f"Set {name} before running this example."
     )
-        f"Missing required environment variable: {name}. "
-        f"Set {name} before running this example."
-    )
 
 
 def get_default_critic(llm: LLM) -> CriticBase | None:
