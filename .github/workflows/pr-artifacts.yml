@@ -4,6 +4,7 @@ name: PR Artifacts
 on:
     workflow_dispatch: # Manual trigger for testing
     pull_request:
+        types: [opened, synchronize, reopened]
         branches: [main]
     pull_request_review:
         types: [submitted]
