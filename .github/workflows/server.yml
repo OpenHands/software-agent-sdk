@@ -146,10 +146,11 @@ jobs:
 
     build-and-push-image:
         name: Build & Push (${{ matrix.variant }}-${{ matrix.arch }})
-        # Run on push events and pull requests from the same repository (not forks)
+        # Run on push events, pull requests from the same repository (not forks), and manual workflow_dispatch
         # Fork PRs cannot push to GHCR and would fail authentication
         if: >
             github.event_name == 'push' ||
+            github.event_name == 'workflow_dispatch' ||
             (github.event_name == 'pull_request' &&
              !github.event.pull_request.head.repo.fork)
         strategy:
