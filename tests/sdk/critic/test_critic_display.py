@@ -4,7 +4,11 @@ from openhands.sdk.critic.result import CriticResult
 
 
 def test_format_critic_result_with_json_message():
-    """Test formatting critic result with JSON probabilities."""
+    """Test formatting critic result with JSON probabilities.
+
+    When no metadata with categorized_features is provided, the raw JSON
+    message is displayed as-is.
+    """
     probs_dict = {
         "sentiment_neutral": 0.7612602710723877,
         "direction_change": 0.5926198959350586,
@@ -21,17 +25,11 @@ def test_format_critic_result_with_json_message():
     # Should display overall score with 4 digits inline
     assert "0.5070" in text
 
-    # Only highest sentiment should be shown with raw probability
-    # sentiment_neutral is highest (0.76)
-    assert "neutral" in text
-    assert "0.76" in text
-
-    # Other metrics above 0.2 threshold should be shown
+    # Without metadata, the raw JSON message is displayed as-is
+    assert "sentiment_neutral" in text
     assert "direction_change" in text
-    # "success" should NOT be shown (redundant with critic score)
-    assert "success:" not in text
-    # "correction" should NOT be shown (below 0.2 threshold)
-    assert "correction" not in text
+    assert "success" in text
+    assert "correction" in text
 
 
 def test_format_critic_result_with_plain_message():
@@ -61,7 +59,11 @@ def test_format_critic_result_without_message():
 
 
 def test_visualize_consistency():
-    """Test that visualize property consistently formats the result."""
+    """Test that visualize property consistently formats the result.
+
+    When no metadata with categorized_features is provided, the raw JSON
+    message is displayed as-is.
+    """
     probs_dict = {
         "success": 0.8,
         "sentiment_positive": 0.7,
@@ -73,16 +75,18 @@ def test_visualize_consistency():
 
     # Should contain overall score
     assert "0.8000" in formatted
-    # "success" should NOT appear as a metric (redundant with critic score)
-    assert "success:" not in formatted
-    # Only highest sentiment should be shown
-    # sentiment_positive (0.7) is higher than sentiment_neutral (0.2)
-    assert "positive" in formatted
-    assert "0.70" in formatted
+    # Without metadata, the raw JSON message is displayed as-is
+    assert "success" in formatted
+    assert "sentiment_positive" in formatted
+    assert "sentiment_neutral" in formatted
 
 
 def test_format_critic_result_sorting():
-    """Test that probabilities are sorted in descending order."""
+    """Test that raw JSON message is displayed when no metadata is provided.
+
+    When no metadata with categorized_features is provided, the raw JSON
+    message is displayed as-is without filtering or sorting.
+    """
     probs_dict = {
         "low": 0.1,
         "medium": 0.5,
@@ -94,45 +98,39 @@ def test_format_critic_result_sorting():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Metrics should be sorted in descending order
-    # With DISPLAY_THRESHOLD of 0.2:
-    # high (0.9) and medium (0.5) should appear
-    # low (0.1) and very_low (0.01) should be filtered out (below 0.2)
+    # Without metadata, all keys from the raw JSON message are displayed
     assert "high" in text
     assert "medium" in text
-    assert "low" not in text  # Below 0.2 threshold
-    assert "very_low" not in text  # Below threshold
-
-    # Verify sorting order: high should appear before medium
-    high_pos = text.find("high")
-    medium_pos = text.find("medium")
-
-    assert high_pos < medium_pos
+    assert "low" in text
+    assert "very_low" in text
 
 
 def test_color_highlighting():
-    """Test that probabilities have appropriate color styling."""
+    """Test that the visualize output has appropriate styling.
+
+    When no metadata with categorized_features is provided, the raw JSON
+    message is displayed as-is. The score and header still have styling.
+    """
     probs_dict = {
-        "critical": 0.85,  # Should be red bold (>= 0.7)
-        "important": 0.65,  # Should be red (>= 0.5)
-        "notable": 0.40,  # Should be yellow (>= 0.3)
-        "medium": 0.15,  # Below 0.2 threshold
-        "minimal": 0.02,  # Below 0.2 threshold
+        "critical": 0.85,
+        "important": 0.65,
+        "notable": 0.40,
+        "medium": 0.15,
+        "minimal": 0.02,
     }
     critic_result = CriticResult(score=0.5, message=json.dumps(probs_dict))
 
     formatted = critic_result.visualize
 
-    # Check that the Text object has the expected content (2 decimal places now)
-    # With DISPLAY_THRESHOLD = 0.2, only critical, important, notable should appear
+    # Without metadata, all keys from the raw JSON message are displayed
     text = formatted.plain
     assert "critical" in text
     assert "important" in text
     assert "notable" in text
-    assert "medium" not in text  # Below 0.2 threshold
-    assert "minimal" not in text  # Below 0.2 threshold
+    assert "medium" in text
+    assert "minimal" in text
 
-    # Verify spans contain style information
+    # Verify spans contain style information for the score and header
     # Rich Text objects have spans with (start, end, style) tuples
     spans = list(formatted.spans)
     assert len(spans) > 0, "Should have styled spans"
