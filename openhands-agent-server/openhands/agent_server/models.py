@@ -116,15 +116,6 @@ class StartConversationRequest(BaseModel):
             "Hooks are extracted and stored for runtime execution."
         ),
     )
-
-
-class StoredConversation(StartConversationRequest):
-    """Stored details about a conversation.
-
-    Extends StartConversationRequest with server-assigned fields and
-    fields populated during plugin loading (like hook_config).
-    """
-
     hook_config: HookConfig | None = Field(
         default=None,
         description=(
@@ -133,6 +124,14 @@ class StoredConversation(StartConversationRequest):
             "PostToolUse, UserPromptSubmit, Stop, etc.)."
         ),
     )
+
+
+class StoredConversation(StartConversationRequest):
+    """Stored details about a conversation.
+
+    Extends StartConversationRequest with server-assigned fields.
+    """
+
     id: OpenHandsUUID
     title: str | None = Field(
         default=None, description="User-defined title for the conversation"
