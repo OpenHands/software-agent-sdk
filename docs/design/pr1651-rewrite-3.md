@@ -560,28 +560,27 @@ Foundation: Define the plugin specification model and loading utility.
 
 **Demo**: User can POST to `/api/conversations/start` with `plugins` array and they load on server.
 
-### 5.5 Deprecate Legacy Fields in AgentContext (M5)
+### 5.5 Remove Plugin Loading from AgentContext (M5)
 
-**Goal**: Mark the AgentContext plugin fields as deprecated (not remove them yet for backward compatibility).
+**Goal**: Clean up the now-obsolete AgentContext plugin approach.
 
-> **Note**: Changed from "Remove" to "Deprecate" to maintain backward compatibility during migration period.
-
-#### 5.5.1 AgentContext Deprecation
+#### 5.5.1 AgentContext Cleanup
 
 - [ ] `openhands-sdk/openhands/sdk/context/agent_context.py`
-  - Mark `plugin_source`, `plugin_ref`, `plugin_repo_path` fields as deprecated
-  - Add deprecation warnings when these fields are used
-  - Keep `plugin_mcp_config` and `plugin_hooks` properties working but deprecated
+  - Remove `plugin_source`, `plugin_ref`, `plugin_repo_path` fields
+  - Remove `_loaded_plugin_mcp_config`, `_loaded_plugin_hooks` private attrs
+  - Remove `_load_plugin()` model validator
+  - Remove `plugin_mcp_config` and `plugin_hooks` properties
 
 #### 5.5.2 Agent Cleanup
 
 - [ ] `openhands-sdk/openhands/sdk/agent/base.py`
-  - Add deprecation warning for plugin MCP merging in `initialize()` if present
+  - Remove any plugin MCP merging in `initialize()` if present
 
 #### 5.5.3 Update Tests
 
-- [ ] Update tests to use new `plugins` parameter instead of AgentContext plugin fields
-- [ ] Keep existing tests but expect deprecation warnings
+- [ ] Remove or update tests that used AgentContext plugin loading
+- [ ] `tests/sdk/context/test_agent_context_plugin.py` - Remove file
 
 ### 5.6 Documentation and Examples (M6)
 
