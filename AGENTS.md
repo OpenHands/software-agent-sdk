@@ -118,6 +118,39 @@ When reviewing code, provide constructive feedback:
 
 </DEV_SETUP>
 
+<PR_ARTIFACTS>
+# PR-Specific Documents
+
+When working on a PR that requires design documents, analysis notes, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+
+## Usage
+
+```bash
+# Create the directory if it doesn't exist
+mkdir -p .pr
+
+# Add your PR-specific documents
+.pr/
+├── design.md       # Design decisions and architecture notes
+├── analysis.md     # Investigation or debugging notes
+└── notes.md        # Any other PR-specific content
+```
+
+## Important Notes
+
+- **This directory will be automatically removed before merging** (for internal PRs)
+- The `block-merge-with-pr-artifacts` check will fail if `.pr/` exists, preventing accidental merge
+- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+- Do NOT put anything in `.pr/` that needs to be preserved - use `docs/` for permanent documentation
+
+## When to Use
+
+- Complex refactoring that benefits from written design rationale
+- Debugging sessions where you want to document your investigation
+- Feature implementations that need temporary planning docs
+- Any analysis that helps reviewers understand the PR but isn't needed long-term
+</PR_ARTIFACTS>
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
