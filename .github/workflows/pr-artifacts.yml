@@ -31,22 +31,24 @@ jobs:
                     echo "is_fork=false" >> $GITHUB_OUTPUT
                   fi
 
+            # Use PAT so the push triggers CI workflows that will complete and
+            # satisfy branch protection. We can't use [skip ci] because the Vercel
+            # GitHub App creates stuck checks that block merging.
             - uses: actions/checkout@v5
               if: steps.check-fork.outputs.is_fork == 'false'
               with:
                   ref: ${{ github.event.pull_request.head.ref }}
-                  token: ${{ secrets.GITHUB_TOKEN }}
+                  token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
 
             - name: Remove .pr/ directory
               id: remove
               if: steps.check-fork.outputs.is_fork == 'false'
               run: |
                   if [ -d ".pr" ]; then
-                    git config user.name "github-actions[bot]"
-                    git config user.email "github-actions[bot]@users.noreply.github.com"
+                    git config user.name "allhands-bot"
+                    git config user.email "allhands-bot@users.noreply.github.com"
                     git rm -rf .pr/
-                    # Use [skip ci] since the PR was already approved - no need to re-run checks
-                    git commit -m "chore: Remove PR-only artifacts [skip ci]"
+                    git commit -m "chore: Remove PR-only artifacts [automated]"
                     git push || {
                       echo "::error::Failed to push cleanup commit. Check branch protection rules."
                       exit 1
