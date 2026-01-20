@@ -20,16 +20,30 @@ Requirements:
 """
 
 import os
+import sys
 
 from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.llm.streaming import ModelResponseStream
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+
+
+def on_token(chunk: ModelResponseStream) -> None:
+    for choice in chunk.choices:
+        delta = getattr(choice, "delta", None)
+        if delta is None:
+            continue
+        content = getattr(delta, "content", None)
+        if isinstance(content, str) and content:
+            sys.stdout.write(content)
+            sys.stdout.flush()
 
 
 # First time: Opens browser for OAuth login
 # Subsequent calls: Reuses cached credentials (auto-refreshes if expired)
 llm = LLM.subscription_login(
     model="gpt-5.2-codex",  # or "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"
+    stream=True,
 )
 
 # Verify subscription mode is active
@@ -45,7 +59,7 @@ agent = Agent(
 )
 
 cwd = os.getcwd()
-conversation = Conversation(agent=agent, workspace=cwd)
+conversation = Conversation(agent=agent, workspace=cwd, token_callbacks=[on_token])
 
 conversation.send_message("List the files in the current directory.")
 conversation.run()
