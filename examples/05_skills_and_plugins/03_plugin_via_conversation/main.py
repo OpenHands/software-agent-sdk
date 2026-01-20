@@ -42,7 +42,12 @@ if not api_key:
 
 # Configure LLM and Agent
 model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
-llm = LLM(usage_id="plugin-demo", model=model, api_key=SecretStr(api_key))
+llm = LLM(
+    usage_id="plugin-demo",
+    model=model,
+    api_key=SecretStr(api_key),
+    base_url=os.getenv("LLM_BASE_URL"),
+)
 agent = Agent(
     llm=llm, tools=[Tool(name=TerminalTool.name), Tool(name=FileEditorTool.name)]
 )

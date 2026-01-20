@@ -6,6 +6,10 @@ from typing import Any
 
 from openhands.sdk.context import AgentContext
 from openhands.sdk.context.skills import Skill
+from openhands.sdk.logger import get_logger
+
+
+logger = get_logger(__name__)
 
 
 def merge_skills(
@@ -32,6 +36,8 @@ def merge_skills(
 
     skills_by_name = {s.name: s for s in existing_skills}
     for skill in plugin_skills:
+        if skill.name in skills_by_name:
+            logger.warning(f"Plugin skill '{skill.name}' overrides existing skill")
         skills_by_name[skill.name] = skill
 
     if max_skills is not None and len(skills_by_name) > max_skills:
@@ -81,14 +87,24 @@ def merge_mcp_configs(
 
     # Merge mcpServers by server name (Claude Code compatible behavior)
     if "mcpServers" in plugin_config:
+        existing_servers = result.get("mcpServers", {})
+        for server_name in plugin_config["mcpServers"]:
+            if server_name in existing_servers:
+                logger.warning(
+                    f"Plugin MCP server '{server_name}' overrides existing server"
+                )
         result["mcpServers"] = {
-            **result.get("mcpServers", {}),
+            **existing_servers,
             **plugin_config["mcpServers"],
         }
 
     # Other top-level keys: plugin wins (shallow override)
     for key, value in plugin_config.items():
         if key != "mcpServers":
+            if key in result:
+                logger.warning(
+                    f"Plugin MCP config key '{key}' overrides existing value"
+                )
             result[key] = value
 
     return result

@@ -140,52 +140,35 @@ class TestMergeMCPConfigs:
         assert plugin_config == original_plugin
 
 
-class TestPluginMergeInto:
-    """Tests for Plugin.merge_into() method."""
+class TestPluginAddSkillsTo:
+    """Tests for Plugin.add_skills_to() method."""
 
-    def test_merge_into_empty_plugin(self, empty_plugin):
-        """Test merging an empty plugin returns unchanged contexts."""
+    def test_add_skills_to_empty_plugin(self, empty_plugin):
+        """Test adding skills from empty plugin returns unchanged context."""
         context = AgentContext(skills=[])
-        mcp_config = {}
-
-        new_context, new_mcp = empty_plugin.merge_into(context, mcp_config)
-
+        new_context = empty_plugin.add_skills_to(context)
         assert new_context.skills == []
-        assert new_mcp == {}
 
-    def test_merge_into_none_inputs(self, mock_plugin_with_skills):
-        """Test merging with None inputs creates new contexts."""
-        new_context, new_mcp = mock_plugin_with_skills.merge_into()
-
+    def test_add_skills_to_none_input(self, mock_plugin_with_skills):
+        """Test adding skills with None input creates new context."""
+        new_context = mock_plugin_with_skills.add_skills_to()
         assert isinstance(new_context, AgentContext)
-        assert isinstance(new_mcp, dict)
         assert len(new_context.skills) > 0
 
-    def test_merge_into_with_skills(self, mock_plugin_with_skills):
-        """Test merging plugin with skills."""
+    def test_add_skills_to_with_skills(self, mock_plugin_with_skills):
+        """Test adding plugin skills to context."""
         context = AgentContext(skills=[])
-        new_context, new_mcp = mock_plugin_with_skills.merge_into(context, {})
-
+        new_context = mock_plugin_with_skills.add_skills_to(context)
         assert len(new_context.skills) == len(mock_plugin_with_skills.skills)
 
-    def test_merge_into_with_mcp_config(self, mock_plugin_with_mcp):
-        """Test merging plugin with MCP config."""
+    def test_add_skills_to_enforces_max_skills(self, mock_plugin_with_skills):
+        """Test add_skills_to enforces max_skills limit."""
         context = AgentContext(skills=[])
-        new_context, new_mcp = mock_plugin_with_mcp.merge_into(context, {})
-
-        assert new_mcp == mock_plugin_with_mcp.mcp_config
-
-    def test_merge_into_enforces_max_skills(self, mock_plugin_with_skills):
-        """Test merge_into enforces max_skills limit."""
-        context = AgentContext(skills=[])
-
-        # Should raise ValueError if limit is exceeded
         with pytest.raises(ValueError, match="exceeds maximum"):
-            mock_plugin_with_skills.merge_into(context, {}, max_skills=0)
+            mock_plugin_with_skills.add_skills_to(context, max_skills=0)
 
-    def test_merge_into_max_skills_with_existing_skills(self, mock_skill):
+    def test_add_skills_to_max_skills_with_existing(self, mock_skill):
         """Test max_skills counts unique skills after merge."""
-        # Create plugin with 2 skills
         plugin_skill_1 = Skill(name="plugin-skill-1", content="P1")
         plugin_skill_2 = Skill(name="plugin-skill-2", content="P2")
         plugin = Plugin(
@@ -193,25 +176,21 @@ class TestPluginMergeInto:
             path="/tmp/test",
             skills=[plugin_skill_1, plugin_skill_2],
         )
-
-        # Existing context has 1 skill
         context = AgentContext(skills=[mock_skill])
 
         # Limit of 3 should allow merge (1 existing + 2 new = 3)
-        new_context, _ = plugin.merge_into(context, {}, max_skills=3)
+        new_context = plugin.add_skills_to(context, max_skills=3)
         assert len(new_context.skills) == 3
 
         # Limit of 2 should fail (3 > 2)
         with pytest.raises(ValueError, match="exceeds maximum"):
-            plugin.merge_into(context, {}, max_skills=2)
+            plugin.add_skills_to(context, max_skills=2)
 
-    def test_merge_into_max_skills_with_override(self):
+    def test_add_skills_to_max_skills_with_override(self):
         """Test max_skills counts correctly when plugin overrides existing skill."""
-        # Create existing skill
         existing_skill = Skill(name="shared-skill", content="Old")
         context = AgentContext(skills=[existing_skill])
 
-        # Plugin has skill with same name (will override)
         plugin_skill = Skill(name="shared-skill", content="New")
         plugin = Plugin(
             manifest=PluginManifest(name="test", version="1.0.0", description="Test"),
@@ -219,24 +198,41 @@ class TestPluginMergeInto:
             skills=[plugin_skill],
         )
 
-        # Should succeed with limit of 1 (only 1 unique skill after merge)
-        new_context, _ = plugin.merge_into(context, {}, max_skills=1)
+        new_context = plugin.add_skills_to(context, max_skills=1)
         assert len(new_context.skills) == 1
         assert new_context.skills[0].content == "New"
 
-    def test_merge_into_preserves_context_fields(self, mock_plugin_with_skills):
-        """Test merge preserves other AgentContext fields."""
+    def test_add_skills_to_preserves_context_fields(self, mock_plugin_with_skills):
+        """Test add_skills_to preserves other AgentContext fields."""
         context = AgentContext(
             skills=[],
             system_message_suffix="Custom suffix",
         )
-
-        new_context, _ = mock_plugin_with_skills.merge_into(context, {})
-
+        new_context = mock_plugin_with_skills.add_skills_to(context)
         assert new_context.system_message_suffix == context.system_message_suffix
 
-    def test_merge_into_returns_merged_mcp_config(self):
-        """Test merge returns correctly merged MCP config."""
+
+class TestPluginAddMcpConfigTo:
+    """Tests for Plugin.add_mcp_config_to() method."""
+
+    def test_add_mcp_config_to_empty_plugin(self, empty_plugin):
+        """Test adding MCP config from empty plugin returns empty dict."""
+        new_mcp = empty_plugin.add_mcp_config_to({})
+        assert new_mcp == {}
+
+    def test_add_mcp_config_to_none_input(self, mock_plugin_with_mcp):
+        """Test adding MCP config with None input."""
+        new_mcp = mock_plugin_with_mcp.add_mcp_config_to()
+        assert isinstance(new_mcp, dict)
+        assert new_mcp == mock_plugin_with_mcp.mcp_config
+
+    def test_add_mcp_config_to_with_config(self, mock_plugin_with_mcp):
+        """Test adding plugin MCP config."""
+        new_mcp = mock_plugin_with_mcp.add_mcp_config_to({})
+        assert new_mcp == mock_plugin_with_mcp.mcp_config
+
+    def test_add_mcp_config_to_merges_configs(self):
+        """Test add_mcp_config_to returns correctly merged MCP config."""
         base_mcp = {"server1": {"command": "base"}}
         plugin_mcp = {"server2": {"command": "plugin"}}
 
@@ -246,7 +242,7 @@ class TestPluginMergeInto:
             mcp_config=plugin_mcp,
         )
 
-        _, new_mcp = plugin.merge_into(None, base_mcp)
+        new_mcp = plugin.add_mcp_config_to(base_mcp)
 
         assert "server1" in new_mcp
         assert "server2" in new_mcp

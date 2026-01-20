@@ -126,12 +126,9 @@ def load_plugins(
             f"mcp_config={'yes' if plugin.mcp_config else 'no'}"
         )
 
-        # Merge skills and MCP using existing SDK utilities
-        merged_context, merged_mcp = plugin.merge_into(
-            merged_context,
-            merged_mcp,
-            max_skills=max_skills,
-        )
+        # Merge skills and MCP config separately
+        merged_context = plugin.add_skills_to(merged_context, max_skills=max_skills)
+        merged_mcp = plugin.add_mcp_config_to(merged_mcp)
 
         # Collect hooks for later combination
         if plugin.hooks and not plugin.hooks.is_empty():

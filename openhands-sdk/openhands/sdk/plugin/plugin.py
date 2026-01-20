@@ -86,46 +86,52 @@ class Plugin(BaseModel):
         """Get the plugin description."""
         return self.manifest.description
 
-    def merge_into(
+    def add_skills_to(
         self,
         agent_context: AgentContext | None = None,
-        mcp_config: dict[str, Any] | None = None,
         max_skills: int | None = None,
-    ) -> tuple[AgentContext, dict[str, Any]]:
-        """Merge this plugin's content into agent context and MCP config.
+    ) -> AgentContext:
+        """Add this plugin's skills to an agent context.
 
-        This is the canonical way to apply a plugin's skills and MCP configuration
-        to an agent's runtime context.
+        Plugin skills override existing skills with the same name.
 
         Args:
-            agent_context: Existing agent context (or None)
-            mcp_config: Existing MCP config (or None)
+            agent_context: Existing agent context (or None to create new)
             max_skills: Optional max total skills (raises ValueError if exceeded)
 
         Returns:
-            Tuple of (merged_agent_context, merged_mcp_config)
+            New AgentContext with this plugin's skills added
 
         Raises:
             ValueError: If max_skills limit would be exceeded
 
         Example:
             >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
-            >>> new_context, new_mcp = plugin.merge_into(
-            ...     agent.agent_context,
-            ...     agent.mcp_config,
-            ...     max_skills=100
-            ... )
-            >>> agent = agent.model_copy(
-            ...     update={"agent_context": new_context, "mcp_config": new_mcp}
-            ... )
+            >>> new_context = plugin.add_skills_to(agent.agent_context, max_skills=100)
+            >>> agent = agent.model_copy(update={"agent_context": new_context})
         """
-        # Merge skills (with optional limit check)
-        merged_context = merge_skills(agent_context, self.skills, max_skills=max_skills)
+        return merge_skills(agent_context, self.skills, max_skills=max_skills)
 
-        # Merge MCP config
-        merged_mcp = merge_mcp_configs(mcp_config, self.mcp_config)
+    def add_mcp_config_to(
+        self,
+        mcp_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Add this plugin's MCP servers to an MCP config.
 
-        return merged_context, merged_mcp
+        Plugin MCP servers override existing servers with the same name.
+
+        Args:
+            mcp_config: Existing MCP config (or None to create new)
+
+        Returns:
+            New MCP config dict with this plugin's servers added
+
+        Example:
+            >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
+            >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
+            >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
+        """
+        return merge_mcp_configs(mcp_config, self.mcp_config)
 
     @classmethod
     def fetch(

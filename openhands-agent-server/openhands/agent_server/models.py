@@ -112,7 +112,7 @@ class StartConversationRequest(BaseModel):
         default=None,
         description=(
             "List of plugins to load for this conversation. Plugins are loaded "
-            "on the server and their skills/MCP config are merged into the agent. "
+            "and their skills/MCP config are merged into the agent. "
             "Hooks are extracted and stored for runtime execution."
         ),
     )
