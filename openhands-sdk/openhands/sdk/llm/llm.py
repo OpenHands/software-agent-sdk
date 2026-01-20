@@ -774,6 +774,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         **final_kwargs,
                     )
                     if isinstance(ret, ResponsesAPIResponse):
+                        if user_enable_streaming:
+                            logger.warning(
+                                "Responses streaming was requested, but the provider "
+                                "returned a non-streaming response; no on_token deltas "
+                                "will be emitted."
+                            )
                         self._telemetry.on_response(ret)
                         return ret
 
