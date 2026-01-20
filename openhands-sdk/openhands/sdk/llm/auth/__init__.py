@@ -11,6 +11,7 @@ from openhands.sdk.llm.auth.credentials import (
 from openhands.sdk.llm.auth.openai import (
     OPENAI_CODEX_MODELS,
     OpenAISubscriptionAuth,
+    SupportedVendor,
 )
 
 
@@ -19,4 +20,5 @@ __all__ = [
     "OAuthCredentials",
     "OpenAISubscriptionAuth",
     "OPENAI_CODEX_MODELS",
+    "SupportedVendor",
 ]

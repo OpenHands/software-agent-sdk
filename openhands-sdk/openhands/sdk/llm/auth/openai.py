@@ -15,7 +15,7 @@ import json
 import platform
 import time
 import webbrowser
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlencode
 
 from aiohttp import web
@@ -29,6 +29,10 @@ from openhands.sdk.logger import get_logger
 
 if TYPE_CHECKING:
     from openhands.sdk.llm.llm import LLM
+
+# Supported vendors for subscription-based authentication.
+# Add new vendors here as they become supported.
+SupportedVendor = Literal["openai"]
 
 logger = get_logger(__name__)
 
@@ -498,7 +502,7 @@ class OpenAISubscriptionAuth:
 
 
 async def subscription_login_async(
-    vendor: str = "openai",
+    vendor: SupportedVendor = "openai",
     model: str = "gpt-5.2-codex",
     force_login: bool = False,
     open_browser: bool = True,
@@ -548,7 +552,7 @@ async def subscription_login_async(
 
 
 def subscription_login(
-    vendor: str = "openai",
+    vendor: SupportedVendor = "openai",
     model: str = "gpt-5.2-codex",
     force_login: bool = False,
     open_browser: bool = True,

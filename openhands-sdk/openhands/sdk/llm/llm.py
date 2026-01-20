@@ -26,6 +26,7 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
+    from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.tool.tool import ToolDefinition
 
 
@@ -1278,7 +1279,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @classmethod
     def subscription_login(
         cls,
-        vendor: str = "openai",
+        vendor: SupportedVendor = "openai",
         model: str = "gpt-5.2-codex",
         force_login: bool = False,
         open_browser: bool = True,
