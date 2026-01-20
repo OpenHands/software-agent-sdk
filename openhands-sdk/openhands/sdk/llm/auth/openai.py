@@ -408,8 +408,7 @@ class OpenAISubscriptionAuth:
         Args:
             model: The model to use (must be in OPENAI_CODEX_MODELS).
             credentials: OAuth credentials to use. If None, uses stored credentials.
-            instructions: Optional instructions for the Codex model. This is sent
-                as the 'instructions' field in the API request.
+            instructions: Optional instructions for the Codex model.
             **llm_kwargs: Additional arguments to pass to LLM constructor.
 
         Returns:
@@ -417,12 +416,6 @@ class OpenAISubscriptionAuth:
 
         Raises:
             ValueError: If the model is not supported or no credentials available.
-
-        Note:
-            The Codex API has specific requirements:
-            - Uses 'instructions' field instead of system messages
-            - Requires 'store: false' to not persist conversations
-            - System prompts should be sent as user messages, not system role
         """
         from openhands.sdk.llm.llm import LLM
 
@@ -438,11 +431,6 @@ class OpenAISubscriptionAuth:
                 "No credentials available. Call login() first or provide credentials."
             )
 
-        # Build cross-platform user agent string
-        user_agent = f"openhands-sdk ({platform.system()}; {platform.machine()})"
-
-        # Extract chatgpt_account_id from JWT access token
-        # This is required for the API to recognize the subscription plan
         account_id = _extract_chatgpt_account_id(creds.access_token)
         if not account_id:
             logger.warning(
@@ -450,54 +438,38 @@ class OpenAISubscriptionAuth:
                 "API requests may fail."
             )
 
-        # Codex-specific extra_body parameters
-        extra_body: dict[str, Any] = {
-            "store": False,  # Don't persist conversations
-        }
+        # Build extra_body with Codex-specific params
+        extra_body: dict[str, Any] = {"store": False}
         if instructions:
             extra_body["instructions"] = instructions
-
-        # Merge with any user-provided extra_body
         if "litellm_extra_body" in llm_kwargs:
-            extra_body = {**extra_body, **llm_kwargs.pop("litellm_extra_body")}
+            extra_body.update(llm_kwargs.pop("litellm_extra_body"))
 
-        # Codex subscription API has specific requirements:
-        # 1. Stream must be enabled
-        # 2. No temperature parameter supported
-        # 3. No max_output_tokens parameter supported
-        llm_kwargs_final = {
-            "temperature": None,
-            "max_output_tokens": None,
-            "stream": True,  # Codex API requires streaming
-            **llm_kwargs,  # User overrides come last
-        }
-
-        # Build headers matching OpenAI's official Codex CLI implementation
+        # Build headers matching OpenAI's official Codex CLI
         extra_headers: dict[str, str] = {
-            "originator": "codex_cli_rs",  # Match official Codex CLI
-            "OpenAI-Beta": "responses=experimental",  # Required for Responses API
-            "User-Agent": user_agent,
+            "originator": "codex_cli_rs",
+            "OpenAI-Beta": "responses=experimental",
+            "User-Agent": f"openhands-sdk ({platform.system()}; {platform.machine()})",
         }
-        # Add chatgpt-account-id header if successfully extracted
         if account_id:
             extra_headers["chatgpt-account-id"] = account_id
 
+        # Codex API requires streaming and doesn't support temperature/max_output_tokens
         llm = LLM(
             model=f"openai/{model}",
             base_url=CODEX_API_ENDPOINT.rsplit("/", 1)[0],
             api_key=creds.access_token,
             extra_headers=extra_headers,
             litellm_extra_body=extra_body,
-            **llm_kwargs_final,
+            temperature=None,
+            max_output_tokens=None,
+            stream=True,
+            **llm_kwargs,
         )
-        # Mark this LLM as subscription-based
         llm._is_subscription = True
-
-        # Force these to None after initialization to prevent them being sent
-        # (in case _init_model_info_and_caps set them from model info)
+        # Ensure these stay None even if model info tried to set them
         llm.max_output_tokens = None
         llm.temperature = None
-
         return llm
 
 

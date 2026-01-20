@@ -188,7 +188,8 @@ def test_openai_subscription_auth_create_llm_success(tmp_path):
     assert llm.model == "openai/gpt-5.2-codex"
     assert llm.api_key is not None
     assert llm.extra_headers is not None
-    assert llm.extra_headers.get("originator") == "openhands"
+    # Uses codex_cli_rs to match official Codex CLI for compatibility
+    assert llm.extra_headers.get("originator") == "codex_cli_rs"
 
 
 @pytest.mark.asyncio

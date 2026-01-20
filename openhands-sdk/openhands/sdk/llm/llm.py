@@ -1095,97 +1095,83 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Prepare (instructions, input[]) for the OpenAI Responses API.
 
-        - Skips prompt caching flags and string serializer concerns
         - Uses Message.to_responses_value to get either instructions (system)
-         or input items (others)
+          or input items (others)
         - Concatenates system instructions into a single instructions string
-
-        Codex subscription endpoints can reject complex/long `instructions`
-        ("Instructions are not valid"). When using the ChatGPT subscription
-        transport (chatgpt.com/backend-api/codex), avoid sending system prompts
-        as top-level instructions and instead prepend them to the first user
-        message.
+        - For subscription mode, system prompts are prepended to user content
         """
-        msgs = copy.deepcopy(messages)
-
-        # Determine vision based on model detection
         vision_active = self.vision_is_active()
-
-        # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
         system_chunks: list[str] = []
 
-        DEFAULT_CODEX_INSTRUCTIONS = (
+        for m in copy.deepcopy(messages):
+            val = m.to_responses_value(vision_enabled=vision_active)
+            if isinstance(val, str):
+                s = val.strip()
+                if s:
+                    if self.is_subscription:
+                        system_chunks.append(s)
+                    else:
+                        instructions = (
+                            s
+                            if instructions is None
+                            else f"{instructions}\n\n---\n\n{s}"
+                        )
+            elif val:
+                input_items.extend(val)
+
+        if self.is_subscription:
+            return self._transform_for_subscription(system_chunks, input_items)
+        return instructions, input_items
+
+    def _transform_for_subscription(
+        self, system_chunks: list[str], input_items: list[dict[str, Any]]
+    ) -> tuple[str, list[dict[str, Any]]]:
+        """Transform messages for Codex subscription transport.
+
+        Codex subscription endpoints reject complex/long `instructions`, so we:
+        1. Use a minimal default instruction string
+        2. Prepend system prompts to the first user message
+        3. Normalize message format to match OpenCode's Codex client
+        """
+        default_instructions = (
             "You are OpenHands agent, a helpful AI assistant that can interact "
             "with a computer to solve tasks."
         )
 
-        for m in msgs:
-            val = m.to_responses_value(vision_enabled=vision_active)
-            if isinstance(val, str):
-                s = val.strip()
-                if not s:
-                    continue
-                if self.is_subscription:
-                    system_chunks.append(s)
-                else:
-                    instructions = (
-                        s if instructions is None else f"{instructions}\n\n---\n\n{s}"
-                    )
-            else:
-                if val:
-                    input_items.extend(val)
+        # Prepend system prompts to first user message
+        if system_chunks:
+            merged = "\n\n---\n\n".join(system_chunks)
+            prefix_content = {
+                "type": "input_text",
+                "text": f"Context (system prompt):\n{merged}\n\n",
+            }
+            self._inject_system_prefix(input_items, prefix_content)
 
-        if self.is_subscription and system_chunks:
-            merged_system = "\n\n---\n\n".join(system_chunks).strip()
-            if merged_system:
-                prefix = f"Context (system prompt):\n{merged_system}\n\n"
-                injected = False
-                for item in input_items:
-                    if item.get("type") == "message" and item.get("role") == "user":
-                        content = item.get("content")
-                        if not isinstance(content, list):
-                            content = [content] if content else []
-                        item["content"] = [
-                            {"type": "input_text", "text": prefix}
-                        ] + content
-                        injected = True
-                        break
+        # Normalize: {"type": "message", ...} -> {"role": ..., "content": ...}
+        normalized = [
+            {"role": item.get("role"), "content": item.get("content") or []}
+            if item.get("type") == "message"
+            else item
+            for item in input_items
+        ]
+        return default_instructions, normalized
 
-                if not injected:
-                    input_items.insert(
-                        0,
-                        {
-                            "role": "user",
-                            "content": [{"type": "input_text", "text": prefix}],
-                        },
-                    )
+    def _inject_system_prefix(
+        self, input_items: list[dict[str, Any]], prefix_content: dict[str, Any]
+    ) -> None:
+        """Inject system prefix into the first user message, or create one."""
+        for item in input_items:
+            if item.get("type") == "message" and item.get("role") == "user":
+                content = item.get("content")
+                if not isinstance(content, list):
+                    content = [content] if content else []
+                item["content"] = [prefix_content] + content
+                return
 
-        # For subscription Codex transport, normalize message items to match
-        # the shape used by OpenCode's Codex client:
-        #   {"role": "user", "content": [{"type": "input_text", ...}]}
-        # instead of our generic {"type": "message", ...} wrapper.
-        if self.is_subscription and input_items:
-            normalized: list[dict[str, Any]] = []
-            for item in input_items:
-                if item.get("type") == "message":
-                    normalized.append(
-                        {
-                            "role": item.get("role"),
-                            "content": item.get("content") or [],
-                        }
-                    )
-                else:
-                    normalized.append(item)
-            input_items = normalized
-
-        # For subscription Codex transport, use a small, stable instructions string
-        # (required by the endpoint) and move the full system prompt into user content.
-        if self.is_subscription:
-            return DEFAULT_CODEX_INSTRUCTIONS, input_items
-
-        return instructions, input_items
+        # No user message found, create a synthetic one
+        input_items.insert(0, {"role": "user", "content": [prefix_content]})
 
     def get_token_count(self, messages: list[Message]) -> int:
         logger.debug(
