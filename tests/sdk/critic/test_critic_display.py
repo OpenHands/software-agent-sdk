@@ -147,7 +147,7 @@ def test_color_highlighting():
 
 def test_star_rating():
     """Test that scores map to correct star ratings.
-    
+
     Each star represents 20%, using round() for conversion.
     Python uses banker's rounding (round half to even).
     """
@@ -202,11 +202,23 @@ def test_visualize_with_categorized_features():
             "all": {"positive": 0.10, "neutral": 0.77, "negative": 0.13},
         },
         "agent_behavioral_issues": [
-            {"name": "loop_behavior", "display_name": "Loop Behavior", "probability": 0.85},
-            {"name": "insufficient_testing", "display_name": "Insufficient Testing", "probability": 0.57},
+            {
+                "name": "loop_behavior",
+                "display_name": "Loop Behavior",
+                "probability": 0.85,
+            },
+            {
+                "name": "insufficient_testing",
+                "display_name": "Insufficient Testing",
+                "probability": 0.57,
+            },
         ],
         "user_followup_patterns": [
-            {"name": "direction_change", "display_name": "Direction Change", "probability": 0.59},
+            {
+                "name": "direction_change",
+                "display_name": "Direction Change",
+                "probability": 0.59,
+            },
         ],
         "infrastructure_issues": [],
         "other": [],
