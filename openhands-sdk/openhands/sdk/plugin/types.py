@@ -15,6 +15,44 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 MARKETPLACE_MANIFEST_DIRS = [".plugin", ".claude-plugin"]
 MARKETPLACE_MANIFEST_FILE = "marketplace.json"
 
+
+class PluginSource(BaseModel):
+    """Specification for a plugin to load.
+
+    This model describes where to find a plugin and is used by load_plugins()
+    to fetch and load plugins from various sources.
+
+    Examples:
+        >>> # GitHub repository
+        >>> PluginSource(source="github:owner/repo", ref="v1.0.0")
+
+        >>> # Plugin from monorepo subdirectory
+        >>> PluginSource(
+        ...     source="github:owner/monorepo",
+        ...     repo_path="plugins/my-plugin"
+        ... )
+
+        >>> # Local path
+        >>> PluginSource(source="/path/to/plugin")
+    """
+
+    source: str = Field(
+        description="Plugin source: 'github:owner/repo', any git URL, or local path"
+    )
+    ref: str | None = Field(
+        default=None,
+        description="Optional branch, tag, or commit (only for git sources)",
+    )
+    repo_path: str | None = Field(
+        default=None,
+        description=(
+            "Subdirectory path within the git repository "
+            "(e.g., 'plugins/my-plugin' for monorepos). "
+            "Only relevant for git sources, not local paths."
+        ),
+    )
+
+
 # Type aliases for marketplace plugin entry configurations
 # These provide better documentation than dict[str, Any] while remaining flexible
 

@@ -8,6 +8,7 @@ available plugins with their metadata and source locations.
 """
 
 from openhands.sdk.plugin.fetch import PluginFetchError
+from openhands.sdk.plugin.loader import load_plugins, merge_hook_configs
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import (
     AgentDefinition,
@@ -19,6 +20,7 @@ from openhands.sdk.plugin.types import (
     MarketplacePluginSource,
     PluginAuthor,
     PluginManifest,
+    PluginSource,
 )
 from openhands.sdk.plugin.utils import merge_mcp_configs, merge_skills
 
@@ -29,8 +31,12 @@ __all__ = [
     "PluginFetchError",
     "PluginManifest",
     "PluginAuthor",
+    "PluginSource",
     "AgentDefinition",
     "CommandDefinition",
+    # Plugin loading
+    "load_plugins",
+    "merge_hook_configs",
     "merge_mcp_configs",
     "merge_skills",
     # Marketplace classes

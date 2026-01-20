@@ -42,7 +42,8 @@ def merge_mcp_configs(
 ) -> dict[str, Any]:
     """Merge MCP configurations.
 
-    Plugin config takes precedence for same keys.
+    Plugin config takes precedence for same keys at each level.
+    Specifically handles mcpServers to merge servers by name.
 
     Args:
         base_config: Base MCP configuration
@@ -54,7 +55,25 @@ def merge_mcp_configs(
     if base_config is None and plugin_config is None:
         return {}
     if base_config is None:
-        return plugin_config or {}
+        return dict(plugin_config) if plugin_config else {}
     if plugin_config is None:
-        return base_config
-    return {**base_config, **plugin_config}
+        return dict(base_config)
+
+    # Deep copy to avoid mutating inputs
+    result = dict(base_config)
+
+    # Merge mcpServers specifically (override by server name)
+    if "mcpServers" in plugin_config:
+        if "mcpServers" not in result:
+            result["mcpServers"] = {}
+        result["mcpServers"] = {
+            **result.get("mcpServers", {}),
+            **plugin_config["mcpServers"],
+        }
+
+    # Merge any other top-level keys (plugin wins)
+    for key, value in plugin_config.items():
+        if key != "mcpServers":
+            result[key] = value
+
+    return result
