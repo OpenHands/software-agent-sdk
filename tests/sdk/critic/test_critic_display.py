@@ -22,8 +22,8 @@ def test_format_critic_result_with_json_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display overall score with 4 digits inline
-    assert "0.5070" in text
+    # Should display overall score with 2 decimal places inline
+    assert "0.51" in text
 
     # Without metadata, the raw JSON message is displayed as-is
     assert "sentiment_neutral" in text
@@ -39,8 +39,8 @@ def test_format_critic_result_with_plain_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should display overall score
-    assert "0.7500" in text
+    # Should display overall score with 2 decimal places
+    assert "0.75" in text
     # Should display plain text message
     assert "This is a plain text message" in text
 
@@ -52,8 +52,8 @@ def test_format_critic_result_without_message():
     formatted = critic_result.visualize
     text = formatted.plain
 
-    # Should only display overall score
-    assert "0.6500" in text
+    # Should only display overall score with 2 decimal places
+    assert "0.65" in text
     # Should be compact - just a few lines
     assert text.count("\n") <= 3
 
@@ -73,8 +73,8 @@ def test_visualize_consistency():
 
     formatted = critic_result.visualize.plain
 
-    # Should contain overall score
-    assert "0.8000" in formatted
+    # Should contain overall score with 2 decimal places
+    assert "0.80" in formatted
     # Without metadata, the raw JSON message is displayed as-is
     assert "success" in formatted
     assert "sentiment_positive" in formatted
