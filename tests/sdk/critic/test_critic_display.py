@@ -24,7 +24,7 @@ def test_format_critic_result_with_json_message():
 
     # Should display human-readable assessment
     assert "Critic thinks the task is" in text
-    assert "might need some adjustments" in text  # Score 0.507 maps to this
+    assert "uncertain" in text  # Score 0.507 maps to "uncertain"
 
     # Without metadata, the raw JSON message is displayed as-is
     assert "sentiment_neutral" in text
@@ -42,7 +42,7 @@ def test_format_critic_result_with_plain_message():
 
     # Should display human-readable assessment
     assert "Critic thinks the task is" in text
-    assert "probably successful" in text  # Score 0.75 maps to this
+    assert "likely successful" in text  # Score 0.75 maps to this
     # Should display plain text message
     assert "This is a plain text message" in text
 
@@ -56,7 +56,7 @@ def test_format_critic_result_without_message():
 
     # Should display human-readable assessment
     assert "Critic thinks the task is" in text
-    assert "probably successful" in text  # Score 0.65 maps to this
+    assert "likely successful" in text  # Score 0.65 maps to this
     # Should be compact - just a few lines
     assert text.count("\n") <= 3
 
@@ -145,26 +145,21 @@ def test_color_highlighting():
 
 
 def test_quality_assessment_levels():
-    """Test that scores map to correct quality assessment levels."""
-    # likely successful (>= 0.8)
+    """Test that scores map to correct quality assessment levels (3 tiers)."""
+    # likely successful (>= 0.6)
+    assert CriticResult._get_quality_assessment(0.6)[0] == "likely successful"
     assert CriticResult._get_quality_assessment(0.8)[0] == "likely successful"
     assert CriticResult._get_quality_assessment(1.0)[0] == "likely successful"
 
-    # probably successful (>= 0.6)
-    assert CriticResult._get_quality_assessment(0.6)[0] == "probably successful"
-    assert CriticResult._get_quality_assessment(0.79)[0] == "probably successful"
+    # uncertain (>= 0.4 and < 0.6)
+    assert CriticResult._get_quality_assessment(0.4)[0] == "uncertain"
+    assert CriticResult._get_quality_assessment(0.5)[0] == "uncertain"
+    assert CriticResult._get_quality_assessment(0.59)[0] == "uncertain"
 
-    # might need some adjustments (>= 0.5)
-    assert CriticResult._get_quality_assessment(0.5)[0] == "might need some adjustments"
-    assert CriticResult._get_quality_assessment(0.59)[0] == "might need some adjustments"
-
-    # likely needs more work (>= 0.3)
-    assert CriticResult._get_quality_assessment(0.3)[0] == "likely needs more work"
-    assert CriticResult._get_quality_assessment(0.49)[0] == "likely needs more work"
-
-    # probably unsuccessful (< 0.3)
-    assert CriticResult._get_quality_assessment(0.0)[0] == "probably unsuccessful"
-    assert CriticResult._get_quality_assessment(0.29)[0] == "probably unsuccessful"
+    # likely unsuccessful (< 0.4)
+    assert CriticResult._get_quality_assessment(0.0)[0] == "likely unsuccessful"
+    assert CriticResult._get_quality_assessment(0.2)[0] == "likely unsuccessful"
+    assert CriticResult._get_quality_assessment(0.39)[0] == "likely unsuccessful"
 
 
 def test_confidence_levels():
@@ -219,7 +214,7 @@ def test_visualize_with_categorized_features():
 
     # Should display human-readable assessment
     assert "Critic thinks the task is" in text
-    assert "probably successful" in text
+    assert "likely successful" in text  # Score 0.65 >= 0.6
 
     # Should display sentiment with emoji
     assert "Expected User Response:" in text

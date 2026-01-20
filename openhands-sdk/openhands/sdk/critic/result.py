@@ -36,16 +36,12 @@ class CriticResult(BaseModel):
         Returns:
             Tuple of (label, emoji, style)
         """
-        if score >= 0.8:
-            return "likely successful", "✓", "green bold"
-        elif score >= 0.6:
-            return "probably successful", "✓", "green"
-        elif score >= 0.5:
-            return "might need some adjustments", "~", "yellow"
-        elif score >= 0.3:
-            return "likely needs more work", "!", "yellow"
+        if score >= 0.6:
+            return "likely successful", "✓", "green"
+        elif score >= 0.4:
+            return "uncertain", "?", "yellow"
         else:
-            return "probably unsuccessful", "✗", "red"
+            return "likely unsuccessful", "✗", "red"
 
     @staticmethod
     def _get_confidence_label(prob: float) -> tuple[str, str]:
