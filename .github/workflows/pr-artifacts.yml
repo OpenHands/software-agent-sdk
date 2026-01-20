@@ -49,8 +49,8 @@ jobs:
                     echo "::notice::No .pr/ directory to remove"
                   fi
 
-  # Block merge if .pr/ directory still exists
-    block-merge-with-pr-artifacts:
+  # Warn if .pr/ directory exists (will be auto-removed on approval)
+    check-pr-artifacts:
         if: github.event_name == 'pull_request'
         runs-on: ubuntu-latest
         steps:
@@ -59,6 +59,5 @@ jobs:
             - name: Check for .pr/ directory
               run: |
                   if [ -d ".pr" ]; then
-                    echo "::error::.pr/ directory must be removed before merging. For non-fork PRs, this happens automatically on approval, or you can remove it manually. For fork PRs, please remove manually."
-                    exit 1
+                    echo "::warning::.pr/ directory exists and will be automatically removed when the PR is approved. For fork PRs, manual removal is required before merging."
                   fi
