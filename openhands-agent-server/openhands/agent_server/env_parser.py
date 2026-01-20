@@ -285,6 +285,11 @@ class DiscriminatedUnionEnvParser(EnvParser):
                 return MISSING
         # Type narrowing: kind is str here (from os.environ.get or dict keys)
         kind = cast(str, kind)
+
+        # If kind contains dots, treat it as a full class name
+        if "." in kind:
+            kind = self._import_and_register_class(kind)
+
         # Intentionally raise KeyError for invalid KIND - typos should fail early
         parser = self.parsers[kind]
         parser_result = parser.from_env(key)
@@ -292,6 +297,35 @@ class DiscriminatedUnionEnvParser(EnvParser):
         parser_result = cast(dict, parser_result)
         parser_result["kind"] = kind
         return parser_result
+
+    def _import_and_register_class(self, full_class_name: str) -> str:
+        """Import a class from its full module path and register its parser.
+
+        Args:
+            full_class_name: Full class path (e.g., 'mymodule.submodule.MyClass')
+
+        Returns:
+            The unqualified class name (e.g., 'MyClass')
+        """
+        import importlib
+
+        parts = full_class_name.rsplit(".", 1)
+        module_name = parts[0]
+        class_name = parts[1]
+
+        # If class already registered, just return the name
+        if class_name in self.parsers:
+            return class_name
+
+        # Import the module and get the class
+        module = importlib.import_module(module_name)
+        cls = getattr(module, class_name)
+
+        # Create and register the parser for this class
+        parser = get_env_parser(cls, _get_default_parsers())
+        self.parsers[class_name] = parser
+
+        return class_name
 
     def to_env(self, key: str, value: Any, output: IO):
         parser = self.parsers[value.kind]
