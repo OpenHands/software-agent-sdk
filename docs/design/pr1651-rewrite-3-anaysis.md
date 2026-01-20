@@ -213,30 +213,86 @@ plugin_path: str | None = None,
 # These would be converted to plugins=[PluginSource(...)] internally
 ```
 
-### 6.2 Plugin Loading Logic in SDK (Multi-Plugin Merging)
+### 6.2 Plugin Loading as SDK Utility (Not LocalConversation-Only)
 
-**Move loading to LocalConversation (explicit, not validator-based):**
+**Key Architectural Constraint:**
+> "Plugin fetching must happen **inside the sandbox/runtime** (where the agent runs)."
+
+This means:
+- **LocalConversation**: Plugin fetch/load happens locally
+- **RemoteConversation**: Plugin fetch/load happens on the remote server
+
+The orchestration logic should be a **shared SDK utility**, not embedded in LocalConversation:
+
 ```python
-# In LocalConversation.__init__()
-if plugins:
-    merged_skills = list(agent.agent_context.skills) if agent.agent_context else []
-    merged_mcp_config = dict(agent.mcp_config) if agent.mcp_config else {}
-    merged_hooks: dict[str, list[HookMatcher]] = {}
+# openhands/sdk/plugin/loader.py (new module)
+from openhands.sdk.plugin import Plugin
+from openhands.sdk.plugin.utils import merge_skills, merge_mcp_configs
+
+def load_plugins(
+    plugin_specs: list[PluginSource],
+    agent: AgentBase,
+    max_skills: int = 100,
+) -> tuple[AgentBase, HookConfig | None]:
+    """Load multiple plugins and merge them into the agent.
     
-    for plugin_spec in plugins:
-        plugin = self._load_plugin(plugin_spec)
-        # Skills: later plugins override earlier (by name)
-        merged_skills = merge_skills(merged_skills, plugin.skills)
-        # MCP config: later plugins override earlier (by key)
-        merged_mcp_config = {**merged_mcp_config, **(plugin.mcp_config or {})}
-        # Hooks: concatenate (all hooks run, order matters for blocking)
-        merged_hooks = merge_hook_configs(merged_hooks, plugin.hooks)
+    This is the canonical function for plugin loading. It should be used by:
+    - LocalConversation (for SDK-direct users)
+    - ConversationService (for agent-server users)
     
-    # Apply merged content
-    agent.agent_context = agent.agent_context.model_copy(update={"skills": merged_skills})
-    agent.mcp_config = merged_mcp_config
-    # merged_hooks used when creating hook processor
+    Args:
+        plugin_specs: List of plugin sources to load
+        agent: Agent to merge plugins into
+        max_skills: Maximum total skills allowed
+        
+    Returns:
+        Tuple of (updated_agent, merged_hook_config)
+    """
+    if not plugin_specs:
+        return agent, None
+    
+    merged_context = agent.agent_context
+    merged_mcp = agent.mcp_config or {}
+    all_hooks: list[HookConfig] = []
+    
+    for spec in plugin_specs:
+        # Fetch (downloads if needed, returns cached path)
+        path = Plugin.fetch(source=spec.source, ref=spec.ref, subpath=spec.path)
+        plugin = Plugin.load(path)
+        
+        # Merge skills and MCP using existing SDK utilities
+        merged_context, merged_mcp = plugin.merge_into(
+            merged_context, merged_mcp, max_skills=max_skills
+        )
+        
+        # Collect hooks for later combination
+        if plugin.hooks:
+            all_hooks.append(plugin.hooks)
+    
+    # Combine all hook configs (concatenation semantics)
+    combined_hooks = merge_hook_configs(all_hooks) if all_hooks else None
+    
+    # Create updated agent with merged content
+    updated_agent = agent.model_copy(update={
+        "agent_context": merged_context,
+        "mcp_config": merged_mcp,
+    })
+    
+    return updated_agent, combined_hooks
 ```
+
+**Why a utility function, not just LocalConversation?**
+
+| Scenario | Where Plugin Loading Happens | Uses Utility |
+|----------|------------------------------|--------------|
+| SDK → LocalConversation | Locally (in LocalConversation.__init__) | ✅ Yes |
+| SDK → RemoteConversation | On server (in ConversationService) | ✅ Yes |
+| Agent Server directly | On server (in ConversationService) | ✅ Yes |
+
+The utility ensures **single source of truth** for:
+1. Fetch → Load → Merge orchestration
+2. Multi-plugin merge semantics
+3. Error handling and validation
 
 **Merge semantics:**
 | Content | Merge Strategy | Rationale |
@@ -245,10 +301,32 @@ if plugins:
 | MCP Config | Override by key (last wins) | Server definitions should be unique |
 | Hooks | Concatenate (all run) | Multiple handlers is standard pattern |
 
-**Benefits over pydantic validator:**
-- No I/O side effects in model deserialization
-- Won't re-trigger plugin fetch on conversation resume
-- Explicit control over when plugin loading happens
+**How each path uses the utility:**
+
+```python
+# LocalConversation.__init__()
+if plugins:
+    self.agent, hook_config = load_plugins(plugins, agent)
+    # hook_config used when creating HookProcessor
+
+# ConversationService.start_conversation()
+if request.plugins:
+    updated_agent, hook_config = load_plugins(request.plugins, request.agent)
+    request = request.model_copy(update={"agent": updated_agent})
+    # hook_config stored in StoredConversation
+
+# RemoteConversation.__init__() - just sends specs to server
+payload = {
+    "agent": agent.model_dump(),
+    "plugins": [p.model_dump() for p in plugins],  # Server does the loading
+}
+```
+
+**Benefits:**
+- Single source of truth for orchestration logic
+- Works for both LocalConversation and ConversationService
+- No I/O side effects in model validators
+- Explicit control over when loading happens
 - Clear error handling path
 - Supports multiple plugins naturally
 
@@ -338,27 +416,70 @@ stored = StoredConversation(
 Based on the discussion, I understand reviewers prefer plugin configuration at the **Conversation level** rather than AgentContext, and want support for **multiple plugins**. Here's my plan to revise the PR:
 
 ### Key Changes
-1. **Add `plugins: list[PluginSource]` to LocalConversation and Conversation factory** - Supports multiple plugins per conversation
-2. **Move plugin loading from AgentContext to LocalConversation** - Explicit loading in `__init__()`, not pydantic validator
-3. **Restore plugin params on StartConversationRequest** - `plugins` list for API parity with LocalConversation
-4. **Remove plugin loading from AgentContext** - Clean up the conceptually-incorrect placement
-5. **Implement proper merge semantics for multiple plugins:**
+1. **Add `plugins: list[PluginSource]` to LocalConversation, RemoteConversation, and Conversation factory** - Supports multiple plugins per conversation
+2. **Create SDK utility `load_plugins(specs, agent)` in `openhands.sdk.plugin.loader`** - Single source of truth for fetch/load/merge orchestration
+3. **Both LocalConversation and ConversationService use the utility** - Same logic, different execution location
+4. **Restore plugin params on StartConversationRequest** - `plugins` list for API parity
+5. **Remove plugin loading from AgentContext** - Clean up the conceptually-incorrect placement
+6. **Implement proper merge semantics for multiple plugins:**
    - Skills: later plugins override earlier (by name)
    - MCP config: later plugins override earlier (by key)
    - Hooks: concatenate (all run, order matters for blocking)
 
 ### Why This Improves on cd99dd7 (Original)
-- **SDK is single source of truth** - Plugin loading logic in `LocalConversation`, not duplicated in `ConversationService`
-- **API parity** - Both SDK users (`Conversation()`) and server users (`StartConversationRequest`) have same plugin params
-- **No blocking I/O in validators** - Explicit `_load_plugins()` call vs hidden side effect
+- **SDK is single source of truth** - Orchestration logic in SDK utility (`load_plugins`), not duplicated in ConversationService
+- **Works for both Local and Remote** - LocalConversation calls utility directly; ConversationService uses same utility on server
+- **API parity** - Both SDK users (`Conversation()`) and server users (`StartConversationRequest`) have same `plugins` param
+- **No blocking I/O in validators** - Explicit utility call vs hidden pydantic side effect
 - **Multi-plugin support** - Can load multiple plugins per conversation (the original only supported one)
+
+### Architecture Diagram
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     openhands.sdk.plugin.loader                          │
+│                                                                          │
+│   load_plugins(specs, agent) -> (updated_agent, hook_config)            │
+│     - Plugin.fetch() for each spec                                       │
+│     - Plugin.load() for each spec                                        │
+│     - plugin.merge_into() for each plugin                               │
+│     - merge_hook_configs() to combine hooks                              │
+└─────────────────────────────────────────────────────────────────────────┘
+                    ▲                              ▲
+                    │                              │
+        ┌───────────┴──────────┐     ┌────────────┴─────────────┐
+        │  LocalConversation   │     │  ConversationService     │
+        │  (runs locally)      │     │  (runs on server)        │
+        │                      │     │                          │
+        │  - calls load_plugins│     │  - calls load_plugins    │
+        │  - uses result       │     │  - stores hook_config    │
+        └──────────────────────┘     └──────────────────────────┘
+                    ▲                              ▲
+                    │                              │
+        ┌───────────┴──────────┐     ┌────────────┴─────────────┐
+        │  Conversation()      │     │  RemoteConversation      │
+        │  with LocalWorkspace │     │  with RemoteWorkspace    │
+        └──────────────────────┘     │                          │
+                                     │  - sends plugins to      │
+                                     │    server in request     │
+                                     └──────────────────────────┘
+```
 
 ### Example Usage
 ```python
-# SDK
+# SDK with LocalWorkspace - plugins loaded locally
 conversation = Conversation(
     agent=agent,
     workspace="./workspace",
+    plugins=[
+        PluginSource(source="github:org/security-plugin", ref="v2.0.0"),
+        PluginSource(source="github:org/logging-plugin"),
+    ]
+)
+
+# SDK with RemoteWorkspace - plugins sent to server, loaded there
+conversation = Conversation(
+    agent=agent,
+    workspace=RemoteWorkspace(host="http://agent-server:8000"),
     plugins=[
         PluginSource(source="github:org/security-plugin", ref="v2.0.0"),
         PluginSource(source="github:org/logging-plugin"),
@@ -381,6 +502,7 @@ POST /api/conversations/start
 - AgentContext stays immutable and focused on LLM-facing context
 - Plugin refs stored per-conversation for reproducible restore
 - Extensible software can load multiple plugins (security, logging, domain-specific, etc.)
+- Single SDK utility works for all execution contexts (local, remote server)
 
 Let me know if this direction aligns with what you had in mind.
 ```
@@ -394,7 +516,14 @@ The reviewers' preference is clear: **plugin configuration belongs at the Conver
 The go-forward plan combines the best of both:
 - Plugin params on Conversation (conceptually correct)
 - **`plugins: list[PluginSource]`** for multi-plugin support (extensibility)
-- Loading logic in SDK's LocalConversation (single source of truth)
-- API parity between StartConversationRequest and LocalConversation (developer experience)
+- **SDK utility `load_plugins()`** as single source of truth for orchestration
+- Utility used by both LocalConversation AND ConversationService (not just one)
+- API parity between StartConversationRequest, LocalConversation, and RemoteConversation
 - Explicit loading, not pydantic validator (no side effects)
 - Clear merge semantics: skills override by name, MCP by key, hooks concatenate
+
+**Key insight**: The question "should it be in a utility so it works with both LocalConversation and RemoteConversation?" led to the realization that:
+1. **LocalConversation** loads plugins locally (for SDK-direct users)
+2. **RemoteConversation** sends plugin specs to server, where **ConversationService** loads them
+3. Both LocalConversation and ConversationService should use the **same SDK utility**
+4. This is the true meaning of "single source of truth" - not just for merge logic, but for the entire orchestration
