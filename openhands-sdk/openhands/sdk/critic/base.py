@@ -27,7 +27,6 @@ class CriticBase(DiscriminatedUnionMixin, abc.ABC):
             "significantly slower due to API calls on each action)"
         ),
     )
-    )
 
     @abc.abstractmethod
     def evaluate(
