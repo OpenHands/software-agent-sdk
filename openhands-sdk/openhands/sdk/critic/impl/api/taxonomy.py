@@ -1,5 +1,6 @@
 """Critic taxonomy - mapping of features to categories for visualization."""
 
+import math
 from typing import Any
 
 
@@ -58,6 +59,26 @@ def get_category(feature_name: str) -> str | None:
     return FEATURE_CATEGORIES.get(feature_name)
 
 
+def _softmax_normalize(probs: dict[str, float]) -> dict[str, float]:
+    """Apply softmax normalization to convert logits to probabilities.
+
+    Args:
+        probs: Dictionary of names to raw probability/logit values
+
+    Returns:
+        Dictionary with softmax-normalized probabilities that sum to 1.0
+    """
+    if not probs:
+        return {}
+
+    values = list(probs.values())
+    exp_values = [math.exp(v) for v in values]
+    exp_sum = sum(exp_values)
+    normalized = [exp_v / exp_sum for exp_v in exp_values]
+
+    return dict(zip(probs.keys(), normalized))
+
+
 def categorize_features(
     probs_dict: dict[str, float],
     display_threshold: float = 0.0,
@@ -75,18 +96,18 @@ def categorize_features(
         Dictionary with categorized features ready for visualization:
         {
             "sentiment": {
-                "predicted": "Neutral",  # Highest probability sentiment
+                "predicted": "Neutral",
                 "probability": 0.77,
                 "all": {"positive": 0.10, "neutral": 0.77, "negative": 0.13}
             },
             "agent_behavioral_issues": [
                 {"name": "loop_behavior", "display_name": "Loop Behavior",
-                    "probability": 0.85},
+                 "probability": 0.85},
                 ...
             ],
             "user_followup_patterns": [...],
             "infrastructure_issues": [...],
-            "other": [...]  # Features not in taxonomy
+            "other": [...]
         }
     """
     result: dict[str, Any] = {
@@ -97,14 +118,16 @@ def categorize_features(
         "other": [],
     }
 
-    # Extract sentiment features
-    sentiment_probs = {}
+    # Extract sentiment features and apply softmax normalization
+    raw_sentiment_probs = {}
     for feature_name, prob in probs_dict.items():
         if feature_name.startswith("sentiment_"):
             short_name = feature_name.replace("sentiment_", "")
-            sentiment_probs[short_name] = prob
+            raw_sentiment_probs[short_name] = prob
 
-    if sentiment_probs:
+    if raw_sentiment_probs:
+        # Apply softmax normalization to convert logits to probabilities
+        sentiment_probs = _softmax_normalize(raw_sentiment_probs)
         max_sentiment = max(sentiment_probs.items(), key=lambda x: x[1])
         result["sentiment"] = {
             "predicted": max_sentiment[0].capitalize(),
