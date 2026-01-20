@@ -49,8 +49,20 @@ from litellm.exceptions import (
     Timeout as LiteLLMTimeout,
 )
 from litellm.responses.main import responses as litellm_responses
-from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import ModelResponse
+from litellm.responses.streaming_iterator import SyncResponsesAPIStreamingIterator
+from litellm.types.llms.openai import (
+    OutputTextDeltaEvent,
+    ReasoningSummaryTextDeltaEvent,
+    RefusalDeltaEvent,
+    ResponseCompletedEvent,
+    ResponsesAPIResponse,
+)
+from litellm.types.utils import (
+    Delta,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+)
 from litellm.utils import (
     create_pretrained_tokenizer,
     supports_vision,
@@ -769,21 +781,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     # a single ResponsesAPIResponse. Drain the iterator and use the
                     # completed response.
                     if final_kwargs.get("stream", False):
-                        from litellm.responses.streaming_iterator import (
-                            SyncResponsesAPIStreamingIterator,
-                        )
-                        from litellm.types.llms.openai import (
-                            OutputTextDeltaEvent,
-                            ReasoningSummaryTextDeltaEvent,
-                            RefusalDeltaEvent,
-                            ResponseCompletedEvent,
-                        )
-                        from litellm.types.utils import (
-                            Delta,
-                            ModelResponseStream,
-                            StreamingChoices,
-                        )
-
                         if not isinstance(ret, SyncResponsesAPIStreamingIterator):
                             raise AssertionError(
                                 f"Expected Responses stream iterator, got {type(ret)}"
