@@ -1,15 +1,25 @@
 """Hook configuration loading and management."""
 
+from __future__ import annotations
+
 import json
 import logging
 import re
+from collections.abc import Callable
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.hooks.executor import HookResult
+    from openhands.sdk.hooks.types import HookEvent
+
+    HookCallback = Callable[["HookEvent"], "HookResult"]
 
 
 logger = logging.getLogger(__name__)
@@ -40,14 +50,33 @@ class HookType(str, Enum):
 
     COMMAND = "command"  # Shell command executed via subprocess
     PROMPT = "prompt"  # LLM-based evaluation (future)
+    CALLBACK = "callback"  # Python callback function
 
 
 class HookDefinition(BaseModel):
-    """A single hook definition."""
+    """A single hook definition.
+
+    For command hooks, set `type=HookType.COMMAND` and provide `command`.
+    For callback hooks, set `type=HookType.CALLBACK` and provide `callback`.
+    """
+
+    model_config = {"arbitrary_types_allowed": True}
 
     type: HookType = HookType.COMMAND
-    command: str
+    command: str | None = None
+    callback: Any | None = None  # HookCallback type, but Any for Pydantic compat
     timeout: int = 60
+
+    @model_validator(mode="after")
+    def _validate_hook_definition(self) -> HookDefinition:
+        """Validate that the appropriate field is set for the hook type."""
+        if self.type == HookType.COMMAND:
+            if not self.command:
+                raise ValueError("command is required for COMMAND hook type")
+        elif self.type == HookType.CALLBACK:
+            if self.callback is None:
+                raise ValueError("callback is required for CALLBACK hook type")
+        return self
 
 
 class HookMatcher(BaseModel):
@@ -55,6 +84,8 @@ class HookMatcher(BaseModel):
 
     Supports exact match, wildcard (*), and regex (auto-detected or /pattern/).
     """
+
+    model_config = {"arbitrary_types_allowed": True}
 
     matcher: str = "*"
     hooks: list[HookDefinition] = Field(default_factory=list)
@@ -118,6 +149,7 @@ class HookConfig(BaseModel):
 
     model_config = {
         "extra": "forbid",
+        "arbitrary_types_allowed": True,
     }
 
     pre_tool_use: list[HookMatcher] = Field(
@@ -212,7 +244,7 @@ class HookConfig(BaseModel):
     @classmethod
     def load(
         cls, path: str | Path | None = None, working_dir: str | Path | None = None
-    ) -> "HookConfig":
+    ) -> HookConfig:
         """Load config from path or search .openhands/hooks.json locations.
 
         Args:
@@ -245,7 +277,7 @@ class HookConfig(BaseModel):
         return cls.model_validate(data)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> "HookConfig":
+    def from_dict(cls, data: dict[str, Any]) -> HookConfig:
         """Create HookConfig from a dictionary.
 
         Supports both legacy format with "hooks" wrapper and direct format:

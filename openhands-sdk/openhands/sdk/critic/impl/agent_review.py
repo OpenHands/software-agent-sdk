@@ -1,10 +1,17 @@
 import json
 import re
-from collections.abc import Sequence
+import subprocess
+from collections.abc import Callable, Sequence
+from typing import ClassVar
+
+from pydantic import ConfigDict
 
 from openhands.sdk import Agent, Conversation
 from openhands.sdk.critic.base import CriticBase, CriticResult
-from openhands.sdk.event import LLMConvertibleEvent, SystemPromptEvent
+from openhands.sdk.event import LLMConvertibleEvent
+from openhands.sdk.hooks.config import HookDefinition, HookType
+from openhands.sdk.hooks.executor import HookResult
+from openhands.sdk.hooks.types import HookDecision, HookEvent
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.logger import get_logger
 
@@ -12,43 +19,91 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+# Type for agent factory function - allows users to provide custom agent creation
+AgentFactory = Callable[[LLM], Agent]
+
+
+def _default_agent_factory(llm: LLM) -> Agent:
+    """Create a minimal agent for code review using only SDK components.
+
+    This creates an agent with no tools - it relies on the LLM's ability
+    to analyze the diff and provide feedback. For a more capable critic
+    agent with file browsing tools, use get_critic_agent from openhands.tools.preset.
+    """
+    from openhands.sdk.context.condenser import LLMSummarizingCondenser
+
+    condenser = LLMSummarizingCondenser(
+        llm=llm.model_copy(update={"usage_id": "critic_condenser"}),
+        max_size=50,
+        keep_first=4,
+    )
+
+    return Agent(
+        llm=llm.model_copy(update={"usage_id": "critic_agent"}),
+        tools=[],  # No tools - pure LLM analysis
+        condenser=condenser,
+    )
+
+
 class AgentReviewCritic(CriticBase):
     """Critic that spawns another OpenHands agent to perform a review.
 
-    Important: this critic *forks* the current agent settings (tools, context,
-    condenser, etc.) from the conversation events and uses the same LLM.
+    This critic creates a separate agent to review git diffs and provide
+    feedback on code quality.
 
     This is intended to be used together with the Stop hook: when the main agent
     tries to finish, the Stop hook can call this critic on the current
     conversation's events + git patch, and deny stop if the critic says
     `not_pass`.
+
+    Args:
+        llm: The LLM to use for the critic agent.
+        agent_factory: Optional factory function to create the critic agent.
+            If not provided, a minimal agent with no tools is created.
+            For a more capable agent, use get_critic_agent from
+            openhands.tools.preset.critic.
+        review_style: Style of review ("roasted" or "standard").
+        max_diff_chars: Maximum characters of diff to include.
+
+    Example usage with callback hook:
+        from openhands.sdk.critic.impl.agent_review import (
+            AgentReviewCritic,
+            create_critic_stop_hook,
+        )
+        from openhands.tools.preset.critic import get_critic_agent
+
+        critic = AgentReviewCritic(
+            llm=llm,
+            agent_factory=get_critic_agent,
+            review_style="roasted",
+        )
+        hook_config = HookConfig(
+            stop=[
+                HookMatcher(
+                    hooks=[create_critic_stop_hook(critic, workspace_dir)]
+                )
+            ]
+        )
     """
 
-    llm: LLM | None = None
+    model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
+
+    llm: LLM
+    agent_factory: AgentFactory | None = None
 
     review_style: str = "roasted"
     max_diff_chars: int = 100_000
 
     def evaluate(
-        self, events: Sequence[LLMConvertibleEvent], git_patch: str | None = None
+        self,
+        events: Sequence[LLMConvertibleEvent],  # noqa: ARG002
+        git_patch: str | None = None,
     ) -> CriticResult:
         if not git_patch or not git_patch.strip():
             return CriticResult(score=0.0, message="Empty git patch")
 
-        root_llm = self.llm or self._extract_llm(events)
-        if root_llm is None:
-            return CriticResult(score=0.0, message="Could not infer agent LLM")
-
-        root_agent = self._extract_agent(events)
-        if root_agent is None:
-            return CriticResult(score=0.0, message="Could not infer agent settings")
-
-        critic_agent = root_agent.model_copy(
-            update={
-                "llm": root_llm.model_copy(update={"usage_id": "critic_agent"}),
-            },
-            deep=True,
-        )
+        factory = self.agent_factory or _default_agent_factory
+        critic_agent = factory(self.llm)
 
         prompt = self._build_prompt(git_patch)
         conversation = Conversation(agent=critic_agent, workspace=".")
@@ -57,38 +112,6 @@ class AgentReviewCritic(CriticBase):
 
         final_text = self._extract_final_text(list(conversation.state.events))
         return self._parse_output(final_text)
-
-    def _extract_llm(self, events: Sequence[LLMConvertibleEvent]) -> LLM | None:
-        for event in events:
-            agent = getattr(event, "agent", None)
-            llm = getattr(agent, "llm", None)
-            if isinstance(llm, LLM):
-                return llm
-
-        for event in events:
-            if not isinstance(event, SystemPromptEvent):
-                continue
-            agent = getattr(event, "agent", None)
-            llm = getattr(agent, "llm", None)
-            if isinstance(llm, LLM):
-                return llm
-
-        return None
-
-    def _extract_agent(self, events: Sequence[LLMConvertibleEvent]) -> Agent | None:
-        for event in events:
-            agent = getattr(event, "agent", None)
-            if isinstance(agent, Agent):
-                return agent
-
-        for event in events:
-            if not isinstance(event, SystemPromptEvent):
-                continue
-            agent = getattr(event, "agent", None)
-            if isinstance(agent, Agent):
-                return agent
-
-        return None
 
     def _build_prompt(self, git_patch: str) -> str:
         style = (
@@ -150,3 +173,89 @@ class AgentReviewCritic(CriticBase):
         score = 1.0 if decision == "pass" else 0.0
         summary = str(data.get("summary", "") or "").strip() or decision
         return CriticResult(score=score, message=summary)
+
+
+def create_critic_stop_hook(
+    critic: AgentReviewCritic,
+    workspace_dir: str,
+) -> HookDefinition:
+    """Create a callback-based stop hook that runs the critic agent.
+
+    This function creates a HookDefinition with a Python callback that:
+    1. Gets the current git diff from the workspace
+    2. Runs the critic agent to review the diff
+    3. Returns allow/deny based on the critic's decision
+
+    Args:
+        critic: The AgentReviewCritic instance to use for review
+        workspace_dir: The workspace directory to get git diff from
+
+    Returns:
+        A HookDefinition configured as a callback hook
+
+    Example:
+        critic = AgentReviewCritic(llm=llm, review_style="roasted")
+        hook_config = HookConfig(
+            stop=[
+                HookMatcher(
+                    hooks=[create_critic_stop_hook(critic, str(workspace))]
+                )
+            ]
+        )
+    """
+
+    def critic_callback(_event: HookEvent) -> HookResult:
+        """Callback that runs the critic agent on the current git diff."""
+        try:
+            # Get the git diff from the workspace
+            patch = subprocess.check_output(
+                ["git", "diff"],
+                cwd=workspace_dir,
+                text=True,
+                stderr=subprocess.DEVNULL,
+            )
+
+            # If no changes, allow stopping
+            if not patch.strip():
+                return HookResult(
+                    success=True,
+                    decision=HookDecision.ALLOW,
+                )
+
+            # Run the critic
+            result = critic.evaluate(events=[], git_patch=patch)
+
+            if result.success:
+                return HookResult(
+                    success=True,
+                    decision=HookDecision.ALLOW,
+                    additional_context=f"Critic approved: {result.message}",
+                )
+            else:
+                return HookResult(
+                    success=True,
+                    blocked=True,
+                    decision=HookDecision.DENY,
+                    reason=f"Critic rejected: {result.message}",
+                    additional_context=f"Critic feedback: {result.message}",
+                )
+
+        except subprocess.CalledProcessError as e:
+            logger.warning(f"Failed to get git diff: {e}")
+            return HookResult(
+                success=True,
+                decision=HookDecision.ALLOW,
+                additional_context="Could not get git diff, allowing stop",
+            )
+        except Exception as e:
+            logger.error(f"Critic callback failed: {e}")
+            return HookResult(
+                success=False,
+                error=f"Critic callback failed: {e}",
+            )
+
+    return HookDefinition(
+        type=HookType.CALLBACK,
+        callback=critic_callback,
+        timeout=300,  # 5 minutes for critic agent to run
+    )
