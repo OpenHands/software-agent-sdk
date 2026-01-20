@@ -24,14 +24,6 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "gpt-5-mini-2025-08-07": {
-        "id": "gpt-5-mini-2025-08-07",
-        "display_name": "GPT-5 Mini",
-        "llm_config": {
-            "model": "litellm_proxy/gpt-5-mini-2025-08-07",
-            "temperature": 1.0,
-        },
-    },
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
