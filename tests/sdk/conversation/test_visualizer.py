@@ -504,3 +504,15 @@ def test_visualizer_conversation_state_update_event_skipped():
     block = visualizer._create_event_block(event)
     # Should return None to skip visualization
     assert block is None
+
+
+def test_default_visualizer_create_sub_visualizer_returns_none():
+    """Test that DefaultConversationVisualizer.create_sub_visualizer returns None.
+
+    This is the expected default behavior - base visualizers don't support
+    sub-agent visualization. Subclasses like DelegationVisualizer can override
+    this to provide sub-agent visualizers.
+    """
+    visualizer = DefaultConversationVisualizer()
+    result = visualizer.create_sub_visualizer("test_agent")
+    assert result is None

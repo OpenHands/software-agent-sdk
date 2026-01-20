@@ -61,6 +61,24 @@ class DelegationVisualizer(DefaultConversationVisualizer):
         )
         self._name = name
 
+    def create_sub_visualizer(self, agent_id: str) -> "DelegationVisualizer":
+        """Create a visualizer for a sub-agent during delegation.
+
+        Creates a new DelegationVisualizer instance for the sub-agent with
+        the same configuration as the parent visualizer.
+
+        Args:
+            agent_id: The identifier of the sub-agent being spawned
+
+        Returns:
+            A new DelegationVisualizer configured for the sub-agent
+        """
+        return DelegationVisualizer(
+            name=agent_id,
+            highlight_regex=self._highlight_patterns,
+            skip_user_messages=self._skip_user_messages,
+        )
+
     @staticmethod
     def _format_agent_name(name: str) -> str:
         """
