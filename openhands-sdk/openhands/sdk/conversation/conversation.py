@@ -130,14 +130,9 @@ class Conversation:
                 raise ValueError(
                     "persistence_dir should not be set when using RemoteConversation"
                 )
-            # TODO (M4): Pass plugins to RemoteConversation when implemented
-            if plugins:
-                logger.warning(
-                    "plugins parameter for RemoteConversation not yet implemented. "
-                    "Plugins will be ignored. Use agent.agent_context.plugin_source."
-                )
             return RemoteConversation(
                 agent=agent,
+                plugins=plugins,
                 conversation_id=conversation_id,
                 callbacks=callbacks,
                 token_callbacks=token_callbacks,

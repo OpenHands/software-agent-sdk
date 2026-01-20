@@ -25,6 +25,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.plugin import load_plugins, merge_hook_configs
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -191,13 +192,6 @@ class ConversationService:
         # Create task to run in background without awaiting
         asyncio.create_task(_notify_and_log_errors())
 
-    # NOTE: _load_and_merge_plugin() has been removed.
-    # Plugin loading now happens automatically during AgentContext initialization
-    # when the request is deserialized. To load a plugin, use:
-    #   {"agent": {"agent_context": {"plugin_source": "github:owner/repo"}}}
-    # Skills and MCP config are merged by AgentContext._load_plugin validator.
-    # Hooks are extracted via agent_context.plugin_hooks in start_conversation().
-
     # Write Methods
 
     async def start_conversation(
@@ -242,13 +236,23 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
-        # Extract hooks from plugin if loaded via AgentContext
-        # Plugin loading happens automatically during AgentContext initialization
-        # (when the request is deserialized), so we just need to extract hooks.
+        # Load plugins using SDK utility (runs in thread pool for async)
+        # This is the new recommended pattern for plugin loading
+        agent = request.agent
         hook_config = None
-        if request.agent.agent_context and request.agent.agent_context.plugin_hooks:
-            hook_config = request.agent.agent_context.plugin_hooks
-            if not hook_config.is_empty():
+
+        if request.plugins:
+            # Load plugins in thread pool to avoid blocking the event loop
+            agent, hook_config = await asyncio.to_thread(
+                load_plugins, request.plugins, agent
+            )
+            logger.info(f"Loaded {len(request.plugins)} plugin(s) for conversation")
+
+        # Also support legacy AgentContext plugin loading
+        # Extract hooks from plugin if loaded via AgentContext (deprecated path)
+        if agent.agent_context and agent.agent_context.plugin_hooks:
+            context_hook_config = agent.agent_context.plugin_hooks
+            if context_hook_config and not context_hook_config.is_empty():
                 event_types = [
                     name
                     for name in [
@@ -259,12 +263,23 @@ class ConversationService:
                         "session_end",
                         "stop",
                     ]
-                    if getattr(hook_config, name, [])
+                    if getattr(context_hook_config, name, [])
                 ]
-                logger.info(f"Loaded hooks from plugin: {event_types} event types")
+                logger.info(f"Loaded hooks from AgentContext plugin: {event_types}")
 
+                # Combine with hooks from plugins list (if any)
+                if hook_config:
+                    hook_config = merge_hook_configs([hook_config, context_hook_config])
+                else:
+                    hook_config = context_hook_config
+
+        # Create stored conversation with updated agent and hook_config
+        # Exclude plugins from stored data since they've been loaded
         stored = StoredConversation(
-            id=conversation_id, hook_config=hook_config, **request.model_dump()
+            id=conversation_id,
+            hook_config=hook_config,
+            **request.model_dump(exclude={"plugins", "agent"}),
+            agent=agent,
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

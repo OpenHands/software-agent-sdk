@@ -14,6 +14,7 @@ from openhands.sdk.conversation.state import (
 )
 from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -107,9 +108,14 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
-    # NOTE: plugin_source, plugin_ref, plugin_path have been moved to AgentContext.
-    # To load a plugin, set these fields on agent.agent_context instead:
-    #   {"agent": {"agent_context": {"plugin_source": "github:owner/repo"}}}
+    plugins: list[PluginSource] | None = Field(
+        default=None,
+        description=(
+            "List of plugins to load for this conversation. Plugins are loaded "
+            "on the server and their skills/MCP config are merged into the agent. "
+            "Hooks are extracted and stored for runtime execution."
+        ),
+    )
 
 
 class StoredConversation(StartConversationRequest):
