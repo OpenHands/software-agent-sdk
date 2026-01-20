@@ -91,7 +91,6 @@ jobs:
         runs-on: ubuntu-latest
         permissions:
             contents: read
-        permissions:
             pull-requests: write
         steps:
             - uses: actions/checkout@v5
