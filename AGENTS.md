@@ -136,12 +136,17 @@ mkdir -p .pr
 └── notes.md        # Any other PR-specific content
 ```
 
+## How It Works
+
+1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
+2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
+3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+
 ## Important Notes
 
-- **This directory will be automatically removed before merging** (for internal PRs)
-- The `block-merge-with-pr-artifacts` check will fail if `.pr/` exists, preventing accidental merge
+- Do NOT put anything in `.pr/` that needs to be preserved
+- The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
 - For fork PRs: You must manually remove `.pr/` before the PR can be merged
-- Do NOT put anything in `.pr/` that needs to be preserved - use `docs/` for permanent documentation
 
 ## When to Use
 
