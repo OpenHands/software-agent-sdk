@@ -650,7 +650,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise
 
     # =========================================================================
-    # Responses API (non-stream, v1)
+    # Responses API (v1)
     # =========================================================================
     def responses(
         self,
@@ -674,16 +674,18 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store: Whether to store the conversation
             _return_metrics: Whether to return usage metrics
             add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens (not yet supported)
+            on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
 
         Note:
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        # Streaming not yet supported
-        if kwargs.get("stream", False) or self.stream or on_token is not None:
-            raise ValueError("Streaming is not supported for Responses API yet")
+        user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if user_enable_streaming:
+            if on_token is None:
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
@@ -759,12 +761,66 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         seed=self.seed,
                         **final_kwargs,
                     )
-                    assert isinstance(ret, ResponsesAPIResponse), (
+                    if isinstance(ret, ResponsesAPIResponse):
+                        self._telemetry.on_response(ret)
+                        return ret
+
+                    # When stream=True, LiteLLM returns a streaming iterator rather than
+                    # a single ResponsesAPIResponse. Drain the iterator and use the
+                    # completed response.
+                    if final_kwargs.get("stream", False):
+                        from litellm.responses.streaming_iterator import (
+                            SyncResponsesAPIStreamingIterator,
+                        )
+                        from litellm.types.utils import (
+                            Delta,
+                            ModelResponseStream,
+                            StreamingChoices,
+                        )
+
+                        if not isinstance(ret, SyncResponsesAPIStreamingIterator):
+                            raise AssertionError(
+                                f"Expected Responses stream iterator, got {type(ret)}"
+                            )
+
+                        for event in ret:
+                            if user_enable_streaming and on_token is not None:
+                                event_type = getattr(event, "type", None)
+                                if event_type in {
+                                    "response.output_text.delta",
+                                    "response.refusal.delta",
+                                    "response.reasoning_summary_text.delta",
+                                }:
+                                    delta = getattr(event, "delta", None)
+                                    if isinstance(delta, str) and delta:
+                                        on_token(
+                                            ModelResponseStream(
+                                                choices=[
+                                                    StreamingChoices(
+                                                        delta=Delta(content=delta)
+                                                    )
+                                                ]
+                                            )
+                                        )
+
+                        completed_event = getattr(ret, "completed_response", None)
+                        if completed_event is None:
+                            raise LLMNoResponseError(
+                                "Responses stream finished without a completed response"
+                            )
+
+                        completed_resp = getattr(completed_event, "response", None)
+                        if not isinstance(completed_resp, ResponsesAPIResponse):
+                            raise LLMNoResponseError(
+                                f"Unexpected completed event: {type(completed_event)}"
+                            )
+
+                        self._telemetry.on_response(completed_resp)
+                        return completed_resp
+
+                    raise AssertionError(
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
-                    # telemetry (latency, cost). Token usage mapping we handle after.
-                    self._telemetry.on_response(ret)
-                    return ret
 
         try:
             resp: ResponsesAPIResponse = _one_attempt()
