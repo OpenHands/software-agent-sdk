@@ -288,3 +288,42 @@ class HookConfig(BaseModel):
 
         with open(path, "w") as f:
             json.dump(self.model_dump(mode="json", exclude_defaults=True), f, indent=2)
+
+    @classmethod
+    def merge(cls, configs: list["HookConfig"]) -> "HookConfig | None":
+        """Merge multiple hook configs by concatenating handlers per event type.
+
+        Each hook config may have multiple event types (pre_tool_use,
+        post_tool_use, etc.). This method combines all matchers from all
+        configs for each event type.
+
+        Args:
+            configs: List of HookConfig objects to merge.
+
+        Returns:
+            A merged HookConfig with all matchers concatenated, or None if no configs
+            or if the result is empty.
+
+        Example:
+            >>> config1 = HookConfig(pre_tool_use=[HookMatcher(matcher="*")])
+            >>> config2 = HookConfig(pre_tool_use=[HookMatcher(matcher="terminal")])
+            >>> merged = HookConfig.merge([config1, config2])
+            >>> len(merged.pre_tool_use)  # Both matchers combined
+            2
+        """
+        if not configs:
+            return None
+
+        # Collect all matchers by event type using the canonical field list
+        collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
+        for config in configs:
+            for field in HOOK_EVENT_FIELDS:
+                collected[field].extend(getattr(config, field))
+
+        merged = cls(**collected)
+
+        # Return None if the merged config is empty
+        if merged.is_empty():
+            return None
+
+        return merged

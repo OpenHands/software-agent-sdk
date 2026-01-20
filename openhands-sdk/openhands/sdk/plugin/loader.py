@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from openhands.sdk.hooks import HOOK_EVENT_FIELDS, HookConfig
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.logger import get_logger
 from openhands.sdk.plugin.plugin import Plugin
 from openhands.sdk.plugin.types import PluginSource
@@ -27,8 +27,7 @@ logger = get_logger(__name__)
 def merge_hook_configs(configs: list[HookConfig]) -> HookConfig | None:
     """Merge multiple hook configs by concatenating handlers per event type.
 
-    Each hook config may have multiple event types (pre_tool_use, post_tool_use, etc.).
-    This function combines all matchers from all configs for each event type.
+    This is a convenience function that delegates to HookConfig.merge().
 
     Args:
         configs: List of HookConfig objects to merge.
@@ -43,22 +42,7 @@ def merge_hook_configs(configs: list[HookConfig]) -> HookConfig | None:
         >>> len(merged.pre_tool_use)  # Both matchers combined
         2
     """
-    if not configs:
-        return None
-
-    # Collect all matchers by event type using the canonical field list
-    collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
-    for config in configs:
-        for field in HOOK_EVENT_FIELDS:
-            collected[field].extend(getattr(config, field))
-
-    merged = HookConfig(**collected)
-
-    # Return None if the merged config is empty
-    if merged.is_empty():
-        return None
-
-    return merged
+    return HookConfig.merge(configs)
 
 
 def load_plugins(
