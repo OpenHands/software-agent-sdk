@@ -229,9 +229,6 @@ class LocalConversation(BaseConversation):
         else:
             self._stuck_detector = None
 
-        # Hook setup (including session_start) is deferred to _ensure_plugins_loaded()
-        # which runs on first run()/send_message() call
-
         with self._state:
             self.agent.init_state(self._state, on_event=self._on_event)
 
