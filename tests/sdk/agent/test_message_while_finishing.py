@@ -313,16 +313,19 @@ class TestMessageWhileFinishing:
         self.final_step_started = False
         self.test_start_time = time.time()
 
+        conversation = Conversation(agent=self.agent)
+        # Store conversation reference for use in mock LLM
+        self.conversation = conversation
+
+        # Trigger lazy agent initialization to create tools
+        conversation._ensure_agent_ready()
+
         # Set the test start time reference for the sleep executor
-        # Access the actual tool instances from the agent's _tools dict
+        # This must happen AFTER agent init but BEFORE any messages are processed
         sleep_tool = self.agent._tools.get("sleep")
         if sleep_tool and sleep_tool.executor is not None:
             setattr(sleep_tool.executor, "test_start_time", self.test_start_time)
             setattr(sleep_tool.executor, "test_instance", self)
-
-        conversation = Conversation(agent=self.agent)
-        # Store conversation reference for use in mock LLM
-        self.conversation = conversation
 
         def elapsed_time():
             return f"[+{time.time() - self.test_start_time:.3f}s]"
