@@ -103,10 +103,12 @@ class LLMConvertibleEvent(Event, ABC):
         )
 
         # Find the latest system prompt event (either type)
+        # Iterate backward for efficiency
         latest_system_event: SystemPromptEvent | SystemPromptUpdateEvent | None = None
-        for event in events:
+        for event in reversed(events):
             if isinstance(event, (SystemPromptEvent, SystemPromptUpdateEvent)):
                 latest_system_event = event
+                break
 
         messages = []
 

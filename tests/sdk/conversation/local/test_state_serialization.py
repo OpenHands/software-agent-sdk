@@ -110,7 +110,8 @@ def test_conversation_state_persistence_save_load():
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        agent = Agent(llm=llm, tools=[])
+        # Use include_default_tools=[] to match the manually created SystemPromptEvent
+        agent = Agent(llm=llm, tools=[], include_default_tools=[])
 
         conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789002")
         persist_path_for_state = LocalConversation.get_persistence_dir(
@@ -175,7 +176,8 @@ def test_conversation_state_incremental_save():
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        agent = Agent(llm=llm, tools=[])
+        # Use include_default_tools=[] to match the manually created SystemPromptEvent
+        agent = Agent(llm=llm, tools=[], include_default_tools=[])
 
         conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789003")
         persist_path_for_state = LocalConversation.get_persistence_dir(
@@ -231,7 +233,8 @@ def test_conversation_state_event_file_scanning():
         llm = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
-        agent = Agent(llm=llm, tools=[])
+        # Use include_default_tools=[] to match the manually created SystemPromptEvent
+        agent = Agent(llm=llm, tools=[], include_default_tools=[])
 
         conv_id = uuid.UUID("12345678-1234-5678-9abc-123456789004")
         persist_path_for_state = LocalConversation.get_persistence_dir(

@@ -531,7 +531,7 @@ class TestSystemPromptUpdateEvent:
             source="agent",
             system_prompt=TextContent(text="Update 2 - final"),
             tools=[],
-            reason=SystemPromptUpdateReason.SYSTEM_PROMPT_CHANGED,
+            reason=SystemPromptUpdateReason.TOOLS_CHANGED,
         )
 
         events = cast(list[LLMConvertibleEvent], [original, update1, update2])

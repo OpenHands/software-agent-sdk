@@ -14,8 +14,6 @@ class SystemPromptUpdateReason(str, Enum):
     """Reason for a SystemPromptUpdateEvent."""
 
     TOOLS_CHANGED = "tools_changed"
-    SYSTEM_PROMPT_CHANGED = "system_prompt_changed"
-    TOOLS_AND_SYSTEM_PROMPT_CHANGED = "tools_and_system_prompt_changed"
 
 
 class SystemPromptEvent(LLMConvertibleEvent):

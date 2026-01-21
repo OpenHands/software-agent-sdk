@@ -153,38 +153,30 @@ class Agent(AgentBase):
                 "The conversation state appears to be corrupted."
             )
 
-        # Get current runtime values
+        # Get current runtime tools
         current_tools = list(self.tools_map.values())
-        current_system_prompt = self.system_message
 
-        # Compare with persisted values
+        # Compare tool names with persisted values
+        # NOTE: We compare names only, not full definitions. Schema changes within
+        # the same tool name won't trigger an update. This covers the common case
+        # of adding/removing tools on restore.
         persisted_tool_names = {t.name for t in latest_system_event.tools}
         current_tool_names = {t.name for t in current_tools}
 
-        tools_changed = persisted_tool_names != current_tool_names
-        prompt_changed = latest_system_event.system_prompt.text != current_system_prompt
-
-        if not tools_changed and not prompt_changed:
-            return  # No changes, no update needed
-
-        # Determine reason for the update
-        if tools_changed and prompt_changed:
-            reason = SystemPromptUpdateReason.TOOLS_AND_SYSTEM_PROMPT_CHANGED
-        elif tools_changed:
-            reason = SystemPromptUpdateReason.TOOLS_CHANGED
-        else:
-            reason = SystemPromptUpdateReason.SYSTEM_PROMPT_CHANGED
+        if persisted_tool_names == current_tool_names:
+            return  # Tools unchanged, no update needed
 
         logger.info(
-            f"Emitting SystemPromptUpdateEvent (reason={reason}): "
-            f"tools_changed={tools_changed}, prompt_changed={prompt_changed}"
+            f"Emitting SystemPromptUpdateEvent: "
+            f"persisted_tools={sorted(persisted_tool_names)}, "
+            f"current_tools={sorted(current_tool_names)}"
         )
 
         update_event = SystemPromptUpdateEvent(
             source="agent",
-            system_prompt=TextContent(text=current_system_prompt),
+            system_prompt=TextContent(text=self.system_message),
             tools=current_tools,
-            reason=reason,
+            reason=SystemPromptUpdateReason.TOOLS_CHANGED,
         )
         on_event(update_event)
 
