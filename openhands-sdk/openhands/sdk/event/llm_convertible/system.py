@@ -82,10 +82,10 @@ class SystemPromptUpdateEvent(LLMConvertibleEvent):
         ..., description="List of tools as ToolDefinition objects"
     )
     reason: str = Field(
-        default="agent_config_changed",
+        ...,
         description=(
-            "Reason for the system prompt update. Common values: "
-            "'tools_changed', 'system_prompt_changed', 'agent_config_changed'"
+            "Reason for the update: 'tools_changed', 'system_prompt_changed', "
+            "or 'tools_and_system_prompt_changed'"
         ),
     )
 
