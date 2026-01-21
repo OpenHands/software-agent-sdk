@@ -278,8 +278,10 @@ class DiscriminatedUnionEnvParser(EnvParser):
 
     def from_env(self, key: str) -> JsonType:
         kind = os.environ.get(f"{key}_KIND", MISSING)
+        kind_missing = False
         if kind is MISSING:
-            # If there is exactly one kind, use it directly
+            kind_missing = True
+            # If there are other fields and there is exactly one kind, use it directly
             if len(self.parsers) == 1:
                 kind = next(iter(self.parsers.keys()))
             else:
@@ -294,6 +296,15 @@ class DiscriminatedUnionEnvParser(EnvParser):
         # Intentionally raise KeyError for invalid KIND - typos should fail early
         parser = self.parsers[kind]
         parser_result = parser.from_env(key)
+
+        # A kind was defined without other fields
+        if parser_result is MISSING:
+            # If the kind was not defined, the entry is MISSING
+            if kind_missing:
+                return MISSING
+            # Only a kind was defined
+            parser_result = {}
+
         # Type narrowing: discriminated union parsers always return dicts
         parser_result = cast(dict, parser_result)
         parser_result["kind"] = kind

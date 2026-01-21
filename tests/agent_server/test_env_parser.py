@@ -1309,3 +1309,72 @@ def test_discriminated_union_full_class_name_invalid_class(clean_env):
 
     with pytest.raises(AttributeError):
         parser.from_env("TEST")
+
+
+def test_discriminated_union_kind_only_no_other_variables(clean_env):
+    """Test that DiscriminatedUnionEnvParser handles types that define only a kind
+    without any other variables."""
+    # Create a parser with no additional fields (empty parser that returns MISSING)
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    parser = DiscriminatedUnionEnvParser(parsers={"EmptyKind": empty_parser})
+
+    # Set KIND but no other environment variables
+    os.environ["TEST_KIND"] = "EmptyKind"
+
+    # Should return just the kind, not MISSING
+    result = parser.from_env("TEST")
+    assert result == {"kind": "EmptyKind"}
+
+
+def test_discriminated_union_kind_only_multiple_kinds(clean_env):
+    """Test that when KIND is set to a type with no fields among multiple kinds,
+    it still works correctly."""
+    # Create parsers - one with fields, one without
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    dog_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser(), "barking": BoolEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(
+        parsers={"EmptyKind": empty_parser, "Dog": dog_parser}
+    )
+
+    # Set KIND to the empty type
+    os.environ["TEST_KIND"] = "EmptyKind"
+
+    # Should return just the kind
+    result = parser.from_env("TEST")
+    assert result == {"kind": "EmptyKind"}
+
+
+def test_discriminated_union_no_kind_no_variables_returns_missing(clean_env):
+    """Test that when KIND is not set and parser returns MISSING,
+    the result is MISSING (not an empty dict with no kind)."""
+    # Create a parser with no additional fields
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    non_empty_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(
+        parsers={"EmptyKind": empty_parser, "NonEmpty": non_empty_parser}
+    )
+
+    # Don't set KIND or any other variables
+    # Should return MISSING because there are multiple kinds and no KIND is set
+    result = parser.from_env("TEST")
+    assert result is MISSING
+
+
+def test_discriminated_union_single_empty_kind_no_variables(clean_env):
+    """Test that when there's exactly one empty kind and no env vars are set,
+    the result is MISSING (the entry is not configured)."""
+    # Create a single empty parser
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    parser = DiscriminatedUnionEnvParser(parsers={"EmptyKind": empty_parser})
+
+    # Don't set any environment variables (not even KIND)
+    # With a single kind, it should try the parser but still return MISSING
+    # because there's no indication that this entry is configured
+    result = parser.from_env("TEST")
+    assert result is MISSING
