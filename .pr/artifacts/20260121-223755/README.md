@@ -1,15 +1,15 @@
 # Restore tool-change persistence probe
 
-- conversation_id: `30692f28-b39a-4e4e-ab82-57c4b6b50ded`
-- persistence_dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- artifacts_root: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805`
+- conversation_id: `3fdb3160-98bb-48e1-aa02-9ce56805792a`
+- persistence_dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- artifacts_root: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755`
 
 ## Snapshots
 
 ## Phase A (after create, before user message)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_a`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_a`
 
 ### base_state.json
 
@@ -37,8 +37,8 @@ You are a helpful assistant for this probe test.
 
 ## Phase A (after send_message, before run)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_a`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_a`
 
 ### base_state.json
 
@@ -66,8 +66,8 @@ You are a helpful assistant for this probe test.
 
 ## Phase A (after run)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_a`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_a`
 
 ### base_state.json
 
@@ -91,7 +91,7 @@ You are a helpful assistant for this probe test.
 ### telemetry logs
 
 - Telemetry files: `1`
-- Latest telemetry file: `gpt-4o-mini-1769029685.602-c77a.json`
+- Latest telemetry file: `gpt-4o-mini-1769035075.704-c725.json`
 - Tools sent to LLM (per telemetry): `['file_editor', 'finish', 'think']`
 - Prompt sent to LLM (system first paragraph):
 
@@ -107,8 +107,8 @@ Hello. Please confirm you can see my tools.
 
 ## Phase B (after restore with terminal added, before user message)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_b`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_b`
 
 ### base_state.json
 
@@ -131,7 +131,7 @@ You are a helpful assistant for this probe test.
 
 #### SystemPromptUpdateEvent (persisted, after restore)
 
-- Reason: `tools_changed`
+- Reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - Tools in SystemPromptUpdateEvent: `['file_editor', 'finish', 'terminal', 'think']`
 
 ### telemetry logs
@@ -141,8 +141,8 @@ You are a helpful assistant for this probe test.
 
 ## Phase B (after send_message, before run)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_b`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_b`
 
 ### base_state.json
 
@@ -165,7 +165,7 @@ You are a helpful assistant for this probe test.
 
 #### SystemPromptUpdateEvent (persisted, after restore)
 
-- Reason: `tools_changed`
+- Reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - Tools in SystemPromptUpdateEvent: `['file_editor', 'finish', 'terminal', 'think']`
 
 ### telemetry logs
@@ -175,8 +175,8 @@ You are a helpful assistant for this probe test.
 
 ## Phase B (after run)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_b`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_b`
 
 ### base_state.json
 
@@ -199,13 +199,13 @@ You are a helpful assistant for this probe test.
 
 #### SystemPromptUpdateEvent (persisted, after restore)
 
-- Reason: `tools_changed`
+- Reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - Tools in SystemPromptUpdateEvent: `['file_editor', 'finish', 'terminal', 'think']`
 
 ### telemetry logs
 
 - Telemetry files: `1`
-- Latest telemetry file: `gpt-4o-mini-1769029686.149-7b5d.json`
+- Latest telemetry file: `gpt-4o-mini-1769035076.285-e64a.json`
 - Tools sent to LLM (per telemetry): `['file_editor', 'finish', 'terminal', 'think']`
 - Prompt sent to LLM (system first paragraph):
 
@@ -221,8 +221,8 @@ Now I added another tool. Please confirm you can see it.
 
 ## Phase C (after restore with same tools, before user message)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_c`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_c`
 
 ### base_state.json
 
@@ -245,7 +245,7 @@ You are a helpful assistant for this probe test.
 
 #### SystemPromptUpdateEvent (persisted, after restore)
 
-- Reason: `tools_changed`
+- Reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - Tools in SystemPromptUpdateEvent: `['file_editor', 'finish', 'terminal', 'think']`
 
 ### telemetry logs
@@ -255,8 +255,8 @@ You are a helpful assistant for this probe test.
 
 ## Phase C (after send_message, before run)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_c`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_c`
 
 ### base_state.json
 
@@ -279,7 +279,7 @@ You are a helpful assistant for this probe test.
 
 #### SystemPromptUpdateEvent (persisted, after restore)
 
-- Reason: `tools_changed`
+- Reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - Tools in SystemPromptUpdateEvent: `['file_editor', 'finish', 'terminal', 'think']`
 
 ### telemetry logs
@@ -289,8 +289,8 @@ You are a helpful assistant for this probe test.
 
 ## Phase C (after run)
 
-- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/conversations/30692f28b39a4e4eab8257c4b6b50ded`
-- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_c`
+- Persistence dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/conversations/3fdb316098bb48e1aa029ce56805792a`
+- Telemetry dir: `/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_c`
 
 ### base_state.json
 
@@ -313,13 +313,13 @@ You are a helpful assistant for this probe test.
 
 #### SystemPromptUpdateEvent (persisted, after restore)
 
-- Reason: `tools_changed`
+- Reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - Tools in SystemPromptUpdateEvent: `['file_editor', 'finish', 'terminal', 'think']`
 
 ### telemetry logs
 
 - Telemetry files: `1`
-- Latest telemetry file: `gpt-4o-mini-1769029686.702-a3f0.json`
+- Latest telemetry file: `gpt-4o-mini-1769035076.853-87a0.json`
 - Tools sent to LLM (per telemetry): `['file_editor', 'finish', 'terminal', 'think']`
 - Prompt sent to LLM (system first paragraph):
 
@@ -337,7 +337,7 @@ What tools do you have available?
 
 ### Files changed (persistence_dir)
 
-- added: `['events/event-00004-5b01a004-654a-4f68-82d8-0be8a0c80ee1.json', 'events/event-00005-fa6732cc-5a9c-4377-9e58-bc1eea8bd69f.json', 'events/event-00006-23dfbad7-2d8c-4f0f-8c8a-535f9a213439.json', 'events/event-00007-fee02181-67cc-4f87-b596-82ac442edd84.json']`
+- added: `['events/event-00004-d4007ff2-cf62-413a-83ed-4d371ea30adb.json', 'events/event-00005-9d21c5c9-69fe-4494-b975-c4a24f58ac65.json', 'events/event-00006-a9e5cb71-e254-4c69-8372-242333096833.json', 'events/event-00007-52c16a5b-daa6-4193-be61-0a80b5c763e6.json']`
 - removed: `[]`
 - changed: `['base_state.json']`
 
@@ -350,8 +350,8 @@ What tools do you have available?
        "extended_thinking_budget": 200000,
        "litellm_extra_body": {},
        "log_completions": true,
--      "log_completions_folder": "/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_a",
-+      "log_completions_folder": "/workspace/project/software-agent-sdk/.pr/artifacts/20260121-210805/telemetry_phase_b",
+-      "log_completions_folder": "/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_a",
++      "log_completions_folder": "/workspace/project/software-agent-sdk/.pr/artifacts/20260121-223755/telemetry_phase_b",
        "max_input_tokens": 128000,
        "max_message_chars": 30000,
        "max_output_tokens": 16384,
@@ -374,7 +374,7 @@ What tools do you have available?
 
 - `base_state.json` agent.tools updated on restore: `['file_editor']` -> `['file_editor', 'terminal']`
 - Persisted `SystemPromptEvent.tools` (original) unchanged: `['file_editor', 'finish', 'think']` == `['file_editor', 'finish', 'think']`
-- ✅ `SystemPromptUpdateEvent` was persisted on restore with reason: `tools_changed`
+- ✅ `SystemPromptUpdateEvent` was persisted on restore with reason: `SystemPromptUpdateReason.TOOLS_CHANGED`
 - ✅ `SystemPromptUpdateEvent.tools` contains new tool: `['file_editor', 'finish', 'terminal', 'think']`
 - Tools sent to LLM after restore (per telemetry): `['file_editor', 'finish', 'terminal', 'think']`
 
