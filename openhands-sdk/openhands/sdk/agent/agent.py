@@ -146,12 +146,11 @@ class Agent(AgentBase):
                 break
 
         if latest_system_event is None:
-            # No system prompt event found - unusual, but not an error
-            logger.warning(
+            # Events exist but no SystemPromptEvent - this is a corrupted state
+            raise RuntimeError(
                 "No SystemPromptEvent found in restored conversation events. "
-                "Skipping system prompt update check."
+                "The conversation state appears to be corrupted."
             )
-            return
 
         # Get current runtime values
         current_tools = list(self.tools_map.values())
