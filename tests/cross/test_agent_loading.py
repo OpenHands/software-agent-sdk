@@ -30,7 +30,7 @@ class ModuleScopeOtherAgent(Agent):
     pass
 
 
-# Tests from test_llm_reconciliation.py
+# Conversation restart coverage (moved from older LLM restart tests).
 def test_conversation_restart_with_nested_llms(tmp_path):
     """Test conversation restart with agent containing nested LLMs."""
     # Create a default agent with dummy LLM + models + keys
@@ -80,7 +80,7 @@ def test_conversation_restart_with_nested_llms(tmp_path):
     assert isinstance(conversation2.agent.condenser.llm.api_key, SecretStr)
     assert conversation2.agent.condenser.llm.api_key.get_secret_value() == "llm-api-key"
 
-    # Verify that the agent configuration is properly reconciled
+    # Verify we keep using the runtime-provided agent configuration on restart.
     assert conversation2.agent.llm.model == "gpt-4o-mini"
     assert conversation2.agent.condenser.llm.model == "gpt-4o-mini"
     assert conversation2.agent.condenser.max_size == 80
@@ -620,7 +620,7 @@ def test_conversation_restart_with_different_agent_context():
 
         cli_agent = Agent(llm=llm, tools=tools, agent_context=cli_context)
 
-        # This should succeed - agent_context differences should be reconciled
+        # This should succeed: runtime agent_context overrides persisted values.
         new_conversation = LocalConversation(
             agent=cli_agent,
             workspace=temp_dir,

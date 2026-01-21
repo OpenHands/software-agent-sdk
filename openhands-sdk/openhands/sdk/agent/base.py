@@ -349,9 +349,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     ) -> AgentBase:
         """Verify that we can resume this agent from persisted state.
 
-        This PR's goal is to *not* reconcile configuration between persisted and
-        runtime Agent instances. Instead, we verify compatibility requirements
-        and then continue with the runtime-provided Agent.
+        We do not merge configuration between persisted and runtime Agent
+        instances. Instead, we verify compatibility requirements and then
+        continue with the runtime-provided Agent.
 
         Compatibility requirements:
         - Agent class/type must match.
