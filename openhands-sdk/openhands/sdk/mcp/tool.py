@@ -86,20 +86,6 @@ class MCPToolExecutor(ToolExecutor):
             self.call_tool, action=action, timeout=300
         )
 
-    def close(self) -> None:
-        """Close the shared MCP client.
-
-        Note: This closes the shared client, affecting all tools using it.
-        Typically called once when the conversation ends.
-        """
-        self.client.sync_close()
-
-    def __enter__(self) -> "MCPToolExecutor":
-        return self
-
-    def __exit__(self, *args: object) -> None:
-        self.close()
-
 
 _mcp_dynamic_action_type: dict[str, type[Schema]] = {}
 

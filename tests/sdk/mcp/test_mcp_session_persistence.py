@@ -97,32 +97,29 @@ class TestSessionPersistence:
             }
         }
 
-        tools = create_mcp_tools(config, timeout=10.0)
-        assert len(tools) == 2
+        with create_mcp_tools(config, timeout=10.0) as toolset:
+            assert len(toolset) == 2
 
-        echo_tool = next(t for t in tools if t.name == "echo")
-        add_tool = next(t for t in tools if t.name == "add_numbers")
+            echo_tool = next(t for t in toolset if t.name == "echo")
+            add_tool = next(t for t in toolset if t.name == "add_numbers")
 
-        # Verify they share the same client
-        echo_executor = echo_tool.executor
-        add_executor = add_tool.executor
-        assert isinstance(echo_executor, MCPToolExecutor)
-        assert isinstance(add_executor, MCPToolExecutor)
-        assert echo_executor.client is add_executor.client
+            # Verify they share the same client
+            echo_executor = echo_tool.executor
+            add_executor = add_tool.executor
+            assert isinstance(echo_executor, MCPToolExecutor)
+            assert isinstance(add_executor, MCPToolExecutor)
+            assert echo_executor.client is add_executor.client
 
-        # Make multiple calls - should all use same connection
-        for i in range(3):
-            action = echo_tool.action_from_arguments({"message": f"test_{i}"})
-            result = echo_executor(action)
-            assert f"test_{i}" in result.text
+            # Make multiple calls - should all use same connection
+            for i in range(3):
+                action = echo_tool.action_from_arguments({"message": f"test_{i}"})
+                result = echo_executor(action)
+                assert f"test_{i}" in result.text
 
-        # Call different tool - same connection
-        action = add_tool.action_from_arguments({"a": 5, "b": 3})
-        result = add_executor(action)
-        assert "8" in result.text
-
-        # Clean up
-        echo_executor.close()
+            # Call different tool - same connection
+            action = add_tool.action_from_arguments({"a": 5, "b": 3})
+            result = add_executor(action)
+            assert "8" in result.text
 
     def test_close_releases_connection(self, live_server: int):
         """Test that close() properly releases the connection."""
@@ -135,18 +132,14 @@ class TestSessionPersistence:
             }
         }
 
-        tools = create_mcp_tools(config, timeout=10.0)
-        tool = next(t for t in tools if t.name == "echo")
-        executor = tool.executor
-        assert isinstance(executor, MCPToolExecutor)
+        with create_mcp_tools(config, timeout=10.0) as toolset:
+            tool = next(t for t in toolset if t.name == "echo")
+            executor = tool.executor
+            assert isinstance(executor, MCPToolExecutor)
 
-        # Make a call
-        action = tool.action_from_arguments({"message": "test"})
-        result = executor(action)
-        assert "test" in result.text
+            # Make a call
+            action = tool.action_from_arguments({"message": "test"})
+            result = executor(action)
+            assert "test" in result.text
 
-        # Close
-        executor.close()
-
-        # Client should be cleaned up (can't call anymore)
-        # Just verify close() doesn't raise
+        # Connection is automatically closed when exiting context manager

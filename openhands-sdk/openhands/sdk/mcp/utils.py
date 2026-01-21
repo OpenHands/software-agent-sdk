@@ -1,6 +1,7 @@
 """Utility functions for MCP integration."""
 
 import logging
+from collections.abc import Iterator
 
 import mcp.types
 from fastmcp.client.logging import LogMessage
@@ -57,16 +58,97 @@ async def _list_tools_and_keep_connected(client: MCPClient) -> list[ToolDefiniti
     return tools
 
 
+class MCPToolset:
+    """A collection of MCP tools with explicit lifecycle management.
+
+    This class owns the MCP client connection and provides clear ownership
+    semantics. Use it as a context manager for automatic cleanup:
+
+        with create_mcp_tools(config) as toolset:
+            for tool in toolset.tools:
+                # use tool
+            # Connection automatically closed on exit
+
+    Or manage lifecycle manually:
+
+        toolset = create_mcp_tools(config)
+        try:
+            for tool in toolset.tools:
+                # use tool
+        finally:
+            toolset.close()
+    """
+
+    def __init__(self, tools: list[MCPToolDefinition], client: MCPClient):
+        self._tools = tools
+        self._client = client
+
+    @property
+    def tools(self) -> list[MCPToolDefinition]:
+        """The list of MCP tools."""
+        return self._tools
+
+    @property
+    def client(self) -> MCPClient:
+        """The underlying MCP client (for advanced use cases)."""
+        return self._client
+
+    def close(self) -> None:
+        """Close the MCP client connection.
+
+        This releases all resources associated with the MCP server connection.
+        After calling close(), the tools in this toolset can no longer be used.
+        """
+        self._client.sync_close()
+
+    def __enter__(self) -> "MCPToolset":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def __iter__(self) -> Iterator[MCPToolDefinition]:
+        """Allow iterating directly over the toolset."""
+        return iter(self._tools)
+
+    def __len__(self) -> int:
+        """Return the number of tools."""
+        return len(self._tools)
+
+    def __getitem__(self, index: int) -> MCPToolDefinition:
+        """Allow indexing into the toolset."""
+        return self._tools[index]
+
+
 def create_mcp_tools(
     config: dict | MCPConfig,
     timeout: float = 30.0,
-) -> list[MCPToolDefinition]:
+) -> MCPToolset:
     """Create MCP tools from MCP configuration.
 
-    The returned tools share a persistent MCP client connection.
-    Call close() on any tool's executor when done to clean up.
+    Returns an MCPToolset that owns the client connection. Use it as a
+    context manager for automatic cleanup, or call close() when done:
+
+        # Context manager (recommended):
+        with create_mcp_tools(config) as toolset:
+            for tool in toolset.tools:
+                # use tool
+
+        # Manual cleanup:
+        toolset = create_mcp_tools(config)
+        try:
+            for tool in toolset.tools:
+                # use tool
+        finally:
+            toolset.close()
+
+    Args:
+        config: MCP configuration dict or MCPConfig object
+        timeout: Timeout for connecting and listing tools (default 30s)
+
+    Returns:
+        MCPToolset containing the tools and owning the client connection
     """
-    tools: list[MCPToolDefinition] = []
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
     client = MCPClient(config, log_handler=log_handler)
@@ -103,4 +185,4 @@ def create_mcp_tools(
         raise
 
     logger.info(f"Created {len(tools)} MCP tools: {[t.name for t in tools]}")
-    return tools
+    return MCPToolset(tools=tools, client=client)

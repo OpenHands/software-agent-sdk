@@ -163,28 +163,25 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        tools = create_mcp_tools(config, timeout=10.0)
-        increment_tool = next(t for t in tools if t.name == "increment_counter")
-        get_tool = next(t for t in tools if t.name == "get_counter")
+        with create_mcp_tools(config, timeout=10.0) as toolset:
+            increment_tool = next(t for t in toolset if t.name == "increment_counter")
+            get_tool = next(t for t in toolset if t.name == "get_counter")
 
-        executor = increment_tool.executor
-        assert isinstance(executor, MCPToolExecutor)
+            executor = increment_tool.executor
+            assert isinstance(executor, MCPToolExecutor)
 
-        # Increment 3 times - all should use SAME session
-        for i in range(3):
-            action = increment_tool.action_from_arguments({})
-            result = executor(action)
-            assert f"Counter is now {i + 1}" in result.text
+            # Increment 3 times - all should use SAME session
+            for i in range(3):
+                action = increment_tool.action_from_arguments({})
+                result = executor(action)
+                assert f"Counter is now {i + 1}" in result.text
 
-        # Verify counter is at 3 (not reset due to new session)
-        get_executor = get_tool.executor
-        assert isinstance(get_executor, MCPToolExecutor)
-        action = get_tool.action_from_arguments({})
-        result = get_executor(action)
-        assert "Counter value is 3" in result.text
-
-        # Clean up
-        executor.close()
+            # Verify counter is at 3 (not reset due to new session)
+            get_executor = get_tool.executor
+            assert isinstance(get_executor, MCPToolExecutor)
+            action = get_tool.action_from_arguments({})
+            result = get_executor(action)
+            assert "Counter value is 3" in result.text
 
     def test_auth_token_persists_across_tools(self, stateful_server):
         """Test that authentication set in one call is available in subsequent calls.
@@ -205,32 +202,29 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        tools = create_mcp_tools(config, timeout=10.0)
-        set_auth_tool = next(t for t in tools if t.name == "set_auth_token")
-        get_auth_tool = next(t for t in tools if t.name == "get_auth_token")
+        with create_mcp_tools(config, timeout=10.0) as toolset:
+            set_auth_tool = next(t for t in toolset if t.name == "set_auth_token")
+            get_auth_tool = next(t for t in toolset if t.name == "get_auth_token")
 
-        set_executor = set_auth_tool.executor
-        get_executor = get_auth_tool.executor
-        assert isinstance(set_executor, MCPToolExecutor)
-        assert isinstance(get_executor, MCPToolExecutor)
+            set_executor = set_auth_tool.executor
+            get_executor = get_auth_tool.executor
+            assert isinstance(set_executor, MCPToolExecutor)
+            assert isinstance(get_executor, MCPToolExecutor)
 
-        # Set auth token
-        action = set_auth_tool.action_from_arguments({"token": "secret-123"})
-        result = set_executor(action)
-        assert "Auth token set to secret-123" in result.text
+            # Set auth token
+            action = set_auth_tool.action_from_arguments({"token": "secret-123"})
+            result = set_executor(action)
+            assert "Auth token set to secret-123" in result.text
 
-        # Verify auth token persists
-        # WITH OLD CODE: This would fail with "ERROR - No auth token!"
-        # WITH FIX: Same session is used, token is preserved
-        action = get_auth_tool.action_from_arguments({})
-        result = get_executor(action)
+            # Verify auth token persists
+            # WITH OLD CODE: This would fail with "ERROR - No auth token!"
+            # WITH FIX: Same session is used, token is preserved
+            action = get_auth_tool.action_from_arguments({})
+            result = get_executor(action)
 
-        # THE KEY ASSERTION: Token must still be there
-        assert "secret-123" in result.text
-        assert "ERROR" not in result.text  # No session reset error
-
-        # Clean up
-        set_executor.close()
+            # THE KEY ASSERTION: Token must still be there
+            assert "secret-123" in result.text
+            assert "ERROR" not in result.text  # No session reset error
 
     def test_multiple_operations_same_session(self, stateful_server):
         """Test a realistic workflow: authenticate, then perform multiple operations."""
@@ -246,40 +240,36 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        tools = create_mcp_tools(config, timeout=10.0)
+        with create_mcp_tools(config, timeout=10.0) as toolset:
+            # Get all tools
+            set_auth = next(t for t in toolset if t.name == "set_auth_token")
+            get_auth = next(t for t in toolset if t.name == "get_auth_token")
+            increment = next(t for t in toolset if t.name == "increment_counter")
+            get_counter = next(t for t in toolset if t.name == "get_counter")
 
-        # Get all tools
-        set_auth = next(t for t in tools if t.name == "set_auth_token")
-        get_auth = next(t for t in tools if t.name == "get_auth_token")
-        increment = next(t for t in tools if t.name == "increment_counter")
-        get_counter = next(t for t in tools if t.name == "get_counter")
+            # Verify executors exist
+            assert set_auth.executor is not None
+            assert get_auth.executor is not None
+            assert increment.executor is not None
+            assert get_counter.executor is not None
 
-        # Verify executors exist
-        assert set_auth.executor is not None
-        assert get_auth.executor is not None
-        assert increment.executor is not None
-        assert get_counter.executor is not None
+            # Simulate realistic workflow:
+            # 1. Authenticate
+            action = set_auth.action_from_arguments({"token": "my-api-key"})
+            result = set_auth.executor(action)
+            assert "my-api-key" in result.text
 
-        # Simulate realistic workflow:
-        # 1. Authenticate
-        action = set_auth.action_from_arguments({"token": "my-api-key"})
-        result = set_auth.executor(action)
-        assert "my-api-key" in result.text
+            # 2. Do some operations (all should use same session)
+            for _ in range(5):
+                action = increment.action_from_arguments({})
+                increment.executor(action)
 
-        # 2. Do some operations (all should use same session)
-        for _ in range(5):
-            action = increment.action_from_arguments({})
-            increment.executor(action)
+            # 3. Verify everything still works in same session
+            action = get_counter.action_from_arguments({})
+            result = get_counter.executor(action)
+            assert "Counter value is 5" in result.text
 
-        # 3. Verify everything still works in same session
-        action = get_counter.action_from_arguments({})
-        result = get_counter.executor(action)
-        assert "Counter value is 5" in result.text
-
-        action = get_auth.action_from_arguments({})
-        result = get_auth.executor(action)
-        assert "my-api-key" in result.text  # Auth still there!
-        assert "ERROR" not in result.text
-
-        # Clean up
-        set_auth.executor.close()
+            action = get_auth.action_from_arguments({})
+            result = get_auth.executor(action)
+            assert "my-api-key" in result.text  # Auth still there!
+            assert "ERROR" not in result.text
