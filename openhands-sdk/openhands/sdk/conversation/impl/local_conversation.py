@@ -349,6 +349,10 @@ class LocalConversation(BaseConversation):
                 }
             )
 
+            # Also update the agent in _state so API responses reflect loaded plugins
+            with self._state:
+                self._state.agent = self.agent
+
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
         # Combine explicit hook_config with plugin hooks
