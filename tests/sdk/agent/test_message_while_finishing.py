@@ -287,12 +287,6 @@ class TestMessageWhileFinishing:
                 object="chat.completion",
             )
 
-    @pytest.mark.xfail(
-        reason="Timing-sensitive test affected by lazy agent initialization. "
-        "The test relies on specific timing of agent init relative to message "
-        "processing. See PR #1651 for context.",
-        strict=False,
-    )
     def test_message_processing_fix_verification(self):
         """
         Verifies the fix: messages sent during final step are processed after finishing.
