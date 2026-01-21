@@ -390,6 +390,14 @@ class LocalConversation(BaseConversation):
 
         Thread-safe: Uses state lock to prevent concurrent initialization.
         """
+        # Fast path: if already initialized, skip lock acquisition entirely.
+        # This is crucial for concurrent send_message() calls during run(),
+        # which holds the state lock during agent.step(). Without this check,
+        # send_message() would block waiting for the lock even though no
+        # initialization is needed.
+        if self._agent_ready:
+            return
+
         with self._state:
             # Re-check after acquiring lock in case another thread initialized
             if self._agent_ready:
