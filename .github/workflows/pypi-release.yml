@@ -160,8 +160,18 @@ jobs:
                   fi
                   echo "📦 SDK commit hash: $SDK_COMMIT_HASH"
 
-                  # 1. Update versions in pyproject.toml using poetry
-                  echo "📝 Updating pyproject.toml..."
+                  # 1. Update versions in pyproject.toml
+                  # The OpenHands pyproject.toml has dependencies in TWO places:
+                  # - [project].dependencies (PEP 621 format for UV compatibility)
+                  # - [tool.poetry.dependencies] (Poetry format)
+                  # We need to update both to avoid version conflicts during poetry lock
+
+                  echo "📝 Updating [project].dependencies section (PEP 621 format)..."
+                  sed -i 's/"openhands-sdk==[^"]*"/"openhands-sdk=='"$VERSION"'"/' pyproject.toml
+                  sed -i 's/"openhands-tools==[^"]*"/"openhands-tools=='"$VERSION"'"/' pyproject.toml
+                  sed -i 's/"openhands-agent-server==[^"]*"/"openhands-agent-server=='"$VERSION"'"/' pyproject.toml
+
+                  echo "📝 Updating [tool.poetry.dependencies] section..."
                   poetry add "openhands-sdk==$VERSION" "openhands-tools==$VERSION" "openhands-agent-server==$VERSION"
 
                   # 2. Generate poetry.lock in root
