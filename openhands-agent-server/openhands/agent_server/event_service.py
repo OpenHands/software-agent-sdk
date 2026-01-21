@@ -46,6 +46,7 @@ class EventService:
     _pub_sub: PubSub[Event] = field(default_factory=lambda: PubSub[Event](), init=False)
     _run_task: asyncio.Task | None = field(default=None, init=False)
     _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
 
     @property
     def conversation_dir(self):
@@ -434,15 +435,19 @@ class EventService:
         # Plugins are loaded lazily on first run()/send_message() call.
         # Hook execution semantics: OpenHands runs hooks sequentially with early-exit
         # on block (PreToolUse), unlike Claude Code's parallel execution model.
+
+        # Create and store callback wrapper to allow flushing pending events
+        self._callback_wrapper = AsyncCallbackWrapper(
+            self._pub_sub, loop=asyncio.get_running_loop()
+        )
+
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
             plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
-            callbacks=[
-                AsyncCallbackWrapper(self._pub_sub, loop=asyncio.get_running_loop())
-            ],
+            callbacks=[self._callback_wrapper],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
@@ -523,12 +528,15 @@ class EventService:
                 except Exception:
                     logger.exception("Error during conversation run")
                 finally:
-                    # Give pending events time to be published via AsyncCallbackWrapper
-                    # before publishing the final state update. This prevents a race
-                    # condition where the conversation status becomes FINISHED before
-                    # agent events (MessageEvent, ActionEvent, etc.) are published to
-                    # WebSocket subscribers.
-                    await asyncio.sleep(0.1)
+                    # Wait for all pending events to be published via
+                    # AsyncCallbackWrapper before publishing the final state update.
+                    # This prevents a race condition where the conversation status
+                    # becomes FINISHED before agent events (MessageEvent, ActionEvent,
+                    # etc.) are published to WebSocket subscribers.
+                    if self._callback_wrapper:
+                        await loop.run_in_executor(
+                            None, self._callback_wrapper.wait_for_pending, 30.0
+                        )
 
                     # Clear task reference and publish state update
                     self._run_task = None
