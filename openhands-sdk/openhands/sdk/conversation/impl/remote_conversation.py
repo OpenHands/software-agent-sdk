@@ -616,7 +616,12 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id))
+        # Note: We do NOT start observability span on client side for remote
+        # conversations. The span is started on the server side in
+        # conversation_service.py where the actual LLM calls happen. Starting a
+        # span here would create orphan traces since OTEL context doesn't
+        # propagate across HTTP/WebSocket boundaries.
+
         if hook_config is not None:
             unsupported = (
                 HookEventType.PRE_TOOL_USE,
@@ -1004,7 +1009,8 @@ class RemoteConversation(BaseConversation):
         except Exception:
             pass
 
-        self._end_observability_span()
+        # Note: We do NOT end observability span on client side for remote
+        # conversations. The span is managed on the server side.
 
     def __del__(self) -> None:
         try:

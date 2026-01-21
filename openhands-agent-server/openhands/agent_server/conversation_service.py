@@ -25,6 +25,11 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.observability.laminar import (
+    end_active_span,
+    should_enable_observability,
+    start_active_span,
+)
 from openhands.sdk.utils.cipher import Cipher
 
 
@@ -237,6 +242,12 @@ class ConversationService:
 
         stored = StoredConversation(id=conversation_id, **request.model_dump())
         event_service = await self._start_event_service(stored)
+
+        # Start observability span on server side for remote conversations
+        # This ensures OTEL traces are properly associated with the conversation session
+        if should_enable_observability():
+            start_active_span("conversation", session_id=str(conversation_id))
+
         initial_message = request.initial_message
         if initial_message:
             message = Message(
@@ -300,6 +311,13 @@ class ConversationService:
                     f"Failed to close event service for conversation "
                     f"{conversation_id}: {e}"
                 )
+
+            # End observability span for this conversation
+            if should_enable_observability():
+                try:
+                    end_active_span()
+                except Exception as e:
+                    logger.debug(f"Failed to end observability span: {e}")
 
             # Safely remove only the conversation directory (workspace is preserved).
             # This operation may fail due to permission issues, but we don't want that
