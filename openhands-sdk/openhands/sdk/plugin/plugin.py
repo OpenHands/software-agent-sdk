@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
-from openhands.sdk.context import AgentContext
 from openhands.sdk.context.skills import Skill
 from openhands.sdk.context.skills.utils import (
     discover_skill_resources,
@@ -25,6 +24,9 @@ from openhands.sdk.plugin.types import (
     PluginManifest,
 )
 
+
+if TYPE_CHECKING:
+    from openhands.sdk.context import AgentContext
 
 logger = get_logger(__name__)
 
@@ -109,6 +111,9 @@ class Plugin(BaseModel):
             >>> new_context = plugin.add_skills_to(agent.agent_context, max_skills=100)
             >>> agent = agent.model_copy(update={"agent_context": new_context})
         """
+        # Import at runtime to avoid circular import
+        from openhands.sdk.context import AgentContext
+
         existing_skills = agent_context.skills if agent_context else []
 
         skills_by_name = {s.name: s for s in existing_skills}
