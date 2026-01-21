@@ -167,7 +167,7 @@ class Agent(AgentBase):
         if persisted_tool_names == current_tool_names:
             return  # Tools unchanged, no update needed
 
-        logger.info(
+        logger.debug(
             f"Emitting SystemPromptUpdateEvent: "
             f"persisted_tools={sorted(persisted_tool_names)}, "
             f"current_tools={sorted(current_tool_names)}"
