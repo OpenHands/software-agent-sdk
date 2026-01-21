@@ -346,6 +346,10 @@ class LocalConversation(BaseConversation):
                 }
             )
 
+            # Reset initialization flag to allow re-initialization with plugin config
+            # This ensures MCP tools from plugins are created properly
+            self.agent._initialized = False
+
             # Also update the agent in _state so API responses reflect loaded plugins
             with self._state:
                 self._state.agent = self.agent
@@ -376,7 +380,10 @@ class LocalConversation(BaseConversation):
             self._hook_processor.set_conversation_state(self._state)
             self._hook_processor.run_session_start()
 
-            # Re-initialize agent state with hook-wrapped callback
+        # Re-initialize agent after loading plugins to ensure MCP tools and skills
+        # from plugins are properly initialized. Use hook-wrapped callback if hooks
+        # are present, otherwise use base callback.
+        if self._plugin_specs:
             with self._state:
                 self.agent.init_state(self._state, on_event=self._on_event)
 

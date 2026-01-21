@@ -219,6 +219,63 @@ class TestLocalConversationPlugins:
 
         conversation.close()
 
+    def test_plugin_mcp_config_is_initialized(
+        self, tmp_path: Path, basic_agent, monkeypatch
+    ):
+        """Test that MCP config from plugins is properly initialized.
+
+        This is a regression test for a bug where MCP tools from plugins were not
+        being created because the agent was initialized before plugins were loaded.
+        """
+        # Mock create_mcp_tools to avoid actually starting MCP servers in tests
+        mcp_tools_created = []
+
+        def mock_create_mcp_tools(config, timeout):
+            mcp_tools_created.append(config)
+            return []  # Return empty list for testing
+
+        import openhands.sdk.agent.base
+
+        monkeypatch.setattr(
+            openhands.sdk.agent.base, "create_mcp_tools", mock_create_mcp_tools
+        )
+
+        plugin_dir = create_test_plugin(
+            tmp_path / "plugin",
+            name="test-plugin",
+            mcp_config={"mcpServers": {"test-server": {"command": "test-cmd"}}},
+        )
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+
+        conversation = LocalConversation(
+            agent=basic_agent,
+            workspace=workspace,
+            plugins=[PluginSource(source=str(plugin_dir))],
+            visualizer=None,
+        )
+
+        # Before loading plugins, no MCP config should exist
+        assert (
+            conversation.agent.mcp_config is None or conversation.agent.mcp_config == {}
+        )
+
+        # Trigger plugin loading
+        conversation._ensure_plugins_loaded()
+
+        # After loading, MCP config should be merged
+        assert conversation.agent.mcp_config is not None
+        assert "mcpServers" in conversation.agent.mcp_config
+        assert "test-server" in conversation.agent.mcp_config["mcpServers"]
+
+        # The agent should have been re-initialized with the new MCP config
+        # This verifies that create_mcp_tools was called with the plugin's MCP config
+        assert len(mcp_tools_created) > 0
+        assert "mcpServers" in mcp_tools_created[-1]
+        assert "test-server" in mcp_tools_created[-1]["mcpServers"]
+
+        conversation.close()
+
 
 class TestConversationFactoryPlugins:
     """Tests for plugin loading via Conversation factory.

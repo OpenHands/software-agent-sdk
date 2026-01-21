@@ -405,6 +405,7 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
         if hook_config.is_empty():
             logger.info(f"No hooks configured in {hooks_json}")
             return HookConfig()
+        logger.info(f"Loaded hooks from {hooks_json}")
         return hook_config
     except Exception as e:
         logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
@@ -418,7 +419,14 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
         return None
 
     try:
-        return load_mcp_config(mcp_json, skill_root=plugin_dir)
+        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        if config and "mcpServers" in config:
+            server_names = list(config["mcpServers"].keys())
+            logger.info(
+                f"Loaded MCP config from {mcp_json} "
+                f"with {len(server_names)} server(s): {server_names}"
+            )
+        return config
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
         return None
