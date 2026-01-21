@@ -523,6 +523,13 @@ class EventService:
                 except Exception:
                     logger.exception("Error during conversation run")
                 finally:
+                    # Give pending events time to be published via AsyncCallbackWrapper
+                    # before publishing the final state update. This prevents a race
+                    # condition where the conversation status becomes FINISHED before
+                    # agent events (MessageEvent, ActionEvent, etc.) are published to
+                    # WebSocket subscribers.
+                    await asyncio.sleep(0.1)
+
                     # Clear task reference and publish state update
                     self._run_task = None
                     await self._publish_state_update()
