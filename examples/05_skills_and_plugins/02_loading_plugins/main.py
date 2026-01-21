@@ -75,5 +75,4 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
     conversation.run()
 
-    print(f"Cost: ${llm.metrics.accumulated_cost:.4f}")
     print(f"EXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")
