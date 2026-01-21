@@ -26,7 +26,6 @@ from openhands.sdk.plugin.types import (
     PluginSource,
     ResolvedPluginSource,
 )
-from openhands.sdk.plugin.utils import merge_mcp_configs, merge_skills
 
 
 __all__ = [
@@ -42,8 +41,6 @@ __all__ = [
     # Plugin loading
     "load_plugins",
     "fetch_plugin_with_resolution",
-    "merge_mcp_configs",
-    "merge_skills",
     # Marketplace classes
     "Marketplace",
     "MarketplaceOwner",
