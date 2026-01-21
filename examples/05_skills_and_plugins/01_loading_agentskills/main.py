@@ -98,6 +98,7 @@ def main():
         print("Skipping agent demo (LLM_API_KEY not set)")
         print("\nTo run the full demo, set the LLM_API_KEY environment variable:")
         print("  export LLM_API_KEY=your-api-key")
+        print("EXAMPLE_COST: 0")
         return
 
     # Configure LLM
@@ -133,6 +134,7 @@ def main():
     conversation.run()
 
     print(f"\nTotal cost: ${llm.metrics.accumulated_cost:.4f}")
+    print(f"EXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")
 
 
 if __name__ == "__main__":
