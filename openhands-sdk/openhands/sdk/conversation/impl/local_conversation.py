@@ -395,7 +395,6 @@ class LocalConversation(BaseConversation):
         self._ensure_plugins_loaded()
 
         # Initialize agent with complete configuration
-        # Use hook-wrapped callback if hooks were configured, otherwise base callback
         with self._state:
             self.agent.init_state(self._state, on_event=self._on_event)
 
