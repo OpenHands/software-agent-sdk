@@ -387,23 +387,26 @@ class LocalConversation(BaseConversation):
 
         This preserves the design principle that constructors should not perform
         I/O or error-prone operations, while eliminating double initialization.
+
+        Thread-safe: Uses state lock to prevent concurrent initialization.
         """
-        if self._agent_ready:
-            return
-
-        # Load plugins first (merges skills, MCP config, hooks)
-        self._ensure_plugins_loaded()
-
-        # Initialize agent with complete configuration
         with self._state:
+            # Re-check after acquiring lock in case another thread initialized
+            if self._agent_ready:
+                return
+
+            # Load plugins first (merges skills, MCP config, hooks)
+            self._ensure_plugins_loaded()
+
+            # Initialize agent with complete configuration
             self.agent.init_state(self._state, on_event=self._on_event)
 
-        # Register LLMs in the registry
-        self.llm_registry.subscribe(self._state.stats.register_llm)
-        for llm in list(self.agent.get_all_llms()):
-            self.llm_registry.add(llm)
+            # Register LLMs in the registry (still holding lock)
+            self.llm_registry.subscribe(self._state.stats.register_llm)
+            for llm in list(self.agent.get_all_llms()):
+                self.llm_registry.add(llm)
 
-        self._agent_ready = True
+            self._agent_ready = True
 
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
