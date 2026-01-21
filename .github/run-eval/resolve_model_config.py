@@ -65,6 +65,11 @@ MODELS = {
         "display_name": "MiniMax M2",
         "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
     },
+    "minimax-m2.1": {
+        "id": "minimax-m2.1",
+        "display_name": "MiniMax M2.1",
+        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",

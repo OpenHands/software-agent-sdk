@@ -129,6 +129,7 @@ if not api_key:
     print("Skipping agent demo (LLM_API_KEY not set)")
     print("\nTo run the full demo, set the LLM_API_KEY environment variable:")
     print("  export LLM_API_KEY=your-api-key")
+    print("EXAMPLE_COST: 0")
     sys.exit(0)
 
 # Configure LLM
@@ -137,6 +138,7 @@ llm = LLM(
     usage_id="plugin-demo",
     model=model,
     api_key=SecretStr(api_key),
+    base_url=os.getenv("LLM_BASE_URL"),
 )
 
 # Create agent context with plugin skills
@@ -203,3 +205,4 @@ with tempfile.TemporaryDirectory() as tmpdir:
         print("No hook log file found (hooks may not have executed)")
 
     print(f"\nTotal cost: ${llm.metrics.accumulated_cost:.4f}")
+    print(f"EXAMPLE_COST: {llm.metrics.accumulated_cost:.4f}")
