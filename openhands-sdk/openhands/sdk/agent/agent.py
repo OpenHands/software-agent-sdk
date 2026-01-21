@@ -132,12 +132,13 @@ class Agent(AgentBase):
         events: list[LLMConvertibleEvent],
         on_event: ConversationCallbackType,
     ) -> None:
-        """Emit SystemPromptUpdateEvent if agent config changed since last persisted.
+        """Emit SystemPromptUpdateEvent if agent tools changed since last persisted.
 
         This is called on conversation restore to check if the runtime agent has
-        different tools or system prompt than what was persisted. If so, we emit
-        a SystemPromptUpdateEvent to record the change in the event log, ensuring
+        different tools than what was persisted. If so, we emit a
+        SystemPromptUpdateEvent to record the change in the event log, ensuring
         the LLM sees the updated configuration.
+        """
         """
         # Find the latest system prompt event (original or update)
         latest_system_event: SystemPromptEvent | SystemPromptUpdateEvent | None = None
