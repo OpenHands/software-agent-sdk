@@ -112,9 +112,9 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as toolset:
-            increment_tool = next(t for t in toolset if t.name == "increment_counter")
-            get_tool = next(t for t in toolset if t.name == "get_counter")
+        with create_mcp_tools(config, timeout=10.0) as client:
+            increment_tool = next(t for t in client if t.name == "increment_counter")
+            get_tool = next(t for t in client if t.name == "get_counter")
 
             executor = increment_tool.executor
             assert isinstance(executor, MCPToolExecutor)
@@ -151,9 +151,9 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as toolset:
-            set_auth_tool = next(t for t in toolset if t.name == "set_auth_token")
-            get_auth_tool = next(t for t in toolset if t.name == "get_auth_token")
+        with create_mcp_tools(config, timeout=10.0) as client:
+            set_auth_tool = next(t for t in client if t.name == "set_auth_token")
+            get_auth_tool = next(t for t in client if t.name == "get_auth_token")
 
             set_executor = set_auth_tool.executor
             get_executor = get_auth_tool.executor
@@ -189,12 +189,12 @@ class TestStatefulMCPSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as toolset:
+        with create_mcp_tools(config, timeout=10.0) as client:
             # Get all tools
-            set_auth = next(t for t in toolset if t.name == "set_auth_token")
-            get_auth = next(t for t in toolset if t.name == "get_auth_token")
-            increment = next(t for t in toolset if t.name == "increment_counter")
-            get_counter = next(t for t in toolset if t.name == "get_counter")
+            set_auth = next(t for t in client if t.name == "set_auth_token")
+            get_auth = next(t for t in client if t.name == "get_auth_token")
+            increment = next(t for t in client if t.name == "increment_counter")
+            get_counter = next(t for t in client if t.name == "get_counter")
 
             # Verify executors exist
             assert set_auth.executor is not None

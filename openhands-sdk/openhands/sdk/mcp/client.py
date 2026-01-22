@@ -2,12 +2,16 @@
 
 import asyncio
 import inspect
-from collections.abc import Callable
-from typing import Any
+from collections.abc import Callable, Iterator
+from typing import TYPE_CHECKING, Any
 
 from fastmcp import Client as AsyncMCPClient
 
 from openhands.sdk.utils.async_executor import AsyncExecutor
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.mcp.tool import MCPToolDefinition
 
 
 class MCPClient(AsyncMCPClient):
@@ -16,24 +20,30 @@ class MCPClient(AsyncMCPClient):
     but owns a background event loop and offers:
       - call_async_from_sync(awaitable_or_fn, *args, timeout=None, **kwargs)
       - call_sync_from_async(fn, *args, **kwargs)  # await this from async code
-      - connect() for explicit connection establishment
+      - sync context manager (with client:) for lifecycle management
       - sync_close() for synchronous cleanup
+
+    After create_mcp_tools() returns, the client has a `tools` attribute
+    containing the list of MCP tools that share this connection.
     """
 
     _executor: AsyncExecutor
     _closed: bool
+    _tools: "list[MCPToolDefinition]"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._executor = AsyncExecutor()
         self._closed = False
+        self._tools = []
+
+    @property
+    def tools(self) -> "list[MCPToolDefinition]":
+        """The MCP tools using this client connection."""
+        return self._tools
 
     async def connect(self) -> None:
-        """Establish connection to the MCP server.
-
-        This is an explicit alternative to using the async context manager.
-        The connection is cleaned up via sync_close() when done.
-        """
+        """Establish connection to the MCP server."""
         await self.__aenter__()
 
     def call_async_from_sync(
@@ -93,3 +103,20 @@ class MCPClient(AsyncMCPClient):
             self.sync_close()
         except Exception:
             pass  # Ignore cleanup errors during deletion
+
+    # Sync context manager for lifecycle management
+    def __enter__(self) -> "MCPClient":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.sync_close()
+
+    # Iteration support for tools
+    def __iter__(self) -> "Iterator[MCPToolDefinition]":
+        return iter(self._tools)
+
+    def __len__(self) -> int:
+        return len(self._tools)
+
+    def __getitem__(self, index: int) -> "MCPToolDefinition":
+        return self._tools[index]

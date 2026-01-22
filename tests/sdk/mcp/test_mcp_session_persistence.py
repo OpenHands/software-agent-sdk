@@ -48,11 +48,11 @@ class TestSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as toolset:
-            assert len(toolset) == 2
+        with create_mcp_tools(config, timeout=10.0) as client:
+            assert len(client) == 2
 
-            echo_tool = next(t for t in toolset if t.name == "echo")
-            add_tool = next(t for t in toolset if t.name == "add_numbers")
+            echo_tool = next(t for t in client if t.name == "echo")
+            add_tool = next(t for t in client if t.name == "add_numbers")
 
             # Verify they share the same client
             echo_executor = echo_tool.executor
@@ -83,8 +83,8 @@ class TestSessionPersistence:
             }
         }
 
-        with create_mcp_tools(config, timeout=10.0) as toolset:
-            tool = next(t for t in toolset if t.name == "echo")
+        with create_mcp_tools(config, timeout=10.0) as client:
+            tool = next(t for t in client if t.name == "echo")
             executor = tool.executor
             assert isinstance(executor, MCPToolExecutor)
 
