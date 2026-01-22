@@ -50,7 +50,8 @@ class ToolPreloadService:
         if not _check_chromium_available():
             _logger.warning(
                 "Chromium not found in PATH - skipping browser tool preload. "
-                "Browser tools will be initialized on-demand if chromium becomes available."
+                "Browser tools will be initialized on-demand if chromium "
+                "becomes available."
             )
             return True
 
