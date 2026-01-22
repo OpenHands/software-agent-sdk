@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 import sys
 
 from openhands.agent_server.config import get_default_config
@@ -12,6 +13,14 @@ from openhands.sdk.utils.models import get_known_concrete_subclasses
 
 
 _logger = get_logger(__name__)
+
+
+def _check_chromium_available() -> bool:
+    """Quick check if any chromium/chrome binary is available in PATH."""
+    for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
+        if shutil.which(binary):
+            return True
+    return False
 
 
 class ToolPreloadService:
@@ -28,6 +37,23 @@ class ToolPreloadService:
             return True
 
         self.running = True
+
+        # Always preload action types regardless of chromium availability
+        try:
+            for action_type in get_known_concrete_subclasses(Action):
+                create_action_type_with_risk(action_type)
+        except Exception:
+            _logger.exception("Error preloading action types")
+
+        # Only attempt to preload browser tools if chromium is available
+        # This prevents noisy errors in evaluation environments without browsers
+        if not _check_chromium_available():
+            _logger.warning(
+                "Chromium not found in PATH - skipping browser tool preload. "
+                "Browser tools will be initialized on-demand if chromium becomes available."
+            )
+            return True
+
         try:
             if sys.platform == "win32":
                 from openhands.tools.browser_use.impl_windows import (
@@ -36,19 +62,17 @@ class ToolPreloadService:
             else:
                 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
-            # Creating an instance here to preload chomium
+            # Creating an instance here to preload chromium
             BrowserToolExecutor()
-
-            # Pre-creating all these classes prevents processing which costs
-            # significant time per tool on the first conversation invocation.
-            for action_type in get_known_concrete_subclasses(Action):
-                create_action_type_with_risk(action_type)
 
             _logger.debug(f"Loaded {BrowserToolExecutor}")
             return True
         except Exception:
-            _logger.exception("Error preloading chromium")
-            return False
+            _logger.warning(
+                "Failed to preload browser tools - they will be initialized on-demand",
+                exc_info=True,
+            )
+            return True  # Return True since non-browser tools were loaded
 
     async def stop(self) -> None:
         """Stop the tool preload process."""
