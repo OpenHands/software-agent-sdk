@@ -16,7 +16,8 @@ class MCPClient(AsyncMCPClient):
     but owns a background event loop and offers:
       - call_async_from_sync(awaitable_or_fn, *args, timeout=None, **kwargs)
       - call_sync_from_async(fn, *args, **kwargs)  # await this from async code
-      - connect() / disconnect() for explicit connection management
+      - connect() for explicit connection establishment
+      - sync_close() for synchronous cleanup
     """
 
     _executor: AsyncExecutor
@@ -31,16 +32,9 @@ class MCPClient(AsyncMCPClient):
         """Establish connection to the MCP server.
 
         This is an explicit alternative to using the async context manager.
-        Call disconnect() when done to clean up resources.
+        The connection is cleaned up via sync_close() when done.
         """
         await self.__aenter__()
-
-    async def disconnect(self) -> None:
-        """Disconnect from the MCP server.
-
-        Properly cleans up the connection established by connect().
-        """
-        await self.__aexit__(None, None, None)
 
     def call_async_from_sync(
         self,

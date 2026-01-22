@@ -30,6 +30,10 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 logger = get_logger(__name__)
 
 
+# NOTE: MCPToolAction is not defined here because it is a pydantic BaseModel
+# dynamically created from the MCP tool schema. It is available as "tool.action_type".
+
+
 def to_camel_case(s: str) -> str:
     parts = re.split(r"[_\-\s]+", s)
     return "".join(word.capitalize() for word in parts if word)

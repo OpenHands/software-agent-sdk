@@ -2,57 +2,10 @@
 
 import mcp.types
 
-from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.definition import MCPToolAction, MCPToolObservation
 from openhands.sdk.mcp.tool import MCPToolDefinition
 
-
-class MockMCPClient(MCPClient):
-    """Mock MCPClient for testing that bypasses the complex constructor."""
-
-    def __init__(self):
-        # Skip the parent constructor to avoid needing transport
-        # Initialize the attributes that the real client would have
-        self._session_id = None
-        self._server_url = None
-        self._connection_count = 0
-
-    def is_connected(self):
-        return True
-
-    @property
-    def session_id(self):
-        return self._session_id
-
-    @property
-    def server_url(self):
-        return self._server_url
-
-    async def call_tool_mcp(  # type: ignore[override]
-        self, name: str, arguments: dict
-    ):
-        """Mock implementation that returns a successful result."""
-        return mcp.types.CallToolResult(
-            content=[mcp.types.TextContent(type="text", text="Mock result")],
-            isError=False,
-        )
-
-    def call_async_from_sync(self, coro_func, timeout=None, **kwargs):
-        """Mock implementation for synchronous calling."""
-        import asyncio
-
-        async def wrapper():
-            async with self:
-                return await coro_func(**kwargs)
-
-        return asyncio.run(wrapper())
-
-    async def __aenter__(self):
-        self._connection_count += 1
-        return self
-
-    async def __aexit__(self, *args):
-        self._connection_count -= 1
+from .conftest import MockMCPClient
 
 
 def test_mcp_tool_to_openai_with_security_risk():

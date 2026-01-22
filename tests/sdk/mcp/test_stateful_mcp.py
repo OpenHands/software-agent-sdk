@@ -16,125 +16,74 @@ With the FIX, we call `__aenter__` once and keep the connection open.
 Related: https://github.com/OpenHands/software-agent-sdk/issues/1739
 """
 
-import logging
-import socket
-import threading
-import time
-
 import pytest
-from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
-
-def _find_free_port() -> int:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
+from .conftest import MCPTestServer
 
 
-class SessionStatefulMCPServer:
-    """MCP server with PER-SESSION state to test session persistence.
+def _create_stateful_server() -> MCPTestServer:
+    """Create an MCP server with per-session state for testing persistence."""
+    server = MCPTestServer("session-stateful-test-server")
+    sessions = server.sessions  # Use server's built-in session tracking
 
-    Unlike a simple global state server, this server stores state keyed by
-    session ID. If the client reconnects with a new session, the state is lost.
-    This mimics real-world session-based authentication systems.
-    """
+    @server.add_tool
+    def set_auth_token(token: str) -> str:
+        """Set authentication token for this session."""
+        ctx = get_context()
+        session_id = ctx.session_id if ctx else "unknown"
+        if session_id not in sessions:
+            sessions[session_id] = {}
+        sessions[session_id]["token"] = token
+        return f"Session {session_id[:8]}: Auth token set to {token}"
 
-    def __init__(self):
-        self.mcp = FastMCP("session-stateful-test-server")
-        self.port: int | None = None
-        self._thread: threading.Thread | None = None
-        self._sessions: dict[str, dict] = {}  # session_id -> state
-        self._setup_tools()
+    @server.add_tool
+    def get_auth_token() -> str:
+        """Get the current auth token (proves session persistence)."""
+        ctx = get_context()
+        session_id = ctx.session_id if ctx else "unknown"
+        token = sessions.get(session_id, {}).get("token")
+        if token is None:
+            return (
+                f"Session {session_id[:8]}: ERROR - "
+                "No auth token! Session state was lost!"
+            )
+        return f"Session {session_id[:8]}: Current auth token is {token}"
 
-    def _setup_tools(self):
-        sessions = self._sessions
+    @server.add_tool
+    def increment_counter() -> str:
+        """Increment a per-session counter."""
+        ctx = get_context()
+        session_id = ctx.session_id if ctx else "unknown"
+        if session_id not in sessions:
+            sessions[session_id] = {"counter": 0}
+        if "counter" not in sessions[session_id]:
+            sessions[session_id]["counter"] = 0
+        sessions[session_id]["counter"] += 1
+        counter = sessions[session_id]["counter"]
+        return f"Session {session_id[:8]}: Counter is now {counter}"
 
-        @self.mcp.tool()
-        def set_auth_token(token: str) -> str:
-            """Set authentication token for this session."""
-            ctx = get_context()
-            session_id = ctx.session_id if ctx else "unknown"
-            if session_id not in sessions:
-                sessions[session_id] = {}
-            sessions[session_id]["token"] = token
-            return f"Session {session_id[:8]}: Auth token set to {token}"
+    @server.add_tool
+    def get_counter() -> str:
+        """Get current counter value for this session."""
+        ctx = get_context()
+        session_id = ctx.session_id if ctx else "unknown"
+        counter = sessions.get(session_id, {}).get("counter", 0)
+        return f"Session {session_id[:8]}: Counter value is {counter}"
 
-        @self.mcp.tool()
-        def get_auth_token() -> str:
-            """Get the current auth token (proves session persistence)."""
-            ctx = get_context()
-            session_id = ctx.session_id if ctx else "unknown"
-            token = sessions.get(session_id, {}).get("token")
-            if token is None:
-                return (
-                    f"Session {session_id[:8]}: ERROR - "
-                    "No auth token! Session state was lost!"
-                )
-            return f"Session {session_id[:8]}: Current auth token is {token}"
-
-        @self.mcp.tool()
-        def increment_counter() -> str:
-            """Increment a per-session counter."""
-            ctx = get_context()
-            session_id = ctx.session_id if ctx else "unknown"
-            if session_id not in sessions:
-                sessions[session_id] = {"counter": 0}
-            if "counter" not in sessions[session_id]:
-                sessions[session_id]["counter"] = 0
-            sessions[session_id]["counter"] += 1
-            counter = sessions[session_id]["counter"]
-            return f"Session {session_id[:8]}: Counter is now {counter}"
-
-        @self.mcp.tool()
-        def get_counter() -> str:
-            """Get current counter value for this session."""
-            ctx = get_context()
-            session_id = ctx.session_id if ctx else "unknown"
-            counter = sessions.get(session_id, {}).get("counter", 0)
-            return f"Session {session_id[:8]}: Counter value is {counter}"
-
-    def start(self) -> int:
-        import asyncio
-
-        self.port = _find_free_port()
-
-        def run():
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(
-                    self.mcp.run_http_async(
-                        host="127.0.0.1",
-                        port=self.port,
-                        transport="http",
-                        show_banner=False,
-                        path="/mcp",
-                    )
-                )
-            except Exception:
-                logging.exception("Error in SessionStatefulMCPServer thread")
-
-        self._thread = threading.Thread(target=run, daemon=True)
-        self._thread.start()
-        time.sleep(0.5)
-        return self.port
-
-    def clear_sessions(self):
-        """Clear all session state for test isolation."""
-        self._sessions.clear()
+    return server
 
 
 @pytest.fixture
 def stateful_server():
     """Fixture providing a per-session stateful MCP test server."""
-    server = SessionStatefulMCPServer()
+    server = _create_stateful_server()
     port = server.start()
     yield server, port
-    # Server thread is daemon, will be cleaned up automatically
+    server.stop()
 
 
 class TestStatefulMCPSessionPersistence:

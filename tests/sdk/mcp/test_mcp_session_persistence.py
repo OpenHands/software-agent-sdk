@@ -6,78 +6,29 @@ avoiding the overhead of reconnecting for each call.
 Related issue: https://github.com/OpenHands/software-agent-sdk/issues/1739
 """
 
-import asyncio
-import socket
-import threading
-import time
-
 import pytest
-from fastmcp import FastMCP
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
-
-def _find_free_port() -> int:
-    """Find an available port."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
-        return s.getsockname()[1]
-
-
-class LiveMCPTestServer:
-    """Test MCP server that tracks session IDs."""
-
-    def __init__(self):
-        self.mcp = FastMCP("test-server")
-        self.port: int | None = None
-        self._thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._setup_tools()
-
-    def _setup_tools(self):
-        @self.mcp.tool()
-        def echo(message: str) -> str:
-            """Echo a message."""
-            return f"Echo: {message}"
-
-        @self.mcp.tool()
-        def add_numbers(a: int, b: int) -> str:
-            """Add two numbers."""
-            return str(a + b)
-
-    def start(self) -> int:
-        """Start the server, return the port."""
-        self.port = _find_free_port()
-
-        def run():
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-            self._loop.run_until_complete(
-                self.mcp.run_http_async(
-                    host="127.0.0.1",
-                    port=self.port,
-                    transport="http",
-                    show_banner=False,
-                    path="/mcp",
-                )
-            )
-
-        self._thread = threading.Thread(target=run, daemon=True)
-        self._thread.start()
-        time.sleep(0.5)  # Wait for server to start
-        return self.port
-
-    def stop(self):
-        """Stop the server."""
-        if self._loop:
-            self._loop.call_soon_threadsafe(self._loop.stop)
+from .conftest import MCPTestServer
 
 
 @pytest.fixture
 def live_server():
-    """Fixture providing a live MCP test server."""
-    server = LiveMCPTestServer()
+    """Fixture providing a live MCP test server with echo/add tools."""
+    server = MCPTestServer("session-test-server")
+
+    @server.add_tool
+    def echo(message: str) -> str:
+        """Echo a message."""
+        return f"Echo: {message}"
+
+    @server.add_tool
+    def add_numbers(a: int, b: int) -> str:
+        """Add two numbers."""
+        return str(a + b)
+
     port = server.start()
     yield port
     server.stop()

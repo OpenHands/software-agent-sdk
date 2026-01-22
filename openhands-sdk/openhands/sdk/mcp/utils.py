@@ -36,9 +36,6 @@ async def log_handler(message: LogMessage):
 async def _list_tools_and_keep_connected(client: MCPClient) -> list[ToolDefinition]:
     """List tools from MCP client and keep connection open."""
     await client.connect()
-    if not client.is_connected():
-        raise RuntimeError("MCP client failed to connect")
-
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
     tools: list[ToolDefinition] = []
     for mcp_tool in mcp_type_tools:
@@ -85,6 +82,13 @@ class MCPToolset:
     def close(self) -> None:
         """Close the MCP client connection."""
         self._client.sync_close()
+
+    def __del__(self) -> None:
+        """Cleanup on garbage collection if not explicitly closed."""
+        try:
+            self.close()
+        except Exception:
+            pass
 
     def __enter__(self) -> "MCPToolset":
         return self
@@ -158,7 +162,7 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
-    except Exception:
+    except BaseException:
         try:
             client.sync_close()
         except Exception as close_exc:
