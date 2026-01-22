@@ -751,3 +751,161 @@ def test_conversation_restore_no_update_when_tools_unchanged():
         assert len(events_b) == initial_event_count
 
         conversation_b.close()
+
+
+def test_conversation_restore_emits_update_when_tools_removed():
+    """Test restore with fewer tools (A+B → A) emits SystemPromptUpdateEvent."""
+    from openhands.sdk.event import SystemPromptUpdateEvent, SystemPromptUpdateReason
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+        conversation_id = uuid.uuid4()
+
+        # Phase A: Create conversation with two tools
+        agent_a = Agent(
+            llm=llm,
+            tools=[Tool(name="FileEditorTool"), Tool(name="TerminalTool")],
+        )
+
+        conversation_a = LocalConversation(
+            agent=agent_a,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+        conversation_a.close()
+
+        # Phase B: Restore with only one tool (removed TerminalTool)
+        agent_b = Agent(llm=llm, tools=[Tool(name="FileEditorTool")])
+
+        conversation_b = LocalConversation(
+            agent=agent_b,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Verify SystemPromptUpdateEvent was emitted
+        events_b = list(conversation_b.state.events)
+        update_events = [e for e in events_b if isinstance(e, SystemPromptUpdateEvent)]
+
+        assert len(update_events) == 1, (
+            "Expected SystemPromptUpdateEvent for tool removal"
+        )
+        assert update_events[0].reason == SystemPromptUpdateReason.TOOLS_CHANGED
+
+        # Verify the update event has only the remaining tool
+        update_tool_names = {t.name for t in update_events[0].tools}
+        assert "file_editor" in update_tool_names
+        assert "terminal" not in update_tool_names
+
+        conversation_b.close()
+
+
+def test_conversation_restore_emits_update_when_tools_swapped():
+    """Test restore with different tools (A → B) emits SystemPromptUpdateEvent."""
+    from openhands.sdk.event import SystemPromptUpdateEvent, SystemPromptUpdateReason
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+        conversation_id = uuid.uuid4()
+
+        # Phase A: Create conversation with file_editor only
+        agent_a = Agent(
+            llm=llm,
+            tools=[Tool(name="FileEditorTool")],
+        )
+
+        conversation_a = LocalConversation(
+            agent=agent_a,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+        conversation_a.close()
+
+        # Phase B: Restore with terminal only (completely different tool set)
+        agent_b = Agent(
+            llm=llm,
+            tools=[Tool(name="TerminalTool")],
+        )
+
+        conversation_b = LocalConversation(
+            agent=agent_b,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Verify SystemPromptUpdateEvent was emitted
+        events_b = list(conversation_b.state.events)
+        update_events = [e for e in events_b if isinstance(e, SystemPromptUpdateEvent)]
+
+        assert len(update_events) == 1, "Expected SystemPromptUpdateEvent for tool swap"
+        assert update_events[0].reason == SystemPromptUpdateReason.TOOLS_CHANGED
+
+        # Verify the update event has the new tool set
+        update_tool_names = {t.name for t in update_events[0].tools}
+        assert "terminal" in update_tool_names
+        assert "file_editor" not in update_tool_names
+
+        conversation_b.close()
+
+
+def test_conversation_restore_no_update_when_tools_reordered():
+    """Test restore with same tools in different order does NOT emit update.
+
+    Since tool comparison uses sets, order should not matter.
+    """
+    from openhands.sdk.event import SystemPromptUpdateEvent
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
+        conversation_id = uuid.uuid4()
+
+        # Phase A: Create conversation with tools in order [file_editor, terminal]
+        agent_a = Agent(
+            llm=llm,
+            tools=[Tool(name="FileEditorTool"), Tool(name="TerminalTool")],
+        )
+
+        conversation_a = LocalConversation(
+            agent=agent_a,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        events_a = list(conversation_a.state.events)
+        initial_event_count = len(events_a)
+        conversation_a.close()
+
+        # Phase B: Restore with same tools in different order [terminal, file_editor]
+        agent_b = Agent(
+            llm=llm,
+            tools=[Tool(name="TerminalTool"), Tool(name="FileEditorTool")],
+        )
+
+        conversation_b = LocalConversation(
+            agent=agent_b,
+            workspace=temp_dir,
+            persistence_dir=temp_dir,
+            conversation_id=conversation_id,
+            visualizer=None,
+        )
+
+        # Verify NO SystemPromptUpdateEvent was emitted
+        events_b = list(conversation_b.state.events)
+        update_events = [e for e in events_b if isinstance(e, SystemPromptUpdateEvent)]
+
+        assert len(update_events) == 0, "Tool reordering should not trigger update"
+
+        # Event count should be the same (no new events added)
+        assert len(events_b) == initial_event_count
+
+        conversation_b.close()
