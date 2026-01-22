@@ -12,7 +12,9 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.hooks import HookConfig
 from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+from openhands.sdk.plugin import PluginSource
 from openhands.sdk.secret import SecretSource
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
@@ -106,10 +108,31 @@ class StartConversationRequest(BaseModel):
             "to register the tools for this conversation."
         ),
     )
+    plugins: list[PluginSource] | None = Field(
+        default=None,
+        description=(
+            "List of plugins to load for this conversation. Plugins are loaded "
+            "and their skills/MCP config are merged into the agent. "
+            "Hooks are extracted and stored for runtime execution."
+        ),
+    )
+    hook_config: HookConfig | None = Field(
+        default=None,
+        description=(
+            "Optional hook configuration for this conversation. Hooks are shell "
+            "scripts that run at key lifecycle events (PreToolUse, PostToolUse, "
+            "UserPromptSubmit, Stop, etc.). If both hook_config and plugins are "
+            "provided, they are merged with explicit hooks running before plugin "
+            "hooks."
+        ),
+    )
 
 
 class StoredConversation(StartConversationRequest):
-    """Stored details about a conversation"""
+    """Stored details about a conversation.
+
+    Extends StartConversationRequest with server-assigned fields.
+    """
 
     id: OpenHandsUUID
     title: str | None = Field(

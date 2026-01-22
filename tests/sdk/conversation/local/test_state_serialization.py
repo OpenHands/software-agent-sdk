@@ -133,7 +133,9 @@ def test_conversation_state_persistence_save_load():
         )
         state.events.append(event1)
         state.events.append(event2)
-        state.stats.register_llm(RegistryEvent(llm=llm))
+        # Note: Do NOT register LLM stats here - this test verifies pure event
+        # persistence. LLM stats registration happens during agent initialization
+        # which is now lazy.
 
         # State auto-saves when events are added
         # Verify files were created
@@ -193,7 +195,8 @@ def test_conversation_state_incremental_save():
             source="agent", system_prompt=TextContent(text="system"), tools=[]
         )
         state.events.append(event1)
-        state.stats.register_llm(RegistryEvent(llm=llm))
+        # Note: Do NOT register LLM stats here - LLM registration happens during
+        # agent initialization which is now lazy.
 
         # Verify event files exist (may have additional events from Agent.init_state)
         event_files = list(Path(persist_path_for_state, "events").glob("*.json"))
@@ -315,7 +318,7 @@ def test_conversation_state_corrupted_event_handling():
             valid_event.model_dump_json(exclude_none=True)
         )
 
-        # Corrupted JSON - will be ignored by EventLog
+        # Corrupted JSON - will cause validation error when accessed
         (events_dir / "event-00001-abcdef02.json").write_text('{"invalid": json}')
 
         # Empty file - will be ignored by EventLog
@@ -331,14 +334,19 @@ def test_conversation_state_corrupted_event_handling():
             valid_event2.model_dump_json(exclude_none=True)
         )
 
-        # Load conversation - EventLog will fail on corrupted files
-        with pytest.raises(ValidationError):
-            Conversation(
-                agent=agent,
-                workspace=LocalWorkspace(working_dir="/tmp"),
-                persistence_dir=temp_dir,
-                conversation_id=conv_id,
-            )
+        # Load conversation - EventLog indexes files during init but doesn't
+        # validate content until events are accessed
+        conversation = Conversation(
+            agent=agent,
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            persistence_dir=temp_dir,
+            conversation_id=conv_id,
+        )
+
+        # Accessing events triggers validation - corrupted JSON will fail
+        with pytest.raises((ValidationError, json.JSONDecodeError)):
+            # Iterate through all events to trigger loading
+            list(conversation._state.events)
 
 
 def test_conversation_state_empty_filestore():
@@ -359,6 +367,10 @@ def test_conversation_state_empty_filestore():
 
         # Should create new state
         assert conversation._state.id is not None
+
+        # Agent initialization is lazy - trigger it to emit SystemPromptEvent
+        conversation._ensure_agent_ready()
+
         assert len(conversation._state.events) == 1  # System prompt event
         assert isinstance(conversation._state.events[0], SystemPromptEvent)
 
@@ -394,9 +406,7 @@ def test_conversation_state_missing_base_state():
 
         # Should create new state, not load the orphaned event file
         assert conversation._state.id is not None
-        assert (
-            len(conversation._state.events) >= 1
-        )  # At least system prompt from Agent.init_state
+        # Note: With lazy initialization, system prompt not added until first use
 
 
 def test_conversation_state_exclude_from_base_state():
@@ -593,14 +603,16 @@ def test_conversation_with_agent_different_llm_config():
             visualizer=None,
         )
 
-        # Send a message
+        # Send a message (this triggers lazy agent initialization)
         conversation.send_message(
             Message(role="user", content=[TextContent(text="test")])
         )
 
         # Store original state dump and ID before deleting
+        # Exclude stats since LLM registration happens during agent init
+        # and the second conversation will have its own stats after init
         original_state_dump = conversation._state.model_dump(
-            mode="json", exclude={"agent"}
+            mode="json", exclude={"agent", "stats"}
         )
         conversation_id = conversation._state.id
 
@@ -624,8 +636,10 @@ def test_conversation_with_agent_different_llm_config():
         assert new_conversation._state.agent.llm.api_key is not None
         assert isinstance(new_conversation._state.agent.llm.api_key, SecretStr)
         assert new_conversation._state.agent.llm.api_key.get_secret_value() == "new-key"
-        # Test that the core state structure is preserved (excluding agent differences)
-        new_dump = new_conversation._state.model_dump(mode="json", exclude={"agent"})
+        # Test that the core state structure is preserved (excluding agent and stats)
+        new_dump = new_conversation._state.model_dump(
+            mode="json", exclude={"agent", "stats"}
+        )
 
         assert new_dump == original_state_dump
 

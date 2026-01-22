@@ -15,6 +15,7 @@ from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
     ObservationEvent,
+    SystemPromptEvent,
 )
 from openhands.sdk.llm import (
     LLM,
@@ -251,6 +252,16 @@ def test_ask_agent_with_existing_events_and_tool_calls(
         workspace=str(tmp_path),
     )
 
+    # 0. SystemPromptEvent (required for proper conversation state)
+    # In a real conversation, this is always added by init_state before user messages
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],  # Tools list for test purposes
+        )
+    )
+
     # 1. Prior user message
     conv.state.events.append(
         MessageEvent(
@@ -305,8 +316,10 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     mock_completion.assert_called_once()
     messages = mock_completion.call_args.kwargs["messages"]
 
-    # Expect: system message + user + assistant(tool_call) + tool + question
-    assert len(messages) >= 5
+    # Expect: user + assistant(tool_call) + tool + question
+    # Note: With lazy initialization, system message may not be present if events
+    # were added before agent initialization
+    assert len(messages) >= 4
 
     user_msg = find_msg(messages, "user", "List the files")
     assistant_msg = next(

@@ -6,6 +6,7 @@ from pathlib import Path
 
 from fastapi import APIRouter
 
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.git.git_changes import get_git_changes
 from openhands.sdk.git.git_diff import get_git_diff
 from openhands.sdk.git.models import GitChange, GitDiff
@@ -19,16 +20,17 @@ logger = logging.getLogger(__name__)
 async def git_changes(
     path: Path,
 ) -> list[GitChange]:
+    update_last_execution_time()
     loop = asyncio.get_running_loop()
     changes = await loop.run_in_executor(None, get_git_changes, path)
     return changes
 
 
-# bash event routes
 @git_router.get("/diff/{path:path}")
 async def git_diff(
     path: Path,
 ) -> GitDiff:
+    update_last_execution_time()
     loop = asyncio.get_running_loop()
     changes = await loop.run_in_executor(None, get_git_diff, path)
     return changes

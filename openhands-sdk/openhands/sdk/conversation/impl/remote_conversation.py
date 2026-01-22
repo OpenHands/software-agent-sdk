@@ -457,6 +457,7 @@ class RemoteConversation(BaseConversation):
         self,
         agent: AgentBase,
         workspace: RemoteWorkspace,
+        plugins: list | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
@@ -476,6 +477,8 @@ class RemoteConversation(BaseConversation):
         Args:
             agent: Agent configuration (will be sent to the server)
             workspace: The working directory for agent operations and tool execution.
+            plugins: Optional list of plugins to load on the server. Each plugin
+                    is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
@@ -537,6 +540,8 @@ class RemoteConversation(BaseConversation):
                 ).model_dump(),
                 # Include tool module qualnames for dynamic registration on server
                 "tool_module_qualnames": tool_qualnames,
+                # Include plugins to load on server
+                "plugins": [p.model_dump() for p in plugins] if plugins else None,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize

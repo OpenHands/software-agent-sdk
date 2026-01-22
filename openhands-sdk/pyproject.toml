@@ -1,6 +1,6 @@
 [project]
 name = "openhands-sdk"
-version = "1.8.2"
+version = "1.9.1"
 description = "OpenHands SDK - Core functionality for building AI agents"
 
 requires-python = ">=3.12"
@@ -17,6 +17,12 @@ dependencies = [
     "websockets>=12",
     "lmnr>=0.7.24",
 ]
+
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+Homepage = "https://github.com/OpenHands/software-agent-sdk"
+Documentation = "https://docs.openhands.dev/sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [project.optional-dependencies]
 boto3 = ["boto3>=1.35.0"]
