@@ -57,7 +57,7 @@ def test_filter_unmatched_tool_calls_with_user_reject_observation() -> None:
     ]
 
     # Filter the events
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Both the ActionEvent and UserRejectObservation should be kept
     # because they form a matched pair (after the fix)
@@ -99,7 +99,7 @@ def test_filter_unmatched_tool_calls_with_agent_error_event() -> None:
     ]
 
     # Filter the events
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Both the ActionEvent and AgentErrorEvent should be kept
     # because they form a matched pair (after the fix)
@@ -164,7 +164,7 @@ def test_filter_unmatched_tool_calls_mixed_observation_types() -> None:
         message_event("End"),
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # After fix: all matched pairs should be kept
     # action_event_1 paired with observation_event

@@ -11,7 +11,6 @@ from pydantic import BaseModel, computed_field
 from openhands.sdk.event import (
     Condensation,
     CondensationRequest,
-    CondensationSummaryEvent,
     LLMConvertibleEvent,
 )
 from openhands.sdk.event.base import Event, EventID
@@ -85,32 +84,6 @@ class View(BaseModel):
 
     def __len__(self) -> int:
         return len(self.events)
-
-    @property
-    def most_recent_condensation(self) -> Condensation | None:
-        """Return the most recent condensation, or None if no condensations exist."""
-        return self.condensations[-1] if self.condensations else None
-
-    @property
-    def summary_event_index(self) -> int | None:
-        """Return the index of the summary event, or None if no summary exists."""
-        recent_condensation = self.most_recent_condensation
-        if (
-            recent_condensation is not None
-            and recent_condensation.summary is not None
-            and recent_condensation.summary_offset is not None
-        ):
-            return recent_condensation.summary_offset
-        return None
-
-    @property
-    def summary_event(self) -> CondensationSummaryEvent | None:
-        """Return the summary event, or None if no summary exists."""
-        if self.summary_event_index is not None:
-            event = self.events[self.summary_event_index]
-            if isinstance(event, CondensationSummaryEvent):
-                return event
-        return None
 
     @computed_field  # type: ignore[prop-decorator]
     @cached_property
@@ -291,46 +264,53 @@ class View(BaseModel):
 
     @staticmethod
     def _enforce_batch_atomicity(
-        events: Sequence[Event],
-        removed_event_ids: set[EventID],
-    ) -> set[EventID]:
-        """Ensure that if any ActionEvent in a batch is removed, all ActionEvents
-        in that batch are removed.
+        view_events: Sequence[LLMConvertibleEvent],
+        all_events: Sequence[Event],
+    ) -> list[LLMConvertibleEvent]:
+        """Ensure that if any ActionEvent in a batch is removed from the view,
+        all ActionEvents in that batch are removed.
 
         This prevents partial batches from being sent to the LLM, which can cause
         API errors when thinking blocks are separated from their tool calls.
 
         Args:
-            events: The original list of events
-            removed_event_ids: Set of event IDs that are being removed
+            view_events: The list of events that are being kept in the view
+            all_events: The complete original list of all events
 
         Returns:
-            Updated set of event IDs that should be removed (including all
-            ActionEvents in batches where any ActionEvent was removed)
+            Filtered list of view events with batch atomicity enforced
+            (removing all ActionEvents from batches where any ActionEvent
+            was already removed)
         """
-        action_batch = ActionBatch.from_events(events)
+        action_batch = ActionBatch.from_events(all_events)
 
         if not action_batch.batches:
-            return removed_event_ids
+            return list(view_events)
 
-        updated_removed_ids = set(removed_event_ids)
+        # Get set of event IDs currently in the view
+        view_event_ids = {event.id for event in view_events}
+
+        # Track which event IDs should be removed due to batch atomicity
+        ids_to_remove: set[EventID] = set()
 
         for llm_response_id, batch_event_ids in action_batch.batches.items():
-            # Check if any ActionEvent in this batch is being removed
-            if any(event_id in removed_event_ids for event_id in batch_event_ids):
+            # Check if any ActionEvent in this batch is missing from view
+            if any(event_id not in view_event_ids for event_id in batch_event_ids):
                 # If so, remove all ActionEvents in this batch
-                updated_removed_ids.update(batch_event_ids)
+                ids_to_remove.update(batch_event_ids)
                 logger.debug(
                     f"Enforcing batch atomicity: removing entire batch "
                     f"with llm_response_id={llm_response_id} "
                     f"({len(batch_event_ids)} events)"
                 )
 
-        return updated_removed_ids
+        # Filter out events that need to be removed
+        return [event for event in view_events if event.id not in ids_to_remove]
 
     @staticmethod
-    def filter_unmatched_tool_calls(
-        events: list[LLMConvertibleEvent],
+    def _filter_unmatched_tool_calls(
+        view_events: Sequence[LLMConvertibleEvent],
+        all_events: Sequence[Event],
     ) -> list[LLMConvertibleEvent]:
         """Filter out unmatched tool call events.
 
@@ -338,49 +318,58 @@ class View(BaseModel):
         but don't have matching pairs. Also enforces batch atomicity - if any
         ActionEvent in a batch is filtered out, all ActionEvents in that batch
         are also filtered out.
+
+        Args:
+            view_events: The list of events to filter
+            all_events: The complete original list of all events
+
+        Returns:
+            Filtered list of events with unmatched tool calls removed
         """
-        action_tool_call_ids = View._get_action_tool_call_ids(events)
-        observation_tool_call_ids = View._get_observation_tool_call_ids(events)
+        action_tool_call_ids = View._get_action_tool_call_ids(view_events)
+        observation_tool_call_ids = View._get_observation_tool_call_ids(view_events)
 
         # Build batch info for batch atomicity enforcement
-        action_batch = ActionBatch.from_events(events)
+        batch = ActionBatch.from_events(all_events)
 
-        # First pass: identify which events would NOT be kept based on matching
-        removed_event_ids: set[EventID] = set()
-        for event in events:
-            if not View._should_keep_event(
+        # First pass: filter out events that don't match based on tool call pairing
+        kept_events = [
+            event
+            for event in view_events
+            if View._should_keep_event(
                 event, action_tool_call_ids, observation_tool_call_ids
-            ):
-                removed_event_ids.add(event.id)
+            )
+        ]
 
         # Second pass: enforce batch atomicity for ActionEvents
         # If any ActionEvent in a batch is removed, all ActionEvents in that
         # batch should also be removed
-        removed_event_ids = View._enforce_batch_atomicity(events, removed_event_ids)
+        kept_events = View._enforce_batch_atomicity(kept_events, all_events)
 
         # Third pass: also remove ObservationEvents whose ActionEvents were removed
         # due to batch atomicity
-        tool_call_ids_to_remove: set[ToolCallID] = set()
-        for action_id in removed_event_ids:
-            if action_id in action_batch.action_id_to_tool_call_id:
-                tool_call_ids_to_remove.add(
-                    action_batch.action_id_to_tool_call_id[action_id]
-                )
+        # Find which action IDs are now missing after batch atomicity enforcement
+        kept_event_ids = {event.id for event in kept_events}
+        tool_call_ids_to_remove: set[ToolCallID] = {
+            tool_call_id
+            for action_id, tool_call_id in batch.action_id_to_tool_call_id.items()
+            if action_id not in kept_event_ids
+        }
 
-        # Filter out removed events
-        result = []
-        for event in events:
-            if event.id in removed_event_ids:
-                continue
-            if isinstance(event, ObservationBaseEvent):
-                if event.tool_call_id in tool_call_ids_to_remove:
-                    continue
-            result.append(event)
+        # Filter out ObservationEvents whose ActionEvents were removed
+        result = [
+            event
+            for event in kept_events
+            if not (
+                isinstance(event, ObservationBaseEvent)
+                and event.tool_call_id in tool_call_ids_to_remove
+            )
+        ]
 
         return result
 
     @staticmethod
-    def _get_action_tool_call_ids(events: list[LLMConvertibleEvent]) -> set[ToolCallID]:
+    def _get_action_tool_call_ids(events: Sequence[Event]) -> set[ToolCallID]:
         """Extract tool_call_ids from ActionEvents."""
         tool_call_ids = set()
         for event in events:
@@ -390,7 +379,7 @@ class View(BaseModel):
 
     @staticmethod
     def _get_observation_tool_call_ids(
-        events: list[LLMConvertibleEvent],
+        events: Sequence[Event],
     ) -> set[ToolCallID]:
         """Extract tool_call_ids from ObservationEvents."""
         tool_call_ids = set()
@@ -404,7 +393,7 @@ class View(BaseModel):
 
     @staticmethod
     def _should_keep_event(
-        event: LLMConvertibleEvent,
+        event: Event,
         action_tool_call_ids: set[ToolCallID],
         observation_tool_call_ids: set[ToolCallID],
     ) -> bool:
@@ -435,66 +424,63 @@ class View(BaseModel):
         return threshold
 
     @staticmethod
+    def unhandled_condensation_request_exists(
+        events: Sequence[Event],
+    ) -> bool:
+        """Check if there is an unhandled condensation request in the list of events.
+
+        An unhandled condensation request is defined as a CondensationRequest event
+        that appears after the most recent Condensation event in the list.
+        """
+        for event in reversed(events):
+            if isinstance(event, Condensation):
+                return False
+            if isinstance(event, CondensationRequest):
+                return True
+        return False
+
+    @staticmethod
     def from_events(events: Sequence[Event]) -> View:
         """Create a view from a list of events, respecting the semantics of any
         condensation events.
         """
-        forgotten_event_ids: set[EventID] = set()
+        output: list[LLMConvertibleEvent] = []
         condensations: list[Condensation] = []
+
+        # Generate the LLMConvertibleEvent objects the agent can send to the LLM by
+        # removing un-sendable events and applying condensations in order.
         for event in events:
+            # By the time we come across a Condensation event, the output list should
+            # already reflect the events seen by the agent up to that point. We can
+            # therefore apply the condensation semantics directly to the output list.
             if isinstance(event, Condensation):
                 condensations.append(event)
-                forgotten_event_ids.update(event.forgotten_event_ids)
-                # Make sure we also forget the condensation action itself
-                forgotten_event_ids.add(event.id)
-            if isinstance(event, CondensationRequest):
-                forgotten_event_ids.add(event.id)
+                output = event.apply(output)
 
-        # Enforce batch atomicity: if any event in a multi-action batch is forgotten,
-        # forget all events in that batch to prevent partial batches with thinking
+            elif isinstance(event, LLMConvertibleEvent):
+                output.append(event)
+
+            # If the event isn't related to condensation and isn't LLMConvertible, it
+            # should not be in the resulting view. Examples include certain internal
+            # events used for state tracking that the LLM does not need to see -- see,
+            # for example, ConversationStateUpdateEvent, PauseEvent, and (relevant here)
+            # CondensationRequest.
+            else:
+                logger.debug(
+                    f"Skipping non-LLMConvertibleEvent of type {type(event)} "
+                    f"in View.from_events"
+                )
+
+        # Enforce batch atomicity: if any event in a multi-action batch is removed,
+        # remove all events in that batch to prevent partial batches with thinking
         # blocks separated from their tool calls
-        forgotten_event_ids = View._enforce_batch_atomicity(events, forgotten_event_ids)
-
-        kept_events = [
-            event
-            for event in events
-            if event.id not in forgotten_event_ids
-            and isinstance(event, LLMConvertibleEvent)
-        ]
-
-        # If we have a summary, insert it at the specified offset.
-        summary: str | None = None
-        summary_offset: int | None = None
-
-        # The relevant summary is always in the last condensation event (i.e., the most
-        # recent one).
-        for event in reversed(events):
-            if isinstance(event, Condensation):
-                if event.summary is not None and event.summary_offset is not None:
-                    summary = event.summary
-                    summary_offset = event.summary_offset
-                    break
-
-        if summary is not None and summary_offset is not None:
-            logger.debug(f"Inserting summary at offset {summary_offset}")
-
-            _new_summary_event = CondensationSummaryEvent(summary=summary)
-            kept_events.insert(summary_offset, _new_summary_event)
-
-        # Check for an unhandled condensation request -- these are events closer to the
-        # end of the list than any condensation action.
-        unhandled_condensation_request = False
-
-        for event in reversed(events):
-            if isinstance(event, Condensation):
-                break
-
-            if isinstance(event, CondensationRequest):
-                unhandled_condensation_request = True
-                break
+        output = View._enforce_batch_atomicity(output, events)
+        output = View._filter_unmatched_tool_calls(output, events)
 
         return View(
-            events=View.filter_unmatched_tool_calls(kept_events),
-            unhandled_condensation_request=unhandled_condensation_request,
+            events=output,
+            unhandled_condensation_request=View.unhandled_condensation_request_exists(
+                events
+            ),
             condensations=condensations,
         )

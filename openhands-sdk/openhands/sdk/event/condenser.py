@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pydantic import Field
 from rich.text import Text
 
@@ -22,8 +24,9 @@ class Condensation(Event):
     summary_offset: int | None = Field(
         default=None,
         ge=0,
-        description="An optional offset to the start of the resulting view"
-        " indicating where the summary should be inserted.",
+        description="An optional offset to the start of the resulting view (after"
+        " forgotten events have been removed) indicating where the summary should be"
+        " inserted. If not provided, the summary will not be inserted into the view.",
     )
     llm_response_id: EventID = Field(
         description=(
@@ -44,6 +47,53 @@ class Condensation(Event):
             text.append("\n[Summary of Events Being Forgotten]\n", style="bold")
             text.append(f"{self.summary}\n")
         return text
+
+    @property
+    def summary_event(self) -> CondensationSummaryEvent:
+        """Generates a CondensationSummaryEvent.
+
+        Since summary events are not part of the main event store and are generated
+        dynamically, this property ensures the created event has a unique and consistent
+        ID based on the condensation event's ID.
+
+        Raises:
+            ValueError: If no summary is present.
+        """
+        if self.summary is None:
+            raise ValueError("No summary present to generate CondensationSummaryEvent.")
+
+        # Create a deterministic ID for the summary event.
+        # This ID will be unique amongst all auto-generated IDs (by virtue of the
+        # "-summary" suffix).
+        # These events are not intended to be stored alongside regular events, but the
+        # ID is still compatible with the file-based event store.
+        summary_id = f"{self.id}-summary"
+
+        return CondensationSummaryEvent(
+            id=summary_id,
+            summary=self.summary,
+            source=self.source,
+        )
+
+    @property
+    def has_summary_metadata(self) -> bool:
+        """Checks if both summary and summary_offset are present."""
+        return self.summary is not None and self.summary_offset is not None
+
+    def apply(self, events: list[LLMConvertibleEvent]) -> list[LLMConvertibleEvent]:
+        """Applies the condensation to a list of events.
+
+        This method removes events that are marked to be forgotten and returns a new
+        list of events. If the summary metadata is present (both summary and offset),
+        the corresponding CondensationSummaryEvent will be inserted at the specified
+        offset _after_ the forgotten events have been removed.
+        """
+        output = [event for event in events if event.id not in self.forgotten_event_ids]
+        if self.has_summary_metadata:
+            assert self.summary_offset is not None
+            summary_event = self.summary_event
+            output.insert(self.summary_offset, summary_event)
+        return output
 
 
 class CondensationRequest(Event):

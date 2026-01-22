@@ -45,6 +45,8 @@ def conversation(agent: Agent, tmp_path) -> LocalConversation:
 
 @pytest.fixture
 def terminal_executor(conversation: LocalConversation) -> TerminalExecutor:
+    # Trigger lazy initialization before accessing tools_map
+    conversation._ensure_agent_ready()
     tools_map = conversation.agent.tools_map
     terminal_tool = tools_map["terminal"]
     return cast(TerminalExecutor, terminal_tool.executor)
