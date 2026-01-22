@@ -13,6 +13,7 @@ from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
@@ -219,6 +220,37 @@ def _setup_static_files(app: FastAPI, config: Config) -> None:
 
 def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
+
+    @api.exception_handler(MCPError)
+    async def _mcp_exception_handler(
+        request: Request, exc: MCPError
+    ) -> JSONResponse:
+        """Handle MCP-related errors as 502 Bad Gateway.
+
+        MCP errors indicate failures in external MCP services (user-configured
+        servers like SSE endpoints, stdio processes, etc.). Using 502 signals
+        that the agent-server itself is healthy but an upstream dependency failed.
+        """
+        logger.warning(
+            "MCP service error on %s %s: %s",
+            request.method,
+            request.url.path,
+            str(exc),
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        content: dict[str, object] = {
+            "detail": "MCP service error",
+            "error_type": type(exc).__name__,
+            "message": str(exc),
+        }
+        if isinstance(exc, MCPTimeoutError):
+            content["timeout"] = exc.timeout
+            # Include server names from config but not full config (may have secrets)
+            if exc.config and "mcpServers" in exc.config:
+                content["mcp_servers"] = list(exc.config["mcpServers"].keys())
+        if DEBUG:
+            content["traceback"] = traceback.format_exc()
+        return JSONResponse(status_code=502, content=content)
 
     @api.exception_handler(Exception)
     async def _unhandled_exception_handler(
