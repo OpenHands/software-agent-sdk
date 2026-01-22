@@ -345,28 +345,28 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def verify(
         self,
         persisted: AgentBase,
-        events: Sequence[Any] | None = None,
+        events: Sequence[Any] | None = None,  # noqa: ARG002
     ) -> AgentBase:
         """Verify that we can resume this agent from persisted state.
 
-        This PR's goal is to *not* reconcile configuration between persisted and
-        runtime Agent instances. Instead, we verify compatibility requirements
-        and then continue with the runtime-provided Agent.
+        We do not merge configuration between persisted and runtime Agent
+        instances. Instead, we verify compatibility requirements and then
+        continue with the runtime-provided Agent.
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools:
-          - If events are provided, only tools that were actually used in history
-            must exist in runtime.
-          - If events are not provided, tool names must match exactly.
+        - Tools must match exactly (same tool names).
 
-        All other configuration (LLM, agent_context, condenser, system prompts,
-        etc.) can be freely changed between sessions.
+        Tools are part of the system prompt and cannot be changed mid-conversation.
+        To use different tools, start a new conversation or use conversation forking
+        (see https://github.com/OpenHands/OpenHands/issues/8560).
+
+        All other configuration (LLM, agent_context, condenser, etc.) can be
+        freely changed between sessions.
 
         Args:
             persisted: The agent loaded from persisted state.
-            events: Optional event sequence to scan for used tools if tool names
-                don't match.
+            events: Unused, kept for API compatibility.
 
         Returns:
             This runtime agent (self) if verification passes.
@@ -387,46 +387,22 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         if runtime_names == persisted_names:
             return self
 
-        if events is not None:
-            from openhands.sdk.event import ActionEvent
-
-            used_tools = {
-                event.tool_name
-                for event in events
-                if isinstance(event, ActionEvent) and event.tool_name
-            }
-
-            # Add builtin tool names from include_default_tools
-            # These are runtime names like 'finish', 'think'
-            for tool_class_name in self.include_default_tools:
-                tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
-                if tool_class is not None:
-                    runtime_names.add(tool_class.name)
-
-            # Only require tools that were actually used in history.
-            missing_used_tools = used_tools - runtime_names
-            if missing_used_tools:
-                raise ValueError(
-                    "Cannot resume conversation: tools that were used in history "
-                    f"are missing from runtime: {sorted(missing_used_tools)}. "
-                    f"Available tools: {sorted(runtime_names)}"
-                )
-
-            return self
-
-        # No events provided: strict tool name matching.
+        # Tools don't match - this is not allowed
         missing_in_runtime = persisted_names - runtime_names
-        missing_in_persisted = runtime_names - persisted_names
+        added_in_runtime = runtime_names - persisted_names
 
         details: list[str] = []
         if missing_in_runtime:
-            details.append(f"Missing in runtime: {sorted(missing_in_runtime)}")
-        if missing_in_persisted:
-            details.append(f"Missing in persisted: {sorted(missing_in_persisted)}")
+            details.append(f"removed: {sorted(missing_in_runtime)}")
+        if added_in_runtime:
+            details.append(f"added: {sorted(added_in_runtime)}")
 
-        suffix = f" ({'; '.join(details)})" if details else ""
         raise ValueError(
-            "Tools don't match between runtime and persisted agents." + suffix
+            f"Cannot resume conversation: tools cannot be changed mid-conversation "
+            f"({'; '.join(details)}). "
+            f"To use different tools, start a new conversation. "
+            f"Conversation forking is planned: "
+            f"https://github.com/OpenHands/OpenHands/issues/8560"
         )
 
     def model_dump_succint(self, **kwargs):
