@@ -152,3 +152,79 @@ def test_action_event_with_reasoning_content():
     # Test that reasoning content is included in the LLM message
     llm_message = action_event.to_llm_message()
     assert llm_message.reasoning_content == "Let me think about this step by step..."
+
+
+def test_deepseek_reasoning_content_always_included():
+    """Test that reasoning_content is always included for DeepSeek models.
+
+    DeepSeek's thinking mode requires reasoning_content to be present in
+    assistant messages during tool call turns, even if it's None.
+    See: https://api-docs.deepseek.com/guides/thinking_mode#tool-calls
+    """
+    from openhands.sdk.llm.message import Message, MessageToolCall, TextContent
+
+    # Create a tool call
+    tool_call = MessageToolCall(
+        id="call_123",
+        name="get_date",
+        arguments="{}",
+        origin="completion",
+    )
+
+    # Test with reasoning_content = None
+    message_with_none = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[tool_call],
+        reasoning_content=None,
+        send_reasoning_content=True,  # DeepSeek model feature
+    )
+
+    result = message_with_none.to_chat_dict()
+    # reasoning_content should be present even when None
+    assert "reasoning_content" in result
+    assert result["reasoning_content"] is None
+
+    # Test with reasoning_content = actual content
+    message_with_content = Message(
+        role="assistant",
+        content=[TextContent(text="")],
+        tool_calls=[tool_call],
+        reasoning_content="Let me think about this...",
+        send_reasoning_content=True,
+    )
+
+    result = message_with_content.to_chat_dict()
+    assert "reasoning_content" in result
+    assert result["reasoning_content"] == "Let me think about this..."
+
+
+def test_deepseek_model_features():
+    """Test that DeepSeek reasoner models have send_reasoning_content enabled."""
+    from openhands.sdk.llm.utils.model_features import get_features
+
+    # Test various DeepSeek model name formats
+    test_cases = [
+        "deepseek/deepseek-reasoner",
+        "deepseek-reasoner",
+        "litellm_proxy/deepseek/deepseek-reasoner",
+        "DeepSeek/deepseek-reasoner",  # Case insensitive
+    ]
+
+    for model in test_cases:
+        features = get_features(model)
+        assert features.send_reasoning_content is True, (
+            f"Expected send_reasoning_content=True for {model}"
+        )
+
+    # Test that non-reasoner DeepSeek models don't have this feature
+    non_reasoner_models = [
+        "deepseek/deepseek-chat",
+        "deepseek-chat",
+    ]
+
+    for model in non_reasoner_models:
+        features = get_features(model)
+        assert features.send_reasoning_content is False, (
+            f"Expected send_reasoning_content=False for {model}"
+        )

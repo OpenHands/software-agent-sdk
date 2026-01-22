@@ -291,8 +291,11 @@ def test_prompt_cache_retention_support(model, expected_retention):
         # DeepSeek reasoner model
         ("deepseek/deepseek-reasoner", True),
         ("DeepSeek/deepseek-reasoner", True),
+        ("deepseek-reasoner", True),  # Without provider prefix
+        ("litellm_proxy/deepseek/deepseek-reasoner", True),  # With litellm proxy prefix
         # Models that should NOT match
         ("deepseek/deepseek-chat", False),  # Different DeepSeek model
+        ("deepseek-chat", False),  # Different DeepSeek model without prefix
         ("kimi-k2-instruct", False),  # Different variant
         ("gpt-4o", False),
         ("claude-3-5-sonnet", False),

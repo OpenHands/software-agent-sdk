@@ -157,6 +157,7 @@ SEND_REASONING_CONTENT_MODELS: list[str] = [
     "kimi-k2-thinking",
     "openrouter/minimax-m2",  # MiniMax-M2 via OpenRouter (interleaved thinking)
     "deepseek/deepseek-reasoner",
+    "deepseek-reasoner",  # DeepSeek reasoner without provider prefix
 ]
 
 

@@ -320,7 +320,11 @@ def test_message_with_reasoning_content_default_disabled():
 
 
 def test_message_with_reasoning_content_none():
-    """Test that reasoning_content is NOT included when it's None even if enabled."""
+    """Test that reasoning_content IS included when it's None for assistant messages.
+
+    DeepSeek requires reasoning_content to be present in assistant messages
+    during tool call turns, even if it's None.
+    """
     from openhands.sdk.llm.message import Message, TextContent
 
     message = Message(
@@ -333,11 +337,13 @@ def test_message_with_reasoning_content_none():
     result = message.to_chat_dict()
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
-    assert "reasoning_content" not in result
+    # reasoning_content should be included even when None for assistant messages
+    assert "reasoning_content" in result
+    assert result["reasoning_content"] is None
 
 
 def test_message_with_reasoning_content_empty_string():
-    """Test that reasoning_content is NOT included when it's an empty string."""
+    """Test that reasoning_content IS included when it's an empty string for assistant."""
     from openhands.sdk.llm.message import Message, TextContent
 
     message = Message(
@@ -350,6 +356,25 @@ def test_message_with_reasoning_content_empty_string():
     result = message.to_chat_dict()
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
+    # reasoning_content should be included even when empty for assistant messages
+    assert "reasoning_content" in result
+    assert result["reasoning_content"] == ""
+
+
+def test_message_with_reasoning_content_non_assistant_role():
+    """Test that reasoning_content is NOT included for non-assistant roles."""
+    from openhands.sdk.llm.message import Message, TextContent
+
+    # User message should not include reasoning_content
+    message = Message(
+        role="user",
+        content=[TextContent(text="User message")],
+        reasoning_content="Some reasoning",
+        send_reasoning_content=True,
+    )
+
+    result = message.to_chat_dict()
+    assert result["role"] == "user"
     assert "reasoning_content" not in result
 
 
