@@ -1165,11 +1165,11 @@ def test_conversation_state_cipher_mismatch():
         assert api_key_value is None
 
 
-def test_agent_verify_builtin_tools_included_in_check():
-    """Test that verify() requires exact tool match including builtin tools.
+def test_agent_verify_fails_when_explicit_tools_differ():
+    """Test that verify() fails when explicit tools differ.
 
     Tools cannot be changed mid-conversation. This test verifies that
-    changing tools (even when builtin tools match) fails verification.
+    changing explicit tools fails verification.
     """
     from openhands.sdk.agent import AgentBase
     from openhands.sdk.tool import Tool
@@ -1187,7 +1187,7 @@ def test_agent_verify_builtin_tools_included_in_check():
     serialized = persisted_agent_obj.model_dump_json()
     persisted_agent = AgentBase.model_validate_json(serialized)
 
-    # Create a runtime agent with DIFFERENT tools (FileEditorTool instead of
+    # Create a runtime agent with DIFFERENT explicit tools (FileEditorTool instead of
     # TerminalTool) - this should FAIL because tools must match exactly
     runtime_agent = Agent(
         llm=llm,
@@ -1195,45 +1195,47 @@ def test_agent_verify_builtin_tools_included_in_check():
         include_default_tools=["FinishTool"],
     )
 
-    # Should fail because tools don't match (TerminalTool vs FileEditorTool)
+    # Should fail because explicit tools don't match (TerminalTool vs FileEditorTool)
     with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
         runtime_agent.verify(persisted_agent)
 
 
-def test_agent_verify_think_builtin_tool_included():
-    """Test that verify() requires exact tool match including builtin tools.
+def test_agent_verify_fails_when_builtin_tools_differ():
+    """Test that verify() fails when builtin tools differ.
 
     Tools cannot be changed mid-conversation. This test verifies that
-    changing tools fails verification even when builtin tools match.
+    changing builtin tools (include_default_tools) fails verification,
+    even when explicit tools match.
     """
     from openhands.sdk.agent import AgentBase
     from openhands.sdk.tool import Tool
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
 
+    # Persisted agent has FinishTool as builtin
     persisted_agent_obj = Agent(
         llm=llm,
         tools=[Tool(name="TerminalTool")],
-        include_default_tools=["ThinkTool"],
+        include_default_tools=["FinishTool"],
     )
 
     serialized = persisted_agent_obj.model_dump_json()
     persisted_agent = AgentBase.model_validate_json(serialized)
 
-    # Runtime agent with different tools should fail
+    # Runtime agent has ThinkTool instead of FinishTool (same explicit tools)
     runtime_agent = Agent(
         llm=llm,
-        tools=[Tool(name="FileEditorTool")],
-        include_default_tools=["ThinkTool"],
+        tools=[Tool(name="TerminalTool")],  # Same explicit tools
+        include_default_tools=["ThinkTool"],  # Different builtin!
     )
 
-    # Should fail because tools don't match
+    # Should fail because builtin tools don't match (FinishTool vs ThinkTool)
     with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
         runtime_agent.verify(persisted_agent)
 
 
-def test_agent_verify_missing_builtin_tool_fails():
-    """Test that verify fails when builtin tools don't match."""
+def test_agent_verify_fails_when_builtin_tool_removed():
+    """Test that verify fails when a builtin tool is removed."""
     from openhands.sdk.agent import AgentBase
     from openhands.sdk.tool import Tool
 
@@ -1242,20 +1244,19 @@ def test_agent_verify_missing_builtin_tool_fails():
     persisted_agent_obj = Agent(
         llm=llm,
         tools=[Tool(name="TerminalTool")],
-        include_default_tools=["FinishTool"],  # Has FinishTool
+        include_default_tools=["FinishTool", "ThinkTool"],  # Has both
     )
 
     serialized = persisted_agent_obj.model_dump_json()
     persisted_agent = AgentBase.model_validate_json(serialized)
 
-    # Runtime agent does NOT have FinishTool in include_default_tools
-    # AND has different tools - should fail
+    # Runtime agent removes ThinkTool
     runtime_agent = Agent(
         llm=llm,
-        tools=[Tool(name="FileEditorTool")],
-        include_default_tools=[],  # No FinishTool!
+        tools=[Tool(name="TerminalTool")],
+        include_default_tools=["FinishTool"],  # Missing ThinkTool!
     )
 
-    # Should fail because tools don't match
+    # Should fail because builtin tools don't match
     with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
         runtime_agent.verify(persisted_agent)

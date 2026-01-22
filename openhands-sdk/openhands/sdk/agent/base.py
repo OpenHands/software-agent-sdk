@@ -381,8 +381,21 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{self.__class__.__name__}."
             )
 
+        # Collect explicit tool names
         runtime_names = {tool.name for tool in self.tools}
         persisted_names = {tool.name for tool in persisted.tools}
+
+        # Add builtin tool names from include_default_tools
+        # These are runtime names like 'finish', 'think'
+        for tool_class_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                runtime_names.add(tool_class.name)
+
+        for tool_class_name in persisted.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                persisted_names.add(tool_class.name)
 
         if runtime_names == persisted_names:
             return self
@@ -400,7 +413,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         raise ValueError(
             f"Cannot resume conversation: tools cannot be changed mid-conversation "
             f"({'; '.join(details)}). "
-            f"To use different tools, start a new conversation. "
+            f"To use different tools, start a new conversation."
         )
 
     def model_dump_succint(self, **kwargs):
