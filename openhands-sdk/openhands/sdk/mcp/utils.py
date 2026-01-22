@@ -1,6 +1,7 @@
 """Utility functions for MCP integration."""
 
 import logging
+from collections.abc import Iterator
 
 import mcp.types
 from fastmcp.client.logging import LogMessage
@@ -32,8 +33,12 @@ async def log_handler(message: LogMessage):
     logger.log(level, msg, extra=extra)
 
 
-async def _list_mcp_tools(client: MCPClient) -> list[ToolDefinition]:
-    """List tools from a connected MCP client."""
+async def _list_tools_and_keep_connected(client: MCPClient) -> list[ToolDefinition]:
+    """List tools from MCP client and keep connection open."""
+    await client.connect()
+    if not client.is_connected():
+        raise RuntimeError("MCP client failed to connect")
+
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
     tools: list[ToolDefinition] = []
     for mcp_tool in mcp_type_tools:
@@ -42,46 +47,100 @@ async def _list_mcp_tools(client: MCPClient) -> list[ToolDefinition]:
     return tools
 
 
-async def _create_stateful_toolset(client: MCPClient) -> list[ToolDefinition]:
-    """Connect to MCP server and create tools sharing the connection.
+class MCPToolset:
+    """A collection of MCP tools with explicit lifecycle management.
 
-    Establishes a persistent connection that remains open for the lifetime
-    of the tools, allowing them to maintain session state across calls.
+    This class owns the MCP client connection and provides clear ownership
+    semantics. Use it as a context manager for automatic cleanup:
+
+        with create_mcp_tools(config) as toolset:
+            for tool in toolset.tools:
+                # use tool
+            # Connection automatically closed on exit
+
+    Or manage lifecycle manually:
+
+        toolset = create_mcp_tools(config)
+        try:
+            for tool in toolset.tools:
+                # use tool
+        finally:
+            toolset.close()
     """
-    await client.connect()
-    if not client.is_connected():
-        raise RuntimeError("MCP client failed to connect")
-    return await _list_mcp_tools(client)
+
+    def __init__(self, tools: list[MCPToolDefinition], client: MCPClient):
+        self._tools = tools
+        self._client = client
+
+    @property
+    def tools(self) -> list[MCPToolDefinition]:
+        """The list of MCP tools."""
+        return self._tools
+
+    @property
+    def client(self) -> MCPClient:
+        """The underlying MCP client (for advanced use cases)."""
+        return self._client
+
+    def close(self) -> None:
+        """Close the MCP client connection."""
+        self._client.sync_close()
+
+    def __enter__(self) -> "MCPToolset":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def __iter__(self) -> Iterator[MCPToolDefinition]:
+        """Allow iterating directly over the toolset."""
+        return iter(self._tools)
+
+    def __len__(self) -> int:
+        """Return the number of tools."""
+        return len(self._tools)
+
+    def __getitem__(self, index: int) -> MCPToolDefinition:
+        """Allow indexing into the toolset."""
+        return self._tools[index]
 
 
 def create_mcp_tools(
     config: dict | MCPConfig,
     timeout: float = 30.0,
-) -> list[MCPToolDefinition]:
-    """Create MCP tools with a persistent connection for session state.
+) -> MCPToolset:
+    """Create MCP tools from MCP configuration.
 
-    Returns tools that share a single MCP client connection, enabling stateful
-    operations across multiple tool calls (e.g., browser sessions, auth tokens).
+    Returns an MCPToolset that owns the client connection. Use it as a
+    context manager for automatic cleanup, or call close() when done:
 
-    The connection is cleaned up when:
-    - Conversation.close() is called (automatically closes all tool executors)
-    - executor.close() is called on any tool (closes the shared client)
-    - The client is garbage collected
+        # Context manager (recommended):
+        with create_mcp_tools(config) as toolset:
+            for tool in toolset.tools:
+                # use tool
+
+        # Manual cleanup:
+        toolset = create_mcp_tools(config)
+        try:
+            for tool in toolset.tools:
+                # use tool
+        finally:
+            toolset.close()
 
     Args:
         config: MCP configuration dict or MCPConfig object
         timeout: Timeout for connecting and listing tools (default 30s)
 
     Returns:
-        List of MCP tools sharing a persistent connection
+        MCPToolset containing the tools and owning the client connection
     """
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
     client = MCPClient(config, log_handler=log_handler)
 
     try:
-        tools: list[MCPToolDefinition] = client.call_async_from_sync(
-            _create_stateful_toolset, timeout=timeout, client=client
+        tools = client.call_async_from_sync(
+            _list_tools_and_keep_connected, timeout=timeout, client=client
         )
     except TimeoutError as e:
         client.sync_close()
@@ -109,4 +168,4 @@ def create_mcp_tools(
         raise
 
     logger.info(f"Created {len(tools)} MCP tools: {[t.name for t in tools]}")
-    return tools
+    return MCPToolset(tools=tools, client=client)

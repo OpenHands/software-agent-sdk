@@ -167,23 +167,18 @@ def test_create_mcp_tools_http_server(http_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        assert len(tools) == 2
-        tool_names = {t.name for t in tools}
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        assert len(toolset) == 2
+        tool_names = {t.name for t in toolset}
         assert "greet" in tool_names
         assert "add_numbers" in tool_names
 
         # Verify tool schemas are properly loaded
-        greet_tool = next(t for t in tools if t.name == "greet")
+        greet_tool = next(t for t in toolset if t.name == "greet")
         openai_schema = greet_tool.to_openai_tool()
         assert openai_schema["type"] == "function"
         assert "parameters" in openai_schema["function"]
         assert "name" in openai_schema["function"]["parameters"]["properties"]
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
 
 
 def test_create_mcp_tools_sse_server(sse_mcp_server: MCPTestServer):
@@ -197,16 +192,11 @@ def test_create_mcp_tools_sse_server(sse_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        assert len(tools) == 2
-        tool_names = {t.name for t in tools}
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        assert len(toolset) == 2
+        tool_names = {t.name for t in toolset}
         assert "echo" in tool_names
         assert "multiply" in tool_names
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
 
 
 def test_create_mcp_tools_mixed_servers(
@@ -226,19 +216,14 @@ def test_create_mcp_tools_mixed_servers(
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
+    with create_mcp_tools(config, timeout=10.0) as toolset:
         # Should have tools from both servers (prefixed with server name)
-        assert len(tools) == 4
-        tool_names = {t.name for t in tools}
+        assert len(toolset) == 4
+        tool_names = {t.name for t in toolset}
         assert "http_server_greet" in tool_names
         assert "http_server_add_numbers" in tool_names
         assert "sse_server_echo" in tool_names
         assert "sse_server_multiply" in tool_names
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
 
 
 def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer):
@@ -252,9 +237,8 @@ def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer)
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        add_tool = next(t for t in tools if t.name == "add_numbers")
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        add_tool = next(t for t in toolset if t.name == "add_numbers")
 
         openai_schema = add_tool.to_openai_tool()
         params = openai_schema["function"].get("parameters", {})
@@ -262,10 +246,6 @@ def test_create_mcp_tools_http_schema_validation(http_mcp_server: MCPTestServer)
         assert params["properties"]["b"]["type"] == "integer"
         assert "a" in params["required"]
         assert "b" in params["required"]
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
 
 
 def test_create_mcp_tools_transport_inferred_from_url(http_mcp_server: MCPTestServer):
@@ -279,13 +259,8 @@ def test_create_mcp_tools_transport_inferred_from_url(http_mcp_server: MCPTestSe
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        assert len(tools) == 2
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        assert len(toolset) == 2
 
 
 def test_create_mcp_tools_sse_inferred_from_url(sse_mcp_server: MCPTestServer):
@@ -299,13 +274,8 @@ def test_create_mcp_tools_sse_inferred_from_url(sse_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        assert len(tools) == 2
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        assert len(toolset) == 2
 
 
 def test_execute_http_tool(http_mcp_server: MCPTestServer):
@@ -319,9 +289,8 @@ def test_execute_http_tool(http_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        greet_tool = next(t for t in tools if t.name == "greet")
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        greet_tool = next(t for t in toolset if t.name == "greet")
 
         action = greet_tool.action_from_arguments({"name": "World"})
         assert greet_tool.executor is not None
@@ -329,10 +298,6 @@ def test_execute_http_tool(http_mcp_server: MCPTestServer):
 
         assert observation is not None
         assert "Hello, World!" in observation.text
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
 
 
 def test_execute_sse_tool(sse_mcp_server: MCPTestServer):
@@ -346,9 +311,8 @@ def test_execute_sse_tool(sse_mcp_server: MCPTestServer):
         }
     }
 
-    tools = create_mcp_tools(config, timeout=10.0)
-    try:
-        multiply_tool = next(t for t in tools if t.name == "multiply")
+    with create_mcp_tools(config, timeout=10.0) as toolset:
+        multiply_tool = next(t for t in toolset if t.name == "multiply")
 
         action = multiply_tool.action_from_arguments({"x": 6, "y": 7})
         assert multiply_tool.executor is not None
@@ -356,10 +320,6 @@ def test_execute_sse_tool(sse_mcp_server: MCPTestServer):
 
         assert observation is not None
         assert "42" in observation.text
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
 
 
 def test_create_mcp_tools_connection_to_nonexistent_server():
@@ -376,13 +336,8 @@ def test_create_mcp_tools_connection_to_nonexistent_server():
     # Should either return empty tools or raise connection-related errors
     # Key is it shouldn't hang
     try:
-        tools = create_mcp_tools(config, timeout=5.0)
-        try:
-            assert len(tools) == 0  # No tools from failed connection
-        finally:
-            if tools:
-                assert tools[0].executor is not None
-                tools[0].executor.close()
+        with create_mcp_tools(config, timeout=5.0) as toolset:
+            assert len(toolset) == 0  # No tools from failed connection
     except (ConnectionError, TimeoutError, MCPTimeoutError, OSError, RuntimeError):
         pass  # Expected connection errors are acceptable
 
@@ -394,14 +349,13 @@ def test_create_mcp_tools_stdio_server():
     }
 
     # Use longer timeout for CI environments where uvx may need to download packages
-    tools = create_mcp_tools(mcp_config, timeout=120.0)
-    try:
-        assert len(tools) == 1
-        assert tools[0].name == "fetch"
+    with create_mcp_tools(mcp_config, timeout=120.0) as toolset:
+        assert len(toolset) == 1
+        assert toolset[0].name == "fetch"
 
         # Get the schema from the OpenAI tool since MCPToolAction now uses dynamic
         # schema
-        openai_tool = tools[0].to_openai_tool()
+        openai_tool = toolset[0].to_openai_tool()
         assert openai_tool["type"] == "function"
         assert "parameters" in openai_tool["function"]
         input_schema = openai_tool["function"]["parameters"]
@@ -418,7 +372,7 @@ def test_create_mcp_tools_stdio_server():
         assert "security_risk" not in input_schema["required"]
         assert "security_risk" not in input_schema["properties"]
 
-        mcp_tool = tools[0].to_mcp_tool()
+        mcp_tool = toolset[0].to_mcp_tool()
         mcp_schema = mcp_tool["inputSchema"]
 
         # Check that both schemas have the same essential structure
@@ -443,11 +397,7 @@ def test_create_mcp_tools_stdio_server():
         assert "security_risk" not in input_schema["required"]
         assert "security_risk" not in input_schema["properties"]
 
-        assert tools[0].executor is not None
-    finally:
-        if tools:
-            assert tools[0].executor is not None
-            tools[0].executor.close()
+        assert toolset[0].executor is not None
 
 
 def test_create_mcp_tools_timeout_error_message():

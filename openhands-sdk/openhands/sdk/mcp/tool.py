@@ -86,15 +86,6 @@ class MCPToolExecutor(ToolExecutor):
             self.call_tool, action=action, timeout=300
         )
 
-    def close(self) -> None:
-        """Close the shared MCP client connection.
-
-        This is called by Conversation.close() to clean up resources.
-        The client's sync_close() is idempotent, so it's safe to call
-        multiple times (e.g., from multiple tools sharing the same client).
-        """
-        self.client.sync_close()
-
 
 _mcp_dynamic_action_type: dict[str, type[Schema]] = {}
 
