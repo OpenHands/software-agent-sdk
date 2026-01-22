@@ -18,6 +18,11 @@ from openhands.sdk.llm import LLM, ImageContent, Message, TextContent
         "litellm_proxy/anthropic/claude-sonnet-4-5-20250929",
         "litellm_proxy/gemini-2.5-flash",
         "litellm_proxy/gemini-3-pro-preview",
+        # OpenAI proxy format (common in evaluations)
+        "litellm_proxy/openai/gpt-4o",
+        "litellm_proxy/openai/gpt-4o-mini",
+        # Gemini with provider prefix via proxy
+        "litellm_proxy/gemini/gemini-2.5-flash",
     ],
 )
 def test_vision_is_active_supported_models(model):

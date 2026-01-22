@@ -924,17 +924,33 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # but model_info will have the correct value for some reason.
         # we can go with it, but we will need to keep an eye if model_info is correct for Vertex or other providers  # noqa: E501
         # remove when litellm is updated to fix https://github.com/BerriAI/litellm/issues/5608  # noqa: E501
-        # Check both the full model name and the name after proxy prefix for vision support  # noqa: E501
+        # Check multiple formats for vision support to handle proxy prefixes like 'litellm_proxy/provider/model'  # noqa: E501
         model_for_caps = self._model_name_for_capabilities()
-        return (
-            supports_vision(model_for_caps)
-            or supports_vision(model_for_caps.split("/")[-1])
-            or (
-                self._model_info is not None
-                and self._model_info.get("supports_vision", False)
-            )
-            or False  # fallback to False if model_info is None
-        )
+        model_parts = model_for_caps.split("/")
+
+        # Try different model name formats:
+        # 1. Full model name (e.g., litellm_proxy/anthropic/claude-opus-4-5-20251101)
+        # 2. Provider/model format (e.g., anthropic/claude-opus-4-5-20251101)
+        # 3. Just the model name (e.g., claude-opus-4-5-20251101)
+        model_variants = [model_for_caps]
+        if len(model_parts) > 2:
+            # Add provider/model format (stripping proxy prefix)
+            model_variants.append("/".join(model_parts[1:]))
+        if len(model_parts) > 1:
+            # Add just the model name
+            model_variants.append(model_parts[-1])
+
+        for variant in model_variants:
+            if supports_vision(variant):
+                return True
+
+        # Fallback to model_info if available
+        if self._model_info is not None and self._model_info.get(
+            "supports_vision", False
+        ):
+            return True
+
+        return False
 
     def is_caching_prompt_active(self) -> bool:
         """Check if prompt caching is supported and enabled for current model.
