@@ -124,3 +124,71 @@ def test_websocket_client_callback_invocation(mock_event):
 
     assert len(callback_events) == 1
     assert callback_events[0].id == mock_event.id
+
+
+def test_websocket_client_wait_for_connection_returns_true_when_connected():
+    """Test wait_for_connection returns True when connection is established."""
+
+    def noop_callback(event):
+        pass
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=noop_callback,
+    )
+
+    # Simulate connection being established
+    client._connected.set()
+
+    # Should return immediately with True
+    start = time.time()
+    result = client.wait_for_connection(timeout=5.0)
+    elapsed = time.time() - start
+
+    assert result is True
+    assert elapsed < 0.1  # Should be nearly instant
+
+
+def test_websocket_client_wait_for_connection_times_out():
+    """Test wait_for_connection returns False on timeout."""
+
+    def noop_callback(event):
+        pass
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=noop_callback,
+    )
+
+    # Don't set _connected, so wait should timeout
+    start = time.time()
+    result = client.wait_for_connection(timeout=0.1)
+    elapsed = time.time() - start
+
+    assert result is False
+    assert 0.1 <= elapsed < 0.3  # Should wait approximately the timeout duration
+
+
+def test_websocket_client_connected_event_cleared_on_start():
+    """Test that _connected event is cleared when starting."""
+
+    def noop_callback(event):
+        pass
+
+    client = WebSocketCallbackClient(
+        host="http://localhost:8000",
+        conversation_id="test-conv-id",
+        callback=noop_callback,
+    )
+
+    # Pre-set the connected event
+    client._connected.set()
+    assert client._connected.is_set()
+
+    # Start should clear it
+    with patch.object(client, "_run"):
+        client.start()
+
+    assert not client._connected.is_set()

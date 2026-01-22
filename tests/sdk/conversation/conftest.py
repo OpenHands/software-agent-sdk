@@ -1,6 +1,24 @@
 """Shared test fixtures for conversation tests."""
 
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def mock_websocket_client():
+    """Auto-mock WebSocketCallbackClient for all conversation tests.
+
+    This prevents tests from blocking on WebSocket connection attempts
+    when testing RemoteConversation functionality.
+    """
+    with patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    ) as mock_ws_class:
+        mock_ws_instance = Mock()
+        mock_ws_instance.wait_for_connection.return_value = True
+        mock_ws_class.return_value = mock_ws_instance
+        yield mock_ws_class
 
 
 def create_mock_http_client(conversation_id: str | None = None):

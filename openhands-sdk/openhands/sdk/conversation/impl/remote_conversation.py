@@ -94,6 +94,7 @@ class WebSocketCallbackClient:
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
+    _connected: threading.Event
 
     def __init__(
         self,
@@ -108,13 +109,26 @@ class WebSocketCallbackClient:
         self.api_key = api_key
         self._thread = None
         self._stop = threading.Event()
+        self._connected = threading.Event()
 
     def start(self) -> None:
         if self._thread:
             return
         self._stop.clear()
+        self._connected.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
+
+    def wait_for_connection(self, timeout: float = 30.0) -> bool:
+        """Wait for the WebSocket to establish a connection.
+
+        Args:
+            timeout: Maximum time to wait in seconds.
+
+        Returns:
+            True if connected, False if timeout occurred.
+        """
+        return self._connected.wait(timeout=timeout)
 
     def stop(self) -> None:
         if not self._thread:
@@ -148,6 +162,8 @@ class WebSocketCallbackClient:
             try:
                 async with websockets.connect(ws_url) as ws:
                     delay = 1.0
+                    # Signal that we're connected
+                    self._connected.set()
                     async for message in ws:
                         if self._stop.is_set():
                             break
@@ -159,8 +175,10 @@ class WebSocketCallbackClient:
                                 "ws_event_processing_error", stack_info=True
                             )
             except websockets.exceptions.ConnectionClosed:
+                self._connected.clear()
                 break
             except Exception:
+                self._connected.clear()
                 logger.debug("ws_connect_retry", exc_info=True)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 30.0)
@@ -179,14 +197,17 @@ class RemoteEventsList(EventsListBase):
     _cached_event_ids: set[str]
     _lock: threading.RLock
 
-    def __init__(self, client: httpx.Client, conversation_id: str):
+    def __init__(
+        self, client: httpx.Client, conversation_id: str, auto_sync: bool = True
+    ):
         self._client = client
         self._conversation_id = conversation_id
         self._cached_events: list[Event] = []
         self._cached_event_ids: set[str] = set()
         self._lock = threading.RLock()
-        # Initial fetch to sync existing events
-        self._do_full_sync()
+        # Initial fetch to sync existing events (can be deferred if auto_sync=False)
+        if auto_sync:
+            self._do_full_sync()
 
     def _do_full_sync(self) -> None:
         """Perform a full sync with the remote API."""
@@ -266,10 +287,12 @@ class RemoteState(ConversationStateProtocol):
     _cached_state: dict | None
     _lock: threading.RLock
 
-    def __init__(self, client: httpx.Client, conversation_id: str):
+    def __init__(
+        self, client: httpx.Client, conversation_id: str, auto_sync: bool = True
+    ):
         self._client = client
         self._conversation_id = conversation_id
-        self._events = RemoteEventsList(client, conversation_id)
+        self._events = RemoteEventsList(client, conversation_id, auto_sync=auto_sync)
 
         # Cache for state information to avoid REST calls
         self._cached_state = None
@@ -535,8 +558,8 @@ class RemoteConversation(BaseConversation):
             # Validate it exists
             _send_request(self._client, "GET", f"/api/conversations/{self._id}")
 
-        # Initialize the remote state
-        self._state = RemoteState(self._client, str(self._id))
+        # Initialize the remote state (defer sync until WebSocket is connected)
+        self._state = RemoteState(self._client, str(self._id), auto_sync=False)
 
         # Add default callback to maintain local event state
         default_callback = self._state.events.create_default_callback()
@@ -582,6 +605,19 @@ class RemoteConversation(BaseConversation):
             api_key=self.workspace.api_key,
         )
         self._ws_client.start()
+
+        # Wait for WebSocket connection before syncing events to avoid race condition
+        # where events created between REST sync and WebSocket connection are missed.
+        # Use a short timeout since WebSocket handshake should be fast; if it fails,
+        # we gracefully degrade to REST-only sync (events may be missed during init).
+        if not self._ws_client.wait_for_connection(timeout=5.0):
+            logger.warning(
+                "WebSocket connection timeout - proceeding with REST sync only. "
+                "Some events may be missed if created during initialization."
+            )
+
+        # Now perform the full sync - any new events will be received via WebSocket
+        self._state.events._do_full_sync()
 
         # Initialize secrets if provided
         if secrets:
