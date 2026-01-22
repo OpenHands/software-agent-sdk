@@ -158,3 +158,75 @@ def test_responses_serializes_images_when_vision_supported(model):
     assert instructions is None or isinstance(instructions, str)
 
     assert any(_has_input_image(item) for item in input_items)
+
+
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": False},
+)
+@patch("openhands.sdk.llm.llm.supports_vision", return_value=False)
+def test_disable_vision_false_forces_vision_on(mock_sv, _mock_model_info):
+    """Test that setting disable_vision=False forces vision on even when model detection fails."""
+    # Create LLM with disable_vision explicitly set to False
+    llm = LLM(
+        model="text-only-model",
+        api_key=SecretStr("k"),
+        usage_id="t",
+        disable_vision=False,  # Force vision on
+    )
+    # Vision should be active despite model not supporting it
+    assert llm.vision_is_active() is True
+
+    # Images should be serialized in chat format
+    msg = Message(
+        role="user",
+        content=[
+            TextContent(text="see image"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+    formatted = llm.format_messages_for_llm([msg])
+    parts = _collect_image_url_parts(formatted[0])
+    assert len(parts) >= 1, "Images should be serialized when disable_vision=False"
+
+
+@patch(
+    "openhands.sdk.llm.llm.get_litellm_model_info",
+    return_value={"supports_vision": True},
+)
+@patch("openhands.sdk.llm.llm.supports_vision", return_value=True)
+def test_disable_vision_true_forces_vision_off(mock_sv, _mock_model_info):
+    """Test that setting disable_vision=True forces vision off even when model supports it."""
+    # Create LLM with disable_vision explicitly set to True
+    llm = LLM(
+        model="claude-sonnet-4-5-20250929",
+        api_key=SecretStr("k"),
+        usage_id="t",
+        disable_vision=True,  # Force vision off
+    )
+    # Vision should be inactive despite model supporting it
+    assert llm.vision_is_active() is False
+
+    # Images should NOT be serialized in chat format
+    msg = Message(
+        role="user",
+        content=[
+            TextContent(text="see image"),
+            ImageContent(image_urls=["https://example.com/image.png"]),
+        ],
+    )
+    formatted = llm.format_messages_for_llm([msg])
+    parts = _collect_image_url_parts(formatted[0])
+    assert len(parts) == 0, "Images should not be serialized when disable_vision=True"
+
+
+def test_disable_vision_none_uses_auto_detection():
+    """Test that disable_vision=None (default) uses automatic model detection."""
+    # For a known vision-capable model, vision should be active
+    llm_vision = LLM(
+        model="claude-sonnet-4-5-20250929",
+        api_key=SecretStr("k"),
+        usage_id="t",
+        # disable_vision defaults to None
+    )
+    assert llm_vision.vision_is_active() is True

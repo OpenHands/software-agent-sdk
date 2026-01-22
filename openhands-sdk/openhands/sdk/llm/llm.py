@@ -911,7 +911,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            return not self.disable_vision and self._supports_vision()
+            # If explicitly disabled, return False
+            if self.disable_vision is True:
+                return False
+            # If explicitly enabled (False), force vision on regardless of model detection
+            if self.disable_vision is False:
+                return True
+            # Otherwise (None), auto-detect based on model capabilities
+            return self._supports_vision()
 
     def _supports_vision(self) -> bool:
         """Acquire from litellm if model is vision capable.
