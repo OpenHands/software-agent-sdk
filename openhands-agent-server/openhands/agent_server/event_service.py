@@ -311,7 +311,21 @@ class EventService:
             with self._conversation.state as state:
                 run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
-            loop.run_in_executor(None, self._conversation.run)
+            conversation = self._conversation
+
+            async def _run_with_error_handling():
+                try:
+                    await loop.run_in_executor(None, conversation.run)
+                except Exception:
+                    logger.exception("Error during conversation run from send_message")
+
+            # Fire-and-forget: This task is intentionally not tracked because
+            # send_message() is designed to return immediately after queuing the
+            # message. The conversation run happens in the background and any
+            # errors are logged. Unlike the run() method which is explicitly
+            # awaited, this pattern allows clients to send messages without
+            # blocking on the full conversation execution.
+            loop.create_task(_run_with_error_handling())
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
@@ -319,20 +333,23 @@ class EventService:
         # Send current state to the new subscriber immediately
         if self._conversation:
             state = self._conversation._state
+            # Create state snapshot while holding the lock to ensure consistency.
+            # ConversationStateUpdateEvent inherits from Event which has frozen=True
+            # in its model_config, making the snapshot immutable after creation.
             with state:
-                # Create state update event with current state information
                 state_update_event = (
                     ConversationStateUpdateEvent.from_conversation_state(state)
                 )
 
-                # Send state update directly to the new subscriber
-                try:
-                    await subscriber(state_update_event)
-                except Exception as e:
-                    logger.error(
-                        f"Error sending initial state to subscriber "
-                        f"{subscriber_id}: {e}"
-                    )
+            # Send state update outside the lock - the event is frozen (immutable),
+            # so we don't need to hold the lock during the async send operation.
+            # This prevents potential deadlocks between the sync FIFOLock and async I/O.
+            try:
+                await subscriber(state_update_event)
+            except Exception as e:
+                logger.error(
+                    f"Error sending initial state to subscriber {subscriber_id}: {e}"
+                )
 
         return subscriber_id
 
@@ -497,8 +514,8 @@ class EventService:
             async def _run_and_publish():
                 try:
                     await loop.run_in_executor(None, conversation.run)
-                except Exception as e:
-                    logger.error(f"Error during conversation run: {e}")
+                except Exception:
+                    logger.exception("Error during conversation run")
                 finally:
                     # Clear task reference and publish state update
                     self._run_task = None
@@ -630,11 +647,18 @@ class EventService:
             return
 
         state = self._conversation._state
+        # Create state snapshot while holding the lock to ensure consistency.
+        # ConversationStateUpdateEvent inherits from Event which has frozen=True
+        # in its model_config, making the snapshot immutable after creation.
         with state:
             state_update_event = ConversationStateUpdateEvent.from_conversation_state(
                 state
             )
-            await self._pub_sub(state_update_event)
+        # Publish outside the lock - the event is frozen (immutable).
+        # Note: _pub_sub iterates through subscribers sequentially. If any subscriber
+        # is slow, it will delay subsequent subscribers. For high-throughput scenarios,
+        # consider using asyncio.gather() for concurrent notification in the future.
+        await self._pub_sub(state_update_event)
 
     async def __aenter__(self):
         await self.start()

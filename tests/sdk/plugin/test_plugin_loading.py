@@ -157,7 +157,8 @@ This is a test skill content.
         plugin = Plugin.load(plugin_dir)
 
         assert plugin.hooks is not None
-        assert len(plugin.hooks.hooks.get("PreToolUse", [])) == 1
+        assert not plugin.hooks.is_empty()
+        assert len(plugin.hooks.pre_tool_use) == 1
 
     def test_load_plugin_with_agents(self, tmp_path: Path):
         """Test loading a plugin with agent definitions."""

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -16,6 +18,7 @@ from pydantic import (
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -36,7 +39,6 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
-
 
 logger = get_logger(__name__)
 
@@ -174,6 +176,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
+    critic: CriticBase | None = Field(
+        default=None,
+        description=(
+            "EXPERIMENTAL: Optional critic to evaluate agent actions and messages "
+            "in real-time. API and behavior may change without notice. "
+            "May impact performance, especially in 'all_actions' mode."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -226,8 +238,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def init_state(
         self,
-        state: "ConversationState",
-        on_event: "ConversationCallbackType",  # noqa: ARG002
+        state: ConversationState,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -238,7 +250,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: "ConversationState"):
+    def _initialize(self, state: ConversationState):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._initialized:
@@ -310,9 +322,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @abstractmethod
     def step(
         self,
-        conversation: "LocalConversation",
-        on_event: "ConversationCallbackType",
-        on_token: "ConversationTokenCallbackType | None" = None,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -332,9 +344,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def verify(
         self,
-        persisted: "AgentBase",
-        events: "Sequence[Any] | None" = None,
-    ) -> "AgentBase":
+        persisted: AgentBase,
+        events: Sequence[Any] | None = None,
+    ) -> AgentBase:
         """Verify that we can resume this agent from persisted state.
 
         This PR's goal is to *not* reconcile configuration between persisted and
