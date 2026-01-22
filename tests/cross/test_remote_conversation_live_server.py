@@ -187,10 +187,6 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
 
 
-@pytest.mark.skip(
-    reason="Flaky due to WebSocket race condition - see issue #1785: "
-    "https://github.com/OpenHands/software-agent-sdk/issues/1785"
-)
 def test_remote_conversation_over_real_server(server_env, patched_llm):
     import shutil
     from pathlib import Path
@@ -563,8 +559,9 @@ def test_conversation_stats_with_live_server(
 
 
 @pytest.mark.skip(
-    reason="Flaky due to WebSocket race condition - see issue #1785: "
-    "https://github.com/OpenHands/software-agent-sdk/issues/1785"
+    reason="Flaky due to WebSocket disconnect timing - ActionEvent may be emitted "
+    "after client starts closing, causing delivery failure. This is a separate issue "
+    "from #1785 (subscription race). Test should use REST API for event verification."
 )
 def test_security_risk_field_with_live_server(
     server_env, monkeypatch: pytest.MonkeyPatch
