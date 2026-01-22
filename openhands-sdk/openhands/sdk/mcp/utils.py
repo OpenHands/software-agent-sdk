@@ -79,7 +79,12 @@ def create_mcp_tools(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
     except BaseException:
-        client.sync_close()
+        try:
+            client.sync_close()
+        except Exception as close_exc:
+            logger.warning(
+                "Failed to close MCP client during error cleanup", exc_info=close_exc
+            )
         raise
 
     logger.info(f"Created {len(client.tools)} MCP tools: {[t.name for t in client]}")

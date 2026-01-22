@@ -15,14 +15,20 @@ if TYPE_CHECKING:
 
 
 class MCPClient(AsyncMCPClient):
-    """
-    Behaves exactly like fastmcp.Client (same constructor & async API),
-    but owns a background event loop and offers:
+    """MCP client with sync helpers and lifecycle management.
+
+    Extends fastmcp.Client with:
       - call_async_from_sync(awaitable_or_fn, *args, timeout=None, **kwargs)
       - call_sync_from_async(fn, *args, **kwargs)  # await this from async code
 
-    After create_mcp_tools() populates it, this client has a `tools` property
-    and can be used as a sync context manager for lifecycle management.
+    After create_mcp_tools() populates it, use as a sync context manager:
+
+        with create_mcp_tools(config) as client:
+            for tool in client.tools:
+                # use tool
+        # Connection automatically closed
+
+    Or manage lifecycle manually by calling sync_close() when done.
     """
 
     _executor: AsyncExecutor
@@ -37,8 +43,8 @@ class MCPClient(AsyncMCPClient):
 
     @property
     def tools(self) -> "list[MCPToolDefinition]":
-        """The MCP tools using this client connection."""
-        return self._tools
+        """The MCP tools using this client connection (returns a copy)."""
+        return list(self._tools)
 
     async def connect(self) -> None:
         """Establish connection to the MCP server."""
