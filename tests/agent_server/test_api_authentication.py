@@ -236,6 +236,22 @@ def test_api_websocket_authentication():
     ):
         pass
 
+    # Query param should take precedence over headers (browser-compatible escape hatch).
+    with client.websocket_connect(
+        "/sockets/bash-events?session_api_key=test-key",
+        headers={"X-Session-API-Key": "wrong-key"},
+    ):
+        pass
+
+    # If query param is present and wrong, connection should fail even if the
+    # header is correct.
+    with pytest.raises(Exception):
+        with client.websocket_connect(
+            "/sockets/bash-events?session_api_key=wrong-key",
+            headers={"X-Session-API-Key": "test-key"},
+        ):
+            assert False, "WebSocket connection should have failed with wrong query key"
+
     # Wrong header -> should fail
     with pytest.raises(Exception):
         with client.websocket_connect(
