@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import Depends, HTTPException, Query, Request, WebSocket, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import APIKeyHeader
 
 from openhands.agent_server.config import Config
@@ -24,34 +24,6 @@ def create_session_api_key_dependency(config: Config):
             raise HTTPException(status.HTTP_401_UNAUTHORIZED)
 
     return check_session_api_key
-
-
-def create_websocket_session_api_key_dependency(config: Config):
-    """Create a WebSocket session API key dependency with the given config.
-
-    WebSocket connections cannot send custom headers directly from browsers,
-    so we support query parameters. For non-browser clients we also accept
-    `X-Session-API-Key` and `Authorization: Bearer ...` headers.
-    """
-
-    def check_websocket_session_api_key(
-        websocket: WebSocket,
-        session_api_key: str | None = Query(None, alias="session_api_key"),
-    ):
-        """Check the session API key from query parameter for WebSocket connections."""
-        candidate = session_api_key
-        if not candidate:
-            candidate = websocket.headers.get("x-session-api-key")
-        if not candidate:
-            auth = websocket.headers.get("authorization") or ""
-            prefix = "bearer "
-            if auth.lower().startswith(prefix):
-                candidate = auth[len(prefix) :].strip() or None
-
-        if config.session_api_keys and candidate not in config.session_api_keys:
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED)
-
-    return check_websocket_session_api_key
 
 
 def get_conversation_service(request: Request):

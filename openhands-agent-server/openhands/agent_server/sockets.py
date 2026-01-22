@@ -57,6 +57,20 @@ def _resolve_websocket_session_api_key(
     return None
 
 
+async def _accept_authenticated_websocket(
+    websocket: WebSocket,
+    session_api_key: str | None,
+) -> bool:
+    """Authenticate and accept the socket, or close with an auth error."""
+    config = get_default_config()
+    resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
+    if config.session_api_keys and resolved_key not in config.session_api_keys:
+        await websocket.close(code=4001, reason="Authentication failed")
+        return False
+    await websocket.accept()
+    return True
+
+
 @sockets_router.websocket("/events/{conversation_id}")
 async def events_socket(
     conversation_id: UUID,
@@ -65,15 +79,9 @@ async def events_socket(
     resend_all: Annotated[bool, Query()] = False,
 ):
     """WebSocket endpoint for conversation events."""
-    # Perform authentication check before accepting the WebSocket connection
-    config = get_default_config()
-    resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
-    if config.session_api_keys and resolved_key not in config.session_api_keys:
-        # Close the WebSocket connection with an authentication error code
-        await websocket.close(code=4001, reason="Authentication failed")
+    if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
-    await websocket.accept()
     logger.info(f"Event Websocket Connected: {conversation_id}")
     event_service = await conversation_service.get_event_service(conversation_id)
     if event_service is None:
@@ -120,15 +128,9 @@ async def bash_events_socket(
     resend_all: Annotated[bool, Query()] = False,
 ):
     """WebSocket endpoint for bash events."""
-    # Perform authentication check before accepting the WebSocket connection
-    config = get_default_config()
-    resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
-    if config.session_api_keys and resolved_key not in config.session_api_keys:
-        # Close the WebSocket connection with an authentication error code
-        await websocket.close(code=4001, reason="Authentication failed")
+    if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
-    await websocket.accept()
     logger.info("Bash Websocket Connected")
     subscriber_id = await bash_event_service.subscribe_to_events(
         _BashWebSocketSubscriber(websocket)
