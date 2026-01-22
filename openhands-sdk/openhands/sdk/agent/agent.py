@@ -139,7 +139,6 @@ class Agent(AgentBase):
         SystemPromptUpdateEvent to record the change in the event log, ensuring
         the LLM sees the updated configuration.
         """
-        """
         # Find the latest system prompt event (original or update)
         latest_system_event: SystemPromptEvent | SystemPromptUpdateEvent | None = None
         for event in reversed(events):
