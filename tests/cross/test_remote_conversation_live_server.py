@@ -558,6 +558,188 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+@pytest.mark.flaky_race_condition
+def test_events_lost_during_client_disconnection(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Test that demonstrates events can be lost during client disconnection.
+
+    This test reproduces the bug described in PR #1791 review where events
+    emitted during client disconnection can be lost. The sequence is:
+
+    1. Test runs conversation with a mocked `finish` tool call
+    2. Server emits `ActionEvent` + `ObservationEvent`
+    3. `conv.run()` returns when status becomes "finished"
+    4. Client starts closing WebSocket
+    5. Server tries to send `ActionEvent` but WebSocket is already closing
+    6. Error: RuntimeError: Unexpected ASGI message 'websocket.send',
+       after sending 'websocket.close'
+
+    The bug is a race condition that may not always reproduce. This test
+    verifies that events delivered via WebSocket match events persisted
+    on the server (fetched via REST API). If they don't match, the bug
+    is demonstrated.
+
+    NOTE: This test is marked as flaky_race_condition because the bug depends
+    on timing. It may pass in some environments but fail in others (e.g., CI
+    vs local). When it fails, it demonstrates the bug. When it passes, the
+    race condition didn't occur in that particular run.
+
+    This is a separate issue from #1785 (subscription race at startup).
+    See PR #1791 review for details: https://github.com/OpenHands/software-agent-sdk/pull/1791#pullrequestreview-3694259068
+    """
+    import httpx
+
+    def fake_completion_with_finish_tool(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        # Return a finish tool call to end the conversation
+        litellm_msg = LiteLLMMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_finish",
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "arguments": '{"message": "Task complete"}',
+                        },
+                    }
+                ],
+            }
+        )
+
+        raw_response = ModelResponse(
+            id="test-resp-finish",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(
+        LLM, "completion", fake_completion_with_finish_tool, raising=True
+    )
+
+    # Create an Agent with empty tools list (finish is a built-in tool)
+    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    # Send message and run - this will trigger the finish tool
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # At this point, conv.run() has returned because status became "finished".
+    # The WebSocket client may have started closing, but the server may still
+    # be trying to send events.
+
+    # Get events received via WebSocket (cached in RemoteEventsList)
+    ws_events = list(conv.state.events)
+
+    # Fetch events directly from REST API to get the authoritative list
+    # This bypasses the WebSocket and shows what's actually persisted on server
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get(
+            f"/api/conversations/{conv._id}/events/search",
+            params={"limit": 100},
+        )
+        response.raise_for_status()
+        rest_data = response.json()
+        rest_events = [Event.model_validate(item) for item in rest_data["items"]]
+
+    # Count ActionEvents in each source
+    ws_action_events = [
+        e for e in ws_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
+    rest_action_events = [
+        e for e in rest_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
+
+    ws_observation_events = [
+        e
+        for e in ws_events
+        if isinstance(e, ObservationEvent) and e.tool_name == "finish"
+    ]
+    rest_observation_events = [
+        e
+        for e in rest_events
+        if isinstance(e, ObservationEvent) and e.tool_name == "finish"
+    ]
+
+    # Log what we found for debugging
+    ws_event_summary = [
+        f"{type(e).__name__}({getattr(e, 'tool_name', 'N/A')})" for e in ws_events
+    ]
+    rest_event_summary = [
+        f"{type(e).__name__}({getattr(e, 'tool_name', 'N/A')})" for e in rest_events
+    ]
+
+    conv.close()
+
+    # The bug: Events may be lost during client disconnection
+    # REST API should always have the events (they're persisted)
+    # WebSocket may miss events if they're emitted during disconnect
+
+    # First, verify REST API has the expected events (sanity check)
+    assert len(rest_action_events) >= 1, (
+        f"REST API should have ActionEvent with finish tool. "
+        f"REST events: {rest_event_summary}"
+    )
+    assert len(rest_observation_events) >= 1, (
+        f"REST API should have ObservationEvent with finish tool. "
+        f"REST events: {rest_event_summary}"
+    )
+
+    # Now check if WebSocket received all events that REST has
+    # If WebSocket has fewer events, the bug is demonstrated
+    ws_has_action = len(ws_action_events) >= 1
+    ws_has_observation = len(ws_observation_events) >= 1
+
+    # This assertion will fail if events were lost during disconnect
+    # The failure message explains the bug
+    assert ws_has_action, (
+        f"BUG REPRODUCED: ActionEvent with finish tool was lost during client "
+        f"disconnection. REST API has {len(rest_action_events)} ActionEvent(s) "
+        f"but WebSocket only received {len(ws_action_events)}. "
+        f"This demonstrates the race condition where events emitted during "
+        f"WebSocket disconnect are not delivered to the client. "
+        f"WebSocket events: {ws_event_summary}. "
+        f"REST events: {rest_event_summary}"
+    )
+
+    assert ws_has_observation, (
+        f"ObservationEvent with finish tool not found via WebSocket. "
+        f"WebSocket events: {ws_event_summary}"
+    )
+
+
 @pytest.mark.skip(
     reason="Flaky due to WebSocket disconnect timing - ActionEvent may be emitted "
     "after client starts closing, causing delivery failure. This is a separate issue "

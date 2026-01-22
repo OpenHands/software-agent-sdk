@@ -79,6 +79,9 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 asyncio_mode = "auto"
+markers = [
+    "flaky_race_condition: marks tests as flaky due to race conditions (may pass or fail depending on timing)",
+]
 
 # Pyright configuration for PEP 420 namespace packages
 # This is needed for VSCode to properly resolve imports across multiple packages in the monorepo
