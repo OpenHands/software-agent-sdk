@@ -13,7 +13,6 @@ from openhands.agent_server.config import (
     Config,
     get_default_config,
 )
-from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 from openhands.agent_server.conversation_router import conversation_router
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
@@ -36,6 +35,7 @@ from openhands.agent_server.tool_router import tool_router
 from openhands.agent_server.vscode_router import vscode_router
 from openhands.agent_server.vscode_service import get_vscode_service
 from openhands.sdk.logger import DEBUG, get_logger
+from openhands.sdk.mcp.exceptions import MCPError, MCPTimeoutError
 
 
 logger = get_logger(__name__)
@@ -222,9 +222,7 @@ def _add_exception_handlers(api: FastAPI) -> None:
     """Add exception handlers to the FastAPI application."""
 
     @api.exception_handler(MCPError)
-    async def _mcp_exception_handler(
-        request: Request, exc: MCPError
-    ) -> JSONResponse:
+    async def _mcp_exception_handler(request: Request, exc: MCPError) -> JSONResponse:
         """Handle MCP-related errors as 502 Bad Gateway.
 
         MCP errors indicate failures in external MCP services (user-configured

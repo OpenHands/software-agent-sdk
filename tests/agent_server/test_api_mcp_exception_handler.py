@@ -6,10 +6,11 @@ servers like SSE endpoints, stdio processes, etc.). Using 502 signals
 that the agent-server itself is healthy but an upstream dependency failed.
 """
 
+from unittest.mock import AsyncMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock
 
 from openhands.agent_server.api import _add_exception_handlers
 from openhands.agent_server.conversation_router import conversation_router
@@ -180,7 +181,7 @@ def test_non_mcp_error_returns_500(client, mock_conversation_service):
 
 
 def test_mcp_error_response_does_not_leak_secrets(client, mock_conversation_service):
-    """Test that MCP error response does not include full config with potential secrets."""
+    """Test that MCP error response does not leak config secrets."""
     timeout = 30.0
     mcp_config = {
         "mcpServers": {
