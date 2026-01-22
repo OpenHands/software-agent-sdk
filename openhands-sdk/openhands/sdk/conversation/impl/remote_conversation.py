@@ -95,6 +95,7 @@ class WebSocketCallbackClient:
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
+    _ready: threading.Event
 
     def __init__(
         self,
@@ -109,6 +110,7 @@ class WebSocketCallbackClient:
         self.api_key = api_key
         self._thread = None
         self._stop = threading.Event()
+        self._ready = threading.Event()
 
     def start(self) -> None:
         if self._thread:
@@ -123,6 +125,21 @@ class WebSocketCallbackClient:
         self._stop.set()
         self._thread.join(timeout=5)
         self._thread = None
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait for WebSocket subscription to complete.
+
+        The server sends a ConversationStateUpdateEvent immediately after
+        subscription completes. This method blocks until that event is received
+        or the timeout expires.
+
+        Args:
+            timeout: Maximum time to wait in seconds. None means wait forever.
+
+        Returns:
+            True if the WebSocket is ready, False if timeout expired.
+        """
+        return self._ready.wait(timeout=timeout)
 
     def _run(self) -> None:
         try:
@@ -154,6 +171,15 @@ class WebSocketCallbackClient:
                             break
                         try:
                             event = Event.model_validate(json.loads(message))
+
+                            # Set ready on first ConversationStateUpdateEvent
+                            # The server sends this immediately after subscription
+                            if (
+                                isinstance(event, ConversationStateUpdateEvent)
+                                and not self._ready.is_set()
+                            ):
+                                self._ready.set()
+
                             self.callback(event)
                         except Exception:
                             logger.exception(
@@ -614,6 +640,15 @@ class RemoteConversation(BaseConversation):
             api_key=self.workspace.api_key,
         )
         self._ws_client.start()
+
+        # Wait for WebSocket subscription to complete before allowing operations.
+        # This ensures events emitted during send_message() are not missed.
+        # The server sends a ConversationStateUpdateEvent after subscription.
+        if not self._ws_client.wait_until_ready(timeout=10.0):
+            logger.warning(
+                f"WebSocket subscription did not complete within timeout for "
+                f"conversation {self._id}. Events may be missed."
+            )
 
         # Initialize secrets if provided
         if secrets:
