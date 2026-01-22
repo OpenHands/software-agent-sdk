@@ -60,8 +60,7 @@ class MCPToolExecutor(ToolExecutor):
             )
         try:
             logger.debug(
-                f"Calling MCP tool {self.tool_name} "
-                f"with args: {action.model_dump()}"
+                f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
             )
             result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
                 name=self.tool_name, arguments=action.to_mcp_arguments()
