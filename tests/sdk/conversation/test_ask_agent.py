@@ -15,6 +15,7 @@ from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
     ObservationEvent,
+    SystemPromptEvent,
 )
 from openhands.sdk.llm import (
     LLM,
@@ -249,6 +250,16 @@ def test_ask_agent_with_existing_events_and_tool_calls(
         agent=agent,
         persistence_dir=str(tmp_path),
         workspace=str(tmp_path),
+    )
+
+    # 0. SystemPromptEvent (required for proper conversation state)
+    # In a real conversation, this is always added by init_state before user messages
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],  # Tools list for test purposes
+        )
     )
 
     # 1. Prior user message

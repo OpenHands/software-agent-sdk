@@ -106,21 +106,61 @@ class Agent(AgentBase):
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
-        # Check if SystemPromptEvent already exists to avoid duplicates
-        has_system_prompt = any(
-            isinstance(event, SystemPromptEvent) for event in state.events
+        # Defensive check: Analyze state to detect unexpected initialization scenarios
+        # These checks help diagnose issues related to lazy loading and event ordering
+        # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
+        events = list(state.events)
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in events)
+        has_user_message = any(
+            isinstance(e, MessageEvent) and e.source == "user" for e in events
         )
-        if not has_system_prompt:
-            # Prepare system message
-            event = SystemPromptEvent(
-                source="agent",
-                system_prompt=TextContent(text=self.system_message),
-                # Tools are stored as ToolDefinition objects and converted to
-                # OpenAI format with security_risk parameter during LLM completion.
-                # See make_llm_completion() in agent/utils.py for details.
-                tools=list(self.tools_map.values()),
+        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in events)
+
+        # Log state for debugging initialization order issues
+        logger.debug(
+            f"init_state called: conversation_id={state.id}, "
+            f"event_count={len(events)}, "
+            f"has_system_prompt={has_system_prompt}, "
+            f"has_user_message={has_user_message}, "
+            f"has_any_llm_event={has_any_llm_event}"
+        )
+
+        if has_system_prompt:
+            # SystemPromptEvent already exists - this is unexpected during normal flow
+            # but could happen in persistence/resume scenarios
+            logger.warning(
+                f"init_state called but SystemPromptEvent already exists. "
+                f"conversation_id={state.id}, event_count={len(events)}. "
+                f"This may indicate double initialization or a resume scenario."
             )
-            on_event(event)
+            return
+
+        # Assert: If there are user messages but no system prompt, something is wrong
+        # The system prompt should always be added before any user messages
+        if has_user_message:
+            event_types = [type(e).__name__ for e in events]
+            logger.error(
+                f"init_state: User message exists without SystemPromptEvent! "
+                f"conversation_id={state.id}, events={event_types}"
+            )
+            assert not has_user_message, (
+                f"Unexpected state: User message exists before SystemPromptEvent. "
+                f"conversation_id={state.id}, event_count={len(events)}, "
+                f"event_types={event_types}. "
+                f"This indicates an initialization order bug - init_state should be "
+                f"called before any user messages are added to the conversation."
+            )
+
+        # Prepare system message
+        event = SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text=self.system_message),
+            # Tools are stored as ToolDefinition objects and converted to
+            # OpenAI format with security_risk parameter during LLM completion.
+            # See make_llm_completion() in agent/utils.py for details.
+            tools=list(self.tools_map.values()),
+        )
+        on_event(event)
 
     def _should_evaluate_with_critic(self, action: Action | None) -> bool:
         """Determine if critic should evaluate based on action type and mode."""

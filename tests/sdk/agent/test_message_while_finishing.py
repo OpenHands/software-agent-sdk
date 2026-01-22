@@ -101,11 +101,11 @@ class SleepExecutor(ToolExecutor):
             f"{action.duration}s - '{action.message}'"
         )
 
-        # Track final step timing if this is the final sleep
+        # Log final step timing if this is the final sleep
+        # Note: final_step_start timestamp is recorded in _mock_llm_response
+        # when the flag is set, to avoid race with butterfly thread
         if "Final sleep" in action.message:
-            print(f"[+{elapsed:.3f}s] FINAL STEP STARTED")
-            if hasattr(self, "test_instance") and self.test_instance is not None:
-                self.test_instance.timestamps.append(("final_step_start", start_time))
+            print(f"[+{elapsed:.3f}s] FINAL STEP SLEEP STARTED")
 
         time.sleep(action.duration)
 
@@ -211,6 +211,8 @@ class TestMessageWhileFinishing:
 
         elif self.step_count == 2:
             # Step 2: Final step - sleep AND finish (multiple tool calls)
+            # Record timestamp BEFORE setting flag to avoid race with butterfly thread
+            self.timestamps.append(("final_step_start", time.time()))
             self.final_step_started = True
 
             response_content = "Now I'll sleep for a longer time and then finish"

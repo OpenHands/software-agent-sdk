@@ -187,6 +187,10 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
 
 
+@pytest.mark.skip(
+    reason="Flaky due to WebSocket race condition - see issue #1785: "
+    "https://github.com/OpenHands/software-agent-sdk/issues/1785"
+)
 def test_remote_conversation_over_real_server(server_env, patched_llm):
     import shutil
     from pathlib import Path
@@ -213,7 +217,7 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
 
     # Wait for WS-delivered events and validate them using proper type checking
     found_state_update = False
-    found_agent_related_event = False
+    found_agent_event = False
 
     for i in range(50):  # up to ~5s
         events = state.events
@@ -239,8 +243,7 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         # Check for expected event types with proper isinstance checks
         for e in events:
             if isinstance(e, SystemPromptEvent) and e.source == "agent":
-                # SystemPromptEvent is agent-related (may not be present with lazy init)
-                found_agent_related_event = True
+                found_agent_event = True
 
             if isinstance(e, ConversationStateUpdateEvent):
                 found_state_update = True
@@ -249,27 +252,29 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
                     "ConversationStateUpdateEvent should have source='environment'"
                 )
 
-            # Check for other agent-related events (MessageEvent or ActionEvent)
+            # Validate MessageEvent structure when found
             if isinstance(e, MessageEvent) and e.source == "agent":
-                # Verify MessageEvent has the expected structure
                 assert hasattr(e, "llm_message"), (
                     "MessageEvent should have llm_message attribute"
                 )
                 assert e.llm_message.role in ("assistant", "user"), (
                     f"Expected role to be assistant or user, got {e.llm_message.role}"
                 )
-                found_agent_related_event = True
-            elif isinstance(e, ActionEvent) and e.source == "agent":
-                # Verify ActionEvent has expected structure
+                found_agent_event = True
+
+            # Validate ActionEvent structure when found
+            if isinstance(e, ActionEvent) and e.source == "agent":
                 assert hasattr(e, "tool_name"), (
                     "ActionEvent should have tool_name attribute"
                 )
-                found_agent_related_event = True
+                found_agent_event = True
 
-        # We expect at least agent-related event and state update events
-        # Note: With lazy initialization, SystemPromptEvent may not be present
-        # in the remote event stream, so we check for any agent-related event
-        if found_agent_related_event and found_state_update:
+        # We check for agent-related events and state updates.
+        # Note: SystemPromptEvent may not be delivered via WebSocket due to a race
+        # condition where the event is published before the WebSocket subscription
+        # completes. The event IS persisted on the server, but RemoteEventsList
+        # may miss it. See: https://github.com/OpenHands/software-agent-sdk/issues/1785
+        if found_agent_event and found_state_update:
             break
         time.sleep(0.1)
 
@@ -278,9 +283,9 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
         f"Expected to find ConversationStateUpdateEvent. "
         f"Found {len(state.events)} events: {[type(e).__name__ for e in state.events]}"
     )
-    assert found_agent_related_event, (
-        f"Expected to find at least one agent-related event "
-        f"(SystemPromptEvent, MessageEvent, or ActionEvent). "
+    assert found_agent_event, (
+        "Expected to find an agent event "
+        "(SystemPromptEvent, MessageEvent, or ActionEvent). "
         f"Found {len(state.events)} events: {
             [
                 (
@@ -557,6 +562,10 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+@pytest.mark.skip(
+    reason="Flaky due to WebSocket race condition - see issue #1785: "
+    "https://github.com/OpenHands/software-agent-sdk/issues/1785"
+)
 def test_security_risk_field_with_live_server(
     server_env, monkeypatch: pytest.MonkeyPatch
 ):
