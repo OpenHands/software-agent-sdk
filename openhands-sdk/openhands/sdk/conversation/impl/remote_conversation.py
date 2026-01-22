@@ -130,16 +130,24 @@ class WebSocketCallbackClient:
         """Wait for WebSocket subscription to complete.
 
         The server sends a ConversationStateUpdateEvent immediately after
-        subscription completes. This method blocks until that event is received
-        or the timeout expires.
+        subscription completes. This method blocks until that event is received,
+        the client is stopped, or the timeout expires.
 
         Args:
             timeout: Maximum time to wait in seconds. None means wait forever.
 
         Returns:
-            True if the WebSocket is ready, False if timeout expired.
+            True if the WebSocket is ready, False if stopped or timeout expired.
         """
-        return self._ready.wait(timeout=timeout)
+        start_time = time.time()
+        while True:
+            if self._ready.is_set():
+                return True
+            if self._stop.is_set():
+                return False
+            if timeout is not None and (time.time() - start_time) >= timeout:
+                return False
+            time.sleep(0.05)  # Check every 50ms
 
     def _run(self) -> None:
         try:

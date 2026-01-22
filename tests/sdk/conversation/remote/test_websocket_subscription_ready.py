@@ -167,6 +167,69 @@ class TestWebSocketReadySignaling:
         result2 = client.wait_until_ready(timeout=0.1)
         assert result2 is True
 
+    def test_wait_until_ready_returns_false_when_stopped(self):
+        """Test that wait_until_ready returns False when client is stopped.
+
+        This tests the fix for the issue where wait_until_ready() would block
+        for the full timeout even when stop() was called. Now it checks both
+        _ready and _stop events, returning False immediately if stopped.
+        """
+        callback = MagicMock()
+
+        client = WebSocketCallbackClient(
+            host="http://localhost:8000",
+            conversation_id="test-conv-id",
+            callback=callback,
+        )
+
+        # Set stop event (simulating client being stopped)
+        client._stop.set()
+
+        # Should return False immediately, not wait for timeout
+        start_time = time.time()
+        result = client.wait_until_ready(timeout=5.0)
+        elapsed = time.time() - start_time
+
+        assert result is False, "wait_until_ready should return False when stopped"
+        assert elapsed < 0.5, (
+            f"Should return immediately when stopped, not wait for timeout. "
+            f"Elapsed: {elapsed}s"
+        )
+
+    def test_wait_until_ready_returns_false_when_stopped_during_wait(self):
+        """Test that wait_until_ready returns False when stop is called during wait.
+
+        This tests that if stop() is called while wait_until_ready() is blocking,
+        it will return False promptly instead of waiting for the full timeout.
+        """
+        callback = MagicMock()
+
+        client = WebSocketCallbackClient(
+            host="http://localhost:8000",
+            conversation_id="test-conv-id",
+            callback=callback,
+        )
+
+        # Set stop after a delay in another thread
+        def set_stop_delayed():
+            time.sleep(0.2)
+            client._stop.set()
+
+        thread = threading.Thread(target=set_stop_delayed)
+        thread.start()
+
+        start_time = time.time()
+        result = client.wait_until_ready(timeout=5.0)
+        elapsed = time.time() - start_time
+
+        thread.join()
+
+        assert result is False, "wait_until_ready should return False when stopped"
+        assert elapsed >= 0.15, "Should have waited for the stop signal"
+        assert elapsed < 1.0, (
+            f"Should not have waited for full timeout. Elapsed: {elapsed}s"
+        )
+
 
 class TestWebSocketClientReadyWithEvents:
     """Tests for WebSocket client ready signaling with event processing."""
