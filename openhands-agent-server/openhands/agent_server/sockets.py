@@ -52,7 +52,7 @@ def _resolve_websocket_session_api_key(
         return None
     prefix = "bearer "
     if auth.lower().startswith(prefix):
-        token = auth[len(prefix) :].strip()
+        token = auth[len(prefix):].strip()
         return token or None
     return None
 
