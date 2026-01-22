@@ -374,7 +374,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("zai_coding/"):
             model_name = model_val.removeprefix("zai_coding/")
             d["model"] = f"zai/{model_name}"
-            d["base_url"] = "https://api.z.ai/api/coding/paas/v4"
+            d["base_url"] = d.get("base_url") or "https://api.z.ai/api/coding/paas/v4"
 
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
