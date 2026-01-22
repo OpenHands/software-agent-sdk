@@ -40,6 +40,15 @@ def _resolve_websocket_session_api_key(
     websocket: WebSocket,
     session_api_key: str | None,
 ) -> str | None:
+    """Resolve the session API key from multiple sources.
+    
+    Precedence order (highest to lowest):
+    1. Query parameter (session_api_key) - for browser compatibility
+    2. X-Session-API-Key header - for non-browser clients
+    3. Authorization: Bearer header - standard auth header
+    
+    Returns None if no valid key is found in any source.
+    """
     if session_api_key:
         return session_api_key
 
