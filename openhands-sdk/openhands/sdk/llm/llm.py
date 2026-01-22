@@ -989,19 +989,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
 
+        # Determine vision and other capabilities once for all messages
+        vision_active = self.vision_is_active()
+        cache_active = self.is_caching_prompt_active()
+        model_features = get_features(self._model_name_for_capabilities())
+        force_string = (
+            self.force_string_serializer
+            if self.force_string_serializer is not None
+            else model_features.force_string_serializer
+        )
+
         for message in messages:
-            message.cache_enabled = self.is_caching_prompt_active()
-            message.vision_enabled = self.vision_is_active()
+            message.cache_enabled = cache_active
             message.function_calling_enabled = self.native_tool_calling
-            model_features = get_features(self._model_name_for_capabilities())
-            message.force_string_serializer = (
-                self.force_string_serializer
-                if self.force_string_serializer is not None
-                else model_features.force_string_serializer
-            )
+            message.force_string_serializer = force_string
             message.send_reasoning_content = model_features.send_reasoning_content
 
-        formatted_messages = [message.to_chat_dict() for message in messages]
+        # Pass vision_enabled as parameter to to_chat_dict (new API)
+        formatted_messages = [
+            message.to_chat_dict(vision_enabled=vision_active) for message in messages
+        ]
 
         return formatted_messages
 

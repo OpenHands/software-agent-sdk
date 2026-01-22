@@ -15,6 +15,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
@@ -210,7 +211,16 @@ class Message(BaseModel):
     role: Literal["user", "system", "assistant", "tool"]
     content: Sequence[TextContent | ImageContent] = Field(default_factory=list)
     cache_enabled: bool = False
-    vision_enabled: bool = False
+    vision_enabled: bool = Field(
+        default=False,
+        description=(
+            "DEPRECATED: This field is deprecated as of 1.10.0 and will be removed "
+            "in 1.11.0. Vision capability is now passed as a parameter to "
+            "to_chat_dict(vision_enabled=...) instead of being stored on the message. "
+            "This field is retained for backward compatibility when deserializing "
+            "stored messages."
+        ),
+    )
     # function calling
     function_calling_enabled: bool = False
     # - tool calls (from LLM)
@@ -264,17 +274,38 @@ class Message(BaseModel):
             return [TextContent(text=v)]
         return v
 
-    def to_chat_dict(self) -> dict[str, Any]:
+    def to_chat_dict(self, *, vision_enabled: bool | None = None) -> dict[str, Any]:
         """Serialize message for OpenAI Chat Completions.
+
+        Args:
+            vision_enabled: Whether to include image content in serialization.
+                If None, falls back to self.vision_enabled for backward compatibility
+                (deprecated behavior).
 
         Chooses the appropriate content serializer and then injects threading keys:
         - Assistant tool call turn: role == "assistant" and self.tool_calls
         - Tool result turn: role == "tool" and self.tool_call_id (with name)
         """
+        # Resolve vision_enabled: prefer parameter, fall back to deprecated field
+        if vision_enabled is None:
+            # Emit deprecation warning only if the deprecated field is being used
+            # and the message actually contains images
+            if self.vision_enabled and self.contains_image:
+                warn_deprecated(
+                    "Message.vision_enabled field",
+                    deprecated_in="1.10.0",
+                    removed_in="1.11.0",
+                    details=(
+                        "Pass vision_enabled as a parameter to to_chat_dict() instead. "
+                        "The field will be removed in version 1.11.0."
+                    ),
+                )
+            vision_enabled = self.vision_enabled
+
         if not self.force_string_serializer and (
-            self.cache_enabled or self.vision_enabled or self.function_calling_enabled
+            self.cache_enabled or vision_enabled or self.function_calling_enabled
         ):
-            message_dict = self._list_serializer()
+            message_dict = self._list_serializer(vision_enabled=vision_enabled)
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
             # single string
@@ -309,7 +340,7 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _list_serializer(self) -> dict[str, Any]:
+    def _list_serializer(self, *, vision_enabled: bool) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
         role_tool_with_prompt_caching = False
 
@@ -337,7 +368,7 @@ class Message(BaseModel):
                     d.pop("cache_control", None)
 
             # Handle vision-enabled filtering for ImageContent
-            if isinstance(item, ImageContent) and self.vision_enabled:
+            if isinstance(item, ImageContent) and vision_enabled:
                 content.extend(item_dicts)
             elif not isinstance(item, ImageContent):
                 # Add non-image content (TextContent, etc.)

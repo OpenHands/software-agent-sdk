@@ -99,11 +99,11 @@ def test_message_tool_role_with_image_cache_prompt():
         ],
         tool_call_id="call_123",
         name="test_tool",
-        vision_enabled=True,
         cache_enabled=True,
     )
 
-    result = message.to_chat_dict()
+    # Pass vision_enabled as parameter (new API)
+    result = message.to_chat_dict(vision_enabled=True)
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_123"
     assert result["cache_control"] == {"type": "ephemeral"}
