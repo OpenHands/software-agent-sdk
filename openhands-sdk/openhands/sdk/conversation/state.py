@@ -390,15 +390,29 @@ class ConversationState(OpenHandsModel):
             List of ActionEvent objects that don't have corresponding observations,
             in chronological order
         """
-        observed_action_ids = set()
+        observed_action_ids: set[str] = set()
+        observed_tool_call_ids: set[str] = set()
         unmatched_actions = []
         # Search in reverse - recent events are more likely to be unmatched
         for event in reversed(events):
             if isinstance(event, (ObservationEvent, UserRejectObservation)):
                 observed_action_ids.add(event.action_id)
+                # Also track tool_call_id to prevent re-execution of actions
+                # that already have observations (fixes duplicate observation bug)
+                if event.tool_call_id is not None:
+                    observed_tool_call_ids.add(event.tool_call_id)
             elif isinstance(event, ActionEvent):
                 # Only executable actions (validated) are considered pending
-                if event.action is not None and event.id not in observed_action_ids:
+                # Check both action_id AND tool_call_id to ensure we don't
+                # re-execute actions that already have observations
+                is_observed = (
+                    event.id in observed_action_ids
+                    or (
+                        event.tool_call_id is not None
+                        and event.tool_call_id in observed_tool_call_ids
+                    )
+                )
+                if event.action is not None and not is_observed:
                     # Insert at beginning to maintain chronological order in result
                     unmatched_actions.insert(0, event)
 
