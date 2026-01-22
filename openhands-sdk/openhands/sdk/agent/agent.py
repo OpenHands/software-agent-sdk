@@ -185,8 +185,9 @@ class Agent(AgentBase):
         pending_actions = ConversationState.get_unmatched_actions(state.events)
         if pending_actions:
             logger.info(
-                "Confirmation mode: Executing %d pending action(s)",
+                "Confirmation mode: Executing %d pending action(s): %s",
                 len(pending_actions),
+                [(a.id, a.tool_call_id, a.tool_name) for a in pending_actions],
             )
             self._execute_actions(conversation, pending_actions, on_event)
             return
@@ -625,6 +626,11 @@ class Agent(AgentBase):
             action_id=action_event.id,
             tool_name=tool.name,
             tool_call_id=action_event.tool_call.id,
+        )
+        logger.debug(
+            f"Creating ObservationEvent: id={obs_event.id}, "
+            f"action_id={action_event.id}, tool_call_id={action_event.tool_call.id}, "
+            f"tool={tool.name}"
         )
         on_event(obs_event)
 

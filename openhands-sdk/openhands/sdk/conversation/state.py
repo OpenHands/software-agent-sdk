@@ -402,6 +402,12 @@ class ConversationState(OpenHandsModel):
                     # Insert at beginning to maintain chronological order in result
                     unmatched_actions.insert(0, event)
 
+        if unmatched_actions:
+            logger.debug(
+                f"get_unmatched_actions found {len(unmatched_actions)} unmatched: "
+                f"{[(a.id, a.tool_call_id, a.tool_name) for a in unmatched_actions]}"
+            )
+
         return unmatched_actions
 
     # ===== FIFOLock delegation methods =====
