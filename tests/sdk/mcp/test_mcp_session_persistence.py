@@ -6,32 +6,59 @@ avoiding the overhead of reconnecting for each call.
 Related issue: https://github.com/OpenHands/software-agent-sdk/issues/1739
 """
 
+import asyncio
+import socket
+import threading
+import time
+
 import pytest
+from fastmcp import FastMCP
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
-from .conftest import MCPTestServer
+
+def _find_free_port() -> int:
+    """Find an available port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
 @pytest.fixture
 def live_server():
     """Fixture providing a live MCP test server with echo/add tools."""
-    server = MCPTestServer("session-test-server")
+    mcp = FastMCP("session-test-server")
 
-    @server.add_tool
+    @mcp.tool()
     def echo(message: str) -> str:
         """Echo a message."""
         return f"Echo: {message}"
 
-    @server.add_tool
+    @mcp.tool()
     def add_numbers(a: int, b: int) -> str:
         """Add two numbers."""
         return str(a + b)
 
-    port = server.start()
+    port = _find_free_port()
+
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            mcp.run_http_async(
+                host="127.0.0.1",
+                port=port,
+                transport="http",
+                show_banner=False,
+                path="/mcp",
+            )
+        )
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.5)
     yield port
-    server.stop()
 
 
 class TestSessionPersistence:

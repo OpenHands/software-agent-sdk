@@ -16,21 +16,32 @@ With the FIX, we call `__aenter__` once and keep the connection open.
 Related: https://github.com/OpenHands/software-agent-sdk/issues/1739
 """
 
+import asyncio
+import socket
+import threading
+import time
+
 import pytest
+from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_context
 
 from openhands.sdk.mcp import create_mcp_tools
 from openhands.sdk.mcp.tool import MCPToolExecutor
 
-from .conftest import MCPTestServer
+
+def _find_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
 
 
-def _create_stateful_server() -> MCPTestServer:
-    """Create an MCP server with per-session state for testing persistence."""
-    server = MCPTestServer("session-stateful-test-server")
-    sessions = server.sessions  # Use server's built-in session tracking
+@pytest.fixture
+def stateful_server():
+    """Fixture providing a per-session stateful MCP test server."""
+    mcp = FastMCP("session-stateful-test-server")
+    sessions: dict[str, dict] = {}
 
-    @server.add_tool
+    @mcp.tool()
     def set_auth_token(token: str) -> str:
         """Set authentication token for this session."""
         ctx = get_context()
@@ -40,7 +51,7 @@ def _create_stateful_server() -> MCPTestServer:
         sessions[session_id]["token"] = token
         return f"Session {session_id[:8]}: Auth token set to {token}"
 
-    @server.add_tool
+    @mcp.tool()
     def get_auth_token() -> str:
         """Get the current auth token (proves session persistence)."""
         ctx = get_context()
@@ -53,7 +64,7 @@ def _create_stateful_server() -> MCPTestServer:
             )
         return f"Session {session_id[:8]}: Current auth token is {token}"
 
-    @server.add_tool
+    @mcp.tool()
     def increment_counter() -> str:
         """Increment a per-session counter."""
         ctx = get_context()
@@ -66,7 +77,7 @@ def _create_stateful_server() -> MCPTestServer:
         counter = sessions[session_id]["counter"]
         return f"Session {session_id[:8]}: Counter is now {counter}"
 
-    @server.add_tool
+    @mcp.tool()
     def get_counter() -> str:
         """Get current counter value for this session."""
         ctx = get_context()
@@ -74,16 +85,25 @@ def _create_stateful_server() -> MCPTestServer:
         counter = sessions.get(session_id, {}).get("counter", 0)
         return f"Session {session_id[:8]}: Counter value is {counter}"
 
-    return server
+    port = _find_free_port()
 
+    def run():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(
+            mcp.run_http_async(
+                host="127.0.0.1",
+                port=port,
+                transport="http",
+                show_banner=False,
+                path="/mcp",
+            )
+        )
 
-@pytest.fixture
-def stateful_server():
-    """Fixture providing a per-session stateful MCP test server."""
-    server = _create_stateful_server()
-    port = server.start()
-    yield server, port
-    server.stop()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    time.sleep(0.5)
+    yield sessions, port
 
 
 class TestStatefulMCPSessionPersistence:
@@ -100,8 +120,8 @@ class TestStatefulMCPSessionPersistence:
         This is the CORE test - if sessions were being reset, the counter
         would reset to 0 between calls because each new session has no state.
         """
-        server, port = stateful_server
-        server.clear_sessions()
+        sessions, port = stateful_server
+        sessions.clear()
 
         config = {
             "mcpServers": {
@@ -139,8 +159,8 @@ class TestStatefulMCPSessionPersistence:
         and then using it in subsequent operations. With the old code, each
         tool call created a new session, losing the auth token.
         """
-        server, port = stateful_server
-        server.clear_sessions()
+        sessions, port = stateful_server
+        sessions.clear()
 
         config = {
             "mcpServers": {
@@ -177,8 +197,8 @@ class TestStatefulMCPSessionPersistence:
 
     def test_multiple_operations_same_session(self, stateful_server):
         """Test a realistic workflow: authenticate, then perform multiple operations."""
-        server, port = stateful_server
-        server.clear_sessions()
+        sessions, port = stateful_server
+        sessions.clear()
 
         config = {
             "mcpServers": {
