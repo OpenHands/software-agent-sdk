@@ -401,8 +401,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             f"Cannot resume conversation: tools cannot be changed mid-conversation "
             f"({'; '.join(details)}). "
             f"To use different tools, start a new conversation. "
-            f"Conversation forking is planned: "
-            f"https://github.com/OpenHands/OpenHands/issues/8560"
         )
 
     def model_dump_succint(self, **kwargs):
