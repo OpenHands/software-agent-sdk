@@ -9,7 +9,6 @@ from fastmcp import Client as AsyncMCPClient
 
 from openhands.sdk.utils.async_executor import AsyncExecutor
 
-
 if TYPE_CHECKING:
     from openhands.sdk.mcp.tool import MCPToolDefinition
 
@@ -20,11 +19,9 @@ class MCPClient(AsyncMCPClient):
     but owns a background event loop and offers:
       - call_async_from_sync(awaitable_or_fn, *args, timeout=None, **kwargs)
       - call_sync_from_async(fn, *args, **kwargs)  # await this from async code
-      - sync context manager (with client:) for lifecycle management
-      - sync_close() for synchronous cleanup
 
-    After create_mcp_tools() returns, the client has a `tools` attribute
-    containing the list of MCP tools that share this connection.
+    After create_mcp_tools() populates it, this client has a `tools` property
+    and can be used as a sync context manager for lifecycle management.
     """
 
     _executor: AsyncExecutor
@@ -92,9 +89,6 @@ class MCPClient(AsyncMCPClient):
 
         # Always cleanup the executor
         self._executor.close()
-
-        # Mark closed only after cleanup succeeds
-        # (Both close methods are idempotent, so retries are safe)
         self._closed = True
 
     def __del__(self):
@@ -104,7 +98,7 @@ class MCPClient(AsyncMCPClient):
         except Exception:
             pass  # Ignore cleanup errors during deletion
 
-    # Sync context manager for lifecycle management
+    # Sync context manager support
     def __enter__(self) -> "MCPClient":
         return self
 

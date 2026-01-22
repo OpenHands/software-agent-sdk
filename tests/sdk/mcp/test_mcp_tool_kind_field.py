@@ -6,26 +6,22 @@ is incorrectly included in the MCP tool arguments, causing validation errors.
 
 import pytest
 
-from openhands.sdk.mcp import MCPClient, create_mcp_tools
-from openhands.sdk.mcp.tool import MCPToolDefinition
+from openhands.sdk.mcp import create_mcp_tools
 
 
 @pytest.fixture
-def fetch_client():
+def fetch_tool():
     """Create a real MCP fetch tool using the mcp-server-fetch package."""
     mcp_config = {
         "mcpServers": {"fetch": {"command": "uvx", "args": ["mcp-server-fetch"]}}
     }
     # Use longer timeout for CI environments where uvx may need to download packages
-    client = create_mcp_tools(mcp_config, timeout=120.0)
-    assert len(client) == 1
-    yield client
-    client.sync_close()
+    tools = create_mcp_tools(mcp_config, timeout=120.0)
+    assert len(tools) == 1
+    return tools[0]
 
 
-def test_real_mcp_tool_excludes_kind_field_from_action_data(
-    fetch_client: MCPClient,
-):
+def test_real_mcp_tool_excludes_kind_field_from_action_data(fetch_tool):
     """Test that action_from_arguments doesn't include 'kind' in data field.
 
     This reproduces issue #886. The 'kind' field is added by DiscriminatedUnionMixin
@@ -33,7 +29,6 @@ def test_real_mcp_tool_excludes_kind_field_from_action_data(
     sent to the MCP server. MCP servers with additionalProperties: false will reject
     requests with unexpected 'kind' fields.
     """
-    fetch_tool = fetch_client[0]
     # Create action from arguments (this is what the agent does)
     args = {"url": "https://example.com"}
     action = fetch_tool.action_from_arguments(args)
@@ -49,11 +44,8 @@ def test_real_mcp_tool_excludes_kind_field_from_action_data(
     assert mcp_args == {"url": "https://example.com"}
 
 
-def test_real_mcp_tool_with_optional_field_no_kind(
-    fetch_client: MCPClient,
-):
+def test_real_mcp_tool_with_optional_field_no_kind(fetch_tool):
     """Test that optional fields work correctly without 'kind' field."""
-    fetch_tool = fetch_client[0]
     # Create action with both required and optional fields
     args = {"url": "https://example.com", "max_length": 5000}
     action = fetch_tool.action_from_arguments(args)
@@ -66,11 +58,8 @@ def test_real_mcp_tool_with_optional_field_no_kind(
     assert action.data["max_length"] == 5000
 
 
-def test_real_mcp_tool_drops_none_values_but_not_kind(
-    fetch_client: MCPClient,
-):
+def test_real_mcp_tool_drops_none_values_but_not_kind(fetch_tool):
     """Test that None values are dropped and 'kind' is not included."""
-    fetch_tool = fetch_client[0]
     # Create action with None value for optional field
     args = {"url": "https://example.com", "max_length": None}
     action = fetch_tool.action_from_arguments(args)
@@ -81,9 +70,7 @@ def test_real_mcp_tool_drops_none_values_but_not_kind(
     assert action.data == {"url": "https://example.com"}
 
 
-def test_real_mcp_tool_execution_without_kind_field(
-    fetch_client: MCPClient,
-):
+def test_real_mcp_tool_execution_without_kind_field(fetch_tool):
     """Test that executing the tool works without 'kind' field in data.
 
     This is the ultimate test - if 'kind' was still being sent to the MCP
@@ -91,7 +78,6 @@ def test_real_mcp_tool_execution_without_kind_field(
     'Input validation error: Additional properties are not allowed
     (kind was unexpected)'
     """
-    fetch_tool = fetch_client[0]
     # Create and execute action
     args = {"url": "https://example.com"}
     action = fetch_tool.action_from_arguments(args)

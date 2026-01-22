@@ -17,15 +17,22 @@ LOGGING_LEVEL_MAP = logging.getLevelNamesMapping()
 
 
 async def log_handler(message: LogMessage):
-    """Forward MCP server logs to Python logging."""
+    """
+    Handles incoming logs from the MCP server and forwards them
+    to the standard Python logging system.
+    """
     msg = message.data.get("msg")
     extra = message.data.get("extra")
+
+    # Convert the MCP log level to a Python log level
     level = LOGGING_LEVEL_MAP.get(message.level.upper(), logging.INFO)
+
+    # Log the message using the standard logging library
     logger.log(level, msg, extra=extra)
 
 
 async def _connect_and_list_tools(client: MCPClient) -> None:
-    """Connect to MCP server and populate client.tools."""
+    """Connect to MCP server and populate client._tools."""
     await client.connect()
     mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
     for mcp_tool in mcp_type_tools:
@@ -39,20 +46,12 @@ def create_mcp_tools(
 ) -> MCPClient:
     """Create MCP tools from MCP configuration.
 
-    Returns an MCPClient with a `tools` property containing the available tools.
-    Use as a context manager for automatic cleanup:
+    Returns an MCPClient with tools populated. Use as a context manager:
 
         with create_mcp_tools(config) as client:
             for tool in client.tools:
                 # use tool
         # Connection automatically closed
-
-    Args:
-        config: MCP configuration dict or MCPConfig object
-        timeout: Timeout for connecting and listing tools (default 30s)
-
-    Returns:
-        MCPClient with tools populated and connection open
     """
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
@@ -64,26 +63,23 @@ def create_mcp_tools(
         )
     except TimeoutError as e:
         client.sync_close()
+        # Extract server names from config for better error message
         server_names = (
             list(config.mcpServers.keys()) if config.mcpServers else ["unknown"]
         )
-        raise MCPTimeoutError(
+        error_msg = (
             f"MCP tool listing timed out after {timeout} seconds.\n"
             f"MCP servers configured: {', '.join(server_names)}\n\n"
             "Possible solutions:\n"
             "  1. Increase the timeout value (default is 30 seconds)\n"
             "  2. Check if the MCP server is running and responding\n"
-            "  3. Verify network connectivity to the MCP server\n",
-            timeout=timeout,
-            config=config.model_dump(),
+            "  3. Verify network connectivity to the MCP server\n"
+        )
+        raise MCPTimeoutError(
+            error_msg, timeout=timeout, config=config.model_dump()
         ) from e
     except BaseException:
-        try:
-            client.sync_close()
-        except Exception as close_exc:
-            logger.warning(
-                "Failed to close MCP client during error cleanup", exc_info=close_exc
-            )
+        client.sync_close()
         raise
 
     logger.info(f"Created {len(client.tools)} MCP tools: {[t.name for t in client]}")

@@ -30,8 +30,9 @@ from openhands.sdk.utils.models import DiscriminatedUnionMixin
 logger = get_logger(__name__)
 
 
-# NOTE: MCPToolAction is not defined here because it is a pydantic BaseModel
-# dynamically created from the MCP tool schema. It is available as "tool.action_type".
+# NOTE: We don't define MCPToolAction because it
+# will be a pydantic BaseModel dynamically created from the MCP tool schema.
+# It will be available as "tool.action_type".
 
 
 def to_camel_case(s: str) -> str:
@@ -40,11 +41,7 @@ def to_camel_case(s: str) -> str:
 
 
 class MCPToolExecutor(ToolExecutor):
-    """Executor for MCP tools using a shared, persistent client.
-
-    The client is kept open by create_mcp_tools() and shared across
-    all tools for the same server. This avoids reconnecting for each call.
-    """
+    """Executor for MCP tools."""
 
     tool_name: str
     client: MCPClient
@@ -63,7 +60,8 @@ class MCPToolExecutor(ToolExecutor):
             )
         try:
             logger.debug(
-                f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
+                f"Calling MCP tool {self.tool_name} "
+                f"with args: {action.model_dump()}"
             )
             result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
                 name=self.tool_name, arguments=action.to_mcp_arguments()

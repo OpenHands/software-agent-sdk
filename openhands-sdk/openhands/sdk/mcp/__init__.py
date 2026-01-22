@@ -7,7 +7,9 @@ from openhands.sdk.mcp.tool import (
     MCPToolDefinition,
     MCPToolExecutor,
 )
-from openhands.sdk.mcp.utils import create_mcp_tools
+from openhands.sdk.mcp.utils import (
+    create_mcp_tools,
+)
 
 
 __all__ = [

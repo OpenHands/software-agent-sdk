@@ -6,9 +6,16 @@ from unittest.mock import MagicMock, Mock
 import mcp.types
 import pytest
 
+from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.tool import MCPToolDefinition, MCPToolExecutor
 
-from .conftest import MockMCPClient
+
+class MockMCPClient(MCPClient):
+    """Mock MCPClient for testing that bypasses the complex constructor."""
+
+    def __init__(self):
+        # Skip the parent constructor to avoid needing transport
+        pass
 
 
 class TestMCPToolImmutability:
