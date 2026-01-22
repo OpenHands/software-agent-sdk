@@ -213,28 +213,36 @@ def test_api_websocket_authentication():
     app = create_app(config)
     client = TestClient(app)
 
-    # Test WebSocket connection without authentication - should fail
-    try:
+    # Without authentication -> should fail
+    with pytest.raises(Exception):
         with client.websocket_connect("/sockets/bash-events"):
-            # If we get here, the connection was established without auth
-            # (should not happen)
-            assert False, (
-                "WebSocket connection should have failed without authentication"
-            )
-    except Exception:
-        # WebSocket connection should fail without proper authentication
+            assert False, "WebSocket connection should have failed without auth"
+
+    # Query-param authentication -> should work (browser-compatible)
+    with client.websocket_connect("/sockets/bash-events?session_api_key=test-key"):
         pass
 
-    # Test WebSocket connection with authentication via query parameter - should work
-    try:
-        with client.websocket_connect("/sockets/bash-events?session_api_key=test-key"):
-            # If we get here, the connection was established with proper auth
-            pass
-    except Exception:
-        # Connection might fail for other reasons (like missing conversation ID for
-        # events endpoint)
-        # This test mainly ensures the auth mechanism works
+    # Header authentication -> should work for non-browser clients
+    with client.websocket_connect(
+        "/sockets/bash-events",
+        headers={"X-Session-API-Key": "test-key"},
+    ):
         pass
+
+    # Authorization header authentication -> should work for non-browser clients
+    with client.websocket_connect(
+        "/sockets/bash-events",
+        headers={"Authorization": "Bearer test-key"},
+    ):
+        pass
+
+    # Wrong header -> should fail
+    with pytest.raises(Exception):
+        with client.websocket_connect(
+            "/sockets/bash-events",
+            headers={"X-Session-API-Key": "wrong-key"},
+        ):
+            assert False, "WebSocket connection should have failed with wrong key"
 
 
 def test_api_options_requests():

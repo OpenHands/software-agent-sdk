@@ -2,8 +2,9 @@
 WebSocket endpoints for OpenHands SDK.
 
 These endpoints are separate from the main API routes to handle WebSocket-specific
-authentication using query parameters instead of headers, since browsers cannot
-send custom HTTP headers directly with WebSocket connections.
+authentication. Browsers cannot send custom HTTP headers directly with WebSocket
+connections, so we support the `session_api_key` query param. For non-browser
+clients (e.g. Python/Node), we also support authenticating via headers.
 """
 
 import logging
@@ -35,6 +36,27 @@ bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
 
 
+def _resolve_websocket_session_api_key(
+    websocket: WebSocket,
+    session_api_key: str | None,
+) -> str | None:
+    if session_api_key:
+        return session_api_key
+
+    header_key = websocket.headers.get("x-session-api-key")
+    if header_key:
+        return header_key
+
+    auth = websocket.headers.get("authorization")
+    if not auth:
+        return None
+    prefix = "bearer "
+    if auth.lower().startswith(prefix):
+        token = auth[len(prefix) :].strip()
+        return token or None
+    return None
+
+
 @sockets_router.websocket("/events/{conversation_id}")
 async def events_socket(
     conversation_id: UUID,
@@ -45,7 +67,8 @@ async def events_socket(
     """WebSocket endpoint for conversation events."""
     # Perform authentication check before accepting the WebSocket connection
     config = get_default_config()
-    if config.session_api_keys and session_api_key not in config.session_api_keys:
+    resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
+    if config.session_api_keys and resolved_key not in config.session_api_keys:
         # Close the WebSocket connection with an authentication error code
         await websocket.close(code=4001, reason="Authentication failed")
         return
@@ -99,7 +122,8 @@ async def bash_events_socket(
     """WebSocket endpoint for bash events."""
     # Perform authentication check before accepting the WebSocket connection
     config = get_default_config()
-    if config.session_api_keys and session_api_key not in config.session_api_keys:
+    resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
+    if config.session_api_keys and resolved_key not in config.session_api_keys:
         # Close the WebSocket connection with an authentication error code
         await websocket.close(code=4001, reason="Authentication failed")
         return
