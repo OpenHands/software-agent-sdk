@@ -969,3 +969,186 @@ def test_should_keep_event_other_event_types() -> None:
         message_event, action_tool_call_ids, observation_tool_call_ids
     )
     assert result is True
+
+
+def test_filter_unmatched_tool_calls_duplicate_observations() -> None:
+    """Test that duplicate observations with the same tool_call_id are filtered.
+
+    This reproduces the issue from GitHub issue #1782 where duplicate
+    ObservationEvents with the same tool_call_id cause LLM API errors
+    (Claude requires exactly one tool_result per tool_use).
+
+    The defensive fix should keep only the first observation for each
+    tool_call_id and filter out subsequent duplicates.
+    """
+    # Create ActionEvent
+    action_event = create_autospec(ActionEvent, instance=True)
+    action_event.tool_call_id = "call_1"
+    action_event.id = "action_1"
+    action_event.llm_response_id = "response_1"
+
+    # Create first observation (should be kept)
+    observation_event_1 = create_autospec(ObservationEvent, instance=True)
+    observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
+
+    # Create duplicate observation with same tool_call_id (should be filtered)
+    observation_event_duplicate = create_autospec(ObservationEvent, instance=True)
+    observation_event_duplicate.tool_call_id = "call_1"
+    observation_event_duplicate.id = "obs_duplicate"
+
+    # Create message events
+    msg1 = message_event("First message")
+    msg2 = message_event("Second message")
+
+    events = [
+        msg1,
+        action_event,
+        observation_event_1,
+        msg2,
+        observation_event_duplicate,  # Duplicate - should be filtered
+    ]
+
+    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+
+    # Should keep the action, first observation, and both message events
+    # Duplicate observation should be filtered out
+    assert len(result) == 4
+    assert action_event in result
+    assert observation_event_1 in result
+    assert msg1 in result
+    assert msg2 in result
+    assert observation_event_duplicate not in result
+
+
+def test_filter_unmatched_tool_calls_multiple_duplicate_observations() -> None:
+    """Test filtering multiple duplicate observations for the same tool_call_id.
+
+    Ensures that only the first observation is kept even when multiple
+    duplicates exist.
+    """
+    # Create ActionEvent
+    action_event = create_autospec(ActionEvent, instance=True)
+    action_event.tool_call_id = "call_1"
+    action_event.id = "action_1"
+    action_event.llm_response_id = "response_1"
+
+    # Create first observation (should be kept)
+    observation_event_1 = create_autospec(ObservationEvent, instance=True)
+    observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
+
+    # Create multiple duplicates (all should be filtered)
+    observation_event_dup1 = create_autospec(ObservationEvent, instance=True)
+    observation_event_dup1.tool_call_id = "call_1"
+    observation_event_dup1.id = "obs_dup1"
+
+    observation_event_dup2 = create_autospec(ObservationEvent, instance=True)
+    observation_event_dup2.tool_call_id = "call_1"
+    observation_event_dup2.id = "obs_dup2"
+
+    observation_event_dup3 = create_autospec(ObservationEvent, instance=True)
+    observation_event_dup3.tool_call_id = "call_1"
+    observation_event_dup3.id = "obs_dup3"
+
+    events = [
+        action_event,
+        observation_event_1,
+        observation_event_dup1,
+        observation_event_dup2,
+        observation_event_dup3,
+    ]
+
+    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+
+    # Should keep only action and first observation
+    assert len(result) == 2
+    assert action_event in result
+    assert observation_event_1 in result
+    assert observation_event_dup1 not in result
+    assert observation_event_dup2 not in result
+    assert observation_event_dup3 not in result
+
+
+def test_filter_unmatched_tool_calls_independent_tool_calls_with_duplicates() -> None:
+    """Test that duplicate filtering is per-tool_call_id.
+
+    Multiple different tool_call_ids should each be allowed one observation,
+    even when some have duplicates.
+    """
+    # First action-observation pair
+    action_event_1 = create_autospec(ActionEvent, instance=True)
+    action_event_1.tool_call_id = "call_1"
+    action_event_1.id = "action_1"
+    action_event_1.llm_response_id = "response_1"
+
+    observation_event_1 = create_autospec(ObservationEvent, instance=True)
+    observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
+
+    # Duplicate for first call
+    observation_event_1_dup = create_autospec(ObservationEvent, instance=True)
+    observation_event_1_dup.tool_call_id = "call_1"
+    observation_event_1_dup.id = "obs_1_dup"
+
+    # Second action-observation pair (no duplicates)
+    action_event_2 = create_autospec(ActionEvent, instance=True)
+    action_event_2.tool_call_id = "call_2"
+    action_event_2.id = "action_2"
+    action_event_2.llm_response_id = "response_2"
+
+    observation_event_2 = create_autospec(ObservationEvent, instance=True)
+    observation_event_2.tool_call_id = "call_2"
+    observation_event_2.id = "obs_2"
+
+    events = [
+        action_event_1,
+        observation_event_1,
+        action_event_2,
+        observation_event_1_dup,  # Duplicate for call_1
+        observation_event_2,
+    ]
+
+    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+
+    # Should keep both action-observation pairs, filter the duplicate
+    assert len(result) == 4
+    assert action_event_1 in result
+    assert observation_event_1 in result
+    assert action_event_2 in result
+    assert observation_event_2 in result
+    assert observation_event_1_dup not in result
+
+
+def test_filter_unmatched_tool_calls_duplicate_none_tool_call_id() -> None:
+    """Test observations with None tool_call_id aren't affected by dup filtering.
+
+    Observations with None tool_call_id should still be filtered based on
+    the existing matching logic, not the duplicate detection.
+    """
+    # Action without tool_call_id
+    action_event = create_autospec(ActionEvent, instance=True)
+    action_event.tool_call_id = None
+    action_event.id = "action_none"
+    action_event.llm_response_id = "response_1"
+
+    # Two observations with None tool_call_id (these get filtered by matching logic)
+    observation_event_1 = create_autospec(ObservationEvent, instance=True)
+    observation_event_1.tool_call_id = None
+    observation_event_1.id = "obs_none_1"
+
+    observation_event_2 = create_autospec(ObservationEvent, instance=True)
+    observation_event_2.tool_call_id = None
+    observation_event_2.id = "obs_none_2"
+
+    events = [
+        action_event,
+        observation_event_1,
+        observation_event_2,
+    ]
+
+    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+
+    # All events with None tool_call_id should be filtered by matching logic
+    # (not duplicate detection)
+    assert len(result) == 0

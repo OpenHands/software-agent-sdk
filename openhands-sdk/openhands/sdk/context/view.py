@@ -338,6 +338,10 @@ class View(BaseModel):
         but don't have matching pairs. Also enforces batch atomicity - if any
         ActionEvent in a batch is filtered out, all ActionEvents in that batch
         are also filtered out.
+
+        Additionally filters out duplicate ObservationEvents with the same
+        tool_call_id to prevent malformed message histories that would cause
+        LLM API errors (e.g., Claude requires exactly one tool_result per tool_use).
         """
         action_tool_call_ids = View._get_action_tool_call_ids(events)
         observation_tool_call_ids = View._get_observation_tool_call_ids(events)
@@ -368,6 +372,8 @@ class View(BaseModel):
                 )
 
         # Filter out removed events
+        # Also track seen observation tool_call_ids to filter duplicates
+        seen_observation_tool_call_ids: set[ToolCallID] = set()
         result = []
         for event in events:
             if event.id in removed_event_ids:
@@ -375,6 +381,21 @@ class View(BaseModel):
             if isinstance(event, ObservationBaseEvent):
                 if event.tool_call_id in tool_call_ids_to_remove:
                     continue
+                # Filter duplicate observations with the same tool_call_id
+                # This enables recovery from stuck conversations where duplicate
+                # observations were persisted in the event stream
+                if event.tool_call_id is not None:
+                    if event.tool_call_id in seen_observation_tool_call_ids:
+                        logger.warning(
+                            f"DUPLICATE_OBSERVATION_FILTERED: "
+                            f"tool_call_id={event.tool_call_id}, "
+                            f"event_id={event.id}, "
+                            f"event_type={type(event).__name__}. "
+                            f"This may indicate a bug in event stream management "
+                            f"during conversation resume."
+                        )
+                        continue
+                    seen_observation_tool_call_ids.add(event.tool_call_id)
             result.append(event)
 
         return result
