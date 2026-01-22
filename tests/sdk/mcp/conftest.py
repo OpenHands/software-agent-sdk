@@ -4,7 +4,7 @@ import asyncio
 import socket
 import threading
 import time
-from typing import Any
+from typing import Any, Literal
 
 import mcp.types
 import pytest
@@ -38,7 +38,7 @@ class MockMCPClient(MCPClient):
     def server_url(self):
         return self._server_url
 
-    async def call_tool_mcp(
+    async def call_tool_mcp(  # type: ignore[override]
         self, name: str, arguments: dict[str, Any]
     ) -> mcp.types.CallToolResult:
         """Mock implementation that returns a successful result."""
@@ -99,7 +99,11 @@ class MCPTestServer:
         """Clear all session state."""
         self._sessions.clear()
 
-    def start(self, transport: str = "http", path: str = "/mcp") -> int:
+    def start(
+        self,
+        transport: Literal["http", "streamable-http", "sse"] = "http",
+        path: str = "/mcp",
+    ) -> int:
         """Start the server and return the port."""
         self.port = _find_free_port()
 
