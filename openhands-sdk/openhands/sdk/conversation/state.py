@@ -405,12 +405,9 @@ class ConversationState(OpenHandsModel):
                 # Only executable actions (validated) are considered pending
                 # Check both action_id AND tool_call_id to ensure we don't
                 # re-execute actions that already have observations
-                is_observed = (
-                    event.id in observed_action_ids
-                    or (
-                        event.tool_call_id is not None
-                        and event.tool_call_id in observed_tool_call_ids
-                    )
+                is_observed = event.id in observed_action_ids or (
+                    event.tool_call_id is not None
+                    and event.tool_call_id in observed_tool_call_ids
                 )
                 if event.action is not None and not is_observed:
                     # Insert at beginning to maintain chronological order in result

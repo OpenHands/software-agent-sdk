@@ -1121,7 +1121,7 @@ def test_filter_unmatched_tool_calls_independent_tool_calls_with_duplicates() ->
 
 
 def test_filter_unmatched_tool_calls_duplicate_none_tool_call_id() -> None:
-    """Test that observations with None tool_call_id are not affected by duplicate filtering.
+    """Test observations with None tool_call_id aren't affected by dup filtering.
 
     Observations with None tool_call_id should still be filtered based on
     the existing matching logic, not the duplicate detection.
