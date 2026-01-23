@@ -75,6 +75,10 @@ def test_message_tool_role_with_cache_prompt():
         tool_call_id="call_123",
         name="test_tool",
         cache_enabled=True,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
+        send_reasoning_content=False,
     )
 
     result = message.to_chat_dict()
@@ -101,6 +105,9 @@ def test_message_tool_role_with_image_cache_prompt():
         name="test_tool",
         vision_enabled=True,
         cache_enabled=True,
+        function_calling_enabled=False,
+        force_string_serializer=False,
+        send_reasoning_content=False,
     )
 
     result = message.to_chat_dict()
@@ -130,6 +137,11 @@ def test_message_with_tool_calls():
         role="assistant",
         content=[TextContent(text="I'll call a function")],
         tool_calls=[tool_call],
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
+        send_reasoning_content=False,
     )
 
     result = message.to_chat_dict()
@@ -153,7 +165,16 @@ def test_message_tool_calls_drop_empty_string_content():
         origin="completion",
     )
 
-    message = Message(role="assistant", content=[], tool_calls=[tool_call])
+    message = Message(
+        role="assistant",
+        content=[],
+        tool_calls=[tool_call],
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
+        send_reasoning_content=False,
+    )
 
     result = message.to_chat_dict()
     assert "content" not in result
@@ -174,7 +195,11 @@ def test_message_tool_calls_strip_blank_list_content():
         role="assistant",
         content=[TextContent(text="")],
         tool_calls=[tool_call],
+        cache_enabled=False,
+        vision_enabled=False,
         function_calling_enabled=True,
+        force_string_serializer=False,
+        send_reasoning_content=False,
     )
 
     result = message.to_chat_dict()
@@ -277,6 +302,10 @@ def test_message_with_reasoning_content_when_enabled():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Let me think step by step...",
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
         send_reasoning_content=True,
     )
 
@@ -294,6 +323,10 @@ def test_message_with_reasoning_content_when_disabled():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Let me think step by step...",
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
         send_reasoning_content=False,
     )
 
@@ -304,13 +337,18 @@ def test_message_with_reasoning_content_when_disabled():
 
 
 def test_message_with_reasoning_content_default_disabled():
-    """Test that reasoning_content is NOT included by default."""
+    """Test that reasoning_content is NOT included when send_reasoning_content is False."""
     from openhands.sdk.llm.message import Message, TextContent
 
     message = Message(
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Let me think step by step...",
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
+        send_reasoning_content=False,
     )
 
     result = message.to_chat_dict()
@@ -327,6 +365,10 @@ def test_message_with_reasoning_content_none():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content=None,
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
         send_reasoning_content=True,
     )
 
@@ -344,6 +386,10 @@ def test_message_with_reasoning_content_empty_string():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="",
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=False,
+        force_string_serializer=False,
         send_reasoning_content=True,
     )
 
@@ -361,8 +407,11 @@ def test_message_with_reasoning_content_list_serializer():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Step by step reasoning",
-        send_reasoning_content=True,
+        cache_enabled=False,
+        vision_enabled=False,
         function_calling_enabled=True,  # Forces list serializer
+        force_string_serializer=False,
+        send_reasoning_content=True,
     )
 
     result = message.to_chat_dict()
