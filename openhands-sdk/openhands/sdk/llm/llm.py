@@ -1219,8 +1219,8 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @classmethod
     def subscription_login(
         cls,
-        vendor: SupportedVendor = "openai",
-        model: str = "gpt-5.2-codex",
+        vendor: SupportedVendor,
+        model: str,
         force_login: bool = False,
         open_browser: bool = True,
         **llm_kwargs,
@@ -1261,9 +1261,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         Example:
             >>> from openhands.sdk import LLM
             >>> # First time: opens browser for OAuth login
-            >>> llm = LLM.subscription_login(model="gpt-5.2-codex")
+            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
             >>> # Subsequent calls: reuses cached credentials
-            >>> llm = LLM.subscription_login(model="gpt-5.2-codex")
+            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
         """
         from openhands.sdk.llm.auth.openai import subscription_login
 

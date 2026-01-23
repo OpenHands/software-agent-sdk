@@ -397,6 +397,9 @@ class OpenAISubscriptionAuth:
 
         Returns:
             Updated credentials, or None if no credentials exist.
+
+        Raises:
+            RuntimeError: If token refresh fails.
         """
         creds = self.get_credentials()
         if creds is None:
@@ -406,19 +409,14 @@ class OpenAISubscriptionAuth:
             return creds
 
         logger.info("Refreshing OpenAI access token")
-        try:
-            tokens = await _refresh_access_token(creds.refresh_token)
-            updated = self._credential_store.update_tokens(
-                vendor=self.vendor,
-                access_token=tokens["access_token"],
-                refresh_token=tokens.get("refresh_token"),
-                expires_in=tokens.get("expires_in", 3600),
-            )
-            return updated
-        except Exception as e:
-            logger.warning(f"Failed to refresh token: {e}")
-            self._credential_store.delete(self.vendor)
-            return None
+        tokens = await _refresh_access_token(creds.refresh_token)
+        updated = self._credential_store.update_tokens(
+            vendor=self.vendor,
+            access_token=tokens["access_token"],
+            refresh_token=tokens.get("refresh_token"),
+            expires_in=tokens.get("expires_in", 3600),
+        )
+        return updated
 
     async def login(self, open_browser: bool = True) -> OAuthCredentials:
         """Perform OAuth login flow.
@@ -714,7 +712,7 @@ def subscription_login(
 # Message transformation utilities for subscription mode
 # =========================================================================
 
-DEFAULT_SUBSCRIPTION_INSTRUCTIONS = (
+DEFAULT_SYSTEM_MESSAGE = (
     "You are OpenHands agent, a helpful AI assistant that can interact "
     "with a computer to solve tasks."
 )
@@ -777,4 +775,4 @@ def transform_for_subscription(
         else item
         for item in input_items
     ]
-    return DEFAULT_SUBSCRIPTION_INSTRUCTIONS, normalized
+    return DEFAULT_SYSTEM_MESSAGE, normalized

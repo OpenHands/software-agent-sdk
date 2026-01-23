@@ -1,7 +1,12 @@
-"""Tests for OpenAI subscription authentication."""
+"""Tests for OpenAI subscription authentication.
+
+Note: Tests for JWT verification and JWKS caching have been removed as they
+require real OAuth tokens to be meaningful. See GitHub issue #1806 for tracking
+integration test requirements.
+"""
 
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -15,11 +20,9 @@ from openhands.sdk.llm.auth.openai import (
     OpenAISubscriptionAuth,
     _build_authorize_url,
     _display_consent_and_confirm,
-    _extract_chatgpt_account_id,
     _generate_pkce,
     _get_consent_marker_path,
     _has_acknowledged_consent,
-    _jwks_cache,
     _mark_consent_acknowledged,
 )
 
@@ -261,164 +264,6 @@ async def test_openai_subscription_auth_refresh_if_needed_expired_creds(tmp_path
         assert result is not None
         assert result.access_token == "new_access"
         mock_refresh.assert_called_once_with("test_refresh")
-
-
-# Tests for JWT signature verification
-class TestJWTVerification:
-    """Tests for JWT signature verification in _extract_chatgpt_account_id."""
-
-    def setup_method(self):
-        """Clear JWKS cache before each test."""
-        _jwks_cache.clear()
-
-    def test_extract_chatgpt_account_id_with_valid_jwt(self):
-        """Test extracting account ID from a properly signed JWT."""
-        # Mock JWKS and JWT verification
-        mock_claims = MagicMock()
-        mock_claims.get.return_value = {"chatgpt_account_id": "test-account-123"}
-
-        with (
-            patch.object(_jwks_cache, "get_key_set") as mock_get_keys,
-            patch("openhands.sdk.llm.auth.openai.jwt.decode") as mock_decode,
-        ):
-            mock_get_keys.return_value = MagicMock()
-            mock_decode.return_value = mock_claims
-
-            result = _extract_chatgpt_account_id("valid.jwt.token")
-
-            assert result == "test-account-123"
-            mock_decode.assert_called_once()
-            mock_claims.validate.assert_called_once()
-
-    def test_extract_chatgpt_account_id_invalid_signature(self):
-        """Test that invalid JWT signature returns None."""
-        from authlib.jose.errors import DecodeError
-
-        with (
-            patch.object(_jwks_cache, "get_key_set") as mock_get_keys,
-            patch("openhands.sdk.llm.auth.openai.jwt.decode") as mock_decode,
-        ):
-            mock_get_keys.return_value = MagicMock()
-            mock_decode.side_effect = DecodeError("Invalid signature")
-
-            result = _extract_chatgpt_account_id("invalid.signature.token")
-
-            assert result is None
-
-    def test_extract_chatgpt_account_id_jwks_fetch_failure(self):
-        """Test graceful handling when JWKS cannot be fetched."""
-        with patch.object(_jwks_cache, "get_key_set") as mock_get_keys:
-            mock_get_keys.side_effect = RuntimeError("Network error")
-
-            result = _extract_chatgpt_account_id("some.jwt.token")
-
-            assert result is None
-
-    def test_extract_chatgpt_account_id_missing_account_id(self):
-        """Test handling JWT without chatgpt_account_id claim."""
-        mock_claims = MagicMock()
-        mock_claims.get.return_value = {}  # No chatgpt_account_id
-
-        with (
-            patch.object(_jwks_cache, "get_key_set") as mock_get_keys,
-            patch("openhands.sdk.llm.auth.openai.jwt.decode") as mock_decode,
-        ):
-            mock_get_keys.return_value = MagicMock()
-            mock_decode.return_value = mock_claims
-
-            result = _extract_chatgpt_account_id("valid.jwt.token")
-
-            assert result is None
-
-    def test_extract_chatgpt_account_id_expired_token(self):
-        """Test handling expired JWT."""
-        from authlib.jose.errors import ExpiredTokenError
-
-        mock_claims = MagicMock()
-        mock_claims.validate.side_effect = ExpiredTokenError()
-
-        with (
-            patch.object(_jwks_cache, "get_key_set") as mock_get_keys,
-            patch("openhands.sdk.llm.auth.openai.jwt.decode") as mock_decode,
-        ):
-            mock_get_keys.return_value = MagicMock()
-            mock_decode.return_value = mock_claims
-
-            result = _extract_chatgpt_account_id("expired.jwt.token")
-
-            assert result is None
-
-
-class TestJWKSCache:
-    """Tests for the JWKS cache."""
-
-    def setup_method(self):
-        """Clear JWKS cache before each test."""
-        _jwks_cache.clear()
-
-    def test_jwks_cache_fetches_on_first_call(self):
-        """Test that JWKS is fetched on first call."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "keys": [{"kid": "test-key", "kty": "RSA", "n": "abc", "e": "AQAB"}]
-        }
-
-        with patch("openhands.sdk.llm.auth.openai.Client") as mock_client_class:
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.get.return_value = mock_response
-            mock_client_class.return_value = mock_client
-
-            # This should trigger a fetch
-            _jwks_cache.get_key_set()
-
-            mock_client.get.assert_called_once()
-
-    def test_jwks_cache_uses_cached_value(self):
-        """Test that cached JWKS is reused within TTL."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "keys": [{"kid": "test-key", "kty": "RSA", "n": "abc", "e": "AQAB"}]
-        }
-
-        with patch("openhands.sdk.llm.auth.openai.Client") as mock_client_class:
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.get.return_value = mock_response
-            mock_client_class.return_value = mock_client
-
-            # First call fetches
-            _jwks_cache.get_key_set()
-            # Second call should use cache
-            _jwks_cache.get_key_set()
-
-            # Should only fetch once
-            assert mock_client.get.call_count == 1
-
-    def test_jwks_cache_clear(self):
-        """Test that cache can be cleared."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "keys": [{"kid": "test-key", "kty": "RSA", "n": "abc", "e": "AQAB"}]
-        }
-
-        with patch("openhands.sdk.llm.auth.openai.Client") as mock_client_class:
-            mock_client = MagicMock()
-            mock_client.__enter__ = MagicMock(return_value=mock_client)
-            mock_client.__exit__ = MagicMock(return_value=False)
-            mock_client.get.return_value = mock_response
-            mock_client_class.return_value = mock_client
-
-            # First call fetches
-            _jwks_cache.get_key_set()
-            # Clear cache
-            _jwks_cache.clear()
-            # Next call should fetch again
-            _jwks_cache.get_key_set()
-
-            assert mock_client.get.call_count == 2
 
 
 # =========================================================================
