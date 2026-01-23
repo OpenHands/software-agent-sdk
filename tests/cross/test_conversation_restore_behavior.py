@@ -184,7 +184,9 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
             skill_keyword="alpha",
         )
 
-        with pytest.raises(ValueError, match="tools cannot be changed mid-conversation") as exc:
+        with pytest.raises(
+            ValueError, match="tools cannot be changed mid-conversation"
+        ) as exc:
             restored = lifecycle.restore(runtime_agent)
             restored.close()
 
@@ -229,7 +231,9 @@ def test_conversation_restore_fails_when_adding_tools(mock_completion):
             skill_keyword="alpha",
         )
 
-        with pytest.raises(ValueError, match="tools cannot be changed mid-conversation") as exc:
+        with pytest.raises(
+            ValueError, match="tools cannot be changed mid-conversation"
+        ) as exc:
             restored = lifecycle.restore(runtime_agent)
             restored.close()
 
