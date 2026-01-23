@@ -24,6 +24,7 @@ from openhands.sdk.observability.laminar import observe
 
 logger = getLogger(__name__)
 
+
 class Reason(Enum):
     """Reasons for condensation."""
 
@@ -123,7 +124,7 @@ class LLMSummarizingCondenser(RollingCondenser):
     def _event_to_string(
         event: LLMConvertibleEvent,
         max_event_str_length: int | None = None,
-        truncation_marker: str = "<TRUNCATED CONTENT>"
+        truncation_marker: str = "<TRUNCATED CONTENT>",
     ) -> str:
         """Convert an event to string, applying truncation if needed.
 
@@ -137,12 +138,12 @@ class LLMSummarizingCondenser(RollingCondenser):
         """
         if max_event_str_length is None:
             return str(event)
-        
+
         output = str(event)
 
         if len(output) <= max_event_str_length:
             return output
-        
+
         # Cut out the middle part of the string representation to ensure the size is
         # within limits, while preserving the start and end of the event.
         half_length = (max_event_str_length - len(truncation_marker)) // 2
@@ -279,7 +280,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
         """Perform a hard context reset by summarizing all events in the view.
-        
+
         Depending on how the hard context reset is triggered, this may fail (e.g., if
         the view is too large for the summarizing LLM to handle). In that case, we keep
         trimming down the contents until a summary can be generated.
@@ -299,7 +300,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                 # event string length.
                 if max_event_str_length is None:
                     max_event_str_length = max(len(str(event)) for event in view.events)
-                
+
                 # Since the summarization failed, reduce the max_event_str_length by 20%
                 assert max_event_str_length is not None
                 max_event_str_length = int(max_event_str_length * 0.8)
@@ -309,7 +310,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                     f"Hard context reset summarization failed with exception: {e}. "
                     f"Reducing max event size to {max_event_str_length} and retrying."
                 )
-            
+
             attempts_remaining -= 1
 
         logger.error("Hard context reset summarization failed after multiple attempts.")
