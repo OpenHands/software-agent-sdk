@@ -1,6 +1,7 @@
 import os
 from collections.abc import Sequence
 from enum import Enum
+from logging import getLogger
 
 from pydantic import Field, model_validator
 
@@ -20,6 +21,8 @@ from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.observability.laminar import observe
 
+
+logger = getLogger(__name__)
 
 class Reason(Enum):
     """Reasons for condensation."""
@@ -120,6 +123,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         self,
         forgotten_events: Sequence[LLMConvertibleEvent],
         summary_offset: int,
+        max_event_str_length: int | None = None,
     ) -> Condensation:
         """Generate a condensation by using the condenser's LLM to summarize forgotten
         events.
@@ -127,6 +131,8 @@ class LLMSummarizingCondenser(RollingCondenser):
         Args:
             forgotten_events: The list of events to be summarized.
             summary_offset: The index where the summary event should be inserted.
+            max_event_str_length: Optional maximum length for each event string. If
+                provided, event strings longer than this will be truncated.
 
         Returns:
             Condensation: The generated condensation object.
@@ -136,8 +142,27 @@ class LLMSummarizingCondenser(RollingCondenser):
         """
         assert len(forgotten_events) > 0, "No events to condense."
 
+        # Closure that handles conversion to string. Applies truncation if needed.
+        def _event_to_str(event: LLMConvertibleEvent) -> str:
+            if max_event_str_length is None:
+                return str(event)
+            
+            output = str(event)
+
+            if len(output) <= max_event_str_length:
+                return output
+            
+            # Cut out the middle part of the string representation to ensure the size is
+            # within limits, while preserving the start and end of the event.
+            truncation_marker = "<TRUNCATED CONTENT>"
+            half_length = (max_event_str_length - len(truncation_marker)) // 2
+            return output[:half_length] + truncation_marker + output[-half_length:]
+
         # Convert events to strings for the template
-        event_strings = [str(forgotten_event) for forgotten_event in forgotten_events]
+        event_strings = [
+            _event_to_str(forgotten_event)
+            for forgotten_event in forgotten_events
+        ]
 
         prompt = render_template(
             os.path.join(os.path.dirname(__file__), "prompts"),
@@ -238,12 +263,42 @@ class LLMSummarizingCondenser(RollingCondenser):
         view: View,
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
-        # If we have to do a hard context reset, we can attempt to summarize all events
-        # in one go.
-        return self._generate_condensation(
-            forgotten_events=view.events,
-            summary_offset=0,
-        )
+        """Perform a hard context reset by summarizing all events in the view.
+        
+        Depending on how the hard context reset is triggered, this may fail (e.g., if
+        the view is too large for the summarizing LLM to handle). In that case, we keep
+        trimming down the contents until a summary can be generated.
+        """
+        max_event_str_length: int | None = None
+        attempts_remaining: int = 5
+
+        while attempts_remaining > 0:
+            try:
+                return self._generate_condensation(
+                    forgotten_events=view.events,
+                    summary_offset=0,
+                    max_event_str_length=max_event_str_length,
+                )
+            except Exception as e:
+                # If we haven't set a max_event_str_length yet, set it as the largest
+                # event string length.
+                if max_event_str_length is None:
+                    max_event_str_length = max(len(str(event)) for event in view.events)
+                
+                # Since the summarization failed, reduce the max_event_str_length by 20%
+                assert max_event_str_length is not None
+                max_event_str_length = int(max_event_str_length * 0.8)
+
+                # Log the exception so we can track these failures
+                logger.warning(
+                    f"Hard context reset summarization failed with exception: {e}. "
+                    f"Reducing max event size to {max_event_str_length} and retrying."
+                )
+            
+            attempts_remaining -= 1
+
+        logger.error("Hard context reset summarization failed after multiple attempts.")
+        return None
 
     @observe(ignore_inputs=["view", "agent_llm"])
     def get_condensation(
