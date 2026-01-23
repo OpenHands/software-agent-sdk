@@ -209,25 +209,25 @@ class Message(BaseModel):
     # These are the roles in the LLM's APIs
     role: Literal["user", "system", "assistant", "tool"]
     content: Sequence[TextContent | ImageContent] = Field(default_factory=list)
-    cache_enabled: bool = False
-    vision_enabled: bool = False
+    cache_enabled: bool | None = None
+    vision_enabled: bool | None = None
     # function calling
-    function_calling_enabled: bool = False
+    function_calling_enabled: bool | None = None
     # - tool calls (from LLM)
     tool_calls: list[MessageToolCall] | None = None
     # - tool execution result (to LLM)
     tool_call_id: str | None = None
     name: str | None = None  # name of the tool
-    force_string_serializer: bool = Field(
-        default=False,
+    force_string_serializer: bool | None = Field(
+        default=None,
         description=(
             "Force using string content serializer when sending to LLM API. "
             "Useful for providers that do not support list content, "
             "like HuggingFace and Groq."
         ),
     )
-    send_reasoning_content: bool = Field(
-        default=False,
+    send_reasoning_content: bool | None = Field(
+        default=None,
         description=(
             "Whether to include the full reasoning content when sending to the LLM. "
             "Useful for models that support extended reasoning, like Kimi-K2-thinking."
@@ -271,6 +271,18 @@ class Message(BaseModel):
         - Assistant tool call turn: role == "assistant" and self.tool_calls
         - Tool result turn: role == "tool" and self.tool_call_id (with name)
         """
+        for field in (
+            "force_string_serializer",
+            "cache_enabled",
+            "vision_enabled",
+            "function_calling_enabled",
+            "send_reasoning_content",
+        ):
+            if getattr(self, field) is None:
+                raise ValueError(
+                    f"{field} must be set before converting to chat format"
+                )
+
         if not self.force_string_serializer and (
             self.cache_enabled or self.vision_enabled or self.function_calling_enabled
         ):

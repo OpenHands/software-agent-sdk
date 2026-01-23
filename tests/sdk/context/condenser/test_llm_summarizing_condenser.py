@@ -568,7 +568,6 @@ def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
 
     with pytest.raises(AssertionError, match="No events to condense"):
         condenser._generate_condensation(
-            summary_event_content="",
             forgotten_events=[],
             summary_offset=0,
         )

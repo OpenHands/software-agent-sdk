@@ -17,7 +17,6 @@ from openhands.sdk.context.prompts import render_template
 from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
-from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.observability.laminar import observe
 
@@ -117,25 +116,8 @@ class LLMSummarizingCondenser(RollingCondenser):
         if Reason.REQUEST in reasons:
             return CondensationRequirement.HARD
 
-    def _get_summary_event_content(self, view: View) -> str:
-        """Extract the text content from the summary event in the view, if any.
-
-        If there is no summary event or it does not contain text content, returns an
-        empty string.
-        """
-        summary_event_content: str = ""
-
-        summary_event = view.summary_event
-        if isinstance(summary_event, MessageEvent):
-            message_content = summary_event.llm_message.content[0]
-            if isinstance(message_content, TextContent):
-                summary_event_content = message_content.text
-
-        return summary_event_content
-
     def _generate_condensation(
         self,
-        summary_event_content: str,
         forgotten_events: Sequence[LLMConvertibleEvent],
         summary_offset: int,
     ) -> Condensation:
@@ -143,7 +125,6 @@ class LLMSummarizingCondenser(RollingCondenser):
         events.
 
         Args:
-            summary_event_content: The content of the previous summary event.
             forgotten_events: The list of events to be summarized.
             summary_offset: The index where the summary event should be inserted.
 
@@ -161,7 +142,6 @@ class LLMSummarizingCondenser(RollingCondenser):
         prompt = render_template(
             os.path.join(os.path.dirname(__file__), "prompts"),
             "summarizing_prompt.j2",
-            previous_summary=summary_event_content,
             events=event_strings,
         )
 
@@ -284,10 +264,7 @@ class LLMSummarizingCondenser(RollingCondenser):
                 "events. Consider adjusting keep_first or max_size parameters."
             )
 
-        summary_event_content = self._get_summary_event_content(view)
-
         return self._generate_condensation(
-            summary_event_content=summary_event_content,
             forgotten_events=forgotten_events,
             summary_offset=summary_offset,
         )

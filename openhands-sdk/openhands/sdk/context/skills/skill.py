@@ -1,7 +1,7 @@
 import io
 import re
 from pathlib import Path
-from typing import Annotated, ClassVar, Union
+from typing import Annotated, ClassVar, Literal, Union
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -35,6 +35,22 @@ logger = get_logger(__name__)
 # Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
 # These files are always active, so we want to keep them reasonably sized
 THIRD_PARTY_SKILL_MAX_CHARS = 10_000
+
+
+class SkillInfo(BaseModel):
+    """Lightweight representation of a skill's essential information.
+
+    This class provides a standardized, serializable format for skill metadata
+    that can be used across different components of the system.
+    """
+
+    name: str
+    type: Literal["repo", "knowledge", "agentskills"]
+    content: str
+    triggers: list[str] = Field(default_factory=list)
+    source: str | None = None
+    description: str | None = None
+    is_agentskills_format: bool = False
 
 
 class SkillResources(BaseModel):
@@ -559,6 +575,48 @@ class Skill(BaseModel):
         variables = self.extract_variables(self.content)
         logger.debug(f"This skill requires user input: {variables}")
         return len(variables) > 0
+
+    def get_skill_type(self) -> Literal["repo", "knowledge", "agentskills"]:
+        """Determine the type of this skill.
+
+        Returns:
+            "agentskills" for AgentSkills format, "repo" for always-active skills,
+            "knowledge" for trigger-based skills.
+        """
+        if self.is_agentskills_format:
+            return "agentskills"
+        elif self.trigger is None:
+            return "repo"
+        else:
+            return "knowledge"
+
+    def get_triggers(self) -> list[str]:
+        """Extract trigger keywords from this skill.
+
+        Returns:
+            List of trigger strings, or empty list if no triggers.
+        """
+        if isinstance(self.trigger, KeywordTrigger):
+            return self.trigger.keywords
+        elif isinstance(self.trigger, TaskTrigger):
+            return self.trigger.triggers
+        return []
+
+    def to_skill_info(self) -> SkillInfo:
+        """Convert this skill to a SkillInfo.
+
+        Returns:
+            SkillInfo containing the skill's essential information.
+        """
+        return SkillInfo(
+            name=self.name,
+            type=self.get_skill_type(),
+            content=self.content,
+            triggers=self.get_triggers(),
+            source=self.source,
+            description=self.description,
+            is_agentskills_format=self.is_agentskills_format,
+        )
 
 
 def load_skills_from_dir(

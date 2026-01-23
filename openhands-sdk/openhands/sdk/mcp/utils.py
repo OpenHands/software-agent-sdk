@@ -10,7 +10,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp.client import MCPClient
 from openhands.sdk.mcp.exceptions import MCPTimeoutError
 from openhands.sdk.mcp.tool import MCPToolDefinition
-from openhands.sdk.tool.tool import ToolDefinition
 
 
 logger = get_logger(__name__)
@@ -32,37 +31,38 @@ async def log_handler(message: LogMessage):
     logger.log(level, msg, extra=extra)
 
 
-async def _list_tools(client: MCPClient) -> list[ToolDefinition]:
-    """List tools from an MCP client."""
-    tools: list[ToolDefinition] = []
-
-    async with client:
-        assert client.is_connected(), "MCP client is not connected."
-        mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
-        for mcp_tool in mcp_type_tools:
-            tool_sequence = MCPToolDefinition.create(
-                mcp_tool=mcp_tool, mcp_client=client
-            )
-            tools.extend(tool_sequence)  # Flatten sequence into list
-    assert not client.is_connected(), (
-        "MCP client should be disconnected after listing tools."
-    )
-    return tools
+async def _connect_and_list_tools(client: MCPClient) -> None:
+    """Connect to MCP server and populate client._tools."""
+    await client.connect()
+    mcp_type_tools: list[mcp.types.Tool] = await client.list_tools()
+    for mcp_tool in mcp_type_tools:
+        tool_sequence = MCPToolDefinition.create(mcp_tool=mcp_tool, mcp_client=client)
+        client._tools.extend(tool_sequence)
 
 
 def create_mcp_tools(
     config: dict | MCPConfig,
     timeout: float = 30.0,
-) -> list[MCPToolDefinition]:
-    """Create MCP tools from MCP configuration."""
-    tools: list[MCPToolDefinition] = []
+) -> MCPClient:
+    """Create MCP tools from MCP configuration.
+
+    Returns an MCPClient with tools populated. Use as a context manager:
+
+        with create_mcp_tools(config) as client:
+            for tool in client.tools:
+                # use tool
+        # Connection automatically closed
+    """
     if isinstance(config, dict):
         config = MCPConfig.model_validate(config)
     client = MCPClient(config, log_handler=log_handler)
 
     try:
-        tools = client.call_async_from_sync(_list_tools, timeout=timeout, client=client)
+        client.call_async_from_sync(
+            _connect_and_list_tools, timeout=timeout, client=client
+        )
     except TimeoutError as e:
+        client.sync_close()
         # Extract server names from config for better error message
         server_names = (
             list(config.mcpServers.keys()) if config.mcpServers else ["unknown"]
@@ -78,6 +78,14 @@ def create_mcp_tools(
         raise MCPTimeoutError(
             error_msg, timeout=timeout, config=config.model_dump()
         ) from e
+    except BaseException:
+        try:
+            client.sync_close()
+        except Exception as close_exc:
+            logger.warning(
+                "Failed to close MCP client during error cleanup", exc_info=close_exc
+            )
+        raise
 
-    logger.info(f"Created {len(tools)} MCP tools: {[t.name for t in tools]}")
-    return tools
+    logger.info(f"Created {len(client.tools)} MCP tools: {[t.name for t in client]}")
+    return client
