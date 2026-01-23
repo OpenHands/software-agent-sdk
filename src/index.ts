@@ -10,7 +10,8 @@ export { RemoteConversation } from './conversation/remote-conversation';
 export { Conversation } from './conversation/conversation';
 export { ConversationManager } from './conversation/conversation-manager';
 export { RemoteWorkspace } from './workspace/remote-workspace';
-export { Workspace } from './workspace/workspace';
+export { LocalWorkspace } from './workspace/local-workspace';
+export { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
 
@@ -63,6 +64,13 @@ export type {
   GitDiff,
 } from './models/workspace';
 
+// Workspace base types and interface
+export type {
+  IWorkspace,
+  BaseWorkspaceOptions,
+  WorkspaceType,
+} from './workspace/base';
+
 // Conversation models
 export type {
   ConversationInfo,
@@ -83,6 +91,10 @@ export type { WebSocketClientOptions } from './events/websocket-client';
 
 export type { RemoteWorkspaceOptions } from './workspace/remote-workspace';
 
+export type { LocalWorkspaceOptions } from './workspace/local-workspace';
+
+export type { WorkspaceOptions, CreateWorkspaceOptions } from './workspace/workspace';
+
 export type { RemoteConversationOptions } from './conversation/remote-conversation';
 
 export type { ConversationManagerOptions } from './conversation/conversation-manager';
@@ -92,7 +104,8 @@ import { RemoteConversation } from './conversation/remote-conversation';
 import { Conversation } from './conversation/conversation';
 import { ConversationManager } from './conversation/conversation-manager';
 import { RemoteWorkspace } from './workspace/remote-workspace';
-import { Workspace } from './workspace/workspace';
+import { LocalWorkspace } from './workspace/local-workspace';
+import { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/workspace';
 import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
@@ -106,7 +119,10 @@ export default {
   Conversation,
   ConversationManager,
   RemoteWorkspace,
+  LocalWorkspace,
   Workspace,
+  createWorkspace,
+  createWorkspaceAuto,
   RemoteState,
   RemoteEventsList,
   WebSocketCallbackClient,

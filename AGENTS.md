@@ -59,6 +59,32 @@ await conversation.workspace.write_file('/path/file.txt', 'content')
 state = conversation.state
 ```
 
+### Workspace Architecture
+
+The workspace module follows the Python SDK's architecture with a common interface and multiple implementations:
+
+```
+src/workspace/
+├── base.ts           # IWorkspace interface defining the contract
+├── remote-workspace.ts  # RemoteWorkspace - connects to remote agent server
+├── local-workspace.ts   # LocalWorkspace - stub for local execution (not yet implemented)
+└── workspace.ts      # Factory functions and Workspace class (backwards compatible)
+```
+
+**IWorkspace Interface**: Defines the common contract for all workspace implementations:
+- `executeCommand()` - Execute bash commands
+- `fileUpload()` / `fileDownload()` - File operations
+- `gitChanges()` / `gitDiff()` - Git operations
+- `close()` - Cleanup resources
+
+**RemoteWorkspace**: Fully implemented class that connects to a remote OpenHands agent server via HTTP API.
+
+**LocalWorkspace**: Stub implementation for local execution. Methods throw errors indicating they need Node.js-specific implementation.
+
+**Factory Functions**:
+- `createWorkspace({ type, options })` - Explicit type selection
+- `createWorkspaceAuto(options)` - Auto-detect based on presence of `host` option
+
 ## Development Workflow
 
 1. **API Changes**: When the OpenAPI specification is updated, corresponding TypeScript interfaces and client methods should be updated

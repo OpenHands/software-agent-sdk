@@ -1,5 +1,8 @@
 /**
  * Remote workspace implementation for executing commands and file operations
+ *
+ * This implements the IWorkspace interface by connecting to a remote OpenHands
+ * agent server. It mirrors the Python SDK's RemoteWorkspace class.
  */
 
 import { HttpClient } from '../client/http-client';
@@ -10,14 +13,37 @@ import {
   GitChange,
   GitDiff,
 } from '../models/workspace';
+import { IWorkspace, BaseWorkspaceOptions } from './base';
 
-export interface RemoteWorkspaceOptions {
+/**
+ * Options for creating a RemoteWorkspace instance.
+ */
+export interface RemoteWorkspaceOptions extends BaseWorkspaceOptions {
+  /** The remote host URL for the workspace (e.g., 'http://localhost:8000') */
   host: string;
-  workingDir: string;
+  /** API key for authenticating with the remote host (optional) */
   apiKey?: string;
 }
 
-export class RemoteWorkspace {
+/**
+ * Remote workspace implementation that connects to an OpenHands agent server.
+ *
+ * RemoteWorkspace provides access to a sandboxed environment running on a remote
+ * OpenHands agent server. This is the recommended approach for production deployments
+ * as it provides better isolation and security.
+ *
+ * Example:
+ * ```typescript
+ * const workspace = new RemoteWorkspace({
+ *   host: 'https://agent-server.example.com',
+ *   workingDir: '/workspace',
+ *   apiKey: 'your-api-key'
+ * });
+ * const result = await workspace.executeCommand('ls -la');
+ * workspace.close();
+ * ```
+ */
+export class RemoteWorkspace implements IWorkspace {
   public readonly host: string;
   public readonly workingDir: string;
   public readonly apiKey?: string;
