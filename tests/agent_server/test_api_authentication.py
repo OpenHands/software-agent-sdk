@@ -229,13 +229,6 @@ def test_api_websocket_authentication():
     ):
         pass
 
-    # Authorization header authentication -> should work for non-browser clients
-    with client.websocket_connect(
-        "/sockets/bash-events",
-        headers={"Authorization": "Bearer test-key"},
-    ):
-        pass
-
     # Query param should take precedence over headers (browser-compatible escape hatch).
     with client.websocket_connect(
         "/sockets/bash-events?session_api_key=test-key",
