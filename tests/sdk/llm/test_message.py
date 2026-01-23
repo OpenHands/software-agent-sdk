@@ -337,7 +337,7 @@ def test_message_with_reasoning_content_when_disabled():
 
 
 def test_message_with_reasoning_content_default_disabled():
-    """Test that reasoning_content is NOT included when send_reasoning_content is False."""
+    """Test that reasoning_content is NOT included when send_reasoning_content=False."""
     from openhands.sdk.llm.message import Message, TextContent
 
     message = Message(
