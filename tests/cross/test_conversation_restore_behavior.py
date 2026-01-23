@@ -35,6 +35,10 @@ register_tool("TerminalTool", TerminalTool)
 register_tool("FileEditorTool", FileEditorTool)
 
 
+class DifferentAgent(Agent):
+    pass
+
+
 @dataclass
 class RestoreLifecycle:
     """Reusable harness that exercises the persistence/restore lifecycle."""
@@ -85,8 +89,23 @@ def _agent(
     condenser_max_size: int,
     skill_name: str,
     skill_keyword: str,
+    include_default_tools: list[str] | None = None,
+    temperature: float | None = None,
+    reasoning_effort: str | None = None,
+    agent_type: type[Agent] = Agent,
 ) -> Agent:
-    llm = LLM(model=llm_model, api_key=SecretStr("test-key"), usage_id="test-llm")
+    llm_kwargs: dict[str, Any] = {
+        "model": llm_model,
+        "api_key": SecretStr("test-key"),
+        "usage_id": "test-llm",
+    }
+    if temperature is not None:
+        llm_kwargs["temperature"] = temperature
+    if reasoning_effort is not None:
+        llm_kwargs["reasoning_effort"] = reasoning_effort
+
+    llm = LLM(**llm_kwargs)
+
     condenser = LLMSummarizingCondenser(
         llm=llm,
         max_size=condenser_max_size,
@@ -103,7 +122,16 @@ def _agent(
         ]
     )
 
-    return Agent(llm=llm, tools=tools, condenser=condenser, agent_context=ctx)
+    agent_kwargs: dict[str, Any] = {
+        "llm": llm,
+        "tools": tools,
+        "condenser": condenser,
+        "agent_context": ctx,
+    }
+    if include_default_tools is not None:
+        agent_kwargs["include_default_tools"] = include_default_tools
+
+    return agent_type(**agent_kwargs)
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
@@ -112,9 +140,15 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
 
     from tests.conftest import create_mock_litellm_response
 
-    mock_completion.return_value = create_mock_litellm_response(
-        content="I'll help you with that.", finish_reason="stop"
-    )
+    captured_completion_kwargs: list[dict[str, Any]] = []
+
+    def capture_completion(*_args: Any, **kwargs: Any):
+        captured_completion_kwargs.append(kwargs)
+        return create_mock_litellm_response(
+            content="I'll help you with that.", finish_reason="stop"
+        )
+
+    mock_completion.side_effect = capture_completion
 
     with tempfile.TemporaryDirectory() as temp_dir:
         base = Path(temp_dir)
@@ -125,24 +159,39 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
         lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
         lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
 
-        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
-        agent = _agent(
+        persisted_tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        persisted_agent = _agent(
             llm_model="gpt-4o-mini",
-            tools=tools,
+            tools=persisted_tools,
             condenser_max_size=80,
             skill_name="skill-v1",
             skill_keyword="alpha",
         )
 
-        initial = lifecycle.run_initial_session(agent)
+        initial = lifecycle.run_initial_session(persisted_agent)
 
-        restored = lifecycle.restore(agent)
+        runtime_tools = [Tool(name="FileEditorTool"), Tool(name="TerminalTool")]
+        runtime_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=runtime_tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            temperature=0.42,
+        )
+
+        restored = lifecycle.restore(runtime_agent)
         try:
             assert restored.id == initial["conversation_id"]
             assert len(restored.state.events) == initial["event_count"]
 
             lifecycle.send_and_run(restored, "Third message")
             assert len(restored.state.events) > initial["event_count"]
+
+            last_call = captured_completion_kwargs[-1]
+            assert last_call["model"] == "gpt-4o-mini"
+            assert last_call["temperature"] == pytest.approx(0.42)
+            assert "messages" in last_call
         finally:
             restored.close()
 
@@ -242,6 +291,150 @@ def test_conversation_restore_fails_when_adding_tools(mock_completion):
 
 
 @patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
+    """Restore must fail when persisted and runtime agent types differ."""
+
+    from tests.conftest import create_mock_litellm_response
+
+    mock_completion.return_value = create_mock_litellm_response(
+        content="I'll help you with that.", finish_reason="stop"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        persisted_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+        lifecycle.run_initial_session(persisted_agent)
+
+        runtime_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            agent_type=DifferentAgent,
+        )
+
+        with pytest.raises(ValueError) as exc:
+            restored = lifecycle.restore(runtime_agent)
+            restored.close()
+
+        assert "persisted agent is of type" in str(exc.value)
+        assert "self is of type" in str(exc.value)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
+    """Restore must fail if include_default_tools removes a built-in tool."""
+
+    from tests.conftest import create_mock_litellm_response
+
+    mock_completion.return_value = create_mock_litellm_response(
+        content="I'll help you with that.", finish_reason="stop"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        persisted_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            include_default_tools=["FinishTool", "ThinkTool"],
+        )
+        lifecycle.run_initial_session(persisted_agent)
+
+        runtime_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            include_default_tools=["FinishTool"],
+        )
+
+        with pytest.raises(
+            ValueError, match="tools cannot be changed mid-conversation"
+        ) as exc:
+            restored = lifecycle.restore(runtime_agent)
+            restored.close()
+
+        assert "removed:" in str(exc.value)
+        assert "think" in str(exc.value)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_conversation_restore_fails_when_default_tools_added(mock_completion):
+    """Restore must fail if include_default_tools adds a built-in tool."""
+
+    from tests.conftest import create_mock_litellm_response
+
+    mock_completion.return_value = create_mock_litellm_response(
+        content="I'll help you with that.", finish_reason="stop"
+    )
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+        persisted_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            include_default_tools=["FinishTool"],
+        )
+        lifecycle.run_initial_session(persisted_agent)
+
+        runtime_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            include_default_tools=["FinishTool", "ThinkTool"],
+        )
+
+        with pytest.raises(
+            ValueError, match="tools cannot be changed mid-conversation"
+        ) as exc:
+            restored = lifecycle.restore(runtime_agent)
+            restored.close()
+
+        assert "added:" in str(exc.value)
+        assert "think" in str(exc.value)
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
 def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
     mock_completion,
 ):
@@ -297,5 +490,67 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
 
             restored.run()
             assert len(restored.state.events) > initial["event_count"]
+        finally:
+            restored.close()
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
+    """Reasoning models should accept reasoning_effort and ignore temperature/top_p."""
+
+    from tests.conftest import create_mock_litellm_response
+
+    captured_completion_kwargs: list[dict[str, Any]] = []
+
+    def capture_completion(*_args: Any, **kwargs: Any):
+        captured_completion_kwargs.append(kwargs)
+        return create_mock_litellm_response(
+            content="Acknowledged.", finish_reason="stop"
+        )
+
+    mock_completion.side_effect = capture_completion
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        base = Path(temp_dir)
+        lifecycle = RestoreLifecycle(
+            workspace_dir=base / "workspace",
+            persistence_base_dir=base / "persist",
+        )
+        lifecycle.workspace_dir.mkdir(parents=True, exist_ok=True)
+        lifecycle.persistence_base_dir.mkdir(parents=True, exist_ok=True)
+
+        tools = [Tool(name="TerminalTool"), Tool(name="FileEditorTool")]
+
+        persisted_agent = _agent(
+            llm_model="gpt-4o-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+        )
+        initial = lifecycle.run_initial_session(persisted_agent)
+
+        runtime_agent = _agent(
+            llm_model="o3-mini",
+            tools=tools,
+            condenser_max_size=80,
+            skill_name="skill-v1",
+            skill_keyword="alpha",
+            temperature=0.33,
+            reasoning_effort="none",
+        )
+
+        restored = lifecycle.restore(runtime_agent)
+        try:
+            assert restored.id == initial["conversation_id"]
+            assert len(restored.state.events) == initial["event_count"]
+
+            lifecycle.send_and_run(restored, "Third message")
+
+            last_call = captured_completion_kwargs[-1]
+            assert last_call["model"] == "o3-mini"
+            assert last_call["reasoning_effort"] == "none"
+            assert "temperature" not in last_call
+            assert "top_p" not in last_call
         finally:
             restored.close()
