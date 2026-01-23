@@ -433,7 +433,11 @@ def test_thinking_blocks_in_message_dict_via_to_chat_dict():
         role="assistant",
         content=[TextContent(text="Final result.")],
         thinking_blocks=[thinking_block],
+        cache_enabled=False,
+        vision_enabled=False,
         function_calling_enabled=True,
+        force_string_serializer=False,
+        send_reasoning_content=False,
     )
 
     # Test via to_chat_dict which calls _list_serializer
