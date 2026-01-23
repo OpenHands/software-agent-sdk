@@ -1,4 +1,5 @@
 import os
+import warnings
 from unittest.mock import patch
 
 import pytest
@@ -123,6 +124,19 @@ def test_llm_config_custom_values():
     assert config.safety_settings == [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"}
     ]
+
+
+def test_safety_settings_no_warning_when_none_or_unset():
+    """Test that no warning is emitted when safety_settings is None or not provided."""
+    with patch(
+        "openhands.sdk.utils.deprecation._current_version", return_value="1.10.0"
+    ):
+        with warnings.catch_warnings(record=True) as rec:
+            warnings.simplefilter("always")
+            LLM(model="gpt-4", usage_id="test-llm")
+            LLM(model="gpt-4", usage_id="test-llm", safety_settings=None)
+
+        assert [w for w in rec if "LLM.safety_settings" in str(w.message)] == []
 
 
 def test_llm_config_secret_str():
