@@ -305,9 +305,14 @@ class Message(BaseModel):
             message_dict["tool_call_id"] = self.tool_call_id
             message_dict["name"] = self.name
 
-        # Required for model like kimi-k2-thinking
-        if self.send_reasoning_content and self.reasoning_content:
-            message_dict["reasoning_content"] = self.reasoning_content
+        # Required for models like kimi-k2-thinking and deepseek-reasoner
+        # DeepSeek requires reasoning_content to be present in assistant messages
+        # during tool call turns, even if it's None
+        if self.send_reasoning_content:
+            if self.role == "assistant":
+                # Always include reasoning_content for assistant messages when enabled
+                # Some providers (e.g., DeepSeek) require this field to be present
+                message_dict["reasoning_content"] = self.reasoning_content
 
         return message_dict
 
