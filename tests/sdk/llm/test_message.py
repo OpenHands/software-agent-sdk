@@ -392,3 +392,67 @@ def test_message_with_reasoning_content_list_serializer():
     assert isinstance(result["content"], list)
     assert result["content"][0]["text"] == "Final answer"
     assert result["reasoning_content"] == "Step by step reasoning"
+
+
+def test_message_deprecated_fields_emit_warnings():
+    """Test that deprecated fields emit deprecation warnings but don't fail."""
+    import warnings
+
+    from deprecation import DeprecatedWarning
+
+    from openhands.sdk.llm.message import Message
+
+    deprecated_fields = [
+        "cache_enabled",
+        "vision_enabled",
+        "function_calling_enabled",
+        "force_string_serializer",
+        "send_reasoning_content",
+    ]
+
+    # Test each deprecated field individually using model_validate with dict
+    for field in deprecated_fields:
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            Message.model_validate({"role": "user", "content": "test", field: True})
+            # Should have received a deprecation warning
+            deprecation_warnings = [
+                x for x in w if issubclass(x.category, DeprecatedWarning)
+            ]
+            assert len(deprecation_warnings) == 1, (
+                f"Expected 1 warning for {field}, got {len(deprecation_warnings)}"
+            )
+            assert field in str(deprecation_warnings[0].message)
+
+
+def test_message_deprecated_fields_are_ignored():
+    """Test that deprecated fields are ignored and don't affect the Message."""
+    import warnings
+
+    from openhands.sdk.llm.message import Message
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # Suppress warnings for this test
+        # Use model_validate to pass extra fields that pyright doesn't know about
+        message = Message.model_validate(
+            {
+                "role": "user",
+                "content": "test",
+                "cache_enabled": True,
+                "vision_enabled": True,
+                "function_calling_enabled": True,
+                "force_string_serializer": True,
+                "send_reasoning_content": True,
+            }
+        )
+
+    # The message should be created successfully
+    assert message.role == "user"
+    assert len(message.content) == 1
+
+    # The deprecated fields should not exist on the model
+    assert not hasattr(message, "cache_enabled")
+    assert not hasattr(message, "vision_enabled")
+    assert not hasattr(message, "function_calling_enabled")
+    assert not hasattr(message, "force_string_serializer")
+    assert not hasattr(message, "send_reasoning_content")

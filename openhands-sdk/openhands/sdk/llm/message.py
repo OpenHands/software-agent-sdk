@@ -11,10 +11,11 @@ from litellm.types.responses.main import (
 from litellm.types.utils import Message as LiteLLMMessage
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
@@ -229,6 +230,47 @@ class Message(BaseModel):
         default=None,
         description="OpenAI Responses reasoning item from model output",
     )
+
+    # Deprecated fields that were moved to to_chat_dict() parameters.
+    # These fields are ignored but accepted for backward compatibility.
+    # REMOVE_AT: 1.12.0 - Remove this list and the _handle_deprecated_fields validator
+    _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = (
+        "cache_enabled",
+        "vision_enabled",
+        "function_calling_enabled",
+        "force_string_serializer",
+        "send_reasoning_content",
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_fields(cls, data: Any) -> Any:
+        """Handle deprecated fields by emitting warnings and removing them.
+
+        REMOVE_AT: 1.12.0 - Remove this validator along with _DEPRECATED_FIELDS
+        """
+        if not isinstance(data, dict):
+            return data
+
+        deprecated_found = [f for f in cls._DEPRECATED_FIELDS if f in data]
+        for field in deprecated_found:
+            warn_deprecated(
+                f"Message.{field}",
+                deprecated_in="1.9.1",
+                removed_in="1.12.0",
+                details=(
+                    f"The '{field}' field has been removed from Message. "
+                    "Pass it as a parameter to to_chat_dict() instead, or use "
+                    "LLM.format_messages_for_llm() which handles this automatically."
+                ),
+                stacklevel=4,  # Adjust for validator call depth
+            )
+            # Remove the deprecated field so Pydantic doesn't complain
+            del data[field]
+
+        return data
 
     @property
     def contains_image(self) -> bool:
