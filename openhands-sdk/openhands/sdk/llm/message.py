@@ -209,30 +209,11 @@ class Message(BaseModel):
     # These are the roles in the LLM's APIs
     role: Literal["user", "system", "assistant", "tool"]
     content: Sequence[TextContent | ImageContent] = Field(default_factory=list)
-    cache_enabled: bool | None = None
-    vision_enabled: bool | None = None
-    # function calling
-    function_calling_enabled: bool | None = None
     # - tool calls (from LLM)
     tool_calls: list[MessageToolCall] | None = None
     # - tool execution result (to LLM)
     tool_call_id: str | None = None
     name: str | None = None  # name of the tool
-    force_string_serializer: bool | None = Field(
-        default=None,
-        description=(
-            "Force using string content serializer when sending to LLM API. "
-            "Useful for providers that do not support list content, "
-            "like HuggingFace and Groq."
-        ),
-    )
-    send_reasoning_content: bool | None = Field(
-        default=None,
-        description=(
-            "Whether to include the full reasoning content when sending to the LLM. "
-            "Useful for models that support extended reasoning, like Kimi-K2-thinking."
-        ),
-    )
     # reasoning content (from reasoning models like o1, Claude thinking, DeepSeek R1)
     reasoning_content: str | None = Field(
         default=None,
@@ -264,29 +245,32 @@ class Message(BaseModel):
             return [TextContent(text=v)]
         return v
 
-    def to_chat_dict(self) -> dict[str, Any]:
+    def to_chat_dict(
+        self,
+        *,
+        cache_enabled: bool,
+        vision_enabled: bool,
+        function_calling_enabled: bool,
+        force_string_serializer: bool,
+        send_reasoning_content: bool,
+    ) -> dict[str, Any]:
         """Serialize message for OpenAI Chat Completions.
+
+        Args:
+            cache_enabled: Whether prompt caching is active.
+            vision_enabled: Whether vision/image processing is enabled.
+            function_calling_enabled: Whether native function calling is enabled.
+            force_string_serializer: Force string serializer instead of list format.
+            send_reasoning_content: Whether to include reasoning_content in output.
 
         Chooses the appropriate content serializer and then injects threading keys:
         - Assistant tool call turn: role == "assistant" and self.tool_calls
         - Tool result turn: role == "tool" and self.tool_call_id (with name)
         """
-        for field in (
-            "force_string_serializer",
-            "cache_enabled",
-            "vision_enabled",
-            "function_calling_enabled",
-            "send_reasoning_content",
+        if not force_string_serializer and (
+            cache_enabled or vision_enabled or function_calling_enabled
         ):
-            if getattr(self, field) is None:
-                raise ValueError(
-                    f"{field} must be set before converting to chat format"
-                )
-
-        if not self.force_string_serializer and (
-            self.cache_enabled or self.vision_enabled or self.function_calling_enabled
-        ):
-            message_dict = self._list_serializer()
+            message_dict = self._list_serializer(vision_enabled=vision_enabled)
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
             # single string
@@ -306,7 +290,7 @@ class Message(BaseModel):
             message_dict["name"] = self.name
 
         # Required for model like kimi-k2-thinking
-        if self.send_reasoning_content and self.reasoning_content:
+        if send_reasoning_content and self.reasoning_content:
             message_dict["reasoning_content"] = self.reasoning_content
 
         return message_dict
@@ -321,7 +305,7 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _list_serializer(self) -> dict[str, Any]:
+    def _list_serializer(self, *, vision_enabled: bool) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
         role_tool_with_prompt_caching = False
 
@@ -349,7 +333,7 @@ class Message(BaseModel):
                     d.pop("cache_control", None)
 
             # Handle vision-enabled filtering for ImageContent
-            if isinstance(item, ImageContent) and self.vision_enabled:
+            if isinstance(item, ImageContent) and vision_enabled:
                 content.extend(item_dicts)
             elif not isinstance(item, ImageContent):
                 # Add non-image content (TextContent, etc.)

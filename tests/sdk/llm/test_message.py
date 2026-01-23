@@ -3,6 +3,16 @@ from unittest.mock import patch
 import pytest
 
 
+# Default serialization options for to_chat_dict() - tests can override as needed
+DEFAULT_SERIALIZATION_OPTS = {
+    "cache_enabled": False,
+    "vision_enabled": False,
+    "function_calling_enabled": False,
+    "force_string_serializer": False,
+    "send_reasoning_content": False,
+}
+
+
 def test_content_base_class_not_implemented():
     """Test that Content base class cannot be instantiated due to abstract method."""
     from openhands.sdk.llm.message import BaseContent
@@ -74,14 +84,11 @@ def test_message_tool_role_with_cache_prompt():
         content=[TextContent(text="Tool response", cache_prompt=True)],
         tool_call_id="call_123",
         name="test_tool",
-        cache_enabled=True,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
+    )
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_123"
     assert result["cache_control"] == {"type": "ephemeral"}
@@ -103,14 +110,11 @@ def test_message_tool_role_with_image_cache_prompt():
         ],
         tool_call_id="call_123",
         name="test_tool",
-        vision_enabled=True,
-        cache_enabled=True,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "vision_enabled": True, "cache_enabled": True}
+    )
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_123"
     assert result["cache_control"] == {"type": "ephemeral"}
@@ -137,14 +141,9 @@ def test_message_with_tool_calls():
         role="assistant",
         content=[TextContent(text="I'll call a function")],
         tool_calls=[tool_call],
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
     assert result["role"] == "assistant"
     assert "tool_calls" in result
     assert len(result["tool_calls"]) == 1
@@ -169,14 +168,9 @@ def test_message_tool_calls_drop_empty_string_content():
         role="assistant",
         content=[],
         tool_calls=[tool_call],
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
     assert "content" not in result
 
 
@@ -195,14 +189,11 @@ def test_message_tool_calls_strip_blank_list_content():
         role="assistant",
         content=[TextContent(text="")],
         tool_calls=[tool_call],
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=True,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+    )
     assert "content" not in result
 
 
@@ -302,14 +293,11 @@ def test_message_with_reasoning_content_when_enabled():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Let me think step by step...",
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=True,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_content": True}
+    )
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert result["reasoning_content"] == "Let me think step by step..."
@@ -323,14 +311,9 @@ def test_message_with_reasoning_content_when_disabled():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Let me think step by step...",
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert "reasoning_content" not in result
@@ -344,14 +327,9 @@ def test_message_with_reasoning_content_default_disabled():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Let me think step by step...",
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=False,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert "reasoning_content" not in result
@@ -365,14 +343,11 @@ def test_message_with_reasoning_content_none():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content=None,
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=True,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_content": True}
+    )
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert "reasoning_content" not in result
@@ -386,14 +361,11 @@ def test_message_with_reasoning_content_empty_string():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="",
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=False,
-        force_string_serializer=False,
-        send_reasoning_content=True,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_content": True}
+    )
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert "reasoning_content" not in result
@@ -407,14 +379,15 @@ def test_message_with_reasoning_content_list_serializer():
         role="assistant",
         content=[TextContent(text="Final answer")],
         reasoning_content="Step by step reasoning",
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=True,  # Forces list serializer
-        force_string_serializer=False,
-        send_reasoning_content=True,
     )
 
-    result = message.to_chat_dict()
+    result = message.to_chat_dict(
+        **{
+            **DEFAULT_SERIALIZATION_OPTS,
+            "function_calling_enabled": True,  # Forces list serializer
+            "send_reasoning_content": True,
+        }
+    )
     assert result["role"] == "assistant"
     assert isinstance(result["content"], list)
     assert result["content"][0]["text"] == "Final answer"

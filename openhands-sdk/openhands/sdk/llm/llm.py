@@ -989,19 +989,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
 
-        for message in messages:
-            message.cache_enabled = self.is_caching_prompt_active()
-            message.vision_enabled = self.vision_is_active()
-            message.function_calling_enabled = self.native_tool_calling
-            model_features = get_features(self._model_name_for_capabilities())
-            message.force_string_serializer = (
-                self.force_string_serializer
-                if self.force_string_serializer is not None
-                else model_features.force_string_serializer
-            )
-            message.send_reasoning_content = model_features.send_reasoning_content
+        model_features = get_features(self._model_name_for_capabilities())
+        cache_enabled = self.is_caching_prompt_active()
+        vision_enabled = self.vision_is_active()
+        function_calling_enabled = self.native_tool_calling
+        force_string_serializer = (
+            self.force_string_serializer
+            if self.force_string_serializer is not None
+            else model_features.force_string_serializer
+        )
+        send_reasoning_content = model_features.send_reasoning_content
 
-        formatted_messages = [message.to_chat_dict() for message in messages]
+        formatted_messages = [
+            message.to_chat_dict(
+                cache_enabled=cache_enabled,
+                vision_enabled=vision_enabled,
+                function_calling_enabled=function_calling_enabled,
+                force_string_serializer=force_string_serializer,
+                send_reasoning_content=send_reasoning_content,
+            )
+            for message in messages
+        ]
 
         return formatted_messages
 
