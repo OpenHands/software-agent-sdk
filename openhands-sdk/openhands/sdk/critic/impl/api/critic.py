@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 from openhands.sdk.critic.base import CriticBase, CriticResult
 from openhands.sdk.critic.impl.api.client import CriticClient
 from openhands.sdk.critic.impl.api.taxonomy import categorize_features
+from openhands.sdk.llm.serialization_context import LLMSerializationContext
 
 
 if TYPE_CHECKING:
@@ -51,11 +52,13 @@ class APIBasedCritic(CriticBase, CriticClient):
         # Serialize messages to dicts for API
         formatted_messages = [
             message.to_chat_dict(
-                cache_enabled=False,
-                vision_enabled=False,  # Critic does not support vision currently
-                function_calling_enabled=True,
-                force_string_serializer=False,
-                send_reasoning_content=False,
+                ctx=LLMSerializationContext(
+                    cache_enabled=False,
+                    vision_enabled=False,  # Critic does not support vision currently
+                    function_calling_enabled=True,
+                    force_string_serializer=False,
+                    send_reasoning_content=False,
+                )
             )
             for message in messages
         ]

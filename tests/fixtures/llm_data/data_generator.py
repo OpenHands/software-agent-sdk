@@ -17,6 +17,7 @@ from openhands.sdk import (
     Conversation,
     Event,
     LLMConvertibleEvent,
+    LLMSerializationContext,
     Message,
     TextContent,
     get_logger,
@@ -82,21 +83,19 @@ def run_conversation(
 
     llm_messages = []
 
-    # Default serialization options for test fixture generation
-    default_serialization_opts = {
-        "cache_enabled": False,
-        "vision_enabled": False,
-        "function_calling_enabled": True,
-        "force_string_serializer": False,
-        "send_reasoning_content": False,
-    }
+    # Default serialization context for test fixture generation
+    default_ctx = LLMSerializationContext(
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=True,
+        force_string_serializer=False,
+        send_reasoning_content=False,
+    )
 
     def conversation_callback(event: Event):
         logger.info(f"Found a conversation message: {str(event)[:200]}...")
         if isinstance(event, LLMConvertibleEvent):
-            llm_messages.append(
-                event.to_llm_message().to_chat_dict(**default_serialization_opts)
-            )
+            llm_messages.append(event.to_llm_message().to_chat_dict(ctx=default_ctx))
 
     conversation = Conversation(agent=agent, callbacks=[conversation_callback])
     message = Message(role="user", content=[TextContent(text=user_message)])

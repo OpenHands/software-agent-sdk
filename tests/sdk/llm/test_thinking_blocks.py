@@ -5,6 +5,7 @@ from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelRespons
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Message, MessageEvent, TextContent, ThinkingBlock
+from openhands.sdk.llm.serialization_context import LLMSerializationContext
 
 
 def create_mock_response_with_thinking(
@@ -436,11 +437,13 @@ def test_thinking_blocks_in_message_dict_via_to_chat_dict():
 
     # Test via to_chat_dict which calls _list_serializer
     chat_dict = message.to_chat_dict(
-        cache_enabled=False,
-        vision_enabled=False,
-        function_calling_enabled=True,
-        force_string_serializer=False,
-        send_reasoning_content=False,
+        ctx=LLMSerializationContext(
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=True,
+            force_string_serializer=False,
+            send_reasoning_content=False,
+        )
     )
 
     # Verify thinking_blocks field exists

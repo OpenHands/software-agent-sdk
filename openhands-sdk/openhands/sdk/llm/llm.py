@@ -70,6 +70,7 @@ from openhands.sdk.llm.message import (
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
 from openhands.sdk.llm.options.chat_options import select_chat_options
 from openhands.sdk.llm.options.responses_options import select_responses_options
+from openhands.sdk.llm.serialization_context import LLMSerializationContext
 from openhands.sdk.llm.streaming import (
     TokenCallbackType,
 )
@@ -329,6 +330,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
+    _serialization_context: LLMSerializationContext | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -409,6 +411,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Capabilities + model info
         self._init_model_info_and_caps()
 
+        # Serialization context is computed once per LLM instance.
+        # This keeps Message as a pure data model and centralizes provider/model
+        # serialization policy on the LLM side.
+        self._serialization_context = LLMSerializationContext.from_llm(self)
+
         if self.temperature is None:
             self.temperature = get_default_temperature(self.model)
 
@@ -418,6 +425,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    @property
+    def serialization_context(self) -> LLMSerializationContext:
+        """Serialization context computed once per LLM instance."""
+
+        assert self._serialization_context is not None
+        return self._serialization_context
 
     def _retry_listener_fn(
         self, attempt_number: int, num_retries: int, _err: BaseException | None
@@ -989,27 +1003,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
 
-        model_features = get_features(self._model_name_for_capabilities())
-        cache_enabled = self.is_caching_prompt_active()
-        vision_enabled = self.vision_is_active()
-        function_calling_enabled = self.native_tool_calling
-        force_string_serializer = (
-            self.force_string_serializer
-            if self.force_string_serializer is not None
-            else model_features.force_string_serializer
-        )
-        send_reasoning_content = model_features.send_reasoning_content
+        ctx = self.serialization_context
 
-        formatted_messages = [
-            message.to_chat_dict(
-                cache_enabled=cache_enabled,
-                vision_enabled=vision_enabled,
-                function_calling_enabled=function_calling_enabled,
-                force_string_serializer=force_string_serializer,
-                send_reasoning_content=send_reasoning_content,
-            )
-            for message in messages
-        ]
+        formatted_messages = [message.to_chat_dict(ctx=ctx) for message in messages]
 
         return formatted_messages
 

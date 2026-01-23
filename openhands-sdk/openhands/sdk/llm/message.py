@@ -13,6 +13,7 @@ from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from openhands.sdk.llm.serialization_context import LLMSerializationContext
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import warn_deprecated
@@ -290,29 +291,19 @@ class Message(BaseModel):
     def to_chat_dict(
         self,
         *,
-        cache_enabled: bool,
-        vision_enabled: bool,
-        function_calling_enabled: bool,
-        force_string_serializer: bool,
-        send_reasoning_content: bool,
+        ctx: LLMSerializationContext,
     ) -> dict[str, Any]:
         """Serialize message for OpenAI Chat Completions.
 
         Args:
-            cache_enabled: Whether prompt caching is active.
-            vision_enabled: Whether vision/image processing is enabled.
-            function_calling_enabled: Whether native function calling is enabled.
-            force_string_serializer: Force string serializer instead of list format.
-            send_reasoning_content: Whether to include reasoning_content in output.
+            ctx: Serialization context (provider/model/invocation policy).
 
         Chooses the appropriate content serializer and then injects threading keys:
         - Assistant tool call turn: role == "assistant" and self.tool_calls
         - Tool result turn: role == "tool" and self.tool_call_id (with name)
         """
-        if not force_string_serializer and (
-            cache_enabled or vision_enabled or function_calling_enabled
-        ):
-            message_dict = self._list_serializer(vision_enabled=vision_enabled)
+        if ctx.use_list_serializer():
+            message_dict = self._list_serializer(vision_enabled=ctx.vision_enabled)
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
             # single string
@@ -332,7 +323,7 @@ class Message(BaseModel):
             message_dict["name"] = self.name
 
         # Required for model like kimi-k2-thinking
-        if send_reasoning_content and self.reasoning_content:
+        if ctx.send_reasoning_content and self.reasoning_content:
             message_dict["reasoning_content"] = self.reasoning_content
 
         return message_dict

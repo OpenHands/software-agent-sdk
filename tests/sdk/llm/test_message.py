@@ -2,15 +2,16 @@ from unittest.mock import patch
 
 import pytest
 
+from openhands.sdk.llm.serialization_context import LLMSerializationContext
 
-# Default serialization options for to_chat_dict() - tests can override as needed
-DEFAULT_SERIALIZATION_OPTS = {
-    "cache_enabled": False,
-    "vision_enabled": False,
-    "function_calling_enabled": False,
-    "force_string_serializer": False,
-    "send_reasoning_content": False,
-}
+
+DEFAULT_CTX = LLMSerializationContext(
+    cache_enabled=False,
+    vision_enabled=False,
+    function_calling_enabled=False,
+    force_string_serializer=False,
+    send_reasoning_content=False,
+)
 
 
 def test_content_base_class_not_implemented():
@@ -87,7 +88,7 @@ def test_message_tool_role_with_cache_prompt():
     )
 
     result = message.to_chat_dict(
-        **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
+        ctx=LLMSerializationContext(**{**DEFAULT_CTX.as_dict(), "cache_enabled": True})
     )
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_123"
@@ -113,7 +114,9 @@ def test_message_tool_role_with_image_cache_prompt():
     )
 
     result = message.to_chat_dict(
-        **{**DEFAULT_SERIALIZATION_OPTS, "vision_enabled": True, "cache_enabled": True}
+        ctx=LLMSerializationContext(
+            **{**DEFAULT_CTX.as_dict(), "vision_enabled": True, "cache_enabled": True}
+        )
     )
     assert result["role"] == "tool"
     assert result["tool_call_id"] == "call_123"
@@ -143,7 +146,7 @@ def test_message_with_tool_calls():
         tool_calls=[tool_call],
     )
 
-    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+    result = message.to_chat_dict(ctx=DEFAULT_CTX)
     assert result["role"] == "assistant"
     assert "tool_calls" in result
     assert len(result["tool_calls"]) == 1
@@ -170,7 +173,7 @@ def test_message_tool_calls_drop_empty_string_content():
         tool_calls=[tool_call],
     )
 
-    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+    result = message.to_chat_dict(ctx=DEFAULT_CTX)
     assert "content" not in result
 
 
@@ -192,7 +195,9 @@ def test_message_tool_calls_strip_blank_list_content():
     )
 
     result = message.to_chat_dict(
-        **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+        ctx=LLMSerializationContext(
+            **{**DEFAULT_CTX.as_dict(), "function_calling_enabled": True}
+        )
     )
     assert "content" not in result
 
@@ -296,7 +301,9 @@ def test_message_with_reasoning_content_when_enabled():
     )
 
     result = message.to_chat_dict(
-        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_content": True}
+        ctx=LLMSerializationContext(
+            **{**DEFAULT_CTX.as_dict(), "send_reasoning_content": True}
+        )
     )
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
@@ -313,7 +320,7 @@ def test_message_with_reasoning_content_when_disabled():
         reasoning_content="Let me think step by step...",
     )
 
-    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+    result = message.to_chat_dict(ctx=DEFAULT_CTX)
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert "reasoning_content" not in result
@@ -329,7 +336,7 @@ def test_message_with_reasoning_content_default_disabled():
         reasoning_content="Let me think step by step...",
     )
 
-    result = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+    result = message.to_chat_dict(ctx=DEFAULT_CTX)
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
     assert "reasoning_content" not in result
@@ -346,7 +353,9 @@ def test_message_with_reasoning_content_none():
     )
 
     result = message.to_chat_dict(
-        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_content": True}
+        ctx=LLMSerializationContext(
+            **{**DEFAULT_CTX.as_dict(), "send_reasoning_content": True}
+        )
     )
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
@@ -364,7 +373,9 @@ def test_message_with_reasoning_content_empty_string():
     )
 
     result = message.to_chat_dict(
-        **{**DEFAULT_SERIALIZATION_OPTS, "send_reasoning_content": True}
+        ctx=LLMSerializationContext(
+            **{**DEFAULT_CTX.as_dict(), "send_reasoning_content": True}
+        )
     )
     assert result["role"] == "assistant"
     assert result["content"] == "Final answer"
@@ -382,11 +393,13 @@ def test_message_with_reasoning_content_list_serializer():
     )
 
     result = message.to_chat_dict(
-        **{
-            **DEFAULT_SERIALIZATION_OPTS,
-            "function_calling_enabled": True,  # Forces list serializer
-            "send_reasoning_content": True,
-        }
+        ctx=LLMSerializationContext(
+            **{
+                **DEFAULT_CTX.as_dict(),
+                "function_calling_enabled": True,  # Forces list serializer
+                "send_reasoning_content": True,
+            }
+        )
     )
     assert result["role"] == "assistant"
     assert isinstance(result["content"], list)

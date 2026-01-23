@@ -17,16 +17,16 @@ from openhands.sdk.llm.message import (
     Message,
     TextContent,
 )
+from openhands.sdk.llm.serialization_context import LLMSerializationContext
 
 
-# Default serialization options for to_chat_dict() - tests can override as needed
-DEFAULT_SERIALIZATION_OPTS = {
-    "cache_enabled": False,
-    "vision_enabled": False,
-    "function_calling_enabled": False,
-    "force_string_serializer": False,
-    "send_reasoning_content": False,
-}
+DEFAULT_CTX = LLMSerializationContext(
+    cache_enabled=False,
+    vision_enabled=False,
+    function_calling_enabled=False,
+    force_string_serializer=False,
+    send_reasoning_content=False,
+)
 
 
 class TestStorageSerialization:
@@ -138,7 +138,7 @@ class TestLLMAPISerialization:
         )
 
         # LLM API serialization - uses string format for simple messages
-        llm_data = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+        llm_data = message.to_chat_dict(ctx=DEFAULT_CTX)
         assert isinstance(llm_data["content"], str)
         assert llm_data["content"] == "Hello, world!"
         assert llm_data["role"] == "user"
@@ -152,7 +152,9 @@ class TestLLMAPISerialization:
 
         # LLM API serialization - uses list format due to cache_enabled
         llm_data = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "cache_enabled": True}
+            )
         )
         assert isinstance(llm_data["content"], list)
         assert len(llm_data["content"]) == 1
@@ -172,7 +174,9 @@ class TestLLMAPISerialization:
 
         # LLM API serialization - uses list format due to vision_enabled
         llm_data = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "vision_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "vision_enabled": True}
+            )
         )
         assert isinstance(llm_data["content"], list)
         assert len(llm_data["content"]) == 2
@@ -190,7 +194,9 @@ class TestLLMAPISerialization:
 
         # LLM API serialization - uses list format due to function_calling_enabled
         llm_data = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "function_calling_enabled": True}
+            )
         )
         assert isinstance(llm_data["content"], list)
 
@@ -203,11 +209,13 @@ class TestLLMAPISerialization:
 
         # LLM API serialization - forced to string format
         llm_data = message.to_chat_dict(
-            **{
-                **DEFAULT_SERIALIZATION_OPTS,
-                "cache_enabled": True,  # Would normally trigger list serializer
-                "force_string_serializer": True,  # But this forces string
-            }
+            ctx=LLMSerializationContext(
+                **{
+                    **DEFAULT_CTX.as_dict(),
+                    "cache_enabled": True,  # Would normally trigger list serializer
+                    "force_string_serializer": True,  # But this forces string
+                }
+            )
         )
         assert isinstance(llm_data["content"], str)
         assert llm_data["content"] == "Hello, world!"
@@ -222,7 +230,7 @@ class TestLLMAPISerialization:
         )
 
         # LLM API serialization - uses string format for simple tool response
-        llm_data = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+        llm_data = message.to_chat_dict(ctx=DEFAULT_CTX)
         assert isinstance(llm_data["content"], str)
         assert llm_data["content"] == "Weather in NYC: 72°F, sunny"
         assert llm_data["tool_call_id"] == "call_123"
@@ -236,7 +244,7 @@ class TestLLMAPISerialization:
         )
 
         # LLM API serialization - string serializer converts empty list to empty string
-        llm_data = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+        llm_data = message.to_chat_dict(ctx=DEFAULT_CTX)
         assert llm_data["content"] == ""
 
     def test_multiple_text_content_string_serialization(self):
@@ -253,7 +261,7 @@ class TestLLMAPISerialization:
         )
 
         # LLM API serialization - joins with newlines
-        llm_data = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+        llm_data = message.to_chat_dict(ctx=DEFAULT_CTX)
         assert isinstance(llm_data["content"], str)
         assert llm_data["content"] == "First line\nSecond line\nThird line"
 
@@ -271,7 +279,9 @@ class TestLLMAPISerialization:
 
         # LLM API serialization
         llm_data = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "vision_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "vision_enabled": True}
+            )
         )
         assert isinstance(llm_data["content"], list)
         assert len(llm_data["content"]) == 2
@@ -290,34 +300,42 @@ class TestSerializationPathSelection:
         )
 
         # Default settings (all False) -> string serializer
-        llm_data1 = message.to_chat_dict(**DEFAULT_SERIALIZATION_OPTS)
+        llm_data1 = message.to_chat_dict(ctx=DEFAULT_CTX)
         assert isinstance(llm_data1["content"], str)
 
         # cache_enabled -> list serializer
         llm_data2 = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "cache_enabled": True}
+            )
         )
         assert isinstance(llm_data2["content"], list)
 
         # vision_enabled -> list serializer
         llm_data3 = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "vision_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "vision_enabled": True}
+            )
         )
         assert isinstance(llm_data3["content"], list)
 
         # function_calling_enabled -> list serializer
         llm_data4 = message.to_chat_dict(
-            **{**DEFAULT_SERIALIZATION_OPTS, "function_calling_enabled": True}
+            ctx=LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "function_calling_enabled": True}
+            )
         )
         assert isinstance(llm_data4["content"], list)
 
         # force_string_serializer overrides everything
         llm_data5 = message.to_chat_dict(
-            cache_enabled=True,
-            vision_enabled=True,
-            function_calling_enabled=True,
-            force_string_serializer=True,
-            send_reasoning_content=False,
+            ctx=LLMSerializationContext(
+                cache_enabled=True,
+                vision_enabled=True,
+                function_calling_enabled=True,
+                force_string_serializer=True,
+                send_reasoning_content=False,
+            )
         )
         assert isinstance(llm_data5["content"], str)
 
@@ -338,26 +356,30 @@ class TestDualSerializationConsistency:
 
         serialization_configs = [
             # Default (all False) -> LLM uses string, storage uses list
-            DEFAULT_SERIALIZATION_OPTS,
+            DEFAULT_CTX,
             # Cache enabled -> both use list
-            {**DEFAULT_SERIALIZATION_OPTS, "cache_enabled": True},
+            LLMSerializationContext(**{**DEFAULT_CTX.as_dict(), "cache_enabled": True}),
             # Vision enabled -> both use list
-            {**DEFAULT_SERIALIZATION_OPTS, "vision_enabled": True},
+            LLMSerializationContext(
+                **{**DEFAULT_CTX.as_dict(), "vision_enabled": True}
+            ),
             # Force string -> LLM uses string, storage uses list
-            {
-                **DEFAULT_SERIALIZATION_OPTS,
-                "cache_enabled": True,
-                "force_string_serializer": True,
-            },
+            LLMSerializationContext(
+                **{
+                    **DEFAULT_CTX.as_dict(),
+                    "cache_enabled": True,
+                    "force_string_serializer": True,
+                }
+            ),
         ]
 
-        for msg, opts in zip(messages, serialization_configs):
+        for msg, ctx in zip(messages, serialization_configs):
             # Storage serialization is ALWAYS list format
             storage_data = msg.model_dump()
             assert isinstance(storage_data["content"], list)
 
             # LLM serialization adapts based on settings
-            llm_data = msg.to_chat_dict(**opts)
+            llm_data = msg.to_chat_dict(ctx=ctx)
             # Content type depends on the message settings
             assert "content" in llm_data
 

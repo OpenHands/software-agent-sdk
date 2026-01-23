@@ -47,6 +47,21 @@ class RouterLLM(LLM):
             )
         return v
 
+    def format_messages_for_llm(self, messages: list[Message]) -> list[dict]:
+        """Format messages using the same underlying LLM that will be selected.
+
+        We intentionally route formatting through the same `select_llm(messages)`
+        decision as `.completion()`.
+
+        If selection is deterministic, this guarantees the provider/model-specific
+        serialization policy (e.g., string vs list content, prompt caching markers,
+        vision support) matches the model that will receive the request.
+        """
+
+        selected_model = self.select_llm(messages)
+        llm = self.llms_for_routing[selected_model]
+        return llm.format_messages_for_llm(messages)
+
     def completion(
         self,
         messages: list[Message],
@@ -56,22 +71,7 @@ class RouterLLM(LLM):
         on_token: TokenCallbackType | None = None,
         **kwargs,
     ) -> LLMResponse:
-        """
-        This method intercepts completion calls and routes them to the appropriate
-        underlying LLM based on the routing logic implemented in select_llm().
-
-        Args:
-            messages: List of conversation messages
-            tools: Optional list of tools available to the model
-            return_metrics: Whether to return usage metrics
-            add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens
-            **kwargs: Additional arguments passed to the LLM API
-
-        Note:
-            Summary field is always added to tool schemas for transparency and
-            explainability of agent actions.
-        """
+        """Route `.completion()` to the selected underlying LLM."""
         # Select appropriate LLM
         selected_model = self.select_llm(messages)
         self.active_llm = self.llms_for_routing[selected_model]

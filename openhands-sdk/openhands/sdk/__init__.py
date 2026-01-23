@@ -26,6 +26,7 @@ from openhands.sdk.llm import (
     LLM,
     ImageContent,
     LLMRegistry,
+    LLMSerializationContext,
     LLMStreamChunk,
     Message,
     RedactedThinkingBlock,
@@ -66,6 +67,7 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMSerializationContext",
     "LLMStreamChunk",
     "TokenCallbackType",
     "ConversationStats",
