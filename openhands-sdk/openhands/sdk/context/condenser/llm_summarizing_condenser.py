@@ -238,12 +238,10 @@ class LLMSummarizingCondenser(RollingCondenser):
         view: View,
         agent_llm: LLM | None = None,  # noqa: ARG002
     ) -> Condensation | None:
-        summary_event_content = self._get_summary_event_content(view)
-        forgotten_events = view.events
-
+        # If we have to do a hard context reset, we can attempt to summarize all events
+        # in one go.
         return self._generate_condensation(
-            summary_event_content=summary_event_content,
-            forgotten_events=forgotten_events,
+            forgotten_events=view.events,
             summary_offset=0,
         )
 

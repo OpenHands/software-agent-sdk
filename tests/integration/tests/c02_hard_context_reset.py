@@ -223,8 +223,7 @@ class HardContextResetTest(BaseIntegrationTest):
             return TestResult(
                 success=False,
                 reason=(
-                    f"Expected at least 2 condensations, "
-                    f"got {len(self.condensations)}"
+                    f"Expected at least 2 condensations, got {len(self.condensations)}"
                 ),
             )
 
@@ -374,8 +373,7 @@ class HardContextResetTest(BaseIntegrationTest):
             return TestResult(
                 success=False,
                 reason=(
-                    "Task verification failed: "
-                    "Line count check not found in outputs"
+                    "Task verification failed: Line count check not found in outputs"
                 ),
             )
 
@@ -441,7 +439,7 @@ class HardContextResetTest(BaseIntegrationTest):
                     return TestResult(
                         success=False,
                         reason=(
-                            f"Condensation {i+1}: Forgotten event {forgotten_id} "
+                            f"Condensation {i + 1}: Forgotten event {forgotten_id} "
                             "still appears in view.events"
                         ),
                     )
