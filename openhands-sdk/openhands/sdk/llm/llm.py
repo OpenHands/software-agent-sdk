@@ -65,6 +65,7 @@ from openhands.sdk.llm.exceptions import (
 # OpenHands utilities
 from openhands.sdk.llm.llm_response import LLMResponse
 from openhands.sdk.llm.message import (
+    ImageContent,
     Message,
 )
 from openhands.sdk.llm.mixins.non_native_fc import NonNativeToolCallingMixin
@@ -1005,9 +1006,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
 
+        vision_active = self.vision_is_active()
+        image_count = 0
+
         for message in messages:
             message.cache_enabled = self.is_caching_prompt_active()
-            message.vision_enabled = self.vision_is_active()
+            message.vision_enabled = vision_active
             message.function_calling_enabled = self.native_tool_calling
             model_features = get_features(self._model_name_for_capabilities())
             message.force_string_serializer = (
@@ -1017,7 +1021,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
             message.send_reasoning_content = model_features.send_reasoning_content
 
+            # Count images that will be included
+            if vision_active:
+                for content in message.content:
+                    if isinstance(content, ImageContent):
+                        image_count += len(content.image_urls)
+
         formatted_messages = [message.to_chat_dict() for message in messages]
+
+        # Log vision usage for debugging multimodal evaluations
+        if image_count > 0:
+            logger.info(
+                "Formatting messages with vision_enabled=%s, including %d image(s) "
+                "for model %s",
+                vision_active,
+                image_count,
+                self.model,
+            )
 
         return formatted_messages
 
@@ -1036,6 +1056,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Determine vision based on model detection
         vision_active = self.vision_is_active()
 
+        # Count images for logging
+        image_count = 0
+        if vision_active:
+            for m in msgs:
+                for content in m.content:
+                    if isinstance(content, ImageContent):
+                        image_count += len(content.image_urls)
+
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
@@ -1051,6 +1079,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             else:
                 if val:
                     input_items.extend(val)
+
+        # Log vision usage for debugging multimodal evaluations
+        if image_count > 0:
+            logger.info(
+                "Formatting responses with vision_enabled=%s, including %d image(s) "
+                "for model %s",
+                vision_active,
+                image_count,
+                self.model,
+            )
+
         return instructions, input_items
 
     def get_token_count(self, messages: list[Message]) -> int:
