@@ -147,3 +147,34 @@ async def test_agent_server_websocket_with_wsproto_header_auth(agent_server):
                 {"role": "user", "content": "Hello from wsproto header auth test"}
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_agent_server_websocket_with_wsproto_header_auth_fails_without_auth(
+    agent_server,
+):
+    port = agent_server["port"]
+
+    response = requests.post(
+        f"http://127.0.0.1:{port}/api/conversations",
+        headers={"X-Session-API-Key": agent_server["api_key"]},
+        json={
+            "agent": {
+                "llm": {
+                    "usage_id": "test-llm",
+                    "model": "test-provider/test-model",
+                    "api_key": "test-key",
+                },
+                "tools": [],
+            },
+            "workspace": {"working_dir": "/tmp/test-workspace"},
+        },
+    )
+    assert response.status_code in [200, 201]
+    conversation_id = response.json()["id"]
+
+    ws_url = f"ws://127.0.0.1:{port}/sockets/events/{conversation_id}?resend_all=true"
+
+    with pytest.raises(websockets.exceptions.InvalidStatus):
+        async with websockets.connect(ws_url, open_timeout=5):
+            pass
