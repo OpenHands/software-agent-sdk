@@ -82,6 +82,14 @@ MODELS = {
             "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
         },
     },
+    "nemotron-3-nano-30b": {
+        "id": "nemotron-3-nano-30b",
+        "display_name": "NVIDIA Nemotron 3 Nano 30B",
+        "llm_config": {
+            "model": "litellm_proxy/openai/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+            "temperature": 0.0,
+        },
+    },
 }
 
 

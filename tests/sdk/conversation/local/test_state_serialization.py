@@ -503,9 +503,7 @@ def test_agent_verify_validates_tools_match():
 
     # Runtime agent with different tools should fail
     different_tools_agent = Agent(llm=llm, tools=[Tool(name="TerminalTool")])
-    with pytest.raises(
-        ValueError, match="Tools don't match between runtime and persisted agents"
-    ):
+    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
         different_tools_agent.verify(persisted_agent)
 
 
@@ -1181,16 +1179,13 @@ def test_conversation_state_cipher_mismatch():
         assert api_key_value is None
 
 
-def test_agent_verify_builtin_tools_included_in_check():
-    """Test that verify() correctly includes builtin tools in its check.
+def test_agent_verify_fails_when_explicit_tools_differ():
+    """Test that verify() fails when explicit tools differ.
 
-    Builtin tools configured via include_default_tools are now correctly
-    recognized by their runtime names (e.g., 'finish', 'think') when
-    checking against event history.
+    Tools cannot be changed mid-conversation. This test verifies that
+    changing explicit tools fails verification.
     """
     from openhands.sdk.agent import AgentBase
-    from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import MessageToolCall
     from openhands.sdk.tool import Tool
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
@@ -1202,47 +1197,60 @@ def test_agent_verify_builtin_tools_included_in_check():
         include_default_tools=["FinishTool"],
     )
 
-    # Events from the session - only 'finish' was used (a builtin tool)
-    events_with_finish = [
-        ActionEvent(
-            source="agent",
-            thought=[],
-            tool_name="finish",  # Runtime name, NOT 'FinishTool'
-            tool_call_id="call_123",
-            tool_call=MessageToolCall(
-                id="call_123",
-                name="finish",
-                arguments='{"message": "Done!"}',
-                origin="completion",
-            ),
-            llm_response_id="resp_123",
-        ),
-    ]
-
     # Serialize and deserialize to simulate loading from persistence
     serialized = persisted_agent_obj.model_dump_json()
     persisted_agent = AgentBase.model_validate_json(serialized)
 
-    # Create a runtime agent with DIFFERENT tools (FileEditorTool instead of
-    # TerminalTool) but still including FinishTool builtin
+    # Create a runtime agent with DIFFERENT explicit tools (FileEditorTool instead of
+    # TerminalTool) - this should FAIL because tools must match exactly
     runtime_agent = Agent(
         llm=llm,
         tools=[Tool(name="FileEditorTool")],  # Different from persisted!
         include_default_tools=["FinishTool"],
     )
 
-    # This should PASS since 'finish' is a builtin tool available via
-    # include_default_tools. The verify method adds builtin tool runtime names
-    # to the check.
-    result = runtime_agent.verify(persisted_agent, events=events_with_finish)
-    assert result is runtime_agent
+    # Should fail because explicit tools don't match (TerminalTool vs FileEditorTool)
+    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+        runtime_agent.verify(persisted_agent)
 
 
-def test_agent_verify_think_builtin_tool_included():
-    """Test that 'think' builtin tool is correctly included in event check."""
+def test_agent_verify_fails_when_builtin_tools_differ():
+    """Test that verify() fails when builtin tools differ.
+
+    Tools cannot be changed mid-conversation. This test verifies that
+    changing builtin tools (include_default_tools) fails verification,
+    even when explicit tools match.
+    """
     from openhands.sdk.agent import AgentBase
-    from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import MessageToolCall
+    from openhands.sdk.tool import Tool
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+
+    # Persisted agent has FinishTool as builtin
+    persisted_agent_obj = Agent(
+        llm=llm,
+        tools=[Tool(name="TerminalTool")],
+        include_default_tools=["FinishTool"],
+    )
+
+    serialized = persisted_agent_obj.model_dump_json()
+    persisted_agent = AgentBase.model_validate_json(serialized)
+
+    # Runtime agent has ThinkTool instead of FinishTool (same explicit tools)
+    runtime_agent = Agent(
+        llm=llm,
+        tools=[Tool(name="TerminalTool")],  # Same explicit tools
+        include_default_tools=["ThinkTool"],  # Different builtin!
+    )
+
+    # Should fail because builtin tools don't match (FinishTool vs ThinkTool)
+    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+        runtime_agent.verify(persisted_agent)
+
+
+def test_agent_verify_fails_when_builtin_tool_removed():
+    """Test that verify fails when a builtin tool is removed."""
+    from openhands.sdk.agent import AgentBase
     from openhands.sdk.tool import Tool
 
     llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
@@ -1250,79 +1258,19 @@ def test_agent_verify_think_builtin_tool_included():
     persisted_agent_obj = Agent(
         llm=llm,
         tools=[Tool(name="TerminalTool")],
-        include_default_tools=["ThinkTool"],
+        include_default_tools=["FinishTool", "ThinkTool"],  # Has both
     )
-
-    events_with_think = [
-        ActionEvent(
-            source="agent",
-            thought=[],
-            tool_name="think",
-            tool_call_id="call_123",
-            tool_call=MessageToolCall(
-                id="call_123",
-                name="think",
-                arguments='{"thought": "Let me think..."}',
-                origin="completion",
-            ),
-            llm_response_id="resp_123",
-        ),
-    ]
 
     serialized = persisted_agent_obj.model_dump_json()
     persisted_agent = AgentBase.model_validate_json(serialized)
 
+    # Runtime agent removes ThinkTool
     runtime_agent = Agent(
-        llm=llm,
-        tools=[Tool(name="FileEditorTool")],
-        include_default_tools=["ThinkTool"],
-    )
-
-    result = runtime_agent.verify(persisted_agent, events=events_with_think)
-    assert result is runtime_agent
-
-
-def test_agent_verify_missing_builtin_tool_fails():
-    """Test that verify fails when a used builtin tool is not configured."""
-    from openhands.sdk.agent import AgentBase
-    from openhands.sdk.event import ActionEvent
-    from openhands.sdk.llm import MessageToolCall
-    from openhands.sdk.tool import Tool
-
-    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
-
-    persisted_agent_obj = Agent(
         llm=llm,
         tools=[Tool(name="TerminalTool")],
-        include_default_tools=["FinishTool"],  # Has FinishTool
+        include_default_tools=["FinishTool"],  # Missing ThinkTool!
     )
 
-    events_with_finish = [
-        ActionEvent(
-            source="agent",
-            thought=[],
-            tool_name="finish",
-            tool_call_id="call_123",
-            tool_call=MessageToolCall(
-                id="call_123",
-                name="finish",
-                arguments='{"message": "Done!"}',
-                origin="completion",
-            ),
-            llm_response_id="resp_123",
-        ),
-    ]
-
-    serialized = persisted_agent_obj.model_dump_json()
-    persisted_agent = AgentBase.model_validate_json(serialized)
-
-    # Runtime agent does NOT have FinishTool in include_default_tools
-    runtime_agent = Agent(
-        llm=llm,
-        tools=[Tool(name="FileEditorTool")],
-        include_default_tools=[],  # No FinishTool!
-    )
-
-    # Should fail because 'finish' was used but FinishTool is not configured
-    with pytest.raises(ValueError, match="missing from runtime.*finish"):
-        runtime_agent.verify(persisted_agent, events=events_with_finish)
+    # Should fail because builtin tools don't match
+    with pytest.raises(ValueError, match="tools cannot be changed mid-conversation"):
+        runtime_agent.verify(persisted_agent)
