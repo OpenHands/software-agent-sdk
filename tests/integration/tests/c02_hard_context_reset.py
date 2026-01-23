@@ -64,7 +64,8 @@ class HardContextResetTest(BaseIntegrationTest):
     - View is constructed successfully from conversation state
     - View has correct structure with both condensations
     - Forgotten events are excluded from the view
-    - Summary events are at correct positions in the view
+    - CondensationSummaryEvent exists in the view
+    - Summary event is at correct position matching the summary_offset
     - View can be used by the LLM (events are accessible)
     """
 
@@ -181,8 +182,9 @@ class HardContextResetTest(BaseIntegrationTest):
         8. View is constructed successfully from conversation state
         9. View has correct structure with both condensations
         10. Forgotten events are excluded from the view
-        11. Summary events are at correct positions in the view
-        12. View events are accessible (can be used by LLM)
+        11. CondensationSummaryEvent exists in the view
+        12. Summary event is at correct position matching the summary_offset
+        13. View events are accessible (can be used by LLM)
         """
         # 1. Verify initial state had insufficient events
         # For normal condensation with keep_first=4, we need at least 5 events
@@ -445,7 +447,14 @@ class HardContextResetTest(BaseIntegrationTest):
                     )
 
         # Verify summary event exists in the view
-        if view.summary_event is None:
+        from openhands.sdk.event.condenser import CondensationSummaryEvent
+
+        summary_events = [
+            (i, event)
+            for i, event in enumerate(view.events)
+            if isinstance(event, CondensationSummaryEvent)
+        ]
+        if not summary_events:
             return TestResult(
                 success=False,
                 reason="View should have a summary event but none found",
@@ -453,19 +462,47 @@ class HardContextResetTest(BaseIntegrationTest):
 
         # Verify summary event is at the expected position
         # (should match the most recent condensation's summary_offset)
-        if view.most_recent_condensation is None:
+        if not view.condensations:
             return TestResult(
                 success=False,
-                reason="View should have a most_recent_condensation but none found",
+                reason="View should have condensations but none found",
             )
 
-        if view.summary_event_index != view.most_recent_condensation.summary_offset:
+        most_recent_condensation = view.condensations[-1]
+        if most_recent_condensation.summary_offset is None:
+            return TestResult(
+                success=False,
+                reason="Most recent condensation should have a summary_offset",
+            )
+
+        # Find the summary event corresponding to the most recent condensation
+        # The summary event ID should be "{condensation_id}-summary"
+        expected_summary_id = f"{most_recent_condensation.id}-summary"
+        summary_event_index = None
+        for i, event in enumerate(view.events):
+            if (
+                isinstance(event, CondensationSummaryEvent)
+                and event.id == expected_summary_id
+            ):
+                summary_event_index = i
+                break
+
+        if summary_event_index is None:
             return TestResult(
                 success=False,
                 reason=(
-                    f"Summary event index {view.summary_event_index} "
+                    f"Could not find summary event with id {expected_summary_id} "
+                    "in view.events"
+                ),
+            )
+
+        if summary_event_index != most_recent_condensation.summary_offset:
+            return TestResult(
+                success=False,
+                reason=(
+                    f"Summary event index {summary_event_index} "
                     f"doesn't match most recent condensation's summary_offset "
-                    f"{view.most_recent_condensation.summary_offset}"
+                    f"{most_recent_condensation.summary_offset}"
                 ),
             )
 
