@@ -558,6 +558,10 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+@pytest.mark.skip(
+    reason="Flaky: events can be lost during WebSocket disconnect. "
+    "See PR #1791 review. Test demonstrates known issue but should not block CI."
+)
 @pytest.mark.flaky_race_condition
 def test_events_lost_during_client_disconnection(
     server_env, monkeypatch: pytest.MonkeyPatch

@@ -139,15 +139,24 @@ class WebSocketCallbackClient:
         Returns:
             True if the WebSocket is ready, False if stopped or timeout expired.
         """
-        start_time = time.time()
+        deadline = None if timeout is None else time.time() + timeout
         while True:
-            if self._ready.is_set():
+            # Calculate remaining timeout
+            if deadline is not None:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    return False
+                wait_timeout = min(0.05, remaining)
+            else:
+                wait_timeout = 0.05
+
+            # Wait efficiently using Event.wait() instead of sleep
+            if self._ready.wait(timeout=wait_timeout):
                 return True
+
+            # Check if stopped
             if self._stop.is_set():
                 return False
-            if timeout is not None and (time.time() - start_time) >= timeout:
-                return False
-            time.sleep(0.05)  # Check every 50ms
 
     def _run(self) -> None:
         try:
@@ -290,12 +299,12 @@ class RemoteEventsList(EventsListBase):
                 break
             page_id = data["next_page_id"]
 
-        # Merge events into cache using add_event which handles deduplication
+        # Merge events into cache, acquiring lock once for all events
         added_count = 0
-        for event in events:
-            with self._lock:
+        with self._lock:
+            for event in events:
                 if event.id not in self._cached_event_ids:
-                    self.add_event(event)
+                    self._add_event_unsafe(event)
                     added_count += 1
 
         logger.debug(
@@ -303,6 +312,18 @@ class RemoteEventsList(EventsListBase):
             f"(total: {len(self._cached_events)})"
         )
         return added_count
+
+    def _add_event_unsafe(self, event: Event) -> None:
+        """Add event to cache without acquiring lock (caller must hold lock)."""
+        # Use bisect with key function for O(log N) insertion
+        # This ensures events are always ordered correctly even if
+        # WebSocket delivers them out of order
+        insert_pos = bisect.bisect_right(
+            self._cached_events, event.timestamp, key=lambda e: e.timestamp
+        )
+        self._cached_events.insert(insert_pos, event)
+        self._cached_event_ids.add(event.id)
+        logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
 
     def add_event(self, event: Event) -> None:
         """Add a new event to the local cache (called by WebSocket callback).
@@ -313,17 +334,7 @@ class RemoteEventsList(EventsListBase):
         with self._lock:
             # Check if event already exists to avoid duplicates
             if event.id not in self._cached_event_ids:
-                # Use bisect with key function for O(log N) insertion
-                # This ensures events are always ordered correctly even if
-                # WebSocket delivers them out of order
-                insert_pos = bisect.bisect_right(
-                    self._cached_events, event.timestamp, key=lambda e: e.timestamp
-                )
-                self._cached_events.insert(insert_pos, event)
-                self._cached_event_ids.add(event.id)
-                logger.debug(
-                    f"Added event {event.id} to local cache at position {insert_pos}"
-                )
+                self._add_event_unsafe(event)
 
     def append(self, event: Event) -> None:
         """Add a new event to the list (for compatibility with EventLog interface)."""
