@@ -253,6 +253,57 @@ class RemoteEventsList(EventsListBase):
         self._cached_event_ids.update(e.id for e in events)
         logger.debug(f"Full sync completed, {len(events)} events cached")
 
+    def reconcile(self) -> int:
+        """Reconcile local cache with server by fetching and merging events.
+
+        This method fetches all events from the server and merges them with
+        the local cache, deduplicating by event ID. This ensures no events
+        are missed due to race conditions between REST sync and WebSocket
+        subscription.
+
+        Returns:
+            Number of new events added during reconciliation.
+        """
+        logger.debug(
+            f"Performing reconciliation sync for conversation {self._conversation_id}"
+        )
+
+        events = []
+        page_id = None
+
+        while True:
+            params = {"limit": 100}
+            if page_id:
+                params["page_id"] = page_id
+
+            resp = _send_request(
+                self._client,
+                "GET",
+                f"/api/conversations/{self._conversation_id}/events/search",
+                params=params,
+            )
+            data = resp.json()
+
+            events.extend([Event.model_validate(item) for item in data["items"]])
+
+            if not data.get("next_page_id"):
+                break
+            page_id = data["next_page_id"]
+
+        # Merge events into cache using add_event which handles deduplication
+        added_count = 0
+        for event in events:
+            with self._lock:
+                if event.id not in self._cached_event_ids:
+                    self.add_event(event)
+                    added_count += 1
+
+        logger.debug(
+            f"Reconciliation completed, {added_count} new events added "
+            f"(total: {len(self._cached_events)})"
+        )
+        return added_count
+
     def add_event(self, event: Event) -> None:
         """Add a new event to the local cache (called by WebSocket callback).
 
@@ -657,6 +708,11 @@ class RemoteConversation(BaseConversation):
                 f"WebSocket subscription did not complete within timeout for "
                 f"conversation {self._id}. Events may be missed."
             )
+
+        # Reconcile events after WebSocket is ready to catch any events that
+        # were emitted between the initial REST sync and WebSocket subscription.
+        # This is the "reconciliation" part of the subscription handshake.
+        self._state.events.reconcile()
 
         # Initialize secrets if provided
         if secrets:

@@ -285,3 +285,152 @@ class TestWebSocketClientReadyWithEvents:
         assert isinstance(received_events[0], MessageEvent)
         assert isinstance(received_events[1], ConversationStateUpdateEvent)
         assert isinstance(received_events[2], MessageEvent)
+
+
+class TestRemoteEventsListReconciliation:
+    """Tests for RemoteEventsList reconciliation functionality."""
+
+    def test_reconcile_method_exists(self):
+        """Test that RemoteEventsList has a reconcile method."""
+        from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
+
+        assert hasattr(RemoteEventsList, "reconcile"), (
+            "RemoteEventsList should have reconcile method"
+        )
+
+    def test_reconcile_merges_events_without_duplicates(self):
+        """Test that reconcile merges events and deduplicates by event ID.
+
+        This tests the core reconciliation logic: events fetched from REST
+        should be merged with existing cached events, with duplicates removed.
+        """
+        from unittest.mock import MagicMock, patch
+
+        from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
+
+        # Mock the HTTP client and _send_request
+        mock_client = MagicMock()
+
+        # Use ConversationStateUpdateEvent as it's a simple concrete event type
+        def make_state_event(event_id: str, timestamp: str) -> dict:
+            return {
+                "kind": "ConversationStateUpdateEvent",
+                "id": event_id,
+                "timestamp": timestamp,
+                "source": "environment",
+                "key": "__full_state__",
+                "value": {"execution_status": "idle"},
+            }
+
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation._send_request"
+        ) as mock_send:
+            # First call (initial sync) returns event1
+            # Second call (reconcile) returns event1, event2, event3
+            mock_response = MagicMock()
+            mock_response.json.side_effect = [
+                {
+                    "items": [make_state_event("event-1", "2024-01-01T00:00:01Z")],
+                    "next_page_id": None,
+                },
+                {
+                    "items": [
+                        make_state_event("event-1", "2024-01-01T00:00:01Z"),
+                        make_state_event("event-2", "2024-01-01T00:00:02Z"),
+                        make_state_event("event-3", "2024-01-01T00:00:03Z"),
+                    ],
+                    "next_page_id": None,
+                },
+            ]
+            mock_send.return_value = mock_response
+
+            # Create RemoteEventsList (triggers initial sync)
+            events_list = RemoteEventsList(mock_client, "test-conv-id")
+
+            # Verify initial state
+            assert len(events_list) == 1
+            assert "event-1" in events_list._cached_event_ids
+
+            # Call reconcile
+            added_count = events_list.reconcile()
+
+            # Verify reconciliation results
+            assert added_count == 2, "Should have added 2 new events"
+            assert len(events_list) == 3, "Should have 3 total events"
+            assert "event-1" in events_list._cached_event_ids
+            assert "event-2" in events_list._cached_event_ids
+            assert "event-3" in events_list._cached_event_ids
+
+    def test_reconcile_handles_empty_server_response(self):
+        """Test that reconcile handles empty server response gracefully."""
+        from unittest.mock import MagicMock, patch
+
+        from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
+
+        mock_client = MagicMock()
+
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation._send_request"
+        ) as mock_send:
+            mock_response = MagicMock()
+            mock_response.json.side_effect = [
+                {"items": [], "next_page_id": None},  # Initial sync
+                {"items": [], "next_page_id": None},  # Reconcile
+            ]
+            mock_send.return_value = mock_response
+
+            events_list = RemoteEventsList(mock_client, "test-conv-id")
+            assert len(events_list) == 0
+
+            added_count = events_list.reconcile()
+            assert added_count == 0
+            assert len(events_list) == 0
+
+    def test_reconcile_is_idempotent(self):
+        """Test that calling reconcile multiple times is safe."""
+        from unittest.mock import MagicMock, patch
+
+        from openhands.sdk.conversation.impl.remote_conversation import RemoteEventsList
+
+        mock_client = MagicMock()
+
+        # Use ConversationStateUpdateEvent as it's a simple concrete event type
+        def make_state_event(event_id: str, timestamp: str) -> dict:
+            return {
+                "kind": "ConversationStateUpdateEvent",
+                "id": event_id,
+                "timestamp": timestamp,
+                "source": "environment",
+                "key": "__full_state__",
+                "value": {"execution_status": "idle"},
+            }
+
+        def make_response():
+            return {
+                "items": [
+                    make_state_event("event-1", "2024-01-01T00:00:01Z"),
+                    make_state_event("event-2", "2024-01-01T00:00:02Z"),
+                ],
+                "next_page_id": None,
+            }
+
+        with patch(
+            "openhands.sdk.conversation.impl.remote_conversation._send_request"
+        ) as mock_send:
+            mock_response = MagicMock()
+            # Use side_effect with a lambda to return fresh dict each time
+            mock_response.json.side_effect = lambda: make_response()
+            mock_send.return_value = mock_response
+
+            events_list = RemoteEventsList(mock_client, "test-conv-id")
+            assert len(events_list) == 2
+
+            # First reconcile - no new events
+            added_count1 = events_list.reconcile()
+            assert added_count1 == 0
+            assert len(events_list) == 2
+
+            # Second reconcile - still no new events
+            added_count2 = events_list.reconcile()
+            assert added_count2 == 0
+            assert len(events_list) == 2
