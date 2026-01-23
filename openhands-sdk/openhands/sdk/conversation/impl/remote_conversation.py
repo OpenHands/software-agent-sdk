@@ -902,6 +902,11 @@ class RemoteConversation(BaseConversation):
                 self._handle_poll_exception(exc)
             else:
                 if self._handle_conversation_status(status):
+                    # Reconcile events to ensure we have all events that may have
+                    # been emitted during the final moments of the run. This handles
+                    # the race condition where events are published after the client
+                    # detects "finished" status but before WebSocket delivers them.
+                    self._state.events.reconcile()
                     logger.info(
                         "Run completed with status: %s (elapsed: %.1fs)",
                         status,

@@ -558,38 +558,26 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
-@pytest.mark.skip(
-    reason="Flaky: events can be lost during WebSocket disconnect. "
-    "See PR #1791 review. Test demonstrates known issue but should not block CI."
-)
-@pytest.mark.flaky_race_condition
-def test_events_lost_during_client_disconnection(
+def test_events_not_lost_during_client_disconnection(
     server_env, monkeypatch: pytest.MonkeyPatch
 ):
-    """Test that demonstrates events can be lost during client disconnection.
+    """Test that events are NOT lost during client disconnection.
 
-    This test reproduces the bug described in PR #1791 review where events
-    emitted during client disconnection can be lost. The sequence is:
+    This is a regression test for the bug described in PR #1791 review where
+    events emitted during client disconnection could be lost. The fix adds a
+    reconciliation sync after run() completes to ensure all events are captured.
 
+    The original bug scenario:
     1. Test runs conversation with a mocked `finish` tool call
     2. Server emits `ActionEvent` + `ObservationEvent`
     3. `conv.run()` returns when status becomes "finished"
     4. Client starts closing WebSocket
-    5. Server tries to send `ActionEvent` but WebSocket is already closing
-    6. Error: RuntimeError: Unexpected ASGI message 'websocket.send',
-       after sending 'websocket.close'
+    5. Events emitted during disconnect may not be delivered via WebSocket
 
-    The bug is a race condition that may not always reproduce. This test
-    verifies that events delivered via WebSocket match events persisted
-    on the server (fetched via REST API). If they don't match, the bug
-    is demonstrated.
+    The fix: After run() completes, we call reconcile() to fetch any events
+    that may have been missed via WebSocket. This ensures the client always
+    has a complete view of all events.
 
-    NOTE: This test is marked as flaky_race_condition because the bug depends
-    on timing. It may pass in some environments but fail in others (e.g., CI
-    vs local). When it fails, it demonstrates the bug. When it passes, the
-    race condition didn't occur in that particular run.
-
-    This is a separate issue from #1785 (subscription race at startup).
     See PR #1791 review for details: https://github.com/OpenHands/software-agent-sdk/pull/1791#pullrequestreview-3694259068
     """
     import httpx
@@ -721,26 +709,21 @@ def test_events_lost_during_client_disconnection(
         f"REST events: {rest_event_summary}"
     )
 
-    # Now check if WebSocket received all events that REST has
-    # If WebSocket has fewer events, the bug is demonstrated
+    # Verify client has all events (reconciliation should have fetched any missed)
     ws_has_action = len(ws_action_events) >= 1
     ws_has_observation = len(ws_observation_events) >= 1
 
-    # This assertion will fail if events were lost during disconnect
-    # The failure message explains the bug
+    # These assertions verify the fix works - reconciliation ensures no events are lost
     assert ws_has_action, (
-        f"BUG REPRODUCED: ActionEvent with finish tool was lost during client "
-        f"disconnection. REST API has {len(rest_action_events)} ActionEvent(s) "
-        f"but WebSocket only received {len(ws_action_events)}. "
-        f"This demonstrates the race condition where events emitted during "
-        f"WebSocket disconnect are not delivered to the client. "
-        f"WebSocket events: {ws_event_summary}. "
-        f"REST events: {rest_event_summary}"
+        f"ActionEvent with finish tool not found in client events. "
+        f"REST API has {len(rest_action_events)} ActionEvent(s) but client has "
+        f"{len(ws_action_events)}. Reconciliation should have fetched missing events. "
+        f"Client events: {ws_event_summary}. REST events: {rest_event_summary}"
     )
 
     assert ws_has_observation, (
-        f"ObservationEvent with finish tool not found via WebSocket. "
-        f"WebSocket events: {ws_event_summary}"
+        f"ObservationEvent with finish tool not found in client events. "
+        f"Client events: {ws_event_summary}"
     )
 
 
