@@ -38,7 +38,7 @@ class TestStorageSerialization:
         assert storage_data["content"][0]["text"] == "Hello, world!"
         assert storage_data["content"][0]["type"] == "text"
         assert storage_data["role"] == "user"
-        assert storage_data["cache_enabled"] is False
+        assert storage_data["cache_enabled"] is None
 
         # Round-trip storage works perfectly
         json_data = message.model_dump_json()
@@ -132,10 +132,11 @@ class TestStorageSerialization:
         )
 
         message = Message.model_validate_json(minimal_json)
-        assert message.cache_enabled is False
-        assert message.vision_enabled is False
-        assert message.function_calling_enabled is False
-        assert message.force_string_serializer is False
+        assert message.cache_enabled is None
+        assert message.vision_enabled is None
+        assert message.function_calling_enabled is None
+        assert message.force_string_serializer is None
+        assert message.send_reasoning_content is None
         assert message.tool_calls is None
         assert message.tool_call_id is None
         assert message.name is None
@@ -172,6 +173,11 @@ class TestLLMAPISerialization:
         message = Message(
             role="user",
             content=[TextContent(text="Hello, world!")],
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - uses string format for simple messages
@@ -186,6 +192,10 @@ class TestLLMAPISerialization:
             role="user",
             content=[TextContent(text="Hello, world!")],
             cache_enabled=True,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - uses list format due to cache_enabled
@@ -204,7 +214,11 @@ class TestLLMAPISerialization:
                     image_urls=["https://example.com/image.jpg"],
                 ),
             ],
+            cache_enabled=False,
             vision_enabled=True,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - uses list format due to vision_enabled
@@ -221,7 +235,11 @@ class TestLLMAPISerialization:
         message = Message(
             role="user",
             content=[TextContent(text="Call a function")],
+            cache_enabled=False,
+            vision_enabled=False,
             function_calling_enabled=True,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - uses list format due to function_calling_enabled
@@ -234,7 +252,10 @@ class TestLLMAPISerialization:
             role="user",
             content=[TextContent(text="Hello, world!")],
             cache_enabled=True,  # Would normally trigger list serializer
+            vision_enabled=False,
+            function_calling_enabled=False,
             force_string_serializer=True,  # But this forces string
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - forced to string format
@@ -249,6 +270,11 @@ class TestLLMAPISerialization:
             content=[TextContent(text="Weather in NYC: 72°F, sunny")],
             tool_call_id="call_123",
             name="get_weather",
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - uses string format for simple tool response
@@ -260,7 +286,15 @@ class TestLLMAPISerialization:
 
     def test_empty_content_llm_serialization(self):
         """Test empty content list converts to empty string in LLM serialization."""
-        message = Message(role="user", content=[])
+        message = Message(
+            role="user",
+            content=[],
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
+        )
 
         # LLM API serialization - string serializer converts empty list to empty string
         llm_data = message.to_chat_dict()
@@ -277,6 +311,11 @@ class TestLLMAPISerialization:
                 TextContent(text="Second line"),
                 TextContent(text="Third line"),
             ],
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization - joins with newlines
@@ -294,7 +333,11 @@ class TestLLMAPISerialization:
                     image_urls=["https://example.com/image.jpg"],
                 ),
             ],
+            cache_enabled=False,
             vision_enabled=True,  # Forces list serializer
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
 
         # LLM API serialization
@@ -310,21 +353,41 @@ class TestSerializationPathSelection:
 
     def test_serialization_path_selection_logic(self):
         """Test the logic that determines which serialization path to use for LLM."""
-        # Default settings -> string serializer
-        message1 = Message(role="user", content=[TextContent(text="test")])
+        # Default settings (all False) -> string serializer
+        message1 = Message(
+            role="user",
+            content=[TextContent(text="test")],
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
+        )
         llm_data1 = message1.to_chat_dict()
         assert isinstance(llm_data1["content"], str)
 
         # cache_enabled -> list serializer
         message2 = Message(
-            role="user", content=[TextContent(text="test")], cache_enabled=True
+            role="user",
+            content=[TextContent(text="test")],
+            cache_enabled=True,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
         llm_data2 = message2.to_chat_dict()
         assert isinstance(llm_data2["content"], list)
 
         # vision_enabled -> list serializer
         message3 = Message(
-            role="user", content=[TextContent(text="test")], vision_enabled=True
+            role="user",
+            content=[TextContent(text="test")],
+            cache_enabled=False,
+            vision_enabled=True,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
         llm_data3 = message3.to_chat_dict()
         assert isinstance(llm_data3["content"], list)
@@ -333,7 +396,11 @@ class TestSerializationPathSelection:
         message4 = Message(
             role="user",
             content=[TextContent(text="test")],
+            cache_enabled=False,
+            vision_enabled=False,
             function_calling_enabled=True,
+            force_string_serializer=False,
+            send_reasoning_content=False,
         )
         llm_data4 = message4.to_chat_dict()
         assert isinstance(llm_data4["content"], list)
@@ -346,6 +413,7 @@ class TestSerializationPathSelection:
             vision_enabled=True,
             function_calling_enabled=True,
             force_string_serializer=True,
+            send_reasoning_content=False,
         )
         llm_data5 = message5.to_chat_dict()
         assert isinstance(llm_data5["content"], str)
@@ -359,22 +427,45 @@ class TestDualSerializationConsistency:
         settings.
         """
         messages = [
-            # Default -> LLM uses string, storage uses list
-            Message(role="user", content=[TextContent(text="test1")]),
+            # Default (all False) -> LLM uses string, storage uses list
+            Message(
+                role="user",
+                content=[TextContent(text="test1")],
+                cache_enabled=False,
+                vision_enabled=False,
+                function_calling_enabled=False,
+                force_string_serializer=False,
+                send_reasoning_content=False,
+            ),
             # Cache enabled -> both use list
             Message(
-                role="user", content=[TextContent(text="test2")], cache_enabled=True
+                role="user",
+                content=[TextContent(text="test2")],
+                cache_enabled=True,
+                vision_enabled=False,
+                function_calling_enabled=False,
+                force_string_serializer=False,
+                send_reasoning_content=False,
             ),
             # Vision enabled -> both use list
             Message(
-                role="user", content=[TextContent(text="test3")], vision_enabled=True
+                role="user",
+                content=[TextContent(text="test3")],
+                cache_enabled=False,
+                vision_enabled=True,
+                function_calling_enabled=False,
+                force_string_serializer=False,
+                send_reasoning_content=False,
             ),
             # Force string -> LLM uses string, storage uses list
             Message(
                 role="user",
                 content=[TextContent(text="test4")],
                 cache_enabled=True,
+                vision_enabled=False,
+                function_calling_enabled=False,
                 force_string_serializer=True,
+                send_reasoning_content=False,
             ),
         ]
 
