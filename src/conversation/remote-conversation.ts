@@ -1,5 +1,8 @@
 /**
  * Remote conversation implementation
+ *
+ * This implements the IConversation interface by connecting to a remote OpenHands
+ * agent server. It mirrors the Python SDK's RemoteConversation class.
  */
 
 // import { v4 as uuidv4 } from 'uuid'; // Unused for now
@@ -15,6 +18,7 @@ import {
   ConversationStats,
   AgentBase,
   SecretValue,
+  LLM,
 } from '../types/base';
 import {
   ConversationInfo,
@@ -25,16 +29,36 @@ import {
   GenerateTitleResponse,
   UpdateSecretsRequest,
 } from '../models/conversation';
+import { IConversation, BaseConversationOptions } from './base';
 
-export interface RemoteConversationOptions {
-  conversationId?: string;
-  callback?: ConversationCallbackType;
-  initialMessage?: string;
-  maxIterations?: number;
-  stuckDetection?: boolean;
-}
+/**
+ * Options for creating a RemoteConversation instance.
+ */
+export type RemoteConversationOptions = BaseConversationOptions;
 
-export class RemoteConversation {
+/**
+ * Remote conversation implementation that connects to an OpenHands agent server.
+ *
+ * RemoteConversation provides access to a conversation running on a remote
+ * OpenHands agent server. This is the recommended approach for production deployments
+ * as it provides better isolation and security.
+ *
+ * Example:
+ * ```typescript
+ * const workspace = new RemoteWorkspace({
+ *   host: 'https://agent-server.example.com',
+ *   workingDir: '/workspace',
+ *   apiKey: 'your-api-key'
+ * });
+ * const conversation = new RemoteConversation(agent, workspace, {
+ *   callback: (event) => console.log(event)
+ * });
+ * await conversation.start({ initialMessage: 'Hello!' });
+ * await conversation.run();
+ * await conversation.close();
+ * ```
+ */
+export class RemoteConversation implements IConversation {
   public readonly agent: AgentBase;
   public readonly workspace: RemoteWorkspace;
   private _conversationId?: string;
@@ -152,7 +176,7 @@ export class RemoteConversation {
     await this.client.post(`/api/conversations/${this.id}/events/respond_to_confirmation`, request);
   }
 
-  async generateTitle(maxLength: number = 50, llm?: any): Promise<string> {
+  async generateTitle(maxLength: number = 50, llm?: LLM): Promise<string> {
     const request: GenerateTitleRequest = { max_length: maxLength };
     if (llm) {
       request.llm = llm;

@@ -85,6 +85,35 @@ src/workspace/
 - `createWorkspace({ type, options })` - Explicit type selection
 - `createWorkspaceAuto(options)` - Auto-detect based on presence of `host` option
 
+### Conversation Architecture
+
+The conversation module follows the same pattern as workspaces:
+
+```
+src/conversation/
+├── base.ts               # IConversation interface defining the contract
+├── remote-conversation.ts   # RemoteConversation - connects to remote agent server
+├── local-conversation.ts    # LocalConversation - stub for local execution (not yet implemented)
+├── conversation.ts       # Factory functions and Conversation class (backwards compatible)
+├── remote-state.ts       # State management for remote conversations
+└── conversation-manager.ts  # Manager for multiple conversations
+```
+
+**IConversation Interface**: Defines the common contract for all conversation implementations:
+- `start()` - Initialize or resume a conversation
+- `sendMessage()` - Send a message to the agent
+- `run()` / `pause()` - Control agent execution
+- `generateTitle()` - Generate a title using LLM
+- `close()` - Cleanup resources
+
+**RemoteConversation**: Fully implemented class that connects to a remote OpenHands agent server via HTTP/WebSocket.
+
+**LocalConversation**: Stub implementation for local agent execution. Methods throw errors indicating they need full agent loop implementation.
+
+**Factory Functions**:
+- `createConversation({ type, agent, workspace, options })` - Explicit type selection
+- `createConversationAuto(agent, workspace, options)` - Auto-detect based on workspace type
+
 ## Development Workflow
 
 1. **API Changes**: When the OpenAPI specification is updated, corresponding TypeScript interfaces and client methods should be updated

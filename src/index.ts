@@ -7,7 +7,12 @@
 
 // Main conversation and workspace classes
 export { RemoteConversation } from './conversation/remote-conversation';
-export { Conversation } from './conversation/conversation';
+export { LocalConversation } from './conversation/local-conversation';
+export {
+  Conversation,
+  createConversation,
+  createConversationAuto,
+} from './conversation/conversation';
 export { ConversationManager } from './conversation/conversation-manager';
 export { RemoteWorkspace } from './workspace/remote-workspace';
 export { LocalWorkspace } from './workspace/local-workspace';
@@ -71,6 +76,15 @@ export type {
   WorkspaceType,
 } from './workspace/base';
 
+// Conversation base types and interface
+export type {
+  IConversation,
+  IConversationState,
+  IEventsList,
+  BaseConversationOptions,
+  ConversationType,
+} from './conversation/base';
+
 // Conversation models
 export type {
   ConversationInfo,
@@ -97,11 +111,20 @@ export type { WorkspaceOptions, CreateWorkspaceOptions } from './workspace/works
 
 export type { RemoteConversationOptions } from './conversation/remote-conversation';
 
+export type { LocalConversationOptions } from './conversation/local-conversation';
+
+export type { ConversationOptions, CreateConversationOptions } from './conversation/conversation';
+
 export type { ConversationManagerOptions } from './conversation/conversation-manager';
 
 // Re-import for default export
 import { RemoteConversation } from './conversation/remote-conversation';
-import { Conversation } from './conversation/conversation';
+import { LocalConversation } from './conversation/local-conversation';
+import {
+  Conversation,
+  createConversation,
+  createConversationAuto,
+} from './conversation/conversation';
 import { ConversationManager } from './conversation/conversation-manager';
 import { RemoteWorkspace } from './workspace/remote-workspace';
 import { LocalWorkspace } from './workspace/local-workspace';
@@ -116,7 +139,10 @@ import { Agent } from './agent/agent';
 // Default export for convenience
 export default {
   RemoteConversation,
+  LocalConversation,
   Conversation,
+  createConversation,
+  createConversationAuto,
   ConversationManager,
   RemoteWorkspace,
   LocalWorkspace,
