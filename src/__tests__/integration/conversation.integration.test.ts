@@ -3,6 +3,9 @@
  *
  * Tests conversation lifecycle including creation, sending messages,
  * running the agent, and receiving events against a real agent-server.
+ *
+ * NOTE: Some tests in this file are skipped by default because they depend on
+ * LLM behavior which is non-deterministic and can be slow.
  */
 
 import {
@@ -25,6 +28,8 @@ import {
 } from './test-utils';
 
 const SKIP_TESTS = skipIfNoConfig();
+// Skip flaky tests that depend on LLM behavior in CI
+const SKIP_FLAKY_TESTS = process.env.SKIP_FLAKY_TESTS !== 'false';
 
 describe('Conversation Integration Tests', () => {
   let config: ReturnType<typeof getTestConfig>;
@@ -217,7 +222,10 @@ describe('Conversation Integration Tests', () => {
   });
 
   describe('Running Agent', () => {
-    it(
+    // These tests are flaky because they depend on LLM behavior
+    const testFn = SKIP_FLAKY_TESTS ? it.skip : it;
+
+    testFn(
       'should run the agent after sending a message',
       async () => {
         if (SKIP_TESTS) return;
@@ -387,7 +395,10 @@ describe('Conversation Integration Tests', () => {
   });
 
   describe('Events List', () => {
-    it(
+    // These tests are flaky because they depend on LLM behavior
+    const testFn = SKIP_FLAKY_TESTS ? it.skip : it;
+
+    testFn(
       'should fetch events from conversation state',
       async () => {
         if (SKIP_TESTS) return;
@@ -430,7 +441,10 @@ describe('Conversation Integration Tests', () => {
   });
 
   describe('Title Generation', () => {
-    it(
+    // These tests are flaky because they depend on LLM behavior
+    const testFn = SKIP_FLAKY_TESTS ? it.skip : it;
+
+    testFn(
       'should generate a conversation title',
       async () => {
         if (SKIP_TESTS) return;

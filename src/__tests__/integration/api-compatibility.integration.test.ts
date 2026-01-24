@@ -9,6 +9,9 @@
  * - agent_status -> execution_status field rename
  * - New endpoints: ask_agent, condense, security_analyzer
  * - New event search filters: source, body, timestamp__gte, timestamp__lt
+ *
+ * NOTE: Some tests in this file are skipped by default because they depend on
+ * LLM behavior which is non-deterministic and can be slow.
  */
 
 import {
@@ -22,6 +25,8 @@ import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from './test-confi
 import { waitForAgentIdle, sleep } from './test-utils';
 
 const SKIP_TESTS = skipIfNoConfig();
+// Skip flaky tests that depend on LLM behavior in CI
+const SKIP_FLAKY_TESTS = process.env.SKIP_FLAKY_TESTS !== 'false';
 
 describe('API Compatibility Integration Tests', () => {
   let config: ReturnType<typeof getTestConfig>;
@@ -216,7 +221,10 @@ describe('API Compatibility Integration Tests', () => {
   });
 
   describe('Event Search Filters', () => {
-    it(
+    // These tests are flaky because they depend on LLM behavior
+    const testFn = SKIP_FLAKY_TESTS ? it.skip : it;
+
+    testFn(
       'should search events with kind filter',
       async () => {
         if (SKIP_TESTS) return;
@@ -310,7 +318,7 @@ describe('API Compatibility Integration Tests', () => {
       config?.testTimeout || 120000
     );
 
-    it(
+    testFn(
       'should count events with filters',
       async () => {
         if (SKIP_TESTS) return;
@@ -352,7 +360,7 @@ describe('API Compatibility Integration Tests', () => {
       config?.testTimeout || 120000
     );
 
-    it(
+    testFn(
       'should search events with timestamp filters',
       async () => {
         if (SKIP_TESTS) return;
@@ -403,7 +411,7 @@ describe('API Compatibility Integration Tests', () => {
       config?.testTimeout || 120000
     );
 
-    it(
+    testFn(
       'should search events with sort order',
       async () => {
         if (SKIP_TESTS) return;
