@@ -31,6 +31,7 @@ import {
   Tool,
   ToolCall,
 } from '../llm/base';
+import { generateSystemPrompt, TOOL_DESCRIPTIONS } from '../prompts';
 
 /**
  * Options for creating a LocalConversation instance.
@@ -97,23 +98,28 @@ class LocalConversationState implements IConversationState {
 
 /**
  * Built-in tools available to the agent
+ * Aligned with the Python SDK's tool definitions
  */
 const BUILTIN_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
       name: 'execute_command',
-      description: 'Execute a bash command in the workspace. Use this to run shell commands, scripts, or interact with the system.',
+      description: TOOL_DESCRIPTIONS.execute_command,
       parameters: {
         type: 'object',
         properties: {
           command: {
             type: 'string',
-            description: 'The bash command to execute',
+            description: 'The bash command to execute. You can only execute one bash command at a time. If you need to run multiple commands sequentially, use `&&` or `;` to chain them together.',
           },
           cwd: {
             type: 'string',
             description: 'Working directory for the command (optional, defaults to workspace root)',
+          },
+          timeout: {
+            type: 'number',
+            description: 'Optional timeout in seconds for the command (default: 30)',
           },
         },
         required: ['command'],
@@ -124,7 +130,7 @@ const BUILTIN_TOOLS: Tool[] = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read the contents of a file from the workspace.',
+      description: TOOL_DESCRIPTIONS.read_file,
       parameters: {
         type: 'object',
         properties: {
@@ -141,7 +147,7 @@ const BUILTIN_TOOLS: Tool[] = [
     type: 'function',
     function: {
       name: 'write_file',
-      description: 'Write content to a file in the workspace. Creates the file if it does not exist.',
+      description: TOOL_DESCRIPTIONS.write_file,
       parameters: {
         type: 'object',
         properties: {
@@ -161,8 +167,25 @@ const BUILTIN_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
+      name: 'think',
+      description: TOOL_DESCRIPTIONS.think,
+      parameters: {
+        type: 'object',
+        properties: {
+          thought: {
+            type: 'string',
+            description: 'The thought to log',
+          },
+        },
+        required: ['thought'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'finish',
-      description: 'Call this when you have completed the task or need to provide a final response to the user.',
+      description: TOOL_DESCRIPTIONS.finish,
       parameters: {
         type: 'object',
         properties: {
@@ -176,17 +199,6 @@ const BUILTIN_TOOLS: Tool[] = [
     },
   },
 ];
-
-const DEFAULT_SYSTEM_PROMPT = `You are a helpful coding assistant with access to a workspace. You can execute commands, read files, and write files to help the user with their tasks.
-
-When working on tasks:
-1. First understand what the user wants
-2. Explore the workspace if needed using execute_command (e.g., 'ls', 'find', 'cat')
-3. Make changes using write_file or execute_command
-4. Verify your changes work
-5. Call finish() when done with a summary of what you did
-
-Always explain what you're doing and why.`;
 
 /**
  * Local conversation implementation that runs the agent loop locally.
@@ -236,7 +248,12 @@ export class LocalConversation implements IConversation {
     this.callback = options.callback;
     this._conversationId = options.conversationId;
     this.persistenceDir = options.persistenceDir;
-    this.systemPrompt = options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+
+    // Generate system prompt - use custom if provided, otherwise generate default
+    this.systemPrompt = options.systemPrompt || generateSystemPrompt({
+      workingDir: workspace.workingDir,
+    });
+
     if (options.maxIterations !== undefined) {
       this.maxIterations = options.maxIterations;
     }
@@ -457,6 +474,17 @@ export class LocalConversation implements IConversation {
           } else {
             result = `Failed to write file: ${uploadResult.error}`;
           }
+          break;
+        }
+
+        case 'think': {
+          // Think tool just logs the thought - no execution needed
+          result = 'Your thought has been logged.';
+          this.emitEvent({
+            type: 'observation',
+            timestamp: Date.now(),
+            data: { kind: 'think', thought: args.thought },
+          });
           break;
         }
 
