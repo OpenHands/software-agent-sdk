@@ -204,7 +204,12 @@ export interface TokenEvent extends BaseEvent {
 export interface StuckDetectionEvent extends BaseEvent {
   kind: 'StuckDetectionEvent';
   /** Type of stuck pattern detected */
-  pattern: 'action_observation_loop' | 'action_error_loop' | 'monologue' | 'alternating_pattern' | 'context_window_error';
+  pattern:
+    | 'action_observation_loop'
+    | 'action_error_loop'
+    | 'monologue'
+    | 'alternating_pattern'
+    | 'context_window_error';
   /** Number of repetitions detected */
   repetitions: number;
   /** Description of the stuck state */
@@ -283,8 +288,14 @@ export function isAgentErrorEvent(event: BaseEvent): event is AgentErrorEvent {
 /**
  * Type guard to check if event is observation-like (has action_id)
  */
-export function isObservationLike(event: BaseEvent): event is ObservationEvent | AgentErrorEvent | UserRejectObservation {
-  return event.kind === 'ObservationEvent' || event.kind === 'AgentErrorEvent' || event.kind === 'UserRejectObservation';
+export function isObservationLike(
+  event: BaseEvent
+): event is ObservationEvent | AgentErrorEvent | UserRejectObservation {
+  return (
+    event.kind === 'ObservationEvent' ||
+    event.kind === 'AgentErrorEvent' ||
+    event.kind === 'UserRejectObservation'
+  );
 }
 
 /**

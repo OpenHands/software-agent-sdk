@@ -334,11 +334,14 @@ export class OpenRouterLLM implements ILLM {
     let accumulated = '';
     let tokenIndex = 0;
     let lastChunk: ChatCompletionChunk | null = null;
-    const toolCalls: Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }> = new Map();
+    const toolCalls: Map<
+      number,
+      { id: string; type: 'function'; function: { name: string; arguments: string } }
+    > = new Map();
 
     for await (const chunk of this.chatCompletionStream(options)) {
       lastChunk = chunk;
-      
+
       for (const choice of chunk.choices) {
         // Handle content tokens
         if (choice.delta?.content) {
@@ -387,22 +390,22 @@ export class OpenRouterLLM implements ILLM {
     });
 
     // Construct final response
-    const finalToolCalls = toolCalls.size > 0 
-      ? Array.from(toolCalls.values()) 
-      : undefined;
+    const finalToolCalls = toolCalls.size > 0 ? Array.from(toolCalls.values()) : undefined;
 
     return {
       id: lastChunk?.id || '',
       model: lastChunk?.model || model,
-      choices: [{
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: accumulated || null,
-          tool_calls: finalToolCalls,
+      choices: [
+        {
+          index: 0,
+          message: {
+            role: 'assistant',
+            content: accumulated || null,
+            tool_calls: finalToolCalls,
+          },
+          finish_reason: lastChunk?.choices[0]?.finish_reason || 'stop',
         },
-        finish_reason: lastChunk?.choices[0]?.finish_reason || 'stop',
-      }],
+      ],
       created: lastChunk?.created || Date.now(),
     };
   }

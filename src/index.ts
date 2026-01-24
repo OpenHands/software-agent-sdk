@@ -193,7 +193,11 @@ export type { WorkspaceOptions, CreateWorkspaceOptions } from './workspace/works
 
 export type { RemoteConversationOptions } from './conversation/remote-conversation';
 
-export type { LocalConversationOptions, ToolExecutor, ConversationTokenCallback } from './conversation/local-conversation';
+export type {
+  LocalConversationOptions,
+  ToolExecutor,
+  ConversationTokenCallback,
+} from './conversation/local-conversation';
 
 export type { ConversationOptions, CreateConversationOptions } from './conversation/conversation';
 

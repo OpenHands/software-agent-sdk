@@ -82,10 +82,14 @@ export class RiskBasedConfirm implements ConfirmationPolicy {
 
   private riskValue(level: RiskLevel): number {
     switch (level) {
-      case 'low': return 1;
-      case 'medium': return 2;
-      case 'high': return 3;
-      case 'unknown': return 2; // Treat unknown as medium
+      case 'low':
+        return 1;
+      case 'medium':
+        return 2;
+      case 'high':
+        return 3;
+      case 'unknown':
+        return 2; // Treat unknown as medium
     }
   }
 
@@ -123,7 +127,7 @@ export class CompositeConfirm implements ConfirmationPolicy {
   }
 
   requiresConfirmation(action: ActionEvent, riskLevel?: RiskLevel): boolean {
-    return this.policies.some(policy => policy.requiresConfirmation(action, riskLevel));
+    return this.policies.some((policy) => policy.requiresConfirmation(action, riskLevel));
   }
 }
 

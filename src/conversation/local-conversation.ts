@@ -31,10 +31,7 @@ import {
   ConversationStateUpdateEvent,
   generateEventId,
 } from '../events/types';
-import {
-  ConfirmationPolicy,
-  NeverConfirm,
-} from '../security/confirmation-policy';
+import { ConfirmationPolicy, NeverConfirm } from '../security/confirmation-policy';
 import { SecurityAnalyzer } from '../security/security-analyzer';
 
 /**
@@ -140,7 +137,13 @@ class LocalEventsList implements IEventsList {
     return this.events[Symbol.iterator]();
   }
 
-  getEventCounts(): { total: number; messages: number; actions: number; observations: number; errors: number } {
+  getEventCounts(): {
+    total: number;
+    messages: number;
+    actions: number;
+    observations: number;
+    errors: number;
+  } {
     let messages = 0;
     let actions = 0;
     let observations = 0;
@@ -758,10 +761,7 @@ Question: ${question}
 
 Provide a direct answer without using any tools.`;
 
-    const messages: ChatMessage[] = [
-      ...contextMessages,
-      { role: 'user', content: askPrompt },
-    ];
+    const messages: ChatMessage[] = [...contextMessages, { role: 'user', content: askPrompt }];
 
     // Make a simple completion without tools
     const response = await this.llm.chatCompletion({

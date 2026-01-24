@@ -1,13 +1,10 @@
 /**
  * Tests for LLM token streaming callbacks
- * 
+ *
  * These tests verify the token callback functionality in the LLM module.
  */
 
-import {
-  TokenCallbackType,
-  TokenStreamEvent,
-} from '../llm/base';
+import { TokenCallbackType, TokenStreamEvent } from '../llm/base';
 
 describe('Token Callback Types', () => {
   describe('TokenStreamEvent', () => {
@@ -80,7 +77,7 @@ describe('Token Callback Types', () => {
       const events: TokenStreamEvent[] = [];
       // Note: TokenCallbackType is sync, but we can test async behavior
       const asyncHandler = async (event: TokenStreamEvent) => {
-        await new Promise(resolve => setTimeout(resolve, 1));
+        await new Promise((resolve) => setTimeout(resolve, 1));
         events.push(event);
       };
 
@@ -145,7 +142,7 @@ describe('LLM Interface with Callbacks', () => {
 
       const words = text.split(' ');
       let accumulated = '';
-      
+
       for (let i = 0; i < words.length; i++) {
         accumulated += (i > 0 ? ' ' : '') + words[i];
         this.tokenCallback({

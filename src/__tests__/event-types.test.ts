@@ -1,6 +1,6 @@
 /**
  * Tests for rich event types
- * 
+ *
  * These tests verify the event type definitions and type guards.
  */
 
@@ -244,9 +244,7 @@ describe('Event Structure', () => {
         source: 'user',
         llm_message: {
           role: 'user',
-          content: [
-            { type: 'text', text: 'Hello, assistant!' },
-          ],
+          content: [{ type: 'text', text: 'Hello, assistant!' }],
         },
         activated_skills: ['code_review'],
       };

@@ -34,31 +34,31 @@ export class PatternBasedAnalyzer implements SecurityAnalyzer {
 
   // Patterns for high-risk operations
   private readonly highRiskPatterns: RegExp[] = [
-    /\brm\s+-rf?\s+[/~]/i,            // rm -rf with absolute/home paths
-    /\bsudo\b/i,                       // sudo commands
-    /\bchmod\s+777\b/i,               // chmod 777
+    /\brm\s+-rf?\s+[/~]/i, // rm -rf with absolute/home paths
+    /\bsudo\b/i, // sudo commands
+    /\bchmod\s+777\b/i, // chmod 777
     /\b(curl|wget).*\|\s*(sh|bash)\b/i, // piped downloads
-    /\bdd\s+.*of=/i,                  // dd command
-    /\bmkfs\b/i,                      // filesystem creation
-    /\b(shutdown|reboot|halt)\b/i,   // system control
-    /\bkill\s+-9\s+1\b/i,            // kill init
+    /\bdd\s+.*of=/i, // dd command
+    /\bmkfs\b/i, // filesystem creation
+    /\b(shutdown|reboot|halt)\b/i, // system control
+    /\bkill\s+-9\s+1\b/i, // kill init
     />(\/dev\/(sd|hd|nvme)|\/etc\/)/i, // writing to devices/etc
-    /\bpasswd\b/i,                    // password changes
-    /\buseradd\b|\buserdel\b/i,      // user management
+    /\bpasswd\b/i, // password changes
+    /\buseradd\b|\buserdel\b/i, // user management
   ];
 
   // Patterns for medium-risk operations
   private readonly mediumRiskPatterns: RegExp[] = [
-    /\brm\b/i,                        // any rm command
-    /\bgit\s+push\b/i,               // git push
-    /\bgit\s+reset\s+--hard\b/i,     // git reset hard
+    /\brm\b/i, // any rm command
+    /\bgit\s+push\b/i, // git push
+    /\bgit\s+reset\s+--hard\b/i, // git reset hard
     /\bnpm\s+(publish|unpublish)\b/i, // npm publish
-    /\bpip\s+install\b/i,            // pip install
-    /\bcurl\b|\bwget\b/i,            // network downloads
-    /\bchmod\b/i,                    // permission changes
-    /\bchown\b/i,                    // ownership changes
-    /\benv\b.*=.*\bexport\b/i,       // environment modifications
-    /\b(docker|kubectl)\b/i,         // container/k8s commands
+    /\bpip\s+install\b/i, // pip install
+    /\bcurl\b|\bwget\b/i, // network downloads
+    /\bchmod\b/i, // permission changes
+    /\bchown\b/i, // ownership changes
+    /\benv\b.*=.*\bexport\b/i, // environment modifications
+    /\b(docker|kubectl)\b/i, // container/k8s commands
   ];
 
   // Patterns for sensitive file access
@@ -113,9 +113,10 @@ export class PatternBasedAnalyzer implements SecurityAnalyzer {
     return {
       riskLevel: highestRisk,
       requiresConfirmation: highestRisk !== 'low',
-      explanation: concerns.length > 0 
-        ? `Found ${concerns.length} potential security concern(s)`
-        : 'No significant risks detected',
+      explanation:
+        concerns.length > 0
+          ? `Found ${concerns.length} potential security concern(s)`
+          : 'No significant risks detected',
       concerns,
     };
   }
@@ -219,9 +220,7 @@ export class CompositeAnalyzer implements SecurityAnalyzer {
   }
 
   async analyze(action: ActionEvent): Promise<SecurityAnalysisResult> {
-    const results = await Promise.all(
-      this.analyzers.map(a => a.analyze(action))
-    );
+    const results = await Promise.all(this.analyzers.map((a) => a.analyze(action)));
 
     // Combine results - highest risk wins
     let highestRisk: RiskLevel = 'low';
@@ -250,10 +249,14 @@ export class CompositeAnalyzer implements SecurityAnalyzer {
 
   private riskValue(level: RiskLevel): number {
     switch (level) {
-      case 'low': return 1;
-      case 'medium': return 2;
-      case 'high': return 3;
-      case 'unknown': return 2;
+      case 'low':
+        return 1;
+      case 'medium':
+        return 2;
+      case 'high':
+        return 3;
+      case 'unknown':
+        return 2;
     }
   }
 }

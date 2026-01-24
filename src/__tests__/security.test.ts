@@ -1,6 +1,6 @@
 /**
  * Tests for Security module (ConfirmationPolicy and SecurityAnalyzer)
- * 
+ *
  * These tests mirror the Python SDK's security tests to ensure
  * consistent behavior across implementations.
  */
@@ -95,7 +95,7 @@ describe('Confirmation Policies', () => {
   describe('ToolBasedConfirm', () => {
     it('should require confirmation for specified tools', () => {
       const policy = new ToolBasedConfirm(['dangerous_tool', 'risky_operation']);
-      
+
       const safeAction = createActionEvent('safe_tool', { arg: 'value' });
       const dangerousAction = createActionEvent('dangerous_tool', { arg: 'value' });
       const riskyAction = createActionEvent('risky_operation', { arg: 'value' });
@@ -243,7 +243,7 @@ describe('Security Analyzers', () => {
 
     it('should support pattern matching', () => {
       const analyzer = new AllowlistAnalyzer([], [/^read_/]);
-      
+
       const readAction = createActionEvent('read_file', { path: '/tmp' });
       // Using readAction to verify pattern matching exists
       const result = analyzer.analyze(readAction);

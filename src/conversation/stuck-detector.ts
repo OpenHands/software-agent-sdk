@@ -47,7 +47,12 @@ export interface StuckDetectionResult {
   /** Whether the agent is stuck */
   isStuck: boolean;
   /** Type of stuck pattern detected (if any) */
-  pattern?: 'action_observation_loop' | 'action_error_loop' | 'monologue' | 'alternating_pattern' | 'context_window_error';
+  pattern?:
+    | 'action_observation_loop'
+    | 'action_error_loop'
+    | 'monologue'
+    | 'alternating_pattern'
+    | 'context_window_error';
   /** Number of repetitions detected */
   repetitions?: number;
   /** Human-readable description */
@@ -113,7 +118,10 @@ export class StuckDetector {
       const event = recentEvents[i];
       if (isActionEvent(event) && lastActions.length < maxNeeded) {
         lastActions.push(event);
-      } else if ((isObservationEvent(event) || isAgentErrorEvent(event)) && lastObservations.length < maxNeeded) {
+      } else if (
+        (isObservationEvent(event) || isAgentErrorEvent(event)) &&
+        lastObservations.length < maxNeeded
+      ) {
         lastObservations.push(event);
       }
       if (lastActions.length >= maxNeeded && lastObservations.length >= maxNeeded) {
@@ -185,14 +193,14 @@ export class StuckDetector {
     }
 
     // Check if all actions are identical
-    const actionsEqual = lastActions.slice(0, threshold).every((action) =>
-      this.actionsEqual(lastActions[0], action)
-    );
+    const actionsEqual = lastActions
+      .slice(0, threshold)
+      .every((action) => this.actionsEqual(lastActions[0], action));
 
     // Check if all observations are identical
-    const observationsEqual = observations.slice(0, threshold).every((obs) =>
-      this.observationsEqual(observations[0], obs)
-    );
+    const observationsEqual = observations
+      .slice(0, threshold)
+      .every((obs) => this.observationsEqual(observations[0], obs));
 
     if (actionsEqual && observationsEqual) {
       return {
@@ -220,9 +228,9 @@ export class StuckDetector {
     }
 
     // Check if all actions are identical
-    const actionsEqual = lastActions.slice(0, threshold).every((action) =>
-      this.actionsEqual(lastActions[0], action)
-    );
+    const actionsEqual = lastActions
+      .slice(0, threshold)
+      .every((action) => this.actionsEqual(lastActions[0], action));
 
     if (!actionsEqual) {
       return { isStuck: false };
@@ -301,7 +309,10 @@ export class StuckDetector {
       const event = events[i];
       if (isActionEvent(event) && lastActions.length < threshold) {
         lastActions.push(event);
-      } else if ((isObservationEvent(event) || isAgentErrorEvent(event)) && lastObservations.length < threshold) {
+      } else if (
+        (isObservationEvent(event) || isAgentErrorEvent(event)) &&
+        lastObservations.length < threshold
+      ) {
         lastObservations.push(event);
       }
       if (lastActions.length === threshold && lastObservations.length === threshold) {
@@ -393,8 +404,7 @@ export class StuckDetector {
 
     if (isMessageEvent(a) && isMessageEvent(b)) {
       return (
-        a.source === b.source &&
-        JSON.stringify(a.llm_message) === JSON.stringify(b.llm_message)
+        a.source === b.source && JSON.stringify(a.llm_message) === JSON.stringify(b.llm_message)
       );
     }
 

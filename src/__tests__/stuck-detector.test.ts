@@ -1,14 +1,11 @@
 /**
  * Tests for StuckDetector class
- * 
+ *
  * These tests mirror the Python SDK's stuck detector tests to ensure
  * consistent behavior across implementations.
  */
 
-import {
-  StuckDetector,
-  DEFAULT_STUCK_THRESHOLDS,
-} from '../conversation/stuck-detector';
+import { StuckDetector, DEFAULT_STUCK_THRESHOLDS } from '../conversation/stuck-detector';
 import {
   BaseEvent,
   MessageEvent,
@@ -45,7 +42,11 @@ function createActionEvent(toolName: string, command: string, thought?: string):
   };
 }
 
-function createObservationEvent(actionId: string, toolName: string, output: string): ObservationEvent {
+function createObservationEvent(
+  actionId: string,
+  toolName: string,
+  output: string
+): ObservationEvent {
   return {
     id: generateEventId(),
     kind: 'ObservationEvent',
@@ -98,9 +99,7 @@ describe('StuckDetector', () => {
   describe('History Too Short', () => {
     it('should return not stuck when there are too few events', () => {
       const detector = new StuckDetector();
-      const events: BaseEvent[] = [
-        createMessageEvent('user', 'Hello'),
-      ];
+      const events: BaseEvent[] = [createMessageEvent('user', 'Hello')];
 
       const result = detector.isStuck(events);
       expect(result.isStuck).toBe(false);
@@ -230,7 +229,7 @@ describe('StuckDetector', () => {
         createMessageEvent('user', 'Hello'),
         createMessageEvent('agent', 'Thinking... 1'),
         createMessageEvent('agent', 'Thinking... 2'),
-        createMessageEvent('user', 'Any progress?'),  // User interrupts
+        createMessageEvent('user', 'Any progress?'), // User interrupts
         createMessageEvent('agent', 'Thinking... 3'),
         createMessageEvent('agent', 'Thinking... 4'),
       ];

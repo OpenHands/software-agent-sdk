@@ -1,6 +1,6 @@
 /**
  * Tests for SecretRegistry class
- * 
+ *
  * These tests mirror the Python SDK's secrets manager tests to ensure
  * consistent behavior across implementations.
  */
@@ -193,7 +193,9 @@ describe('SecretRegistry', () => {
       const output = 'Token: abc123, Again: abc123, And again: abc123';
       const masked = registry.maskSecretsInOutput(output);
 
-      expect(masked).toBe('Token: <secret-hidden>, Again: <secret-hidden>, And again: <secret-hidden>');
+      expect(masked).toBe(
+        'Token: <secret-hidden>, Again: <secret-hidden>, And again: <secret-hidden>'
+      );
     });
   });
 
