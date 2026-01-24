@@ -70,6 +70,8 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
   const [isLoading, setIsLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const conversationRef = useRef<LocalConversation | null>(null);
+  const pendingMessagesRef = useRef<Message[]>([]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -115,6 +117,35 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
     }
   }, []);
 
+  // Event callback for the conversation
+  const handleConversationEvent = useCallback((event: unknown) => {
+    const eventData = event as Record<string, unknown>;
+    
+    if (eventData.kind === 'assistant_message' && eventData.content) {
+      pendingMessagesRef.current.push({
+        id: `${Date.now()}-assistant-${Math.random()}`,
+        role: 'assistant',
+        content: eventData.content as string,
+        timestamp: new Date(),
+      });
+    } else if (eventData.kind === 'tool_result') {
+      pendingMessagesRef.current.push({
+        id: `${Date.now()}-tool-${Math.random()}`,
+        role: 'tool',
+        content: eventData.result as string,
+        timestamp: new Date(),
+        toolName: eventData.tool as string,
+      });
+    } else if (eventData.kind === 'finish') {
+      pendingMessagesRef.current.push({
+        id: `${Date.now()}-finish-${Math.random()}`,
+        role: 'assistant',
+        content: eventData.message as string,
+        timestamp: new Date(),
+      });
+    }
+  }, []);
+
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
 
@@ -129,66 +160,38 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
     setInput('');
     setIsLoading(true);
 
+    // Clear pending messages for this run
+    pendingMessagesRef.current = [];
+
     try {
-      // Create a minimal workspace (won't be used since we have custom tools)
-      const workspace = new LocalWorkspace({ workingDir: '/workspace' });
-      
-      // Create an agent configuration
-      const agent = new Agent({
-        llm: { model, api_key: '' }, // LLM config (actual LLM instance passed separately)
-      });
-      
-      // Collect events for display
-      const newMessages: Message[] = [];
-      
-      // Create the conversation with custom tools and tool executor
-      const conversation = new LocalConversation(agent, workspace, {
-        llm,
-        systemPrompt: SYSTEM_PROMPT,
-        tools: TOOLS,
-        toolExecutor,
-        maxIterations: 10,
-        callback: (event) => {
-          // Handle events from the conversation
-          // Event properties are spread directly on the event object (not nested under event.data)
-          const eventData = event as Record<string, unknown>;
-          
-          if (eventData.kind === 'assistant_message' && eventData.content) {
-            newMessages.push({
-              id: `${Date.now()}-assistant`,
-              role: 'assistant',
-              content: eventData.content as string,
-              timestamp: new Date(),
-            });
-          } else if (eventData.kind === 'tool_call') {
-            // Tool calls are handled by toolExecutor
-          } else if (eventData.kind === 'tool_result') {
-            newMessages.push({
-              id: `${Date.now()}-tool`,
-              role: 'tool',
-              content: eventData.result as string,
-              timestamp: new Date(),
-              toolName: eventData.tool as string,
-            });
-          } else if (eventData.kind === 'finish') {
-            newMessages.push({
-              id: `${Date.now()}-finish`,
-              role: 'assistant',
-              content: eventData.message as string,
-              timestamp: new Date(),
-            });
-          }
-        },
-      });
-      
-      // Start the conversation with the user's message
-      await conversation.start({ initialMessage: userMessage.content });
+      // Create conversation if it doesn't exist
+      if (!conversationRef.current) {
+        const workspace = new LocalWorkspace({ workingDir: '/workspace' });
+        const agent = new Agent({
+          llm: { model, api_key: '' },
+        });
+        
+        conversationRef.current = new LocalConversation(agent, workspace, {
+          llm,
+          systemPrompt: SYSTEM_PROMPT,
+          tools: TOOLS,
+          toolExecutor,
+          maxIterations: 10,
+          callback: handleConversationEvent,
+        });
+        
+        // Start the conversation with the first message
+        await conversationRef.current.start({ initialMessage: userMessage.content });
+      } else {
+        // Send follow-up message to existing conversation
+        await conversationRef.current.sendMessage(userMessage.content);
+      }
       
       // Run the agent loop
-      await conversation.run();
+      await conversationRef.current.run();
       
       // Update messages with collected events
-      setMessages((prev) => [...prev, ...newMessages]);
+      setMessages((prev) => [...prev, ...pendingMessagesRef.current]);
       
     } catch (error) {
       console.error('Error in agent loop:', error);
@@ -215,6 +218,7 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
 
   const clearChat = () => {
     setMessages([]);
+    conversationRef.current = null; // Reset conversation to start fresh
   };
 
   return (
@@ -224,11 +228,11 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
           <div className="icon">🤖</div>
           <h3>Agent Ready</h3>
           <p>
-            This agent has access to a <code>console_log</code> tool.
-            Try asking it to log something to the console!
+            This agent has access to a JavaScript <code>eval</code> tool.
+            Try asking it to calculate something or run code!
           </p>
           <p style={{ marginTop: '1rem', fontSize: '0.875rem', color: 'var(--text-secondary)' }}>
-            Example: "Log 'Hello, World!' to the console" or "Calculate 2+2 and log the result"
+            Example: "What is 2 + 2?" or "Generate the first 10 fibonacci numbers"
           </p>
         </div>
       ) : (
