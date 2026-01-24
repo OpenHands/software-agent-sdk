@@ -9,7 +9,7 @@ The template uses skill triggers:
 - /github-pr-review provides instructions for posting review comments via GitHub API
 
 The template includes:
-- {diff} - The complete git diff for the PR
+- {diff} - The complete git diff for the PR (may be truncated for large files)
 - {pr_number} - The PR number
 - {commit_id} - The HEAD commit SHA
 """
