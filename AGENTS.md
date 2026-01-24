@@ -67,7 +67,7 @@ The workspace module follows the Python SDK's architecture with a common interfa
 src/workspace/
 ├── base.ts           # IWorkspace interface defining the contract
 ├── remote-workspace.ts  # RemoteWorkspace - connects to remote agent server
-├── local-workspace.ts   # LocalWorkspace - stub for local execution (not yet implemented)
+├── local-workspace.ts   # LocalWorkspace - local execution using Node.js APIs
 └── workspace.ts      # Factory functions and Workspace class (backwards compatible)
 ```
 
@@ -79,7 +79,11 @@ src/workspace/
 
 **RemoteWorkspace**: Fully implemented class that connects to a remote OpenHands agent server via HTTP API.
 
-**LocalWorkspace**: Stub implementation for local execution. Methods throw errors indicating they need Node.js-specific implementation.
+**LocalWorkspace**: Fully implemented class for local execution using Node.js APIs:
+- Uses `child_process.spawn` for command execution with timeout support
+- Uses `fs/promises` for file operations
+- Parses `git status --porcelain` for git changes
+- Note: Requires Node.js environment, won't work in browsers
 
 **Factory Functions**:
 - `createWorkspace({ type, options })` - Explicit type selection
@@ -138,7 +142,7 @@ The conversation module follows the same pattern as workspaces:
 src/conversation/
 ├── base.ts               # IConversation interface defining the contract
 ├── remote-conversation.ts   # RemoteConversation - connects to remote agent server
-├── local-conversation.ts    # LocalConversation - stub for local execution (not yet implemented)
+├── local-conversation.ts    # LocalConversation - local agent execution with LLM
 ├── conversation.ts       # Factory functions and Conversation class (backwards compatible)
 ├── remote-state.ts       # State management for remote conversations
 └── conversation-manager.ts  # Manager for multiple conversations
@@ -153,7 +157,36 @@ src/conversation/
 
 **RemoteConversation**: Fully implemented class that connects to a remote OpenHands agent server via HTTP/WebSocket.
 
-**LocalConversation**: Stub implementation for local agent execution. Methods throw errors indicating they need full agent loop implementation.
+**LocalConversation**: Fully implemented class for local agent execution:
+- Integrates with ILLM interface for LLM communication
+- Implements agent loop with tool calling support
+- Built-in tools: `execute_command`, `read_file`, `write_file`, `finish`
+- Maintains message history for multi-turn conversations
+- Supports pause/resume functionality
+- Event emission with callback support
+
+**Local Conversation Example**:
+```typescript
+import { LocalWorkspace, LocalConversation, OpenRouterLLM } from '@openhands/typescript-client';
+
+// Create components
+const workspace = new LocalWorkspace({ workingDir: '/path/to/project' });
+const llm = new OpenRouterLLM({ 
+  apiKey: 'your-key', 
+  defaultModel: 'anthropic/claude-3.5-sonnet' 
+});
+
+// Create and run conversation
+const conversation = new LocalConversation(
+  { kind: 'local-agent' },
+  workspace,
+  { llm, maxIterations: 50 }
+);
+
+await conversation.start({ initialMessage: 'List all TypeScript files' });
+await conversation.run();
+await conversation.close();
+```
 
 **Factory Functions**:
 - `createConversation({ type, agent, workspace, options })` - Explicit type selection
