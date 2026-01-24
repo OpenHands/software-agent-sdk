@@ -142,11 +142,11 @@ class WebSocketCallbackClient:
         Returns:
             True if the WebSocket is ready, False if stopped or timeout expired.
         """
-        deadline = None if timeout is None else time.time() + timeout
+        deadline = None if timeout is None else time.monotonic() + timeout
         while True:
             # Calculate remaining timeout
             if deadline is not None:
-                remaining = deadline - time.time()
+                remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return False
                 wait_timeout = min(0.05, remaining)
@@ -723,6 +723,12 @@ class RemoteConversation(BaseConversation):
         # The server sends a ConversationStateUpdateEvent after subscription.
         ws_timeout = 30.0
         if not self._ws_client.wait_until_ready(timeout=ws_timeout):
+            try:
+                self._ws_client.stop()
+            except Exception:
+                pass
+            finally:
+                self._ws_client = None
             raise WebSocketConnectionError(
                 conversation_id=self._id,
                 timeout=ws_timeout,
