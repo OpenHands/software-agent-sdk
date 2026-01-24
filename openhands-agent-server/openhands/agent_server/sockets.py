@@ -37,11 +37,11 @@ logger = logging.getLogger(__name__)
 
 
 def _get_config(websocket: WebSocket) -> Config:
-    """Return the app's configured Config for this websocket.
+    """Return the Config associated with this FastAPI app instance.
 
-    In tests and embedders, `create_app(config)` may be used to construct an app
-    with a non-default Config. WebSocket handlers should respect that Config
-    rather than always reading from environment-derived defaults.
+    This ensures WebSocket auth follows the same configuration as the REST API
+    when the agent server is used as a library (e.g., tests or when mounted into
+    another FastAPI app), rather than always reading environment defaults.
     """
     config = getattr(websocket.app.state, "config", None)
     if isinstance(config, Config):
