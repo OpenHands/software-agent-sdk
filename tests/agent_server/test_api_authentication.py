@@ -254,6 +254,16 @@ def test_api_websocket_authentication():
             assert False, "WebSocket connection should have failed with wrong key"
 
 
+def test_api_websocket_no_auth_required():
+    """Test that WebSocket connections work when auth is disabled."""
+    config = Config(session_api_keys=[])
+    app = create_app(config)
+    client = TestClient(app)
+
+    with client.websocket_connect("/sockets/bash-events"):
+        pass
+
+
 def test_api_options_requests():
     """Test that OPTIONS requests work for CORS preflight."""
     config = Config(session_api_keys=["test-key"])

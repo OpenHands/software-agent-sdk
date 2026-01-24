@@ -79,6 +79,7 @@ async def _accept_authenticated_websocket(
     config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
     if config.session_api_keys and resolved_key not in config.session_api_keys:
+        logger.warning("WebSocket authentication failed: invalid or missing API key")
         await websocket.close(code=4001, reason="Authentication failed")
         return False
     await websocket.accept()
