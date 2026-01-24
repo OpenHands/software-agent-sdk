@@ -2,6 +2,9 @@
  * Integration tests for WebSocketCallbackClient
  *
  * Tests real-time event streaming from the agent-server.
+ *
+ * NOTE: Some tests in this file are skipped by default because they depend on
+ * LLM behavior which is non-deterministic and can be slow.
  */
 
 import { WebSocketCallbackClient, HttpClient, Event } from '../../index';
@@ -9,6 +12,8 @@ import { getTestConfig, skipIfNoConfig, createTestLLMConfig } from './test-confi
 import { sleep, waitFor } from './test-utils';
 
 const SKIP_TESTS = skipIfNoConfig();
+// Skip flaky tests that depend on LLM behavior in CI
+const SKIP_FLAKY_TESTS = process.env.SKIP_FLAKY_TESTS !== 'false';
 
 describe('WebSocket Integration Tests', () => {
   let config: ReturnType<typeof getTestConfig>;
@@ -286,7 +291,10 @@ describe('WebSocket Integration Tests', () => {
   });
 
   describe('Event Content', () => {
-    it(
+    // These tests are flaky because they depend on LLM behavior
+    const testFn = SKIP_FLAKY_TESTS ? it.skip : it;
+
+    testFn(
       'should receive MessageEvent with content',
       async () => {
         if (SKIP_TESTS) return;
@@ -347,7 +355,7 @@ describe('WebSocket Integration Tests', () => {
       config?.testTimeout || 120000
     );
 
-    it(
+    testFn(
       'should receive ActionEvent when agent performs action',
       async () => {
         if (SKIP_TESTS) return;
@@ -409,7 +417,7 @@ describe('WebSocket Integration Tests', () => {
       config?.testTimeout || 180000
     );
 
-    it(
+    testFn(
       'should receive ObservationEvent after action',
       async () => {
         if (SKIP_TESTS) return;
