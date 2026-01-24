@@ -27,16 +27,11 @@ This creates ONE giant match containing:
 The combined content fails JSON parsing → 0 valid matches → AssertionError.
 """
 
-import re
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
-from openhands.tools.terminal.constants import (
-    CMD_OUTPUT_METADATA_PS1_REGEX,
-    CMD_OUTPUT_PS1_BEGIN,
-    CMD_OUTPUT_PS1_END,
-)
+from openhands.tools.terminal.constants import CMD_OUTPUT_METADATA_PS1_REGEX
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal.terminal_session import TerminalSession
 
@@ -120,7 +115,7 @@ Done.
 
     # Pager output (like from `less` or `help` command) that has no PS1 markers
     # This happens when a pager takes over the terminal screen
-    PAGER_OUTPUT_NO_PS1 = '''Help on class RidgeClassifierCV in module sklearn.linear_model.ridge:
+    PAGER_OUTPUT_NO_PS1 = '''Help on class RidgeClassifierCV in sklearn.linear_model:
 
 class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRidgeCV)
  |  Ridge classifier with built-in cross-validation.
@@ -196,9 +191,10 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
         # CURRENT BUGGY BEHAVIOR: 0 matches (all fail JSON parsing)
         # EXPECTED FIXED BEHAVIOR: 1 match (the second valid block)
         assert len(matches) >= 1, (
-            f"BUG: Expected at least 1 valid PS1 match from corrupted output, got {len(matches)}. "
-            "The output contains a VALID PS1 block at the end, but the regex/parser fails to find it. "
-            "This is the bug that causes 'Expected at least one PS1 metadata block, but got 0' errors."
+            f"BUG: Expected at least 1 valid PS1 match, got {len(matches)}. "
+            "The output contains a VALID PS1 block at the end, but the "
+            "regex/parser fails to find it. This bug causes "
+            "'Expected at least one PS1 metadata block, but got 0' errors."
         )
 
     def test_handle_completed_command_fails_with_corrupted_output(self):
@@ -234,11 +230,13 @@ ALSO BROKEN
 {invalid json here}
 ###PS1END###'''
 
-        ps1_matches = CmdOutputMetadata.matches_ps1_metadata(completely_corrupted_output)
+        ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
+            completely_corrupted_output
+        )
 
         # Verify we get 0 matches due to corruption
         assert len(ps1_matches) == 0, (
-            f"Expected 0 valid PS1 matches from completely corrupted output, got {len(ps1_matches)}"
+            f"Expected 0 PS1 matches from corrupted output, got {len(ps1_matches)}"
         )
 
         # Now verify the assertion fails as seen in production
@@ -250,8 +248,9 @@ ALSO BROKEN
             )
 
         # Verify the error message matches what we see in Datadog
-        assert "Expected at least one PS1 metadata block, but got 0" in str(exc_info.value)
-        assert "FULL OUTPUT" in str(exc_info.value)
+        error_msg = str(exc_info.value)
+        assert "Expected at least one PS1 metadata block, but got 0" in error_msg
+        assert "FULL OUTPUT" in error_msg
 
     def test_pager_output_causes_zero_ps1_matches(self):
         """
@@ -291,7 +290,7 @@ SOME EXTRA OUTPUT BUT NO PS1END MARKER
 '''
         matches = CmdOutputMetadata.matches_ps1_metadata(partial_block)
         assert len(matches) == 0, (
-            f"Expected 0 matches for partial PS1 block without ###PS1END###, got {len(matches)}"
+            f"Expected 0 matches for partial PS1 block, got {len(matches)}"
         )
 
     def test_ps1_block_with_embedded_special_chars(self):
@@ -348,8 +347,8 @@ INTERLEAVED COMMAND OUTPUT HERE - THIS BREAKS THE JSON
         # The regex WILL match this because the markers are present,
         # but the JSON parsing should fail and skip it
         assert len(matches) == 0, (
-            f"Expected 0 matches when command output interleaves with PS1 JSON, got {len(matches)}. "
-            "The JSON parser should reject malformed JSON between PS1 markers."
+            f"Expected 0 matches with interleaved output, got {len(matches)}. "
+            "The JSON parser should reject malformed JSON between markers."
         )
 
 
@@ -389,7 +388,8 @@ class TestPS1CorruptionIntegration:
             )
 
         # Document the current error behavior
-        assert "Expected at least one PS1 metadata block, but got 0" in str(exc_info.value)
+        error_msg = str(exc_info.value)
+        assert "Expected at least one PS1 metadata block, but got 0" in error_msg
 
 
 class TestPS1ParserRobustness:
