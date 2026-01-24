@@ -49,10 +49,10 @@ export function ChatInterface({ llm, model }: ChatInterfaceProps) {
     setIsLoading(true);
 
     try {
-      // Build conversation history for context
+      // Build conversation history for context (use plain strings for content)
       const conversationMessages = [...messages, userMessage].map((msg) => ({
         role: msg.role as 'user' | 'assistant',
-        content: [{ type: 'text' as const, text: msg.content }],
+        content: msg.content,
       }));
 
       // Call the LLM
