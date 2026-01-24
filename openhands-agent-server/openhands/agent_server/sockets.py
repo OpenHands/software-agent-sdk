@@ -49,7 +49,6 @@ def _get_config(websocket: WebSocket) -> Config:
     return get_default_config()
 
 
-
 def _resolve_websocket_session_api_key(
     websocket: WebSocket,
     session_api_key: str | None,
