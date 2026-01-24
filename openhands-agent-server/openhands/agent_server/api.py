@@ -26,6 +26,7 @@ from openhands.agent_server.git_router import git_router
 from openhands.agent_server.middleware import LocalhostCORSMiddleware
 from openhands.agent_server.server_details_router import (
     get_server_info,
+    mark_initialization_complete,
     server_details_router,
 )
 from openhands.agent_server.skills_router import skills_router
@@ -89,6 +90,11 @@ async def api_lifespan(api: FastAPI) -> AsyncIterator[None]:
         start_tool_preload_service(),
         return_exceptions=True,
     )
+
+    # Mark initialization as complete - now the /ready endpoint will return 200
+    # and Kubernetes readiness probes will pass
+    mark_initialization_complete()
+    logger.info("Server initialization complete - ready to serve requests")
 
     async with service:
         # Store the initialized service in app state for dependency injection
