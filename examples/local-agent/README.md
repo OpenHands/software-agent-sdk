@@ -1,11 +1,11 @@
 # OpenHands Local Agent
 
-A browser-based agent UI that demonstrates the OpenHands TypeScript SDK with tool calling capabilities using OpenRouter.
+A browser-based agent UI that demonstrates the OpenHands TypeScript SDK's `LocalConversation` class with custom tool calling capabilities using OpenRouter.
 
 ## Features
 
-- 🤖 **Agent Loop** - Full agent loop that handles tool calls and responses
-- 🔧 **Tool Calling** - Demonstrates LLM tool/function calling with a `console_log` tool
+- 🤖 **LocalConversation Agent Loop** - Uses the SDK's built-in agent loop via `LocalConversation.run()`
+- 🔧 **Custom Tool Calling** - Demonstrates how to provide custom tools and a tool executor
 - 🔐 **OpenRouter Authentication** - Securely connect with your API key
 - 💬 **Real-time Chat** - Conversational interface with message history
 - 🤖 **Multiple Models** - Switch between Claude, GPT-4, Gemini, Llama, and more
@@ -40,17 +40,17 @@ npm run dev
 
 ## How It Works
 
-This example demonstrates a complete agent loop with tool calling:
+This example demonstrates using `LocalConversation` with custom tools:
 
-1. **User sends a message** - The message is added to the conversation history
-2. **LLM processes with tools** - The LLM can choose to call the `console_log` tool
-3. **Tool execution** - When the LLM calls a tool, it's executed locally
-4. **Tool results** - Results are sent back to the LLM for further processing
-5. **Loop continues** - The agent continues until no more tool calls are needed
+1. **User sends a message** - Creates a `LocalConversation` with custom tools
+2. **conversation.start()** - Initializes the conversation with the user's message
+3. **conversation.run()** - Runs the agent loop, calling the custom `toolExecutor` for each tool call
+4. **Tool execution** - The `toolExecutor` handles `console_log` and `finish` tools
+5. **Events** - The callback receives events for display in the UI
 
-### The `console_log` Tool
+### Custom Tools
 
-The agent has access to a simple `console_log` tool that logs messages to the browser console:
+The agent has access to custom tools defined in the example:
 
 ```typescript
 const TOOLS: Tool[] = [
@@ -62,10 +62,21 @@ const TOOLS: Tool[] = [
       parameters: {
         type: 'object',
         properties: {
-          message: {
-            type: 'string',
-            description: 'The message to log to the console',
-          },
+          message: { type: 'string', description: 'The message to log' },
+        },
+        required: ['message'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'finish',
+      description: 'Call this when you have completed the task.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: { type: 'string', description: 'Final message' },
         },
         required: ['message'],
       },
@@ -97,58 +108,66 @@ examples/local-agent/
     ├── App.tsx          # Main app component
     ├── styles.css       # Global styles
     └── components/
-        ├── AgentChatInterface.tsx  # Agent loop & chat UI
+        ├── AgentChatInterface.tsx  # LocalConversation usage & chat UI
         ├── AuthScreen.tsx          # API key input
         └── SettingsModal.tsx       # Model settings
 ```
 
-## Agent Loop Implementation
+## Using LocalConversation with Custom Tools
 
-The core agent loop is implemented in `AgentChatInterface.tsx`:
+The key pattern demonstrated in `AgentChatInterface.tsx`:
 
 ```typescript
-const runAgentLoop = async (conversationMessages: ChatMessage[]): Promise<Message[]> => {
-  const newMessages: Message[] = [];
-  let currentMessages = [...conversationMessages];
+import { LocalConversation, LocalWorkspace, Agent, Tool, ToolCall } from '@openhands/typescript-client';
+
+// Define custom tools
+const TOOLS: Tool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'console_log',
+      description: 'Logs a message to the console.',
+      parameters: { /* ... */ },
+    },
+  },
+];
+
+// Define a tool executor
+const toolExecutor = (toolCall: ToolCall): string => {
+  const { name, arguments: argsString } = toolCall.function;
+  const args = JSON.parse(argsString);
   
-  for (let i = 0; i < maxIterations; i++) {
-    // Call LLM with tools
-    const response = await llm.chatCompletion({
-      messages: currentMessages,
-      model,
-      tools: TOOLS,
-      toolChoice: 'auto',
-    });
-
-    const choice = response.choices[0];
-    const assistantMessage = choice.message;
-    
-    // If no tool calls, we're done
-    if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
-      break;
-    }
-
-    // Execute tool calls and add results
-    for (const toolCall of assistantMessage.tool_calls) {
-      const result = executeToolCall(toolCall);
-      currentMessages.push({
-        role: 'tool',
-        content: result,
-        tool_call_id: toolCall.id,
-      });
-    }
+  if (name === 'console_log') {
+    console.log(args.message);
+    return `Logged: "${args.message}"`;
   }
   
-  return newMessages;
+  return `Unknown tool: ${name}`;
 };
+
+// Create the conversation with custom tools
+const conversation = new LocalConversation(agent, workspace, {
+  llm,
+  systemPrompt: 'You are a helpful assistant...',
+  tools: TOOLS,           // Custom tools
+  toolExecutor,           // Custom tool executor
+  maxIterations: 10,
+  callback: (event) => {
+    // Handle events (assistant_message, tool_result, finish, etc.)
+  },
+});
+
+// Start and run
+await conversation.start({ initialMessage: 'Hello!' });
+await conversation.run();
 ```
 
 ## Extending with More Tools
 
-To add more tools, simply:
+To add more tools:
 
 1. Add the tool definition to the `TOOLS` array
-2. Add a handler in the `executeToolCall` function
+2. Add a handler in the `toolExecutor` function
 
 Example adding a `get_time` tool:
 
@@ -165,19 +184,16 @@ const TOOLS: Tool[] = [
   },
 ];
 
-function executeToolCall(toolCall: ToolCall): string {
+const toolExecutor = (toolCall: ToolCall): string => {
   const { name } = toolCall.function;
   
-  if (name === 'console_log') {
-    // ... existing handler
-  }
-  
+  if (name === 'console_log') { /* ... */ }
   if (name === 'get_time') {
     return new Date().toISOString();
   }
   
   return `Unknown tool: ${name}`;
-}
+};
 ```
 
 ## Related

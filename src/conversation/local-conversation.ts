@@ -24,6 +24,12 @@ import { ILLM, ChatMessage, Tool, ToolCall } from '../llm/base';
 import { generateSystemPrompt, TOOL_DESCRIPTIONS } from '../prompts';
 
 /**
+ * Tool executor function type.
+ * Takes a tool call and returns the result string.
+ */
+export type ToolExecutor = (toolCall: ToolCall) => Promise<string> | string;
+
+/**
  * Options for creating a LocalConversation instance.
  */
 export interface LocalConversationOptions extends BaseConversationOptions {
@@ -33,6 +39,12 @@ export interface LocalConversationOptions extends BaseConversationOptions {
   systemPrompt?: string;
   /** Optional persistence directory for saving conversation state */
   persistenceDir?: string;
+  /** Custom tools to provide to the LLM (in addition to or instead of built-in tools) */
+  tools?: Tool[];
+  /** Custom tool executor function. If provided, handles all tool calls. */
+  toolExecutor?: ToolExecutor;
+  /** Whether to include built-in tools (execute_command, read_file, etc.). Default: true if no custom tools provided */
+  includeBuiltinTools?: boolean;
 }
 
 /**
@@ -227,6 +239,9 @@ export class LocalConversation implements IConversation {
   private _isPaused: boolean = false;
   private _isFinished: boolean = false;
   private secrets: Record<string, SecretValue> = {};
+  private customTools?: Tool[];
+  private toolExecutor?: ToolExecutor;
+  private includeBuiltinTools: boolean;
 
   constructor(agent: AgentBase, workspace: LocalWorkspace, options: LocalConversationOptions) {
     this.agent = agent;
@@ -235,6 +250,10 @@ export class LocalConversation implements IConversation {
     this.callback = options.callback;
     this._conversationId = options.conversationId;
     this.persistenceDir = options.persistenceDir;
+    this.customTools = options.tools;
+    this.toolExecutor = options.toolExecutor;
+    // Include built-in tools by default only if no custom tools are provided
+    this.includeBuiltinTools = options.includeBuiltinTools ?? !options.tools;
 
     // Generate system prompt - use custom if provided, otherwise generate default
     this.systemPrompt =
@@ -246,6 +265,20 @@ export class LocalConversation implements IConversation {
     if (options.maxIterations !== undefined) {
       this.maxIterations = options.maxIterations;
     }
+  }
+
+  /**
+   * Get the tools available to the agent.
+   */
+  private getTools(): Tool[] {
+    const tools: Tool[] = [];
+    if (this.includeBuiltinTools) {
+      tools.push(...BUILTIN_TOOLS);
+    }
+    if (this.customTools) {
+      tools.push(...this.customTools);
+    }
+    return tools;
   }
 
   get id(): ConversationID {
@@ -354,6 +387,8 @@ export class LocalConversation implements IConversation {
 
     let iterations = 0;
 
+    const tools = this.getTools();
+
     while (iterations < this.maxIterations && !this._isPaused && !this._isFinished) {
       iterations++;
 
@@ -361,8 +396,8 @@ export class LocalConversation implements IConversation {
         // Get LLM response
         const response = await this.llm.chatCompletion({
           messages: this.messages,
-          tools: BUILTIN_TOOLS,
-          toolChoice: 'auto',
+          tools: tools.length > 0 ? tools : undefined,
+          toolChoice: tools.length > 0 ? 'auto' : undefined,
         });
 
         const choice = response.choices[0];
@@ -438,58 +473,16 @@ export class LocalConversation implements IConversation {
     let result: string;
 
     try {
-      const args = JSON.parse(argsString);
-
-      switch (name) {
-        case 'execute_command': {
-          const cmdResult = await this.workspace.executeCommand(args.command, args.cwd);
-          result = `Exit code: ${cmdResult.exit_code}\n`;
-          if (cmdResult.stdout) result += `stdout:\n${cmdResult.stdout}\n`;
-          if (cmdResult.stderr) result += `stderr:\n${cmdResult.stderr}`;
-          if (cmdResult.timeout_occurred) result += '\n(Command timed out)';
-          break;
-        }
-
-        case 'read_file': {
-          const content = await this.workspace.downloadAsText(args.path);
-          result = content;
-          break;
-        }
-
-        case 'write_file': {
-          const uploadResult = await this.workspace.fileUpload(args.content, args.path);
-          if (uploadResult.success) {
-            result = `Successfully wrote ${uploadResult.file_size} bytes to ${args.path}`;
-          } else {
-            result = `Failed to write file: ${uploadResult.error}`;
-          }
-          break;
-        }
-
-        case 'think': {
-          // Think tool just logs the thought - no execution needed
-          result = 'Your thought has been logged.';
-          this.emitEvent({
-            type: 'observation',
-            timestamp: Date.now(),
-            data: { kind: 'think', thought: args.thought },
-          });
-          break;
-        }
-
-        case 'finish': {
-          result = 'Task completed.';
+      // If a custom tool executor is provided, use it for all tool calls
+      if (this.toolExecutor) {
+        result = await this.toolExecutor(toolCall);
+        // Check if this was a finish tool call
+        if (name === 'finish') {
           this._isFinished = true;
-          this.emitEvent({
-            type: 'message',
-            timestamp: Date.now(),
-            data: { kind: 'finish', message: args.message },
-          });
-          break;
         }
-
-        default:
-          result = `Unknown tool: ${name}`;
+      } else {
+        // Use built-in tool handling
+        result = await this.executeBuiltinTool(toolCall);
       }
     } catch (error) {
       result = `Error executing ${name}: ${error instanceof Error ? error.message : String(error)}`;
@@ -507,6 +500,61 @@ export class LocalConversation implements IConversation {
       timestamp: Date.now(),
       data: { kind: 'tool_result', tool: name, result },
     });
+  }
+
+  /**
+   * Execute a built-in tool.
+   */
+  private async executeBuiltinTool(toolCall: ToolCall): Promise<string> {
+    const { name, arguments: argsString } = toolCall.function;
+    const args = JSON.parse(argsString);
+
+    switch (name) {
+      case 'execute_command': {
+        const cmdResult = await this.workspace.executeCommand(args.command, args.cwd);
+        let result = `Exit code: ${cmdResult.exit_code}\n`;
+        if (cmdResult.stdout) result += `stdout:\n${cmdResult.stdout}\n`;
+        if (cmdResult.stderr) result += `stderr:\n${cmdResult.stderr}`;
+        if (cmdResult.timeout_occurred) result += '\n(Command timed out)';
+        return result;
+      }
+
+      case 'read_file': {
+        const content = await this.workspace.downloadAsText(args.path);
+        return content;
+      }
+
+      case 'write_file': {
+        const uploadResult = await this.workspace.fileUpload(args.content, args.path);
+        if (uploadResult.success) {
+          return `Successfully wrote ${uploadResult.file_size} bytes to ${args.path}`;
+        } else {
+          return `Failed to write file: ${uploadResult.error}`;
+        }
+      }
+
+      case 'think': {
+        this.emitEvent({
+          type: 'observation',
+          timestamp: Date.now(),
+          data: { kind: 'think', thought: args.thought },
+        });
+        return 'Your thought has been logged.';
+      }
+
+      case 'finish': {
+        this._isFinished = true;
+        this.emitEvent({
+          type: 'message',
+          timestamp: Date.now(),
+          data: { kind: 'finish', message: args.message },
+        });
+        return 'Task completed.';
+      }
+
+      default:
+        return `Unknown tool: ${name}`;
+    }
   }
 
   /**

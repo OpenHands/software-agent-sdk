@@ -1,6 +1,6 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { OpenRouterLLM, Tool, ToolCall, ChatMessage } from '@openhands/typescript-client';
+import type { OpenRouterLLM, Tool, ToolCall } from '@openhands/typescript-client';
 
 interface Message {
   id: string;
@@ -36,33 +36,32 @@ const TOOLS: Tool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'finish',
+      description: 'Call this when you have completed the task and want to end the conversation.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: 'Final message or summary to present to the user',
+          },
+        },
+        required: ['message'],
+      },
+    },
+  },
 ];
-
-// Execute a tool call
-function executeToolCall(toolCall: ToolCall): string {
-  const { name, arguments: argsString } = toolCall.function;
-  
-  try {
-    const args = JSON.parse(argsString);
-    
-    if (name === 'console_log') {
-      const message = args.message || '';
-      console.log('[Agent Tool]', message);
-      return `Logged to console: "${message}"`;
-    }
-    
-    return `Unknown tool: ${name}`;
-  } catch (error) {
-    return `Error executing tool: ${error instanceof Error ? error.message : 'Unknown error'}`;
-  }
-}
 
 const SYSTEM_PROMPT = `You are a helpful AI assistant with access to tools. When the user asks you to do something that requires outputting information, use the console_log tool to display it.
 
 Available tools:
 - console_log: Logs a message to the browser console. Use this to output results, display information, or show computed values.
+- finish: Call this when you have completed the task to end the conversation.
 
-When you need to show something to the user, use the console_log tool. After using tools, summarize what you did for the user.`;
+When you need to show something to the user, use the console_log tool. After using tools, call finish with a summary of what you did.`;
 
 export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -82,74 +81,28 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
     }
   }, [input]);
 
-  const runAgentLoop = async (conversationMessages: ChatMessage[]): Promise<Message[]> => {
-    const newMessages: Message[] = [];
-    let currentMessages = [...conversationMessages];
-    const maxIterations = 10; // Prevent infinite loops
+  // Tool executor function that will be passed to LocalConversation
+  const toolExecutor = useCallback((toolCall: ToolCall): string => {
+    const { name, arguments: argsString } = toolCall.function;
     
-    for (let i = 0; i < maxIterations; i++) {
-      const response = await llm.chatCompletion({
-        messages: currentMessages,
-        model,
-        tools: TOOLS,
-        toolChoice: 'auto',
-      });
-
-      const choice = response.choices[0];
-      if (!choice) break;
-
-      const assistantMessage = choice.message;
+    try {
+      const args = JSON.parse(argsString);
       
-      // Add assistant message to our display
-      if (assistantMessage.content || assistantMessage.tool_calls) {
-        const displayMessage: Message = {
-          id: `${Date.now()}-${i}-assistant`,
-          role: 'assistant',
-          content: assistantMessage.content || '',
-          timestamp: new Date(),
-          toolCalls: assistantMessage.tool_calls,
-        };
-        newMessages.push(displayMessage);
-        
-        // Add to conversation for next iteration
-        currentMessages.push({
-          role: 'assistant',
-          content: assistantMessage.content || '',
-          tool_calls: assistantMessage.tool_calls,
-        });
+      if (name === 'console_log') {
+        const message = args.message || '';
+        console.log('[Agent Tool]', message);
+        return `Logged to console: "${message}"`;
       }
-
-      // If no tool calls, we're done
-      if (!assistantMessage.tool_calls || assistantMessage.tool_calls.length === 0) {
-        break;
+      
+      if (name === 'finish') {
+        return `Task completed: ${args.message || ''}`;
       }
-
-      // Execute tool calls and add results
-      for (const toolCall of assistantMessage.tool_calls) {
-        const result = executeToolCall(toolCall);
-        
-        // Add tool result to display
-        const toolMessage: Message = {
-          id: `${Date.now()}-${i}-tool-${toolCall.id}`,
-          role: 'tool',
-          content: result,
-          timestamp: new Date(),
-          toolCallId: toolCall.id,
-          toolName: toolCall.function.name,
-        };
-        newMessages.push(toolMessage);
-        
-        // Add to conversation for next iteration
-        currentMessages.push({
-          role: 'tool',
-          content: result,
-          tool_call_id: toolCall.id,
-        });
-      }
+      
+      return `Unknown tool: ${name}`;
+    } catch (error) {
+      return `Error executing tool: ${error instanceof Error ? error.message : 'Unknown error'}`;
     }
-    
-    return newMessages;
-  };
+  }, []);
 
   const sendMessage = async () => {
     if (!input.trim() || isLoading) return;
@@ -166,29 +119,68 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
     setIsLoading(true);
 
     try {
-      // Build conversation history
-      const conversationMessages: ChatMessage[] = [
-        { role: 'system', content: SYSTEM_PROMPT },
-        ...messages.map((msg): ChatMessage => {
-          if (msg.role === 'tool') {
-            return {
+      // Dynamically import LocalConversation to use the SDK's agent loop
+      const { LocalConversation, LocalWorkspace, Agent } = await import('@openhands/typescript-client');
+      
+      // Create a minimal workspace (won't be used since we have custom tools)
+      const workspace = new LocalWorkspace({ workingDir: '/workspace' });
+      
+      // Create an agent configuration
+      const agent = new Agent({
+        llm: { model, api_key: '' }, // LLM config (actual LLM instance passed separately)
+      });
+      
+      // Collect events for display
+      const newMessages: Message[] = [];
+      
+      // Create the conversation with custom tools and tool executor
+      const conversation = new LocalConversation(agent, workspace, {
+        llm,
+        systemPrompt: SYSTEM_PROMPT,
+        tools: TOOLS,
+        toolExecutor,
+        maxIterations: 10,
+        callback: (event) => {
+          // Handle events from the conversation
+          const data = event.data as Record<string, unknown>;
+          
+          if (data.kind === 'assistant_message' && data.content) {
+            newMessages.push({
+              id: `${Date.now()}-assistant`,
+              role: 'assistant',
+              content: data.content as string,
+              timestamp: new Date(),
+            });
+          } else if (data.kind === 'tool_call') {
+            // Tool calls are handled by toolExecutor
+          } else if (data.kind === 'tool_result') {
+            newMessages.push({
+              id: `${Date.now()}-tool`,
               role: 'tool',
-              content: msg.content,
-              tool_call_id: msg.toolCallId || '',
-            };
+              content: data.result as string,
+              timestamp: new Date(),
+              toolName: data.tool as string,
+            });
+          } else if (data.kind === 'finish') {
+            newMessages.push({
+              id: `${Date.now()}-finish`,
+              role: 'assistant',
+              content: data.message as string,
+              timestamp: new Date(),
+            });
           }
-          return {
-            role: msg.role as 'user' | 'assistant',
-            content: msg.content,
-            tool_calls: msg.toolCalls,
-          };
-        }),
-        { role: 'user', content: userMessage.content },
-      ];
-
+        },
+      });
+      
+      // Start the conversation with the user's message
+      await conversation.start({ initialMessage: userMessage.content });
+      
       // Run the agent loop
-      const newMessages = await runAgentLoop(conversationMessages);
+      await conversation.run();
+      
+      // Update messages with collected events
       setMessages((prev) => [...prev, ...newMessages]);
+      
     } catch (error) {
       console.error('Error in agent loop:', error);
 
