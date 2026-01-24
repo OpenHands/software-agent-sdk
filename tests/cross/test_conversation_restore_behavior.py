@@ -72,9 +72,6 @@ class RestoreLifecycle:
             return {
                 "conversation_id": conversation.id,
                 "event_count": len(conversation.state.events),
-                "state_dump_excluding_events": conversation._state.model_dump(
-                    mode="json", exclude={"events"}
-                ),
             }
         finally:
             conversation.close()
@@ -323,8 +320,7 @@ def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
         )
 
         with pytest.raises(ValueError) as exc:
-            restored = lifecycle.restore(runtime_agent)
-            restored.close()
+            lifecycle.restore(runtime_agent)
 
         assert "persisted agent is of type" in str(exc.value)
         assert "self is of type" in str(exc.value)
