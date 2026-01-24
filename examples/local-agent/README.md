@@ -1,11 +1,11 @@
 # OpenHands Local Agent
 
-A browser-based agent UI that demonstrates the OpenHands TypeScript SDK's `LocalConversation` class with custom tool calling capabilities using OpenRouter.
+A browser-based agent UI that demonstrates the OpenHands TypeScript SDK's `LocalConversation` class with JavaScript evaluation capabilities using OpenRouter.
 
 ## Features
 
 - 🤖 **LocalConversation Agent Loop** - Uses the SDK's built-in agent loop via `LocalConversation.run()`
-- 🔧 **Custom Tool Calling** - Demonstrates how to provide custom tools and a tool executor
+- 🔧 **JavaScript Eval Tool** - Agent can execute JavaScript code in the browser
 - 🔐 **OpenRouter Authentication** - Securely connect with your API key
 - 💬 **Real-time Chat** - Conversational interface with message history
 - 🤖 **Multiple Models** - Switch between Claude, GPT-4, Gemini, Llama, and more
@@ -40,31 +40,31 @@ npm run dev
 
 ## How It Works
 
-This example demonstrates using `LocalConversation` with custom tools:
+This example demonstrates using `LocalConversation` with a custom `eval` tool:
 
-1. **User sends a message** - Creates a `LocalConversation` with custom tools
+1. **User sends a message** - Creates a `LocalConversation` with the eval tool
 2. **conversation.start()** - Initializes the conversation with the user's message
 3. **conversation.run()** - Runs the agent loop, calling the custom `toolExecutor` for each tool call
-4. **Tool execution** - The `toolExecutor` handles `console_log` and `finish` tools
+4. **Tool execution** - The `toolExecutor` evaluates JavaScript code and returns results
 5. **Events** - The callback receives events for display in the UI
 
-### Custom Tools
+### The Eval Tool
 
-The agent has access to custom tools defined in the example:
+The agent has access to a JavaScript evaluation tool:
 
 ```typescript
 const TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
-      name: 'console_log',
-      description: 'Logs a message to the console.',
+      name: 'eval',
+      description: 'Evaluates JavaScript code in the browser and returns the result.',
       parameters: {
         type: 'object',
         properties: {
-          message: { type: 'string', description: 'The message to log' },
+          code: { type: 'string', description: 'The JavaScript code to evaluate' },
         },
-        required: ['message'],
+        required: ['code'],
       },
     },
   },
@@ -89,10 +89,11 @@ const TOOLS: Tool[] = [
 
 Try these prompts to see the agent in action:
 
-- "Log 'Hello, World!' to the console"
-- "Calculate 2 + 2 and log the result"
-- "Log the current date and time"
-- "Log a greeting in 3 different languages"
+- "What is 2 + 2?"
+- "Calculate the factorial of 10"
+- "Generate an array of the first 10 fibonacci numbers"
+- "What's the current date and time?"
+- "Create a function that reverses a string and test it"
 
 ## Code Structure
 
@@ -125,9 +126,15 @@ const TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
-      name: 'console_log',
-      description: 'Logs a message to the console.',
-      parameters: { /* ... */ },
+      name: 'eval',
+      description: 'Evaluates JavaScript code in the browser.',
+      parameters: {
+        type: 'object',
+        properties: {
+          code: { type: 'string', description: 'The JavaScript code to evaluate' },
+        },
+        required: ['code'],
+      },
     },
   },
 ];
@@ -137,9 +144,13 @@ const toolExecutor = (toolCall: ToolCall): string => {
   const { name, arguments: argsString } = toolCall.function;
   const args = JSON.parse(argsString);
   
-  if (name === 'console_log') {
-    console.log(args.message);
-    return `Logged: "${args.message}"`;
+  if (name === 'eval') {
+    try {
+      const result = eval(args.code);
+      return JSON.stringify(result, null, 2);
+    } catch (error) {
+      return `Error: ${error.message}`;
+    }
   }
   
   return `Unknown tool: ${name}`;
@@ -162,39 +173,9 @@ await conversation.start({ initialMessage: 'Hello!' });
 await conversation.run();
 ```
 
-## Extending with More Tools
+## Security Note
 
-To add more tools:
-
-1. Add the tool definition to the `TOOLS` array
-2. Add a handler in the `toolExecutor` function
-
-Example adding a `get_time` tool:
-
-```typescript
-const TOOLS: Tool[] = [
-  // ... existing tools
-  {
-    type: 'function',
-    function: {
-      name: 'get_time',
-      description: 'Gets the current time',
-      parameters: { type: 'object', properties: {} },
-    },
-  },
-];
-
-const toolExecutor = (toolCall: ToolCall): string => {
-  const { name } = toolCall.function;
-  
-  if (name === 'console_log') { /* ... */ }
-  if (name === 'get_time') {
-    return new Date().toISOString();
-  }
-  
-  return `Unknown tool: ${name}`;
-};
-```
+⚠️ **Warning**: This example uses `eval()` which can execute arbitrary JavaScript code. This is intentional for demonstration purposes but should be used with caution. In a production environment, consider sandboxing or restricting the code that can be executed.
 
 ## Related
 

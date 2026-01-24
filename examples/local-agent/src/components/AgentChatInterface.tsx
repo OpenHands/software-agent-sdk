@@ -18,22 +18,22 @@ interface AgentChatInterfaceProps {
   model: string;
 }
 
-// Define the console_log tool
+// Define the eval tool
 const TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
-      name: 'console_log',
-      description: 'Logs a message to the console. Use this to output information, debug values, or display results to the user.',
+      name: 'eval',
+      description: 'Evaluates JavaScript code in the browser and returns the result. Use this to perform calculations, manipulate data, or execute any JavaScript code.',
       parameters: {
         type: 'object',
         properties: {
-          message: {
+          code: {
             type: 'string',
-            description: 'The message to log to the console',
+            description: 'The JavaScript code to evaluate',
           },
         },
-        required: ['message'],
+        required: ['code'],
       },
     },
   },
@@ -56,13 +56,13 @@ const TOOLS: Tool[] = [
   },
 ];
 
-const SYSTEM_PROMPT = `You are a helpful AI assistant with access to tools. When the user asks you to do something that requires outputting information, use the console_log tool to display it.
+const SYSTEM_PROMPT = `You are a helpful AI assistant with access to JavaScript evaluation capabilities.
 
 Available tools:
-- console_log: Logs a message to the browser console. Use this to output results, display information, or show computed values.
+- eval: Evaluates JavaScript code in the browser and returns the result. Use this for calculations, data manipulation, or any JavaScript operations.
 - finish: Call this when you have completed the task to end the conversation.
 
-When you need to show something to the user, use the console_log tool. After using tools, call finish with a summary of what you did.`;
+When the user asks you to do something, use the eval tool to execute JavaScript code. After completing the task, call finish with a summary of what you did.`;
 
 export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -89,10 +89,20 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
     try {
       const args = JSON.parse(argsString);
       
-      if (name === 'console_log') {
-        const message = args.message || '';
-        console.log('[Agent Tool]', message);
-        return `Logged to console: "${message}"`;
+      if (name === 'eval') {
+        const code = args.code || '';
+        console.log('[Agent Tool] Evaluating:', code);
+        try {
+          // eslint-disable-next-line no-eval
+          const result = eval(code);
+          const resultStr = typeof result === 'undefined' ? 'undefined' : JSON.stringify(result, null, 2);
+          console.log('[Agent Tool] Result:', result);
+          return resultStr;
+        } catch (evalError) {
+          const errorMsg = evalError instanceof Error ? evalError.message : String(evalError);
+          console.error('[Agent Tool] Eval error:', errorMsg);
+          return `Error: ${errorMsg}`;
+        }
       }
       
       if (name === 'finish') {
