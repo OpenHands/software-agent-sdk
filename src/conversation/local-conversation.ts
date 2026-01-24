@@ -5,11 +5,6 @@
  * LocalConversation runs the agent loop locally without connecting to a remote server.
  *
  * This mirrors the Python SDK's LocalConversation class.
- *
- * NOTE: This is a stub implementation. The actual implementation will need to:
- * - Run the agent loop locally
- * - Manage conversation state in memory
- * - Handle tool execution through LocalWorkspace
  */
 
 import {
@@ -21,6 +16,7 @@ import {
   AgentBase,
   SecretValue,
   LLM,
+  Event,
 } from '../types/base';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import {
@@ -29,37 +25,68 @@ import {
   IEventsList,
   BaseConversationOptions,
 } from './base';
+import {
+  ILLM,
+  ChatMessage,
+  Tool,
+  ToolCall,
+} from '../llm/base';
 
 /**
  * Options for creating a LocalConversation instance.
  */
 export interface LocalConversationOptions extends BaseConversationOptions {
+  /** The LLM instance to use for the conversation */
+  llm: ILLM;
+  /** Optional system prompt for the agent */
+  systemPrompt?: string;
   /** Optional persistence directory for saving conversation state */
   persistenceDir?: string;
 }
 
 /**
- * Stub implementation of events list for local conversations.
+ * Event types for local conversation
+ */
+interface ConversationEvent {
+  type: 'message' | 'action' | 'observation' | 'error';
+  timestamp: number;
+  data: unknown;
+}
+
+/**
+ * Implementation of events list for local conversations.
  */
 class LocalEventsList implements IEventsList {
-  private events: unknown[] = [];
+  private events: ConversationEvent[] = [];
 
-  async addEvent(event: unknown): Promise<void> {
+  async addEvent(event: ConversationEvent): Promise<void> {
     this.events.push(event);
   }
 
-  async getEvents(): Promise<unknown[]> {
+  async getEvents(): Promise<ConversationEvent[]> {
     return [...this.events];
+  }
+
+  getEventCounts(): { total: number; messages: number; actions: number; observations: number } {
+    let messages = 0;
+    let actions = 0;
+    let observations = 0;
+    for (const event of this.events) {
+      if (event.type === 'message') messages++;
+      else if (event.type === 'action') actions++;
+      else if (event.type === 'observation') observations++;
+    }
+    return { total: this.events.length, messages, actions, observations };
   }
 }
 
 /**
- * Stub implementation of conversation state for local conversations.
+ * Implementation of conversation state for local conversations.
  */
 class LocalConversationState implements IConversationState {
   readonly id: ConversationID;
-  readonly events: IEventsList;
-  executionStatus: string = 'idle';
+  readonly events: LocalEventsList;
+  executionStatus: 'idle' | 'running' | 'paused' | 'finished' = 'idle';
   confirmationPolicy?: ConfirmationPolicyBase;
 
   constructor(id: ConversationID) {
@@ -69,23 +96,113 @@ class LocalConversationState implements IConversationState {
 }
 
 /**
+ * Built-in tools available to the agent
+ */
+const BUILTIN_TOOLS: Tool[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'execute_command',
+      description: 'Execute a bash command in the workspace. Use this to run shell commands, scripts, or interact with the system.',
+      parameters: {
+        type: 'object',
+        properties: {
+          command: {
+            type: 'string',
+            description: 'The bash command to execute',
+          },
+          cwd: {
+            type: 'string',
+            description: 'Working directory for the command (optional, defaults to workspace root)',
+          },
+        },
+        required: ['command'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'read_file',
+      description: 'Read the contents of a file from the workspace.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Path to the file to read (relative to workspace or absolute)',
+          },
+        },
+        required: ['path'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'write_file',
+      description: 'Write content to a file in the workspace. Creates the file if it does not exist.',
+      parameters: {
+        type: 'object',
+        properties: {
+          path: {
+            type: 'string',
+            description: 'Path to the file to write (relative to workspace or absolute)',
+          },
+          content: {
+            type: 'string',
+            description: 'Content to write to the file',
+          },
+        },
+        required: ['path', 'content'],
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'finish',
+      description: 'Call this when you have completed the task or need to provide a final response to the user.',
+      parameters: {
+        type: 'object',
+        properties: {
+          message: {
+            type: 'string',
+            description: 'Final message or summary to present to the user',
+          },
+        },
+        required: ['message'],
+      },
+    },
+  },
+];
+
+const DEFAULT_SYSTEM_PROMPT = `You are a helpful coding assistant with access to a workspace. You can execute commands, read files, and write files to help the user with their tasks.
+
+When working on tasks:
+1. First understand what the user wants
+2. Explore the workspace if needed using execute_command (e.g., 'ls', 'find', 'cat')
+3. Make changes using write_file or execute_command
+4. Verify your changes work
+5. Call finish() when done with a summary of what you did
+
+Always explain what you're doing and why.`;
+
+/**
  * Local conversation implementation that runs the agent loop locally.
  *
  * LocalConversation provides direct agent execution on the local system without
- * requiring a remote server. It's suitable for development, testing, and scenarios
- * where the agent should run in the same process.
- *
- * NOTE: This is a stub implementation. Full implementation requires:
- * - Agent loop execution
- * - LLM integration
- * - Tool execution coordination with LocalWorkspace
+ * requiring a remote server. It integrates with an LLM (via ILLM interface) to
+ * process messages and execute tool calls through the LocalWorkspace.
  *
  * Example:
  * ```typescript
  * const workspace = new LocalWorkspace({ workingDir: '/path/to/project' });
+ * const llm = new OpenRouterLLM({ apiKey: 'your-key', defaultModel: 'anthropic/claude-3.5-sonnet' });
  * const conversation = new LocalConversation(agent, workspace, {
+ *   llm,
  *   maxIterations: 50,
- *   persistenceDir: '/path/to/persistence'
+ *   systemPrompt: 'You are a helpful assistant...'
  * });
  * await conversation.start({ initialMessage: 'Hello!' });
  * await conversation.run();
@@ -95,21 +212,34 @@ class LocalConversationState implements IConversationState {
 export class LocalConversation implements IConversation {
   public readonly agent: AgentBase;
   public readonly workspace: LocalWorkspace;
+  public readonly llm: ILLM;
+
   private _conversationId?: string;
   private _state?: LocalConversationState;
   private callback?: ConversationCallbackType;
   private persistenceDir?: string;
+  private systemPrompt: string;
+  private maxIterations: number = 50;
+  private messages: ChatMessage[] = [];
+  private _isPaused: boolean = false;
+  private _isFinished: boolean = false;
+  private secrets: Record<string, SecretValue> = {};
 
   constructor(
     agent: AgentBase,
     workspace: LocalWorkspace,
-    options: LocalConversationOptions = {}
+    options: LocalConversationOptions
   ) {
     this.agent = agent;
     this.workspace = workspace;
+    this.llm = options.llm;
     this.callback = options.callback;
     this._conversationId = options.conversationId;
     this.persistenceDir = options.persistenceDir;
+    this.systemPrompt = options.systemPrompt || DEFAULT_SYSTEM_PROMPT;
+    if (options.maxIterations !== undefined) {
+      this.maxIterations = options.maxIterations;
+    }
   }
 
   get id(): ConversationID {
@@ -133,11 +263,6 @@ export class LocalConversation implements IConversation {
 
   /**
    * Start or resume a conversation.
-   *
-   * STUB: This method needs to be implemented to:
-   * - Generate or validate conversation ID
-   * - Initialize conversation state
-   * - Set up agent context
    */
   async start(
     options: { initialMessage?: string; maxIterations?: number; stuckDetection?: boolean } = {}
@@ -150,130 +275,301 @@ export class LocalConversation implements IConversation {
     // Initialize state
     this._state = new LocalConversationState(this._conversationId);
 
-    // TODO: Implement full initialization
-    // - Set up agent context
-    // - Load persisted state if available
-    // - Process initial message if provided
-
-    if (options.initialMessage) {
-      // TODO: Add initial message to events
-      console.debug(`LocalConversation: Would process initial message: ${options.initialMessage}`);
+    // Set max iterations if provided
+    if (options.maxIterations !== undefined) {
+      this.maxIterations = options.maxIterations;
     }
 
-    console.debug(`LocalConversation started with ID: ${this._conversationId}`);
+    // Initialize message history with system prompt
+    this.messages = [
+      { role: 'system', content: this.systemPrompt },
+    ];
+
+    // Add initial message if provided
+    if (options.initialMessage) {
+      await this.sendMessage(options.initialMessage);
+    }
+
+    this.emitEvent({
+      type: 'message',
+      timestamp: Date.now(),
+      data: { kind: 'conversation_started', conversationId: this._conversationId },
+    });
   }
 
   /**
    * Get conversation statistics.
-   *
-   * STUB: Returns placeholder stats.
    */
   async conversationStats(): Promise<ConversationStats> {
-    // TODO: Implement actual stats tracking
+    if (!this._state) {
+      return { total_events: 0, message_events: 0, action_events: 0, observation_events: 0 };
+    }
+    const counts = this._state.events.getEventCounts();
     return {
-      total_events: 0,
-      message_events: 0,
-      action_events: 0,
-      observation_events: 0,
+      total_events: counts.total,
+      message_events: counts.messages,
+      action_events: counts.actions,
+      observation_events: counts.observations,
     };
   }
 
   /**
    * Send a message to the agent.
-   *
-   * STUB: This method needs to be implemented to add the message to the conversation.
    */
   async sendMessage(message: string | Message): Promise<void> {
-    // TODO: Implement message handling
-    throw new Error(
-      'LocalConversation.sendMessage is not yet implemented. ' +
-      `Message: ${typeof message === 'string' ? message : JSON.stringify(message)}`
-    );
+    const content = typeof message === 'string' ? message : JSON.stringify(message);
+
+    // Add user message to history
+    this.messages.push({ role: 'user', content });
+
+    // Record the event
+    this.emitEvent({
+      type: 'message',
+      timestamp: Date.now(),
+      data: { kind: 'user_message', content },
+    });
   }
 
   /**
-   * Execute the agent to process messages.
+   * Execute the agent loop to process messages.
    *
-   * STUB: This method needs to be implemented to run the agent loop.
+   * This runs the agent until:
+   * - The agent calls the finish() tool
+   * - Maximum iterations reached
+   * - pause() is called
+   * - An error occurs
    */
   async run(): Promise<void> {
-    // TODO: Implement agent loop execution
-    throw new Error(
-      'LocalConversation.run is not yet implemented. ' +
-      'This requires agent loop implementation with LLM integration.'
-    );
+    if (!this._state) {
+      throw new Error('Conversation not started. Call start() first.');
+    }
+
+    this._state.executionStatus = 'running';
+    this._isPaused = false;
+    this._isFinished = false;
+
+    let iterations = 0;
+
+    while (iterations < this.maxIterations && !this._isPaused && !this._isFinished) {
+      iterations++;
+
+      try {
+        // Get LLM response
+        const response = await this.llm.chatCompletion({
+          messages: this.messages,
+          tools: BUILTIN_TOOLS,
+          toolChoice: 'auto',
+        });
+
+        const choice = response.choices[0];
+        if (!choice) {
+          throw new Error('No response from LLM');
+        }
+
+        const assistantMessage = choice.message;
+
+        // Add assistant message to history
+        this.messages.push({
+          role: 'assistant',
+          content: assistantMessage.content || '',
+          tool_calls: assistantMessage.tool_calls,
+        });
+
+        // Emit the assistant's response
+        if (assistantMessage.content) {
+          this.emitEvent({
+            type: 'message',
+            timestamp: Date.now(),
+            data: { kind: 'assistant_message', content: assistantMessage.content },
+          });
+        }
+
+        // Handle tool calls
+        if (assistantMessage.tool_calls && assistantMessage.tool_calls.length > 0) {
+          for (const toolCall of assistantMessage.tool_calls) {
+            if (this._isPaused || this._isFinished) break;
+            await this.handleToolCall(toolCall);
+          }
+        } else if (choice.finish_reason === 'stop') {
+          // No tool calls and stop reason - agent is done
+          this._isFinished = true;
+        }
+
+      } catch (error) {
+        this.emitEvent({
+          type: 'error',
+          timestamp: Date.now(),
+          data: { kind: 'agent_error', error: error instanceof Error ? error.message : String(error) },
+        });
+        this._state.executionStatus = 'finished';
+        throw error;
+      }
+    }
+
+    this._state.executionStatus = this._isPaused ? 'paused' : 'finished';
+
+    if (iterations >= this.maxIterations && !this._isFinished) {
+      this.emitEvent({
+        type: 'observation',
+        timestamp: Date.now(),
+        data: { kind: 'max_iterations_reached', iterations },
+      });
+    }
+  }
+
+  /**
+   * Handle a tool call from the LLM.
+   */
+  private async handleToolCall(toolCall: ToolCall): Promise<void> {
+    const { name, arguments: argsString } = toolCall.function;
+
+    this.emitEvent({
+      type: 'action',
+      timestamp: Date.now(),
+      data: { kind: 'tool_call', tool: name, arguments: argsString },
+    });
+
+    let result: string;
+
+    try {
+      const args = JSON.parse(argsString);
+
+      switch (name) {
+        case 'execute_command': {
+          const cmdResult = await this.workspace.executeCommand(args.command, args.cwd);
+          result = `Exit code: ${cmdResult.exit_code}\n`;
+          if (cmdResult.stdout) result += `stdout:\n${cmdResult.stdout}\n`;
+          if (cmdResult.stderr) result += `stderr:\n${cmdResult.stderr}`;
+          if (cmdResult.timeout_occurred) result += '\n(Command timed out)';
+          break;
+        }
+
+        case 'read_file': {
+          const content = await this.workspace.downloadAsText(args.path);
+          result = content;
+          break;
+        }
+
+        case 'write_file': {
+          const uploadResult = await this.workspace.fileUpload(args.content, args.path);
+          if (uploadResult.success) {
+            result = `Successfully wrote ${uploadResult.file_size} bytes to ${args.path}`;
+          } else {
+            result = `Failed to write file: ${uploadResult.error}`;
+          }
+          break;
+        }
+
+        case 'finish': {
+          result = 'Task completed.';
+          this._isFinished = true;
+          this.emitEvent({
+            type: 'message',
+            timestamp: Date.now(),
+            data: { kind: 'finish', message: args.message },
+          });
+          break;
+        }
+
+        default:
+          result = `Unknown tool: ${name}`;
+      }
+    } catch (error) {
+      result = `Error executing ${name}: ${error instanceof Error ? error.message : String(error)}`;
+    }
+
+    // Add tool result to messages
+    this.messages.push({
+      role: 'tool',
+      content: result,
+      tool_call_id: toolCall.id,
+    });
+
+    this.emitEvent({
+      type: 'observation',
+      timestamp: Date.now(),
+      data: { kind: 'tool_result', tool: name, result },
+    });
   }
 
   /**
    * Pause agent execution.
-   *
-   * STUB: This method needs to be implemented to pause the agent loop.
    */
   async pause(): Promise<void> {
-    // TODO: Implement pause functionality
+    this._isPaused = true;
     if (this._state) {
       this._state.executionStatus = 'paused';
     }
-    console.debug('LocalConversation: pause() called');
+    this.emitEvent({
+      type: 'message',
+      timestamp: Date.now(),
+      data: { kind: 'paused' },
+    });
   }
 
   /**
    * Set the confirmation policy.
-   *
-   * STUB: Stores the policy for future use.
    */
   async setConfirmationPolicy(policy: ConfirmationPolicyBase): Promise<void> {
     if (this._state) {
       this._state.confirmationPolicy = policy;
     }
-    console.debug('LocalConversation: confirmation policy set');
   }
 
   /**
    * Send a confirmation response.
    *
-   * STUB: This method needs to be implemented.
+   * Note: Confirmation handling is not yet fully implemented in LocalConversation.
    */
   async sendConfirmationResponse(accept: boolean, reason?: string): Promise<void> {
-    // TODO: Implement confirmation response handling
-    throw new Error(
-      'LocalConversation.sendConfirmationResponse is not yet implemented. ' +
-      `Accept: ${accept}, Reason: ${reason}`
-    );
+    this.emitEvent({
+      type: 'message',
+      timestamp: Date.now(),
+      data: { kind: 'confirmation_response', accept, reason },
+    });
+    // Resume execution if paused for confirmation
+    if (accept) {
+      this._isPaused = false;
+    }
   }
 
   /**
-   * Generate a title for the conversation.
-   *
-   * STUB: This method needs LLM integration.
+   * Generate a title for the conversation using the LLM.
    */
-  async generateTitle(_maxLength: number = 50, _llm?: LLM): Promise<string> {
-    // TODO: Implement title generation using LLM
-    throw new Error(
-      'LocalConversation.generateTitle is not yet implemented. ' +
-      'This requires LLM integration.'
-    );
+  async generateTitle(maxLength: number = 50, llm?: LLM): Promise<string> {
+    const llmToUse = llm || this.llm;
+
+    // Get a summary of the conversation
+    const userMessages = this.messages
+      .filter(m => m.role === 'user')
+      .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
+      .slice(0, 3)
+      .join('\n');
+
+    if (!userMessages) {
+      return 'New Conversation';
+    }
+
+    const prompt = `Generate a short title (max ${maxLength} characters) for a conversation that starts with:\n\n${userMessages}\n\nRespond with only the title, no quotes or explanation.`;
+
+    const title = await llmToUse.generate(prompt);
+    return title.slice(0, maxLength).trim();
   }
 
   /**
    * Update secrets available to the agent.
-   *
-   * STUB: Stores secrets for future use.
    */
   async updateSecrets(secrets: Record<string, SecretValue>): Promise<void> {
-    // TODO: Implement secrets storage
-    console.debug(`LocalConversation: updateSecrets() called with ${Object.keys(secrets).length} secrets`);
+    this.secrets = { ...this.secrets, ...secrets };
   }
 
   /**
    * Start WebSocket client.
    *
    * NOTE: LocalConversation doesn't use WebSocket since it runs locally.
-   * Events are delivered directly through the callback.
    */
   async startWebSocketClient(): Promise<void> {
-    // No-op for local conversation - events are delivered directly
-    console.debug('LocalConversation: startWebSocketClient() is a no-op for local conversations');
+    // No-op for local conversation
   }
 
   /**
@@ -283,25 +579,63 @@ export class LocalConversation implements IConversation {
    */
   async stopWebSocketClient(): Promise<void> {
     // No-op for local conversation
-    console.debug('LocalConversation: stopWebSocketClient() is a no-op for local conversations');
   }
 
   /**
    * Close the conversation and cleanup resources.
    */
   async close(): Promise<void> {
-    // TODO: Implement proper cleanup
-    // - Save state if persistence is enabled
-    // - Clean up any running processes
+    this._isPaused = true;
+    this._isFinished = true;
+    if (this._state) {
+      this._state.executionStatus = 'finished';
+    }
     this.workspace.close();
-    console.debug('LocalConversation: closed');
+    this.llm.close();
+    this.emitEvent({
+      type: 'message',
+      timestamp: Date.now(),
+      data: { kind: 'conversation_closed' },
+    });
+  }
+
+  /**
+   * Get the current message history.
+   */
+  getMessages(): ChatMessage[] {
+    return [...this.messages];
+  }
+
+  /**
+   * Emit an event and call the callback if provided.
+   */
+  private emitEvent(event: ConversationEvent): void {
+    if (this._state) {
+      this._state.events.addEvent(event);
+    }
+    if (this.callback) {
+      // Convert to Event format expected by callback
+      const callbackEvent: Event = {
+        id: this.generateEventId(),
+        kind: (event.data as { kind?: string })?.kind || event.type,
+        timestamp: new Date(event.timestamp).toISOString(),
+        ...event.data as Record<string, unknown>,
+      };
+      this.callback(callbackEvent);
+    }
+  }
+
+  /**
+   * Generate a unique event ID.
+   */
+  private generateEventId(): string {
+    return `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   }
 
   /**
    * Generate a unique conversation ID.
    */
   private generateConversationId(): string {
-    // Simple UUID v4 implementation
     return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
       const r = (Math.random() * 16) | 0;
       const v = c === 'x' ? r : (r & 0x3) | 0x8;
