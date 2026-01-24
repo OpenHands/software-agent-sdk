@@ -276,6 +276,138 @@ class TestPollingDeduplication:
         assert decoded == original_data
 
     @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
+    def test_base64_decode_produces_incorrect_padding_error(self, mock_time):
+        """Test that reproduces the exact error seen in production logs.
+
+        This test demonstrates that the duplicated output causes:
+        - "Incorrect padding" error from base64.b64decode()
+
+        The trajectory capture code runs:
+            tar -czf - workspace | base64
+        Then decodes with:
+            base64.b64decode(stdout)
+
+        When chunks are duplicated, the total length is no longer a multiple
+        of 4, causing the decode to fail.
+        """
+        mixin = RemoteWorkspaceMixinHelper(
+            host="http://localhost:8000", working_dir="workspace"
+        )
+
+        mock_time.time.side_effect = [0, 1, 2, 3, 4]
+        mock_time.sleep = Mock()
+
+        # Create base64 data with chunk sizes that produce invalid length
+        # when duplicated:
+        # Original: 68 chars (valid, 68 % 4 = 0)
+        # Duplicated: 17+17+17+17+17+34 = 119 chars (INVALID, 119 % 4 = 3)
+        original_data = b"Test data!" * 5
+        base64_encoded = base64.b64encode(original_data).decode("ascii")
+
+        chunk1 = base64_encoded[:17]  # 17 chars
+        chunk2 = base64_encoded[17:34]  # 17 chars
+        chunk3 = base64_encoded[34:]  # 34 chars
+
+        start_response = Mock()
+        start_response.raise_for_status = Mock()
+        start_response.json.return_value = {"id": "cmd-789"}
+
+        # Poll 1: chunk 1
+        poll_response_1 = Mock()
+        poll_response_1.raise_for_status = Mock()
+        poll_response_1.json.return_value = {
+            "items": [
+                {
+                    "id": "event-1",
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": chunk1,
+                    "stderr": None,
+                    "exit_code": None,
+                },
+            ]
+        }
+
+        # Poll 2: API returns ALL events
+        poll_response_2 = Mock()
+        poll_response_2.raise_for_status = Mock()
+        poll_response_2.json.return_value = {
+            "items": [
+                {
+                    "id": "event-1",
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": chunk1,
+                    "stderr": None,
+                    "exit_code": None,
+                },
+                {
+                    "id": "event-2",
+                    "kind": "BashOutput",
+                    "order": 1,
+                    "stdout": chunk2,
+                    "stderr": None,
+                    "exit_code": None,
+                },
+            ]
+        }
+
+        # Poll 3: API returns ALL events, command completes
+        poll_response_3 = Mock()
+        poll_response_3.raise_for_status = Mock()
+        poll_response_3.json.return_value = {
+            "items": [
+                {
+                    "id": "event-1",
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": chunk1,
+                    "stderr": None,
+                    "exit_code": None,
+                },
+                {
+                    "id": "event-2",
+                    "kind": "BashOutput",
+                    "order": 1,
+                    "stdout": chunk2,
+                    "stderr": None,
+                    "exit_code": None,
+                },
+                {
+                    "id": "event-3",
+                    "kind": "BashOutput",
+                    "order": 2,
+                    "stdout": chunk3,
+                    "stderr": None,
+                    "exit_code": 0,
+                },
+            ]
+        }
+
+        generator = mixin._execute_command_generator(
+            "tar -czf - workspace | base64", None, 30.0
+        )
+
+        next(generator)
+        generator.send(start_response)
+        generator.send(poll_response_1)
+        generator.send(poll_response_2)
+
+        try:
+            generator.send(poll_response_3)
+            pytest.fail("Generator should have stopped")
+        except StopIteration as e:
+            result = e.value
+
+        # Attempt to decode the output - this is what trajectory capture does
+        # This should NOT raise an error if deduplication is working correctly
+        decoded = base64.b64decode(result.stdout)
+        assert decoded == original_data, (
+            f"base64.b64decode() should succeed and return original data. "
+            f"Got {len(result.stdout)} chars (length % 4 = {len(result.stdout) % 4})"
+        )
+
+    @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
     def test_single_poll_works_correctly(self, mock_time):
         """Test that single poll iteration works correctly.
 
