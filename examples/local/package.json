@@ -4,7 +4,7 @@
   "description": "Browser-based chat UI for OpenHands with OpenRouter integration",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "cd ../.. && npm run build && cd - && vite",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
