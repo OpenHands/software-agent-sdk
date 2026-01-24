@@ -52,7 +52,7 @@ class TestPS1Corruption:
     # 7. ###PS1END### (the ONLY end marker)
     #
     # The non-greedy regex matches from #1 to #7, creating ONE invalid match.
-    CORRUPTED_OUTPUT_GRUNT_CAT = r'''
+    CORRUPTED_OUTPUT_GRUNT_CAT = r"""
 ###PS1JSON###
 {
   "pid": "",
@@ -80,10 +80,10 @@ Done.
   "working_dir": "/workspace/p5.js",
   "py_interpreter_path": "/usr/bin/python"
 }
-###PS1END###'''
+###PS1END###"""
 
     # Another corrupted output with ANSI remnants
-    CORRUPTED_OUTPUT_ANSI_REMNANTS = r'''
+    CORRUPTED_OUTPUT_ANSI_REMNANTS = r"""
 ###PS1JSON###
 {
   "pid": "877",
@@ -111,11 +111,11 @@ Done.
   "working_dir": "/workspace/p5.js",
   "py_interpreter_path": "/usr/bin/python"
 }
-###PS1END###'''
+###PS1END###"""
 
     # Pager output (like from `less` or `help` command) that has no PS1 markers
     # This happens when a pager takes over the terminal screen
-    PAGER_OUTPUT_NO_PS1 = '''Help on class RidgeClassifierCV in sklearn.linear_model:
+    PAGER_OUTPUT_NO_PS1 = """Help on class RidgeClassifierCV in sklearn.linear_model:
 
 class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRidgeCV)
  |  Ridge classifier with built-in cross-validation.
@@ -134,7 +134,7 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
 ~
 ~
 ~
-(END)'''
+(END)"""
 
     def test_corrupted_ps1_regex_matches_wrong_content(self):
         """
@@ -217,7 +217,7 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
 
         # Simulate output where ALL PS1 blocks are corrupted
         # In this case, the JSON is completely broken - no valid blocks at all
-        completely_corrupted_output = '''\n###PS1JSON###
+        completely_corrupted_output = """\n###PS1JSON###
 {
   "pid": "",
   "exit_code": "0",
@@ -228,7 +228,7 @@ class RidgeClassifierCV(sklearn.linear_model.base.LinearClassifierMixin, _BaseRi
 ###PS1JSON###
 ALSO BROKEN
 {invalid json here}
-###PS1END###'''
+###PS1END###"""
 
         ps1_matches = CmdOutputMetadata.matches_ps1_metadata(
             completely_corrupted_output
@@ -279,7 +279,7 @@ ALSO BROKEN
         incomplete blocks.
         """
         # PS1 block that starts but never ends (common in corruption scenarios)
-        partial_block = '''
+        partial_block = """
 ###PS1JSON###
 {
   "pid": "123",
@@ -287,7 +287,7 @@ ALSO BROKEN
   "username": "openhands"
 }
 SOME EXTRA OUTPUT BUT NO PS1END MARKER
-'''
+"""
         matches = CmdOutputMetadata.matches_ps1_metadata(partial_block)
         assert len(matches) == 0, (
             f"Expected 0 matches for partial PS1 block, got {len(matches)}"
@@ -305,7 +305,7 @@ SOME EXTRA OUTPUT BUT NO PS1END MARKER
         These should not confuse the parser when they appear inside the JSON.
         """
         # Valid PS1 block but with special chars in a field value
-        ps1_with_special_chars = '''
+        ps1_with_special_chars = """
 ###PS1JSON###
 {
   "pid": "123",
@@ -316,7 +316,7 @@ SOME EXTRA OUTPUT BUT NO PS1END MARKER
   "py_interpreter_path": "/usr/bin/python"
 }
 ###PS1END###
-'''
+"""
         matches = CmdOutputMetadata.matches_ps1_metadata(ps1_with_special_chars)
         assert len(matches) == 1, (
             f"Expected 1 match for PS1 with special chars in values, got {len(matches)}"
@@ -334,14 +334,14 @@ SOME EXTRA OUTPUT BUT NO PS1END MARKER
 
         The parser should handle this gracefully instead of crashing.
         """
-        interleaved_output = '''
+        interleaved_output = """
 ###PS1JSON###
 {
   "pid": "123"
 INTERLEAVED COMMAND OUTPUT HERE - THIS BREAKS THE JSON
 }
 ###PS1END###
-'''
+"""
         matches = CmdOutputMetadata.matches_ps1_metadata(interleaved_output)
 
         # The regex WILL match this because the markers are present,
@@ -397,7 +397,7 @@ class TestPS1ParserRobustness:
 
     def test_regex_handles_multiline_json(self):
         """Test that the PS1 regex correctly handles multiline JSON."""
-        multiline_json = '''
+        multiline_json = """
 ###PS1JSON###
 {
   "pid": "123",
@@ -408,13 +408,13 @@ class TestPS1ParserRobustness:
   "py_interpreter_path": "/usr/bin/python"
 }
 ###PS1END###
-'''
+"""
         matches = CmdOutputMetadata.matches_ps1_metadata(multiline_json)
         assert len(matches) == 1
 
     def test_multiple_valid_ps1_blocks(self):
         """Test parsing multiple valid PS1 blocks (normal operation)."""
-        two_blocks = '''
+        two_blocks = """
 ###PS1JSON###
 {
   "pid": "100",
@@ -430,7 +430,7 @@ Some command output here
   "username": "user1"
 }
 ###PS1END###
-'''
+"""
         matches = CmdOutputMetadata.matches_ps1_metadata(two_blocks)
         assert len(matches) == 2
 
