@@ -8,7 +8,6 @@
 import {
   StuckDetector,
   DEFAULT_STUCK_THRESHOLDS,
-  StuckDetectionResult,
 } from '../conversation/stuck-detector';
 import {
   BaseEvent,

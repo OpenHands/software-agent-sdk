@@ -10,12 +10,10 @@ import {
   ActionEvent,
   ObservationEvent,
   AgentErrorEvent,
-  MessageEvent,
   isActionEvent,
   isObservationEvent,
   isAgentErrorEvent,
   isMessageEvent,
-  ConversationEvent,
 } from '../events/types';
 
 /**

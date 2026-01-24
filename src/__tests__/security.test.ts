@@ -11,7 +11,6 @@ import {
   RiskBasedConfirm,
   ToolBasedConfirm,
   CompositeConfirm,
-  RiskLevel,
   createConfirmationPolicy,
 } from '../security/confirmation-policy';
 
@@ -246,11 +245,13 @@ describe('Security Analyzers', () => {
       const analyzer = new AllowlistAnalyzer([], [/^read_/]);
       
       const readAction = createActionEvent('read_file', { path: '/tmp' });
-      const writeAction = createActionEvent('write_file', { path: '/tmp' });
+      // Using readAction to verify pattern matching exists
+      const result = analyzer.analyze(readAction);
 
       // Pattern matching is on action JSON, not tool name
       // This tests that patterns are checked
       expect(analyzer.type).toBe('allowlist');
+      expect(result).toBeDefined();
     });
   });
 

@@ -20,28 +20,22 @@ import {
 } from '../types/base';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { IConversation, IConversationState, IEventsList, BaseConversationOptions } from './base';
-import { ILLM, ChatMessage, Tool, ToolCall, TokenCallbackType, TokenStreamEvent } from '../llm/base';
+import { ILLM, ChatMessage, Tool, ToolCall, TokenStreamEvent } from '../llm/base';
 import { generateSystemPrompt, TOOL_DESCRIPTIONS } from '../prompts';
 import { SecretRegistry } from './secret-registry';
 import { StuckDetector, StuckDetectionThresholds, StuckDetectionResult } from './stuck-detector';
 import {
   BaseEvent,
   ActionEvent,
-  ObservationEvent,
-  MessageEvent as TypedMessageEvent,
-  ConfirmationRequestEvent,
   UserRejectObservation,
-  StuckDetectionEvent,
   ConversationStateUpdateEvent,
   generateEventId,
-  isActionEvent,
 } from '../events/types';
 import {
   ConfirmationPolicy,
   NeverConfirm,
-  RiskLevel,
 } from '../security/confirmation-policy';
-import { SecurityAnalyzer, PatternBasedAnalyzer } from '../security/security-analyzer';
+import { SecurityAnalyzer } from '../security/security-analyzer';
 
 /**
  * Tool executor function type.

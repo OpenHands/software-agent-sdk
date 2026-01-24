@@ -5,7 +5,7 @@
  * structured events for all conversation activities.
  */
 
-import { Event, Message, MessageContent } from '../types/base';
+import { Message, MessageContent } from '../types/base';
 
 /**
  * Event ID type - unique identifier for events

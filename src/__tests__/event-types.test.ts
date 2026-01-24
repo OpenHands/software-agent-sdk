@@ -5,7 +5,6 @@
  */
 
 import {
-  BaseEvent,
   MessageEvent,
   ActionEvent,
   ObservationEvent,

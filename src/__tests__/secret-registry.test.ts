@@ -9,7 +9,6 @@ import {
   SecretRegistry,
   StaticSecretSource,
   CallableSecretSource,
-  SecretValue,
 } from '../conversation/secret-registry';
 
 describe('SecretRegistry', () => {

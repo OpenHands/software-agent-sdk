@@ -34,7 +34,7 @@ export class PatternBasedAnalyzer implements SecurityAnalyzer {
 
   // Patterns for high-risk operations
   private readonly highRiskPatterns: RegExp[] = [
-    /\brm\s+-rf?\s+[\/~]/i,           // rm -rf with absolute/home paths
+    /\brm\s+-rf?\s+[/~]/i,            // rm -rf with absolute/home paths
     /\bsudo\b/i,                       // sudo commands
     /\bchmod\s+777\b/i,               // chmod 777
     /\b(curl|wget).*\|\s*(sh|bash)\b/i, // piped downloads
@@ -265,9 +265,10 @@ export function createSecurityAnalyzer(type: string, options?: unknown): Securit
   switch (type) {
     case 'pattern_based':
       return new PatternBasedAnalyzer();
-    case 'allowlist':
+    case 'allowlist': {
       const opts = options as { tools?: string[]; patterns?: RegExp[] } | undefined;
       return new AllowlistAnalyzer(opts?.tools || [], opts?.patterns || []);
+    }
     case 'noop':
       return new NoOpAnalyzer();
     default:
