@@ -12,8 +12,14 @@ module.exports = {
     '**/__tests__/integration/**/*.integration.test.ts'
   ],
   transform: {
-    '^.+\\.ts$': 'ts-jest'
+    '^.+\\.ts$': 'ts-jest',
+    // Transform ESM modules from @openrouter/sdk
+    '^.+\\.js$': 'babel-jest'
   },
+  // Don't ignore @openrouter/sdk for transformation
+  transformIgnorePatterns: [
+    '/node_modules/(?!(@openrouter/sdk)/)'
+  ],
   moduleFileExtensions: [
     'ts',
     'js',

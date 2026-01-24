@@ -7,16 +7,33 @@
 
 // Main conversation and workspace classes
 export { RemoteConversation } from './conversation/remote-conversation';
-export { Conversation } from './conversation/conversation';
+export { LocalConversation } from './conversation/local-conversation';
+export {
+  Conversation,
+  createConversation,
+  createConversationAuto,
+} from './conversation/conversation';
 export { ConversationManager } from './conversation/conversation-manager';
 export { RemoteWorkspace } from './workspace/remote-workspace';
-export { Workspace } from './workspace/workspace';
+export { LocalWorkspace } from './workspace/local-workspace';
+export { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
 export type { EventSearchOptions } from './events/remote-events-list';
 
 // Agent classes
 export { Agent } from './agent/agent';
+
+// LLM classes and factory functions
+export { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
+
+// Prompts
+export {
+  DEFAULT_SYSTEM_PROMPT,
+  MINIMAL_SYSTEM_PROMPT,
+  TOOL_DESCRIPTIONS,
+  generateSystemPrompt,
+} from './prompts';
 
 // WebSocket client for real-time events
 export { WebSocketCallbackClient } from './events/websocket-client';
@@ -39,7 +56,7 @@ export type {
   TextContent,
   ImageContent,
   AgentBase,
-  LLM,
+  LLM as LLMConfig,
   ServerInfo,
   Success,
   EventPage,
@@ -63,6 +80,18 @@ export type {
   GitChange,
   GitDiff,
 } from './models/workspace';
+
+// Workspace base types and interface
+export type { IWorkspace, BaseWorkspaceOptions, WorkspaceType } from './workspace/base';
+
+// Conversation base types and interface
+export type {
+  IConversation,
+  IConversationState,
+  IEventsList,
+  BaseConversationOptions,
+  ConversationType,
+} from './conversation/base';
 
 // Conversation models
 export type {
@@ -90,30 +119,72 @@ export type { WebSocketClientOptions } from './events/websocket-client';
 
 export type { RemoteWorkspaceOptions } from './workspace/remote-workspace';
 
+export type { LocalWorkspaceOptions } from './workspace/local-workspace';
+
+export type { WorkspaceOptions, CreateWorkspaceOptions } from './workspace/workspace';
+
 export type { RemoteConversationOptions } from './conversation/remote-conversation';
+
+export type { LocalConversationOptions, ToolExecutor } from './conversation/local-conversation';
+
+export type { ConversationOptions, CreateConversationOptions } from './conversation/conversation';
 
 export type { ConversationManagerOptions } from './conversation/conversation-manager';
 
+// LLM types and interfaces
+export type {
+  ILLM,
+  BaseLLMOptions,
+  LLMProviderType,
+  MessageRole,
+  ContentPart,
+  ChatMessage,
+  Tool,
+  ToolCall,
+  ChatCompletionOptions,
+  ChatCompletionChoice,
+  TokenUsage,
+  ChatCompletionResponse,
+  ChatCompletionChunk,
+} from './llm';
+export type { OpenRouterLLMOptions, LLMOptions, CreateLLMOptions } from './llm';
+
+// Prompt types
+export type { SystemPromptOptions } from './prompts';
+
 // Re-import for default export
 import { RemoteConversation } from './conversation/remote-conversation';
-import { Conversation } from './conversation/conversation';
+import { LocalConversation } from './conversation/local-conversation';
+import {
+  Conversation,
+  createConversation,
+  createConversationAuto,
+} from './conversation/conversation';
 import { ConversationManager } from './conversation/conversation-manager';
 import { RemoteWorkspace } from './workspace/remote-workspace';
-import { Workspace } from './workspace/workspace';
+import { LocalWorkspace } from './workspace/local-workspace';
+import { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/workspace';
 import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
 import { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
 import { Agent } from './agent/agent';
+import { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
 
 // Default export for convenience
 export default {
   RemoteConversation,
+  LocalConversation,
   Conversation,
+  createConversation,
+  createConversationAuto,
   ConversationManager,
   RemoteWorkspace,
+  LocalWorkspace,
   Workspace,
+  createWorkspace,
+  createWorkspaceAuto,
   RemoteState,
   RemoteEventsList,
   WebSocketCallbackClient,
@@ -123,4 +194,8 @@ export default {
   AgentExecutionStatus,
   ConversationExecutionStatus,
   Agent,
+  LLM,
+  OpenRouterLLM,
+  createLLM,
+  createOpenRouterLLM,
 };
