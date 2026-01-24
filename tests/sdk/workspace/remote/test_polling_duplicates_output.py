@@ -1,14 +1,18 @@
 """Tests for output deduplication in remote workspace polling.
 
 These tests verify that the polling loop in RemoteWorkspaceMixin correctly
-deduplicates events when the API returns all events on each poll iteration.
+fetches only new events using order__gt filtering.
 
 Bug context:
-- The bash events search API returns ALL events from the beginning on each call
-- Without deduplication, output gets duplicated: A + B + A + B + C + ...
-- This causes base64 decoding failures in trajectory capture
+- Previously, the bash events search API returned ALL events on each call
+- Without filtering, output got duplicated: A + B + A + B + C + ...
+- This caused base64 decoding failures in trajectory capture
 
-Error messages observed in production:
+Fix:
+- Client now passes order__gt parameter to fetch only new events
+- API filters events with order > last_order
+
+Error messages that were observed in production:
 - "Invalid base64-encoded string: number of data characters (5352925)
    cannot be 1 more than a multiple of 4"
 - "Incorrect padding"
@@ -30,16 +34,15 @@ class RemoteWorkspaceMixinHelper(RemoteWorkspaceMixin):
 
 
 class TestPollingDeduplication:
-    """Tests for proper event deduplication in the polling loop."""
+    """Tests for proper event filtering using order__gt in the polling loop."""
 
     @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
     def test_polling_should_not_duplicate_events_across_iterations(self, mock_time):
-        """Test that polling deduplicates events returned by the API.
+        """Test that polling uses order__gt to fetch only new events.
 
         When a command produces output over multiple poll iterations,
-        the API returns ALL events on each poll. The implementation must
-        deduplicate to avoid output like:
-        chunk1 + chunk1 + chunk2 + chunk1 + chunk2 + chunk3
+        the client should use order__gt to request only events newer than
+        the last one it processed.
 
         Expected correct output: chunk1 + chunk2 + chunk3
         """
@@ -54,7 +57,7 @@ class TestPollingDeduplication:
         start_response.raise_for_status = Mock()
         start_response.json.return_value = {"id": "cmd-123"}
 
-        # Poll 1: Only chunk 1 exists
+        # Poll 1: First poll (no order__gt), returns chunk 1
         poll_response_1 = Mock()
         poll_response_1.raise_for_status = Mock()
         poll_response_1.json.return_value = {
@@ -70,19 +73,11 @@ class TestPollingDeduplication:
             ]
         }
 
-        # Poll 2: API returns ALL events (chunks 1 and 2)
+        # Poll 2: With order__gt=0, API returns only chunk 2
         poll_response_2 = Mock()
         poll_response_2.raise_for_status = Mock()
         poll_response_2.json.return_value = {
             "items": [
-                {
-                    "id": "event-1",
-                    "kind": "BashOutput",
-                    "order": 0,
-                    "stdout": "CHUNK1",
-                    "stderr": None,
-                    "exit_code": None,
-                },
                 {
                     "id": "event-2",
                     "kind": "BashOutput",
@@ -94,27 +89,11 @@ class TestPollingDeduplication:
             ]
         }
 
-        # Poll 3: API returns ALL events (chunks 1, 2, and 3)
+        # Poll 3: With order__gt=1, API returns only chunk 3
         poll_response_3 = Mock()
         poll_response_3.raise_for_status = Mock()
         poll_response_3.json.return_value = {
             "items": [
-                {
-                    "id": "event-1",
-                    "kind": "BashOutput",
-                    "order": 0,
-                    "stdout": "CHUNK1",
-                    "stderr": None,
-                    "exit_code": None,
-                },
-                {
-                    "id": "event-2",
-                    "kind": "BashOutput",
-                    "order": 1,
-                    "stdout": "CHUNK2",
-                    "stderr": None,
-                    "exit_code": None,
-                },
                 {
                     "id": "event-3",
                     "kind": "BashOutput",
@@ -156,7 +135,7 @@ class TestPollingDeduplication:
         The trajectory capture runs: tar -czf - workspace | base64
         Then decodes with base64.b64decode(stdout)
 
-        Without deduplication, the output becomes invalid base64.
+        With order__gt filtering, each poll returns only new events.
         """
         mixin = RemoteWorkspaceMixinHelper(
             host="http://localhost:8000", working_dir="workspace"
@@ -178,7 +157,7 @@ class TestPollingDeduplication:
         start_response.raise_for_status = Mock()
         start_response.json.return_value = {"id": "cmd-456"}
 
-        # Poll 1: Only chunk 1
+        # Poll 1: First poll, returns chunk 1
         poll_response_1 = Mock()
         poll_response_1.raise_for_status = Mock()
         poll_response_1.json.return_value = {
@@ -194,19 +173,11 @@ class TestPollingDeduplication:
             ]
         }
 
-        # Poll 2: API returns ALL events
+        # Poll 2: With order__gt=0, API returns only chunk 2
         poll_response_2 = Mock()
         poll_response_2.raise_for_status = Mock()
         poll_response_2.json.return_value = {
             "items": [
-                {
-                    "id": "event-1",
-                    "kind": "BashOutput",
-                    "order": 0,
-                    "stdout": chunk1,
-                    "stderr": None,
-                    "exit_code": None,
-                },
                 {
                     "id": "event-2",
                     "kind": "BashOutput",
@@ -218,27 +189,11 @@ class TestPollingDeduplication:
             ]
         }
 
-        # Poll 3: API returns ALL events
+        # Poll 3: With order__gt=1, API returns only chunk 3
         poll_response_3 = Mock()
         poll_response_3.raise_for_status = Mock()
         poll_response_3.json.return_value = {
             "items": [
-                {
-                    "id": "event-1",
-                    "kind": "BashOutput",
-                    "order": 0,
-                    "stdout": chunk1,
-                    "stderr": None,
-                    "exit_code": None,
-                },
-                {
-                    "id": "event-2",
-                    "kind": "BashOutput",
-                    "order": 1,
-                    "stdout": chunk2,
-                    "stderr": None,
-                    "exit_code": None,
-                },
                 {
                     "id": "event-3",
                     "kind": "BashOutput",
@@ -276,10 +231,11 @@ class TestPollingDeduplication:
         assert decoded == original_data
 
     @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
-    def test_base64_decode_produces_incorrect_padding_error(self, mock_time):
-        """Test that reproduces the exact error seen in production logs.
+    def test_base64_decode_succeeds_with_order_filtering(self, mock_time):
+        """Test that base64 decoding works correctly with order__gt filtering.
 
-        This test demonstrates that the duplicated output causes:
+        This test verifies that the order__gt fix prevents the error that was
+        seen in production logs:
         - "Incorrect padding" error from base64.b64decode()
 
         The trajectory capture code runs:
@@ -287,8 +243,7 @@ class TestPollingDeduplication:
         Then decodes with:
             base64.b64decode(stdout)
 
-        When chunks are duplicated, the total length is no longer a multiple
-        of 4, causing the decode to fail.
+        With order__gt filtering, output is not duplicated and decodes correctly.
         """
         mixin = RemoteWorkspaceMixinHelper(
             host="http://localhost:8000", working_dir="workspace"
@@ -297,10 +252,7 @@ class TestPollingDeduplication:
         mock_time.time.side_effect = [0, 1, 2, 3, 4]
         mock_time.sleep = Mock()
 
-        # Create base64 data with chunk sizes that produce invalid length
-        # when duplicated:
-        # Original: 68 chars (valid, 68 % 4 = 0)
-        # Duplicated: 17+17+17+17+17+34 = 119 chars (INVALID, 119 % 4 = 3)
+        # Create base64 data
         original_data = b"Test data!" * 5
         base64_encoded = base64.b64encode(original_data).decode("ascii")
 
@@ -312,7 +264,7 @@ class TestPollingDeduplication:
         start_response.raise_for_status = Mock()
         start_response.json.return_value = {"id": "cmd-789"}
 
-        # Poll 1: chunk 1
+        # Poll 1: First poll, returns chunk 1
         poll_response_1 = Mock()
         poll_response_1.raise_for_status = Mock()
         poll_response_1.json.return_value = {
@@ -328,19 +280,11 @@ class TestPollingDeduplication:
             ]
         }
 
-        # Poll 2: API returns ALL events
+        # Poll 2: With order__gt=0, API returns only chunk 2
         poll_response_2 = Mock()
         poll_response_2.raise_for_status = Mock()
         poll_response_2.json.return_value = {
             "items": [
-                {
-                    "id": "event-1",
-                    "kind": "BashOutput",
-                    "order": 0,
-                    "stdout": chunk1,
-                    "stderr": None,
-                    "exit_code": None,
-                },
                 {
                     "id": "event-2",
                     "kind": "BashOutput",
@@ -352,27 +296,11 @@ class TestPollingDeduplication:
             ]
         }
 
-        # Poll 3: API returns ALL events, command completes
+        # Poll 3: With order__gt=1, API returns only chunk 3
         poll_response_3 = Mock()
         poll_response_3.raise_for_status = Mock()
         poll_response_3.json.return_value = {
             "items": [
-                {
-                    "id": "event-1",
-                    "kind": "BashOutput",
-                    "order": 0,
-                    "stdout": chunk1,
-                    "stderr": None,
-                    "exit_code": None,
-                },
-                {
-                    "id": "event-2",
-                    "kind": "BashOutput",
-                    "order": 1,
-                    "stdout": chunk2,
-                    "stderr": None,
-                    "exit_code": None,
-                },
                 {
                     "id": "event-3",
                     "kind": "BashOutput",
@@ -399,8 +327,12 @@ class TestPollingDeduplication:
         except StopIteration as e:
             result = e.value
 
-        # Attempt to decode the output - this is what trajectory capture does
-        # This should NOT raise an error if deduplication is working correctly
+        # Output should be valid base64 (68 chars, 68 % 4 = 0)
+        assert result.stdout == base64_encoded, (
+            f"Expected '{base64_encoded}' but got '{result.stdout}'"
+        )
+
+        # Decode should succeed (this would fail with "Incorrect padding" before fix)
         decoded = base64.b64decode(result.stdout)
         assert decoded == original_data, (
             f"base64.b64decode() should succeed and return original data. "

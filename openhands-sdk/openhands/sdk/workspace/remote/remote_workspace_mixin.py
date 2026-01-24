@@ -87,34 +87,36 @@ class RemoteWorkspaceMixin(BaseModel):
             stdout_parts = []
             stderr_parts = []
             exit_code = None
-            seen_event_ids: set[str] = set()
+            last_order = -1  # Track highest order seen to fetch only new events
 
             while time.time() - start_time < timeout:
-                # Search for all events
+                # Search for new events (order > last_order)
+                params: dict[str, str | int] = {
+                    "command_id__eq": command_id,
+                    "sort_order": "TIMESTAMP",
+                    "limit": 100,
+                }
+                if last_order >= 0:
+                    params["order__gt"] = last_order
+
                 response = yield {
                     "method": "GET",
                     "url": f"{self.host}/api/bash/bash_events/search",
-                    "params": {
-                        "command_id__eq": command_id,
-                        "sort_order": "TIMESTAMP",
-                        "limit": 100,
-                    },
+                    "params": params,
                     "headers": self._headers,
                     "timeout": timeout,
                 }
                 response.raise_for_status()
                 search_result = response.json()
 
-                # Filter for BashOutput events for this command
+                # Process BashOutput events
                 for event in search_result.get("items", []):
-                    # Deduplicate events - the API returns all events on each poll
-                    event_id = event.get("id")
-                    if event_id is not None:
-                        if event_id in seen_event_ids:
-                            continue
-                        seen_event_ids.add(event_id)
-
                     if event.get("kind") == "BashOutput":
+                        # Track the highest order we've seen
+                        event_order = event.get("order")
+                        if event_order is not None and event_order > last_order:
+                            last_order = event_order
+
                         if event.get("stdout"):
                             stdout_parts.append(event["stdout"])
                         if event.get("stderr"):
