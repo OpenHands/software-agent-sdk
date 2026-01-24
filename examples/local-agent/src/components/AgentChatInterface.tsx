@@ -246,9 +246,20 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
         content: eventData.content as string,
         timestamp: new Date(),
       });
-    } else if (eventData.kind === 'tool_result') {
+    } else if (eventData.kind === 'tool_call') {
+      // Show the tool call with its inputs
       pendingMessagesRef.current.push({
-        id: `${Date.now()}-tool-${Math.random()}`,
+        id: `${Date.now()}-toolcall-${Math.random()}`,
+        role: 'tool',
+        content: eventData.arguments as string,
+        timestamp: new Date(),
+        toolName: eventData.tool as string,
+        toolCallId: 'call',
+      });
+    } else if (eventData.kind === 'tool_result') {
+      // Show the tool result
+      pendingMessagesRef.current.push({
+        id: `${Date.now()}-toolresult-${Math.random()}`,
         role: 'tool',
         content: eventData.result as string,
         timestamp: new Date(),
@@ -364,8 +375,11 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
                 {message.role === 'tool' ? (
                   <div className="tool-result">
                     <div className="tool-header">
-                      <span className="tool-icon">🔧</span>
+                      <span className="tool-icon">{message.toolCallId ? '📤' : '📥'}</span>
                       <span className="tool-name">{message.toolName}</span>
+                      <span className="tool-type" style={{ marginLeft: '0.5rem', fontSize: '0.75rem', opacity: 0.7 }}>
+                        {message.toolCallId ? '(call)' : '(result)'}
+                      </span>
                     </div>
                     <pre className="tool-output">{message.content}</pre>
                   </div>
