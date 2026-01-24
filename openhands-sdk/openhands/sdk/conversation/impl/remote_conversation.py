@@ -288,13 +288,17 @@ class RemoteEventsList(EventsListBase):
             if page_id:
                 params["page_id"] = page_id
 
-            resp = _send_request(
-                self._client,
-                "GET",
-                f"/api/conversations/{self._conversation_id}/events/search",
-                params=params,
-            )
-            data = resp.json()
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._conversation_id}/events/search",
+                    params=params,
+                )
+                data = resp.json()
+            except Exception as e:
+                logger.warning(f"Failed to fetch events during reconciliation: {e}")
+                break  # Return partial results rather than failing completely
 
             events.extend([Event.model_validate(item) for item in data["items"]])
 
