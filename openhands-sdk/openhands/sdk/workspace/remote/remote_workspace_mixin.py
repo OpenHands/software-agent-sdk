@@ -87,6 +87,7 @@ class RemoteWorkspaceMixin(BaseModel):
             stdout_parts = []
             stderr_parts = []
             exit_code = None
+            seen_event_ids: set[str] = set()
 
             while time.time() - start_time < timeout:
                 # Search for all events
@@ -106,6 +107,13 @@ class RemoteWorkspaceMixin(BaseModel):
 
                 # Filter for BashOutput events for this command
                 for event in search_result.get("items", []):
+                    # Deduplicate events - the API returns all events on each poll
+                    event_id = event.get("id")
+                    if event_id is not None:
+                        if event_id in seen_event_ids:
+                            continue
+                        seen_event_ids.add(event_id)
+
                     if event.get("kind") == "BashOutput":
                         if event.get("stdout"):
                             stdout_parts.append(event["stdout"])
