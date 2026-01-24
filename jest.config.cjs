@@ -3,8 +3,17 @@ module.exports = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: [
-    '**/__tests__/**/*.ts',
+    // Only match files ending in .test.ts or .spec.ts
+    '**/__tests__/**/*.test.ts',
+    '**/__tests__/**/*.spec.ts',
     '**/?(*.)+(spec|test).ts'
+  ],
+  testPathIgnorePatterns: [
+    '/node_modules/',
+    // Ignore integration tests by default (run separately)
+    '.*\\.integration\\.test\\.ts$',
+    // Ignore helper files
+    '.*/__tests__/integration/(test-config|test-utils|setup|index)\\.ts$'
   ],
   transform: {
     '^.+\\.ts$': 'ts-jest'

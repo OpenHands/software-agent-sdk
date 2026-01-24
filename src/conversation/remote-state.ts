@@ -7,6 +7,7 @@ import { RemoteEventsList } from '../events/remote-events-list';
 import {
   ConversationID,
   Event,
+  ConversationExecutionStatus,
   AgentExecutionStatus,
   ConfirmationPolicyBase,
   // ConversationStats, // Unused for now
@@ -67,7 +68,9 @@ export class RemoteState {
         if (this.cachedState === null) {
           this.cachedState = {} as ConversationInfo;
         }
-        Object.assign(this.cachedState, event.value);
+        // Unwrap full_state if present (API may return wrapped state)
+        const stateValue = event.value?.full_state ?? event.value;
+        Object.assign(this.cachedState, stateValue);
       } else {
         // Handle individual field updates
         if (this.cachedState === null) {
@@ -96,25 +99,47 @@ export class RemoteState {
     return this.conversationId;
   }
 
-  async getAgentStatus(): Promise<AgentExecutionStatus> {
+  /**
+   * Helper to unwrap full_state if present
+   */
+  private unwrapState(info: ConversationInfo): ConversationInfo {
+    return (info as any).full_state ?? info;
+  }
+
+  /**
+   * Get the current execution status of the conversation.
+   * This method handles both the new `execution_status` field and the legacy `agent_status` field.
+   */
+  async getExecutionStatus(): Promise<ConversationExecutionStatus> {
     const info = await this.getConversationInfo();
-    const statusStr = info.agent_status;
+    // Handle case where info might still be wrapped in full_state
+    const unwrappedInfo = this.unwrapState(info);
+    // Try new field first, fall back to legacy field
+    const statusStr = unwrappedInfo.execution_status ?? unwrappedInfo.agent_status;
     if (statusStr === undefined || statusStr === null) {
-      throw new Error(`agent_status missing in conversation info: ${JSON.stringify(info)}`);
+      throw new Error(`execution_status missing in conversation info: ${JSON.stringify(info)}`);
     }
     return statusStr;
   }
 
+  /**
+   * @deprecated Use getExecutionStatus() instead. This method is kept for backward compatibility.
+   */
+  async getAgentStatus(): Promise<AgentExecutionStatus> {
+    return this.getExecutionStatus();
+  }
+
   async setAgentStatus(value: AgentExecutionStatus): Promise<void> {
     throw new Error(
-      `Setting agent_status on RemoteState has no effect. ` +
-        `Remote agent status is managed server-side. Attempted to set: ${value}`
+      `Setting execution_status on RemoteState has no effect. ` +
+        `Remote execution status is managed server-side. Attempted to set: ${value}`
     );
   }
 
   async getConfirmationPolicy(): Promise<ConfirmationPolicyBase> {
     const info = await this.getConversationInfo();
-    const policyData = info.confirmation_policy;
+    const unwrappedInfo = this.unwrapState(info);
+    const policyData = unwrappedInfo.confirmation_policy;
     if (policyData === undefined || policyData === null) {
       throw new Error(`confirmation_policy missing in conversation info: ${JSON.stringify(info)}`);
     }
@@ -123,12 +148,14 @@ export class RemoteState {
 
   async getActivatedKnowledgeSkills(): Promise<string[]> {
     const info = await this.getConversationInfo();
-    return info.activated_knowledge_skills || [];
+    const unwrappedInfo = this.unwrapState(info);
+    return unwrappedInfo.activated_knowledge_skills || [];
   }
 
   async getAgent(): Promise<AgentBase> {
     const info = await this.getConversationInfo();
-    const agentData = info.agent;
+    const unwrappedInfo = this.unwrapState(info);
+    const agentData = unwrappedInfo.agent;
     if (agentData === undefined || agentData === null) {
       throw new Error(`agent missing in conversation info: ${JSON.stringify(info)}`);
     }
@@ -137,7 +164,8 @@ export class RemoteState {
 
   async getWorkspace(): Promise<any> {
     const info = await this.getConversationInfo();
-    const workspace = info.workspace;
+    const unwrappedInfo = this.unwrapState(info);
+    const workspace = unwrappedInfo.workspace;
     if (workspace === undefined || workspace === null) {
       throw new Error(`workspace missing in conversation info: ${JSON.stringify(info)}`);
     }
@@ -146,7 +174,8 @@ export class RemoteState {
 
   async getPersistenceDir(): Promise<string> {
     const info = await this.getConversationInfo();
-    const persistenceDir = info.persistence_dir;
+    const unwrappedInfo = this.unwrapState(info);
+    const persistenceDir = unwrappedInfo.persistence_dir;
     if (persistenceDir === undefined || persistenceDir === null) {
       throw new Error(`persistence_dir missing in conversation info: ${JSON.stringify(info)}`);
     }
@@ -155,7 +184,8 @@ export class RemoteState {
 
   async modelDump(): Promise<Record<string, any>> {
     const info = await this.getConversationInfo();
-    return info as Record<string, any>;
+    const unwrappedInfo = this.unwrapState(info);
+    return unwrappedInfo as Record<string, any>;
   }
 
   async modelDumpJson(): Promise<string> {

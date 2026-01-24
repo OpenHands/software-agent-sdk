@@ -15,6 +15,9 @@
     "test": "jest --config jest.config.cjs",
     "test:watch": "jest --config jest.config.cjs --watch",
     "test:coverage": "jest --config jest.config.cjs --coverage",
+    "test:integration": "jest --config jest.integration.config.cjs",
+    "test:integration:verbose": "jest --config jest.integration.config.cjs --verbose",
+    "test:all": "npm run test && npm run test:integration",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "prepublishOnly": "npm run clean && npm run build && npm test"
