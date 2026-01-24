@@ -340,6 +340,82 @@ class TestPollingDeduplication:
         )
 
     @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
+    def test_assertion_fires_on_duplicate_events(self, mock_time):
+        """Test that an AssertionError is raised if duplicate events are received.
+
+        This is a safety check - the API should filter duplicates via order__gt,
+        but if it doesn't, the client should detect and fail fast rather than
+        silently corrupting output.
+        """
+        mixin = RemoteWorkspaceMixinHelper(
+            host="http://localhost:8000", working_dir="workspace"
+        )
+
+        mock_time.time.side_effect = [0, 1, 2, 3]
+        mock_time.sleep = Mock()
+
+        start_response = Mock()
+        start_response.raise_for_status = Mock()
+        start_response.json.return_value = {"id": "cmd-999"}
+
+        # Poll 1: Returns event-1
+        poll_response_1 = Mock()
+        poll_response_1.raise_for_status = Mock()
+        poll_response_1.json.return_value = {
+            "items": [
+                {
+                    "id": "event-1",
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": "CHUNK1",
+                    "stderr": None,
+                    "exit_code": None,
+                },
+            ]
+        }
+
+        # Poll 2: API bug - returns event-1 again (duplicate!)
+        poll_response_2 = Mock()
+        poll_response_2.raise_for_status = Mock()
+        poll_response_2.json.return_value = {
+            "items": [
+                {
+                    "id": "event-1",  # Duplicate!
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": "CHUNK1",
+                    "stderr": None,
+                    "exit_code": None,
+                },
+                {
+                    "id": "event-2",
+                    "kind": "BashOutput",
+                    "order": 1,
+                    "stdout": "CHUNK2",
+                    "stderr": None,
+                    "exit_code": 0,
+                },
+            ]
+        }
+
+        generator = mixin._execute_command_generator("test_command", None, 30.0)
+
+        next(generator)
+        generator.send(start_response)
+        generator.send(poll_response_1)
+
+        # The assertion is caught and returns an error result
+        try:
+            generator.send(poll_response_2)
+            pytest.fail("Generator should have stopped")
+        except StopIteration as e:
+            result = e.value
+
+        # Should return error result with duplicate event message
+        assert result.exit_code == -1
+        assert "Duplicate event received: event-1" in result.stderr
+
+    @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
     def test_single_poll_works_correctly(self, mock_time):
         """Test that single poll iteration works correctly.
 

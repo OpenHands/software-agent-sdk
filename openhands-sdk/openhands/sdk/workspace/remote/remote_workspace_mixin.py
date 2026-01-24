@@ -88,6 +88,7 @@ class RemoteWorkspaceMixin(BaseModel):
             stderr_parts = []
             exit_code = None
             last_order = -1  # Track highest order seen to fetch only new events
+            seen_event_ids: set[str] = set()  # Track seen IDs to detect duplicates
 
             while time.time() - start_time < timeout:
                 # Search for new events (order > last_order)
@@ -111,6 +112,15 @@ class RemoteWorkspaceMixin(BaseModel):
 
                 # Process BashOutput events
                 for event in search_result.get("items", []):
+                    # Assert no duplicates - the API should filter them via order__gt
+                    event_id = event.get("id")
+                    if event_id is not None:
+                        assert event_id not in seen_event_ids, (
+                            f"Duplicate event received: {event_id}. "
+                            f"The API should have filtered this via order__gt"
+                        )
+                        seen_event_ids.add(event_id)
+
                     if event.get("kind") == "BashOutput":
                         # Track the highest order we've seen
                         event_order = event.get("order")
