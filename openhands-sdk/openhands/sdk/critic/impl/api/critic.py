@@ -49,13 +49,16 @@ class APIBasedCritic(CriticBase, CriticClient):
         messages = LLMConvertibleEvent.events_to_messages(llm_convertible_events)
 
         # Serialize messages to dicts for API
-        for message in messages:
-            message.cache_enabled = False
-            message.vision_enabled = False  # Critic does not support vision currently
-            message.function_calling_enabled = True
-            message.force_string_serializer = False
-            message.send_reasoning_content = False
-        formatted_messages = [message.to_chat_dict() for message in messages]
+        formatted_messages = [
+            message.to_chat_dict(
+                cache_enabled=False,
+                vision_enabled=False,  # Critic does not support vision currently
+                function_calling_enabled=True,
+                force_string_serializer=False,
+                send_reasoning_content=False,
+            )
+            for message in messages
+        ]
 
         # Convert ToolDefinition objects to ChatCompletionToolParam format
         tools_for_api = [tool.to_openai_tool() for tool in tools]

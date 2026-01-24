@@ -2,6 +2,7 @@ import os
 from unittest.mock import patch
 
 import pytest
+from deprecation import DeprecatedWarning
 from pydantic import SecretStr, ValidationError
 
 from openhands.sdk.llm import LLM
@@ -43,43 +44,51 @@ def test_llm_config_defaults():
 
 def test_llm_config_custom_values():
     """Test LLM with custom values."""
-    config = LLM(
-        usage_id="test-llm",
-        model="gpt-4",
-        api_key=SecretStr("test-key"),
-        base_url="https://api.example.com",
-        api_version="v1",
-        num_retries=3,
-        retry_multiplier=2,
-        retry_min_wait=1,
-        retry_max_wait=10,
-        timeout=30,
-        max_message_chars=10000,
-        temperature=0.5,
-        top_p=0.9,
-        top_k=50,
-        max_input_tokens=4000,
-        max_output_tokens=1000,
-        input_cost_per_token=0.001,
-        output_cost_per_token=0.002,
-        ollama_base_url="http://localhost:11434",
-        drop_params=False,
-        modify_params=False,
-        disable_vision=True,
-        disable_stop_word=True,
-        caching_prompt=False,
-        log_completions=True,
-        custom_tokenizer=None,  # Changed from "custom_tokenizer" to avoid HF API call
-        native_tool_calling=True,
-        reasoning_effort="high",
-        seed=42,
-        safety_settings=[
-            {
-                "category": "HARM_CATEGORY_HARASSMENT",
-                "threshold": "BLOCK_MEDIUM_AND_ABOVE",
-            }
-        ],
-    )
+    # safety_settings is deprecated starting in 1.10.0
+    # Mock the version to simulate being on 1.10.0+ to trigger the warning
+    with (
+        patch(
+            "openhands.sdk.utils.deprecation._current_version", return_value="1.10.0"
+        ),
+        pytest.warns(DeprecatedWarning, match="LLM.safety_settings"),
+    ):
+        config = LLM(
+            usage_id="test-llm",
+            model="gpt-4",
+            api_key=SecretStr("test-key"),
+            base_url="https://api.example.com",
+            api_version="v1",
+            num_retries=3,
+            retry_multiplier=2,
+            retry_min_wait=1,
+            retry_max_wait=10,
+            timeout=30,
+            max_message_chars=10000,
+            temperature=0.5,
+            top_p=0.9,
+            top_k=50,
+            max_input_tokens=4000,
+            max_output_tokens=1000,
+            input_cost_per_token=0.001,
+            output_cost_per_token=0.002,
+            ollama_base_url="http://localhost:11434",
+            drop_params=False,
+            modify_params=False,
+            disable_vision=True,
+            disable_stop_word=True,
+            caching_prompt=False,
+            log_completions=True,
+            custom_tokenizer=None,  # Avoid HF API call
+            native_tool_calling=True,
+            reasoning_effort="high",
+            seed=42,
+            safety_settings=[
+                {
+                    "category": "HARM_CATEGORY_HARASSMENT",
+                    "threshold": "BLOCK_MEDIUM_AND_ABOVE",
+                }
+            ],
+        )
 
     assert config.model == "gpt-4"
     assert config.api_key is not None
