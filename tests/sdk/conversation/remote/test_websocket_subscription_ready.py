@@ -47,6 +47,8 @@ class TestWebSocketReadySignaling:
         waiter.join(timeout=0.1)
         assert waiter.is_alive()
 
+        # Set _ready directly since we're testing wait_until_ready in isolation
+        # without starting the WebSocket thread that would normally set this
         client._ready.set()
         waiter.join(timeout=1.0)
 
