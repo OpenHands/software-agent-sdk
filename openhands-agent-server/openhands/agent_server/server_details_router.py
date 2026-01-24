@@ -27,7 +27,7 @@ def update_last_execution_time():
 
 def mark_initialization_complete():
     """Mark the server as fully initialized and ready to serve requests.
-    
+
     This should be called after all services (VSCode, desktop, tool preload, etc.)
     have finished initializing. Until this is called, the /ready endpoint will
     return 503 Service Unavailable.
@@ -56,7 +56,7 @@ async def health() -> str:
 @server_details_router.get("/ready")
 async def ready(response: Response):
     """Readiness check - returns OK only if the server has completed initialization.
-    
+
     This endpoint should be used by Kubernetes readiness probes to determine
     when the pod is ready to receive traffic. Returns 503 during initialization.
     """
