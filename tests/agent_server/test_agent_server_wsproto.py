@@ -21,7 +21,12 @@ def find_free_port():
 
 
 def run_agent_server(port, api_key):
-    os.environ["OH_SESSION_API_KEYS"] = f'["{api_key}"]'
+    # Configure authentication for the server process.
+    #
+    # Use both the V1 indexed env var and the legacy V0 var to keep this test
+    # stable across different config parsing behaviors.
+    os.environ["OH_SESSION_API_KEYS_0"] = api_key
+    os.environ["SESSION_API_KEY"] = api_key
     sys.argv = ["agent-server", "--port", str(port)]
     from openhands.agent_server.__main__ import main
 
@@ -33,7 +38,8 @@ def agent_server():
     port = find_free_port()
     api_key = "test-wsproto-key"
 
-    process = multiprocessing.Process(target=run_agent_server, args=(port, api_key))
+    ctx = multiprocessing.get_context("spawn")
+    process = ctx.Process(target=run_agent_server, args=(port, api_key))
     process.start()
 
     for _ in range(30):
