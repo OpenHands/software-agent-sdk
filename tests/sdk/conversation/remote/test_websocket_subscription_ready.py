@@ -73,6 +73,8 @@ class TestWebSocketReadySignaling:
         waiter.join(timeout=0.1)
         assert waiter.is_alive()
 
+        # Set _stop directly to bypass the thread-exists check in stop()
+        # since we're testing without starting the WebSocket thread
         client._stop.set()
         waiter.join(timeout=1.0)
 
