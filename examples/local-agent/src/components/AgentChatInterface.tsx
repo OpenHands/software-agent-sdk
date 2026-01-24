@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { LocalConversation, LocalWorkspace, Agent } from '@openhands/typescript-client';
 import type { LLM, Tool, ToolCall } from '@openhands/typescript-client';
 
 interface Message {
@@ -119,9 +120,6 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
     setIsLoading(true);
 
     try {
-      // Dynamically import LocalConversation to use the SDK's agent loop
-      const { LocalConversation, LocalWorkspace, Agent } = await import('@openhands/typescript-client');
-      
       // Create a minimal workspace (won't be used since we have custom tools)
       const workspace = new LocalWorkspace({ workingDir: '/workspace' });
       

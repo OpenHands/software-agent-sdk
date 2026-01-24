@@ -1,9 +1,8 @@
 import { useState, useEffect } from 'react';
+import { LLM } from '@openhands/typescript-client';
 import { AuthScreen } from './components/AuthScreen';
 import { AgentChatInterface } from './components/AgentChatInterface';
 import { SettingsModal } from './components/SettingsModal';
-
-type LLMType = InstanceType<typeof import('@openhands/typescript-client').LLM>;
 
 export interface ChatConfig {
   apiKey: string;
@@ -26,9 +25,8 @@ const POPULAR_MODELS = [
 
 function App() {
   const [config, setConfig] = useState<ChatConfig | null>(null);
-  const [llm, setLlm] = useState<LLMType | null>(null);
+  const [llm, setLlm] = useState<LLM | null>(null);
   const [showSettings, setShowSettings] = useState(false);
-  const [initError, setInitError] = useState<string | null>(null);
 
   useEffect(() => {
     const savedApiKey = localStorage.getItem('openrouter_api_key');
@@ -47,22 +45,13 @@ function App() {
 
   useEffect(() => {
     if (config) {
-      import('@openhands/typescript-client')
-        .then(({ LLM }) => {
-          // LLM class uses OpenRouter under the hood
-          const newLlm = new LLM({
-            apiKey: config.apiKey,
-            defaultModel: config.model,
-            defaultTemperature: config.temperature,
-            defaultMaxTokens: config.maxTokens,
-          });
-          setLlm(newLlm);
-          setInitError(null);
-        })
-        .catch((error) => {
-          console.error('Failed to load SDK:', error);
-          setInitError(error.message);
-        });
+      const newLlm = new LLM({
+        apiKey: config.apiKey,
+        defaultModel: config.model,
+        defaultTemperature: config.temperature,
+        defaultMaxTokens: config.maxTokens,
+      });
+      setLlm(newLlm);
     } else {
       setLlm(null);
     }
@@ -103,22 +92,6 @@ function App() {
     }
     setShowSettings(false);
   };
-
-  if (initError) {
-    return (
-      <div className="app">
-        <div className="auth-screen">
-          <div className="auth-card">
-            <h2>Error</h2>
-            <p style={{ color: 'var(--error)' }}>Failed to initialize: {initError}</p>
-            <button className="btn btn-primary" onClick={() => window.location.reload()}>
-              Reload
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
 
   if (!config || !llm) {
     return (
