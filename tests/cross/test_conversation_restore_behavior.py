@@ -29,6 +29,7 @@ from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.terminal import TerminalTool
+from tests.conftest import create_mock_litellm_response
 
 
 register_tool("TerminalTool", TerminalTool)
@@ -138,8 +139,6 @@ def _agent(
 def test_conversation_restore_lifecycle_happy_path(mock_completion):
     """Baseline: restore should load prior events and allow further execution."""
 
-    from tests.conftest import create_mock_litellm_response
-
     captured_completion_kwargs: list[dict[str, Any]] = []
 
     def capture_completion(*_args: Any, **kwargs: Any):
@@ -200,8 +199,6 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
 def test_conversation_restore_fails_when_removing_tools(mock_completion):
     """Restore must fail when runtime tools remove a persisted tool."""
 
-    from tests.conftest import create_mock_litellm_response
-
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
     )
@@ -246,8 +243,6 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_conversation_restore_fails_when_adding_tools(mock_completion):
     """Restore must fail when runtime tools add a new tool."""
-
-    from tests.conftest import create_mock_litellm_response
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -294,8 +289,6 @@ def test_conversation_restore_fails_when_adding_tools(mock_completion):
 def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
     """Restore must fail when persisted and runtime agent types differ."""
 
-    from tests.conftest import create_mock_litellm_response
-
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
     )
@@ -339,8 +332,6 @@ def test_conversation_restore_fails_when_agent_class_changes(mock_completion):
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
     """Restore must fail if include_default_tools removes a built-in tool."""
-
-    from tests.conftest import create_mock_litellm_response
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -388,8 +379,6 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_conversation_restore_fails_when_default_tools_added(mock_completion):
     """Restore must fail if include_default_tools adds a built-in tool."""
-
-    from tests.conftest import create_mock_litellm_response
 
     mock_completion.return_value = create_mock_litellm_response(
         content="I'll help you with that.", finish_reason="stop"
@@ -439,8 +428,6 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
     mock_completion,
 ):
     """Restore should succeed when ONLY non-breaking agent config changes."""
-
-    from tests.conftest import create_mock_litellm_response
 
     mock_completion.return_value = create_mock_litellm_response(
         content="Acknowledged.", finish_reason="stop"
@@ -497,8 +484,6 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
 @patch("openhands.sdk.llm.llm.litellm_completion")
 def test_restore_reasoning_effort_none_strips_temperature(mock_completion):
     """Reasoning models should accept reasoning_effort and ignore temperature/top_p."""
-
-    from tests.conftest import create_mock_litellm_response
 
     captured_completion_kwargs: list[dict[str, Any]] = []
 
