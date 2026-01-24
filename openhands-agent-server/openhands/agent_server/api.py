@@ -321,6 +321,8 @@ def create_app(config: Config | None = None) -> FastAPI:
     if config is None:
         config = get_default_config()
     app = _create_fastapi_instance()
+    app.state.config = config
+
     _add_api_routes(app, config)
     _setup_static_files(app, config)
     app.add_middleware(LocalhostCORSMiddleware, allow_origins=config.allow_cors_origins)

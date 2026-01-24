@@ -20,7 +20,7 @@ from fastapi import (
 )
 
 from openhands.agent_server.bash_service import get_default_bash_event_service
-from openhands.agent_server.config import get_default_config
+from openhands.agent_server.config import Config, get_default_config
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
@@ -34,6 +34,20 @@ sockets_router = APIRouter(prefix="/sockets", tags=["WebSockets"])
 conversation_service = get_default_conversation_service()
 bash_event_service = get_default_bash_event_service()
 logger = logging.getLogger(__name__)
+
+
+def _get_config(websocket: WebSocket) -> Config:
+    """Return the app's configured Config for this websocket.
+
+    In tests and embedders, `create_app(config)` may be used to construct an app
+    with a non-default Config. WebSocket handlers should respect that Config
+    rather than always reading from environment-derived defaults.
+    """
+    config = getattr(websocket.app.state, "config", None)
+    if isinstance(config, Config):
+        return config
+    return get_default_config()
+
 
 
 def _resolve_websocket_session_api_key(
@@ -63,7 +77,7 @@ async def _accept_authenticated_websocket(
     session_api_key: str | None,
 ) -> bool:
     """Authenticate and accept the socket, or close with an auth error."""
-    config = get_default_config()
+    config = _get_config(websocket)
     resolved_key = _resolve_websocket_session_api_key(websocket, session_api_key)
     if config.session_api_keys and resolved_key not in config.session_api_keys:
         await websocket.close(code=4001, reason="Authentication failed")
