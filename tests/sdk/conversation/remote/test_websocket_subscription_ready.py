@@ -36,20 +36,23 @@ class TestWebSocketReadySignaling:
             callback=MagicMock(),
         )
 
-        def set_ready_delayed() -> None:
-            time.sleep(0.05)
-            client._ready.set()
+        result: dict[str, bool | None] = {"value": None}
 
-        thread = threading.Thread(target=set_ready_delayed)
-        thread.start()
+        def wait_for_ready() -> None:
+            result["value"] = client.wait_until_ready(timeout=1.0)
 
-        start = time.monotonic()
-        assert client.wait_until_ready(timeout=1.0) is True
-        elapsed = time.monotonic() - start
+        waiter = threading.Thread(target=wait_for_ready)
+        waiter.start()
 
-        thread.join()
+        # Ensure it doesn't return immediately (i.e. it actually blocks).
+        waiter.join(timeout=0.02)
+        assert waiter.is_alive()
 
-        assert 0.04 <= elapsed < 0.5
+        client._ready.set()
+        waiter.join(timeout=1.0)
+
+        assert not waiter.is_alive()
+        assert result["value"] is True
 
     def test_wait_until_ready_unblocks_when_stopped(self):
         client = WebSocketCallbackClient(
@@ -58,20 +61,34 @@ class TestWebSocketReadySignaling:
             callback=MagicMock(),
         )
 
-        def set_stop_delayed() -> None:
-            time.sleep(0.05)
-            client._stop.set()
+        result: dict[str, bool | None] = {"value": None}
 
-        thread = threading.Thread(target=set_stop_delayed)
-        thread.start()
+        def wait_for_ready() -> None:
+            result["value"] = client.wait_until_ready(timeout=1.0)
 
-        start = time.monotonic()
-        assert client.wait_until_ready(timeout=1.0) is False
-        elapsed = time.monotonic() - start
+        waiter = threading.Thread(target=wait_for_ready)
+        waiter.start()
 
-        thread.join()
+        waiter.join(timeout=0.02)
+        assert waiter.is_alive()
 
-        assert 0.04 <= elapsed < 0.5
+        client._stop.set()
+        waiter.join(timeout=1.0)
+
+        assert not waiter.is_alive()
+        assert result["value"] is False
+
+    def test_wait_until_ready_is_idempotent_after_ready(self):
+        client = WebSocketCallbackClient(
+            host="http://localhost:8000",
+            conversation_id="test-conv-id",
+            callback=MagicMock(),
+        )
+
+        client._ready.set()
+
+        assert client.wait_until_ready(timeout=0.1) is True
+        assert client.wait_until_ready(timeout=0.1) is True
 
 
 class TestRemoteEventsListReconciliation:
