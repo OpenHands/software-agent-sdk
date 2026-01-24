@@ -19,6 +19,7 @@ export { LocalWorkspace } from './workspace/local-workspace';
 export { Workspace, createWorkspace, createWorkspaceAuto } from './workspace/workspace';
 export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
+export type { EventSearchOptions } from './events/remote-events-list';
 
 // Agent classes
 export { Agent } from './agent/agent';
@@ -69,7 +70,7 @@ export type {
 
 export type { AgentOptions } from './agent/agent';
 
-export { EventSortOrder, AgentExecutionStatus } from './types/base';
+export { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
 
 // Workspace models
 export type {
@@ -105,8 +106,14 @@ export type {
   GenerateTitleRequest,
   GenerateTitleResponse,
   UpdateSecretsRequest,
+  StaticSecret,
+  LookupSecret,
+  SecretObject,
   ConversationSearchRequest,
   ConversationSearchResponse,
+  AskAgentRequest,
+  AskAgentResponse,
+  SetSecurityAnalyzerRequest,
 } from './models/conversation';
 
 // Client options
@@ -165,7 +172,7 @@ import { RemoteState } from './conversation/remote-state';
 import { RemoteEventsList } from './events/remote-events-list';
 import { WebSocketCallbackClient } from './events/websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
-import { EventSortOrder, AgentExecutionStatus } from './types/base';
+import { EventSortOrder, AgentExecutionStatus, ConversationExecutionStatus } from './types/base';
 import { Agent } from './agent/agent';
 import { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
 
@@ -189,6 +196,7 @@ export default {
   HttpError,
   EventSortOrder,
   AgentExecutionStatus,
+  ConversationExecutionStatus,
   Agent,
   LLM,
   OpenRouterLLM,
