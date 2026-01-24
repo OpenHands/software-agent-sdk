@@ -38,28 +38,28 @@ export function AuthScreen({ onAuthenticate, models, defaultModel }: AuthScreenP
   };
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>
+    <div id="auth-app-container" className="app">
+      <header id="auth-header" className="header">
+        <h1 id="auth-title">
           <span className="logo">🤖</span>
           OpenHands Chat
         </h1>
       </header>
 
-      <div className="auth-screen">
-        <div className="auth-card">
-          <h2>Welcome</h2>
-          <p>
+      <div id="auth-screen" className="auth-screen">
+        <div id="auth-card" className="auth-card">
+          <h2 id="auth-welcome-title">Welcome</h2>
+          <p id="auth-welcome-text">
             Connect your OpenRouter API key to start chatting with AI models.
           </p>
 
-          <form className="auth-form" onSubmit={handleSubmit}>
-            {error && <div className="error-message">{error}</div>}
+          <form id="auth-form" className="auth-form" onSubmit={handleSubmit}>
+            {error && <div id="auth-error-message" className="error-message">{error}</div>}
 
             <div className="form-group">
-              <label htmlFor="apiKey">OpenRouter API Key</label>
+              <label htmlFor="auth-api-key-input">OpenRouter API Key</label>
               <input
-                id="apiKey"
+                id="auth-api-key-input"
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
@@ -69,9 +69,9 @@ export function AuthScreen({ onAuthenticate, models, defaultModel }: AuthScreenP
             </div>
 
             <div className="form-group">
-              <label htmlFor="model">Default Model</label>
+              <label htmlFor="auth-model-select">Default Model</label>
               <select
-                id="model"
+                id="auth-model-select"
                 className="model-select"
                 value={model}
                 onChange={(e) => setModel(e.target.value)}
@@ -86,6 +86,7 @@ export function AuthScreen({ onAuthenticate, models, defaultModel }: AuthScreenP
             </div>
 
             <button
+              id="auth-connect-button"
               type="submit"
               className="btn btn-primary"
               disabled={!apiKey || isLoading}
@@ -95,9 +96,9 @@ export function AuthScreen({ onAuthenticate, models, defaultModel }: AuthScreenP
             </button>
           </form>
 
-          <div className="auth-link">
+          <div id="auth-link-container" className="auth-link">
             Don't have an API key?{' '}
-            <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">
+            <a id="auth-openrouter-link" href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">
               Get one at OpenRouter →
             </a>
           </div>

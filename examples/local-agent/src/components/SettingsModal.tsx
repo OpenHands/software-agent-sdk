@@ -18,14 +18,14 @@ export function SettingsModal({ config, models, onClose, onSave }: SettingsModal
   };
 
   return (
-    <div className="modal-overlay" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Settings</h3>
+    <div id="settings-modal-overlay" className="modal-overlay" onClick={onClose}>
+      <div id="settings-modal" className="modal" onClick={(e) => e.stopPropagation()}>
+        <h3 id="settings-modal-title">Settings</h3>
 
         <div className="form-group">
-          <label htmlFor="settings-model">Model</label>
+          <label htmlFor="settings-model-select">Model</label>
           <select
-            id="settings-model"
+            id="settings-model-select"
             className="model-select"
             value={model}
             onChange={(e) => setModel(e.target.value)}
@@ -40,11 +40,11 @@ export function SettingsModal({ config, models, onClose, onSave }: SettingsModal
         </div>
 
         <div className="form-group" style={{ marginTop: '1rem' }}>
-          <label htmlFor="settings-temperature">
+          <label id="settings-temperature-label" htmlFor="settings-temperature-input">
             Temperature: {temperature.toFixed(1)}
           </label>
           <input
-            id="settings-temperature"
+            id="settings-temperature-input"
             type="range"
             min="0"
             max="2"
@@ -60,9 +60,9 @@ export function SettingsModal({ config, models, onClose, onSave }: SettingsModal
         </div>
 
         <div className="form-group" style={{ marginTop: '1rem' }}>
-          <label htmlFor="settings-tokens">Max Tokens: {maxTokens}</label>
+          <label id="settings-tokens-label" htmlFor="settings-tokens-input">Max Tokens: {maxTokens}</label>
           <input
-            id="settings-tokens"
+            id="settings-tokens-input"
             type="range"
             min="256"
             max="8192"
@@ -77,11 +77,11 @@ export function SettingsModal({ config, models, onClose, onSave }: SettingsModal
           </div>
         </div>
 
-        <div className="modal-actions">
-          <button className="btn btn-secondary" onClick={onClose}>
+        <div id="settings-modal-actions" className="modal-actions">
+          <button id="settings-cancel-button" className="btn btn-secondary" onClick={onClose}>
             Cancel
           </button>
-          <button className="btn btn-primary" onClick={handleSave}>
+          <button id="settings-save-button" className="btn btn-primary" onClick={handleSave}>
             Save Changes
           </button>
         </div>
