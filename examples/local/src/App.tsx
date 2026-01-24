@@ -3,8 +3,8 @@ import { AuthScreen } from './components/AuthScreen';
 import { ChatInterface } from './components/ChatInterface';
 import { SettingsModal } from './components/SettingsModal';
 
-// Lazy load OpenRouterLLM to avoid initialization errors
-type OpenRouterLLMType = InstanceType<typeof import('@openhands/typescript-client').OpenRouterLLM>;
+// Lazy load LLM to avoid initialization errors
+type LLMType = InstanceType<typeof import('@openhands/typescript-client').LLM>;
 
 export interface ChatConfig {
   apiKey: string;
@@ -27,7 +27,7 @@ const POPULAR_MODELS = [
 
 function App() {
   const [config, setConfig] = useState<ChatConfig | null>(null);
-  const [llm, setLlm] = useState<OpenRouterLLMType | null>(null);
+  const [llm, setLlm] = useState<LLMType | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
 
@@ -52,8 +52,9 @@ function App() {
     if (config) {
       // Dynamically import to avoid issues with SDK initialization
       import('@openhands/typescript-client')
-        .then(({ OpenRouterLLM }) => {
-          const newLlm = new OpenRouterLLM({
+        .then(({ LLM }) => {
+          // LLM class uses OpenRouter under the hood
+          const newLlm = new LLM({
             apiKey: config.apiKey,
             defaultModel: config.model,
             defaultTemperature: config.temperature,

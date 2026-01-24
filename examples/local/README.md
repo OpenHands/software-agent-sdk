@@ -1,6 +1,6 @@
 # OpenHands Local Chat
 
-A browser-based chat UI that demonstrates the OpenHands TypeScript SDK with OpenRouter integration.
+A browser-based chat UI that demonstrates the OpenHands TypeScript SDK's `LLM` class with OpenRouter integration.
 
 ![OpenHands Chat Screenshot](https://via.placeholder.com/800x500?text=OpenHands+Chat+UI)
 
@@ -76,28 +76,32 @@ examples/local/
 
 ## How It Works
 
-This example demonstrates using the `OpenRouterLLM` class from the TypeScript SDK:
+This example demonstrates using the `LLM` class from the TypeScript SDK. The `LLM` class uses OpenRouter under the hood to provide access to 300+ models:
 
 ```typescript
-import { OpenRouterLLM } from '@openhands/typescript-client';
+import { LLM } from '@openhands/typescript-client';
 
-// Create LLM instance
-const llm = new OpenRouterLLM({
+// Create LLM instance (uses OpenRouter under the hood)
+const llm = new LLM({
   apiKey: 'your-api-key',
   defaultModel: 'anthropic/claude-3.5-sonnet',
   defaultTemperature: 0.7,
   defaultMaxTokens: 4096,
 });
 
-// Send a message
-const response = await llm.completion({
+// Send a message using chatCompletion
+const response = await llm.chatCompletion({
   messages: [
-    { role: 'user', content: [{ type: 'text', text: 'Hello!' }] }
+    { role: 'user', content: 'Hello!' }
   ],
   model: 'anthropic/claude-3.5-sonnet',
 });
 
 console.log(response.choices[0].message.content);
+
+// Or use the simple generate() helper
+const text = await llm.generate('Hello!');
+console.log(text);
 ```
 
 ## Configuration
@@ -154,3 +158,4 @@ npm run preview
 - [OpenRouter Documentation](https://openrouter.ai/docs)
 - [OpenHands TypeScript SDK](../../README.md)
 - [Model Pricing](https://openrouter.ai/models)
+- [Local Agent Example](../local-agent/) - Agent with tool calling

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import ReactMarkdown from 'react-markdown';
-import type { OpenRouterLLM, Tool, ToolCall } from '@openhands/typescript-client';
+import type { LLM, Tool, ToolCall } from '@openhands/typescript-client';
 
 interface Message {
   id: string;
@@ -13,7 +13,7 @@ interface Message {
 }
 
 interface AgentChatInterfaceProps {
-  llm: OpenRouterLLM;
+  llm: LLM;
   model: string;
 }
 
