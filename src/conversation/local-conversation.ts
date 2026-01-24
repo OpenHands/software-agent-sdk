@@ -20,14 +20,39 @@ import {
 } from '../types/base';
 import { LocalWorkspace } from '../workspace/local-workspace';
 import { IConversation, IConversationState, IEventsList, BaseConversationOptions } from './base';
-import { ILLM, ChatMessage, Tool, ToolCall } from '../llm/base';
+import { ILLM, ChatMessage, Tool, ToolCall, TokenCallbackType, TokenStreamEvent } from '../llm/base';
 import { generateSystemPrompt, TOOL_DESCRIPTIONS } from '../prompts';
+import { SecretRegistry } from './secret-registry';
+import { StuckDetector, StuckDetectionThresholds, StuckDetectionResult } from './stuck-detector';
+import {
+  BaseEvent,
+  ActionEvent,
+  ObservationEvent,
+  MessageEvent as TypedMessageEvent,
+  ConfirmationRequestEvent,
+  UserRejectObservation,
+  StuckDetectionEvent,
+  ConversationStateUpdateEvent,
+  generateEventId,
+  isActionEvent,
+} from '../events/types';
+import {
+  ConfirmationPolicy,
+  NeverConfirm,
+  RiskLevel,
+} from '../security/confirmation-policy';
+import { SecurityAnalyzer, PatternBasedAnalyzer } from '../security/security-analyzer';
 
 /**
  * Tool executor function type.
  * Takes a tool call and returns the result string.
  */
 export type ToolExecutor = (toolCall: ToolCall) => Promise<string> | string;
+
+/**
+ * Token callback type for the conversation level.
+ */
+export type ConversationTokenCallback = (event: TokenStreamEvent) => void;
 
 /**
  * Options for creating a LocalConversation instance.
@@ -45,41 +70,94 @@ export interface LocalConversationOptions extends BaseConversationOptions {
   toolExecutor?: ToolExecutor;
   /** Whether to include built-in tools (execute_command, read_file, etc.). Default: true if no custom tools provided */
   includeBuiltinTools?: boolean;
-}
-
-/**
- * Event types for local conversation
- */
-interface ConversationEvent {
-  type: 'message' | 'action' | 'observation' | 'error';
-  timestamp: number;
-  data: unknown;
+  /** Token callback for streaming tokens during LLM generation */
+  tokenCallback?: ConversationTokenCallback;
+  /** Enable stuck detection (default: true) */
+  stuckDetection?: boolean;
+  /** Custom thresholds for stuck detection */
+  stuckDetectionThresholds?: Partial<StuckDetectionThresholds>;
+  /** Security analyzer for evaluating action risks */
+  securityAnalyzer?: SecurityAnalyzer;
+  /** Initial secrets to provide to the conversation */
+  secrets?: Record<string, SecretValue>;
 }
 
 /**
  * Implementation of events list for local conversations.
+ * Stores typed events and provides indexing and search capabilities.
  */
 class LocalEventsList implements IEventsList {
-  private events: ConversationEvent[] = [];
+  private events: BaseEvent[] = [];
+  private idToIndex: Map<string, number> = new Map();
 
-  async addEvent(event: ConversationEvent): Promise<void> {
+  async addEvent(event: BaseEvent): Promise<void> {
+    const index = this.events.length;
     this.events.push(event);
+    this.idToIndex.set(event.id, index);
   }
 
-  async getEvents(): Promise<ConversationEvent[]> {
+  async getEvents(): Promise<BaseEvent[]> {
     return [...this.events];
   }
 
-  getEventCounts(): { total: number; messages: number; actions: number; observations: number } {
+  /**
+   * Get all events as an array (synchronous access).
+   */
+  getEventsSync(): BaseEvent[] {
+    return [...this.events];
+  }
+
+  /**
+   * Get an event by index.
+   */
+  getByIndex(index: number): BaseEvent | undefined {
+    if (index < 0) {
+      index = this.events.length + index;
+    }
+    return this.events[index];
+  }
+
+  /**
+   * Get an event by ID.
+   */
+  getById(id: string): BaseEvent | undefined {
+    const index = this.idToIndex.get(id);
+    return index !== undefined ? this.events[index] : undefined;
+  }
+
+  /**
+   * Get the index of an event by ID.
+   */
+  getIndex(id: string): number | undefined {
+    return this.idToIndex.get(id);
+  }
+
+  /**
+   * Get the number of events.
+   */
+  get length(): number {
+    return this.events.length;
+  }
+
+  /**
+   * Iterate over events.
+   */
+  [Symbol.iterator](): Iterator<BaseEvent> {
+    return this.events[Symbol.iterator]();
+  }
+
+  getEventCounts(): { total: number; messages: number; actions: number; observations: number; errors: number } {
     let messages = 0;
     let actions = 0;
     let observations = 0;
+    let errors = 0;
     for (const event of this.events) {
-      if (event.type === 'message') messages++;
-      else if (event.type === 'action') actions++;
-      else if (event.type === 'observation') observations++;
+      if (event.kind === 'MessageEvent') messages++;
+      else if (event.kind === 'ActionEvent') actions++;
+      else if (event.kind === 'ObservationEvent') observations++;
+      else if (event.kind === 'AgentErrorEvent') errors++;
     }
-    return { total: this.events.length, messages, actions, observations };
+    return { total: this.events.length, messages, actions, observations, errors };
   }
 }
 
@@ -89,8 +167,11 @@ class LocalEventsList implements IEventsList {
 class LocalConversationState implements IConversationState {
   readonly id: ConversationID;
   readonly events: LocalEventsList;
-  executionStatus: 'idle' | 'running' | 'paused' | 'finished' = 'idle';
-  confirmationPolicy?: ConfirmationPolicyBase;
+  executionStatus: 'idle' | 'running' | 'paused' | 'finished' | 'waiting_for_confirmation' = 'idle';
+  confirmationPolicy: ConfirmationPolicy = new NeverConfirm();
+  securityAnalyzer?: SecurityAnalyzer;
+  /** Actions waiting for confirmation: action_id -> ActionEvent */
+  pendingActions: Map<string, ActionEvent> = new Map();
 
   constructor(id: ConversationID) {
     this.id = id;
@@ -232,28 +313,51 @@ export class LocalConversation implements IConversation {
   private _conversationId?: string;
   private _state?: LocalConversationState;
   private callback?: ConversationCallbackType;
+  private tokenCallback?: ConversationTokenCallback;
   private persistenceDir?: string;
   private systemPrompt: string;
   private maxIterations: number = 50;
   private messages: ChatMessage[] = [];
   private _isPaused: boolean = false;
   private _isFinished: boolean = false;
-  private secrets: Record<string, SecretValue> = {};
+  private _isWaitingForConfirmation: boolean = false;
   private customTools?: Tool[];
   private toolExecutor?: ToolExecutor;
   private includeBuiltinTools: boolean;
+
+  // New feature instances
+  private secretRegistry: SecretRegistry;
+  private stuckDetector?: StuckDetector;
+  private stuckDetectionEnabled: boolean;
+  private securityAnalyzer?: SecurityAnalyzer;
 
   constructor(agent: AgentBase, workspace: LocalWorkspace, options: LocalConversationOptions) {
     this.agent = agent;
     this.workspace = workspace;
     this.llm = options.llm;
     this.callback = options.callback;
+    this.tokenCallback = options.tokenCallback;
     this._conversationId = options.conversationId;
     this.persistenceDir = options.persistenceDir;
     this.customTools = options.tools;
     this.toolExecutor = options.toolExecutor;
     // Include built-in tools by default only if no custom tools are provided
     this.includeBuiltinTools = options.includeBuiltinTools ?? !options.tools;
+
+    // Initialize secret registry
+    this.secretRegistry = new SecretRegistry();
+    if (options.secrets) {
+      this.secretRegistry.updateSecrets(options.secrets);
+    }
+
+    // Initialize stuck detection
+    this.stuckDetectionEnabled = options.stuckDetection ?? true;
+    if (this.stuckDetectionEnabled) {
+      this.stuckDetector = new StuckDetector(options.stuckDetectionThresholds);
+    }
+
+    // Initialize security analyzer
+    this.securityAnalyzer = options.securityAnalyzer;
 
     // Generate system prompt - use custom if provided, otherwise generate default
     this.systemPrompt =
@@ -575,9 +679,18 @@ export class LocalConversation implements IConversation {
   /**
    * Set the confirmation policy.
    */
-  async setConfirmationPolicy(policy: ConfirmationPolicyBase): Promise<void> {
+  async setConfirmationPolicy(policy: ConfirmationPolicyBase | ConfirmationPolicy): Promise<void> {
     if (this._state) {
-      this._state.confirmationPolicy = policy;
+      // If it's a ConfirmationPolicyBase (old interface), wrap it
+      if ('requiresConfirmation' in policy) {
+        this._state.confirmationPolicy = policy as ConfirmationPolicy;
+      } else {
+        // Create a simple wrapper
+        this._state.confirmationPolicy = {
+          type: (policy as ConfirmationPolicyBase).type,
+          requiresConfirmation: () => (policy as ConfirmationPolicyBase).type === 'always',
+        };
+      }
     }
   }
 
@@ -623,9 +736,129 @@ export class LocalConversation implements IConversation {
 
   /**
    * Update secrets available to the agent.
+   * Secrets are stored in the SecretRegistry and can be used for:
+   * - Environment variable injection into commands
+   * - Output masking to prevent accidental exposure
    */
   async updateSecrets(secrets: Record<string, SecretValue>): Promise<void> {
-    this.secrets = { ...this.secrets, ...secrets };
+    this.secretRegistry.updateSecrets(secrets);
+  }
+
+  /**
+   * Ask the agent a simple, stateless question and get a direct LLM response.
+   *
+   * This bypasses the normal conversation flow and does NOT modify, persist,
+   * or become part of the conversation state. The request is not remembered by
+   * the main agent, no events are recorded, and execution status is untouched.
+   *
+   * @param question - A simple string question to ask the agent
+   * @returns A string response from the agent
+   */
+  async askAgent(question: string): Promise<string> {
+    // Build context from recent conversation history
+    const contextMessages = this.messages.slice(-10); // Last 10 messages for context
+
+    const askPrompt = `Based on the conversation context, please answer this question concisely:
+
+Question: ${question}
+
+Provide a direct answer without using any tools.`;
+
+    const messages: ChatMessage[] = [
+      ...contextMessages,
+      { role: 'user', content: askPrompt },
+    ];
+
+    // Make a simple completion without tools
+    const response = await this.llm.chatCompletion({
+      messages,
+      // No tools - just get a direct answer
+    });
+
+    return response.choices[0]?.message?.content || 'Unable to generate a response.';
+  }
+
+  /**
+   * Reject all pending actions awaiting confirmation.
+   *
+   * @param reason - The reason for rejection
+   */
+  async rejectPendingActions(reason: string = 'User rejected the action'): Promise<void> {
+    if (!this._state) return;
+
+    for (const [actionId, action] of this._state.pendingActions) {
+      // Emit rejection event
+      const rejectEvent: UserRejectObservation = {
+        id: generateEventId(),
+        kind: 'UserRejectObservation',
+        timestamp: new Date().toISOString(),
+        source: 'user',
+        action_id: actionId,
+        reason,
+      };
+
+      this.emitTypedEvent(rejectEvent);
+
+      // Add rejection as tool result
+      this.messages.push({
+        role: 'tool',
+        content: `Action rejected: ${reason}`,
+        tool_call_id: action.tool_call_id,
+      });
+    }
+
+    // Clear pending actions
+    this._state.pendingActions.clear();
+
+    // Resume if was waiting for confirmation
+    if (this._isWaitingForConfirmation) {
+      this._isWaitingForConfirmation = false;
+      this._state.executionStatus = 'running';
+    }
+  }
+
+  /**
+   * Set the security analyzer for evaluating action risks.
+   *
+   * @param analyzer - The security analyzer to use, or null to disable
+   */
+  setSecurityAnalyzer(analyzer: SecurityAnalyzer | null): void {
+    this.securityAnalyzer = analyzer || undefined;
+    if (this._state) {
+      this._state.securityAnalyzer = this.securityAnalyzer;
+    }
+  }
+
+  /**
+   * Check if the agent is currently stuck using the stuck detector.
+   *
+   * @returns StuckDetectionResult with details about any detected stuck pattern
+   */
+  checkIfStuck(): StuckDetectionResult {
+    if (!this.stuckDetector || !this._state) {
+      return { isStuck: false };
+    }
+
+    const events = this._state.events.getEventsSync();
+    return this.stuckDetector.isStuck(events);
+  }
+
+  /**
+   * Get the secret registry for direct access.
+   * Useful for masking secrets in custom output handling.
+   */
+  getSecretRegistry(): SecretRegistry {
+    return this.secretRegistry;
+  }
+
+  /**
+   * Mask any secrets in the given text.
+   *
+   * @param text - Text that may contain secret values
+   * @returns Text with secret values replaced by <secret-hidden>
+   */
+  maskSecrets(text: string): string {
+    return this.secretRegistry.maskSecretsInOutput(text);
   }
 
   /**
@@ -657,11 +890,15 @@ export class LocalConversation implements IConversation {
     }
     this.workspace.close();
     this.llm.close();
-    this.emitEvent({
-      type: 'message',
-      timestamp: Date.now(),
-      data: { kind: 'conversation_closed' },
-    });
+    const stateEvent: ConversationStateUpdateEvent = {
+      id: generateEventId(),
+      kind: 'ConversationStateUpdateEvent',
+      timestamp: new Date().toISOString(),
+      source: 'system',
+      key: 'status',
+      value: 'closed',
+    };
+    this.emitTypedEvent(stateEvent);
   }
 
   /**
@@ -672,29 +909,37 @@ export class LocalConversation implements IConversation {
   }
 
   /**
-   * Emit an event and call the callback if provided.
+   * Emit a typed event and call the callback if provided.
    */
-  private emitEvent(event: ConversationEvent): void {
+  private emitTypedEvent(event: BaseEvent): void {
     if (this._state) {
       this._state.events.addEvent(event);
     }
     if (this.callback) {
-      // Convert to Event format expected by callback
-      const callbackEvent: Event = {
-        id: this.generateEventId(),
-        kind: (event.data as { kind?: string })?.kind || event.type,
-        timestamp: new Date(event.timestamp).toISOString(),
-        ...(event.data as Record<string, unknown>),
-      };
-      this.callback(callbackEvent);
+      // Convert to the callback's expected Event format
+      this.callback(event as Event);
     }
   }
 
   /**
-   * Generate a unique event ID.
+   * Emit an event (legacy format) and call the callback if provided.
+   * @deprecated Use emitTypedEvent instead
    */
-  private generateEventId(): string {
-    return `evt_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+  private emitEvent(event: { type: string; timestamp: number; data: unknown }): void {
+    // Convert to typed event
+    const typedEvent: BaseEvent = {
+      id: generateEventId(),
+      kind: (event.data as { kind?: string })?.kind || event.type,
+      timestamp: new Date(event.timestamp).toISOString(),
+      ...(event.data as Record<string, unknown>),
+    };
+
+    if (this._state) {
+      this._state.events.addEvent(typedEvent);
+    }
+    if (this.callback) {
+      this.callback(typedEvent as Event);
+    }
   }
 
   /**

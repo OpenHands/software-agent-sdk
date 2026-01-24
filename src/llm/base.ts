@@ -11,6 +11,28 @@
 export type MessageRole = 'system' | 'user' | 'assistant' | 'tool';
 
 /**
+ * Token callback type for streaming tokens.
+ * Called for each token received during streaming completion.
+ */
+export type TokenCallbackType = (token: TokenStreamEvent) => void;
+
+/**
+ * Token stream event - represents a single token or chunk from streaming
+ */
+export interface TokenStreamEvent {
+  /** The token content */
+  token: string;
+  /** Whether this is the final token */
+  isFinal: boolean;
+  /** Accumulated content so far */
+  accumulated?: string;
+  /** Token index in the response */
+  index?: number;
+  /** Model that generated this token */
+  model?: string;
+}
+
+/**
  * Content types for messages
  */
 export interface TextContent {
@@ -189,6 +211,21 @@ export interface ILLM {
   ): AsyncIterable<ChatCompletionChunk>;
 
   /**
+   * Send a chat completion request with streaming and invoke a callback for each token.
+   *
+   * This method provides a simpler interface for streaming when you just need
+   * to process tokens as they arrive without managing the async iterator yourself.
+   *
+   * @param options - The completion options
+   * @param onToken - Callback invoked for each token received
+   * @returns The final completion response
+   */
+  chatCompletionWithCallback?(
+    options: Omit<ChatCompletionOptions, 'stream'>,
+    onToken: TokenCallbackType
+  ): Promise<ChatCompletionResponse>;
+
+  /**
    * Simple helper to send a single message and get a text response.
    *
    * @param prompt - The user message to send
@@ -196,6 +233,20 @@ export interface ILLM {
    * @returns The assistant's response text
    */
   generate(prompt: string, systemPrompt?: string): Promise<string>;
+
+  /**
+   * Simple helper with token streaming callback.
+   *
+   * @param prompt - The user message to send
+   * @param systemPrompt - Optional system prompt
+   * @param onToken - Callback invoked for each token received
+   * @returns The assistant's response text
+   */
+  generateWithCallback?(
+    prompt: string,
+    systemPrompt?: string,
+    onToken?: TokenCallbackType
+  ): Promise<string>;
 
   /**
    * Close/cleanup any resources held by the LLM client.

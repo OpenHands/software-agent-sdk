@@ -15,6 +15,7 @@ import type {
   ChatMessage,
   Tool,
   ToolCall,
+  TokenCallbackType,
 } from './base';
 
 // Define response types locally since the SDK's module resolution is complex
@@ -319,6 +320,114 @@ export class OpenRouterLLM implements ILLM {
     const response = await this.chatCompletion({ messages });
 
     return response.choices[0]?.message?.content || '';
+  }
+
+  /**
+   * Chat completion with streaming and token callback.
+   * Invokes the callback for each token received during streaming.
+   */
+  async chatCompletionWithCallback(
+    options: Omit<ChatCompletionOptions, 'stream'>,
+    onToken: TokenCallbackType
+  ): Promise<ChatCompletionResponse> {
+    const model = options.model || this.defaultModel;
+    let accumulated = '';
+    let tokenIndex = 0;
+    let lastChunk: ChatCompletionChunk | null = null;
+    const toolCalls: Map<number, { id: string; type: 'function'; function: { name: string; arguments: string } }> = new Map();
+
+    for await (const chunk of this.chatCompletionStream(options)) {
+      lastChunk = chunk;
+      
+      for (const choice of chunk.choices) {
+        // Handle content tokens
+        if (choice.delta?.content) {
+          accumulated += choice.delta.content;
+          onToken({
+            token: choice.delta.content,
+            isFinal: false,
+            accumulated,
+            index: tokenIndex++,
+            model: chunk.model,
+          });
+        }
+
+        // Accumulate tool calls
+        if (choice.delta?.tool_calls) {
+          for (const tc of choice.delta.tool_calls) {
+            const existing = toolCalls.get(tc.index);
+            if (existing) {
+              // Append to existing tool call
+              if (tc.function?.arguments) {
+                existing.function.arguments += tc.function.arguments;
+              }
+            } else if (tc.id) {
+              // New tool call
+              toolCalls.set(tc.index, {
+                id: tc.id,
+                type: 'function',
+                function: {
+                  name: tc.function?.name || '',
+                  arguments: tc.function?.arguments || '',
+                },
+              });
+            }
+          }
+        }
+      }
+    }
+
+    // Send final token event
+    onToken({
+      token: '',
+      isFinal: true,
+      accumulated,
+      index: tokenIndex,
+      model,
+    });
+
+    // Construct final response
+    const finalToolCalls = toolCalls.size > 0 
+      ? Array.from(toolCalls.values()) 
+      : undefined;
+
+    return {
+      id: lastChunk?.id || '',
+      model: lastChunk?.model || model,
+      choices: [{
+        index: 0,
+        message: {
+          role: 'assistant',
+          content: accumulated || null,
+          tool_calls: finalToolCalls,
+        },
+        finish_reason: lastChunk?.choices[0]?.finish_reason || 'stop',
+      }],
+      created: lastChunk?.created || Date.now(),
+    };
+  }
+
+  /**
+   * Generate with streaming and token callback.
+   */
+  async generateWithCallback(
+    prompt: string,
+    systemPrompt?: string,
+    onToken?: TokenCallbackType
+  ): Promise<string> {
+    const messages: ChatMessage[] = [];
+
+    if (systemPrompt) {
+      messages.push({ role: 'system', content: systemPrompt });
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    if (onToken) {
+      const response = await this.chatCompletionWithCallback({ messages }, onToken);
+      return response.choices[0]?.message?.content || '';
+    } else {
+      return this.generate(prompt, systemPrompt);
+    }
   }
 
   close(): void {

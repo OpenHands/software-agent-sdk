@@ -21,6 +21,75 @@ export { RemoteState } from './conversation/remote-state';
 export { RemoteEventsList } from './events/remote-events-list';
 export type { EventSearchOptions } from './events/remote-events-list';
 
+// Stuck Detection
+export { StuckDetector, DEFAULT_STUCK_THRESHOLDS } from './conversation/stuck-detector';
+export type { StuckDetectionThresholds, StuckDetectionResult } from './conversation/stuck-detector';
+
+// Secret Registry
+export {
+  SecretRegistry,
+  StaticSecretSource,
+  CallableSecretSource,
+} from './conversation/secret-registry';
+export type { SecretSource, SecretSourceKind } from './conversation/secret-registry';
+
+// Security (Confirmation Policy & Security Analyzer)
+export {
+  NeverConfirm,
+  AlwaysConfirm,
+  RiskBasedConfirm,
+  ToolBasedConfirm,
+  CompositeConfirm,
+  createConfirmationPolicy,
+} from './security/confirmation-policy';
+export type {
+  RiskLevel,
+  SecurityAnalysisResult,
+  ConfirmationPolicy,
+} from './security/confirmation-policy';
+
+export {
+  PatternBasedAnalyzer,
+  AllowlistAnalyzer,
+  NoOpAnalyzer,
+  CompositeAnalyzer,
+  createSecurityAnalyzer,
+} from './security/security-analyzer';
+export type { SecurityAnalyzer } from './security/security-analyzer';
+
+// Rich Event Types
+export {
+  generateEventId,
+  createBaseEvent,
+  isMessageEvent,
+  isActionEvent,
+  isObservationEvent,
+  isAgentErrorEvent,
+  isObservationLike,
+} from './events/types';
+export type {
+  EventID,
+  EventSource,
+  BaseEvent,
+  MessageEvent as TypedMessageEvent,
+  ActionEvent as TypedActionEvent,
+  ObservationEvent as TypedObservationEvent,
+  AgentErrorEvent as TypedAgentErrorEvent,
+  SystemPromptEvent as TypedSystemPromptEvent,
+  PauseEvent as TypedPauseEvent,
+  CondensationRequestEvent,
+  CondensationSummaryEvent,
+  ConversationStateUpdateEvent,
+  UserRejectObservation,
+  ConfirmationRequestEvent,
+  ConfirmationResponseEvent,
+  TokenEvent,
+  StuckDetectionEvent,
+  FinishEvent,
+  ThinkEvent,
+  ConversationEvent as TypedConversationEvent,
+} from './events/types';
+
 // Agent classes
 export { Agent } from './agent/agent';
 
@@ -64,8 +133,7 @@ export type {
   SecretValue,
   ConversationStats,
   ConfirmationPolicyBase,
-  NeverConfirm,
-  AlwaysConfirm,
+  // Note: NeverConfirm and AlwaysConfirm classes are exported from security module
 } from './types/base';
 
 export type { AgentOptions } from './agent/agent';
@@ -125,7 +193,7 @@ export type { WorkspaceOptions, CreateWorkspaceOptions } from './workspace/works
 
 export type { RemoteConversationOptions } from './conversation/remote-conversation';
 
-export type { LocalConversationOptions, ToolExecutor } from './conversation/local-conversation';
+export type { LocalConversationOptions, ToolExecutor, ConversationTokenCallback } from './conversation/local-conversation';
 
 export type { ConversationOptions, CreateConversationOptions } from './conversation/conversation';
 
@@ -146,6 +214,8 @@ export type {
   TokenUsage,
   ChatCompletionResponse,
   ChatCompletionChunk,
+  TokenCallbackType,
+  TokenStreamEvent,
 } from './llm';
 export type { OpenRouterLLMOptions, LLMOptions, CreateLLMOptions } from './llm';
 

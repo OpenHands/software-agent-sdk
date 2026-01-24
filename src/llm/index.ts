@@ -19,6 +19,8 @@ export type {
   TokenUsage,
   ChatCompletionResponse,
   ChatCompletionChunk,
+  TokenCallbackType,
+  TokenStreamEvent,
 } from './base';
 
 // OpenRouter implementation
