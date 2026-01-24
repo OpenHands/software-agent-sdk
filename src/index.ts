@@ -23,6 +23,9 @@ export { RemoteEventsList } from './events/remote-events-list';
 // Agent classes
 export { Agent } from './agent/agent';
 
+// LLM classes and factory functions
+export { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
+
 // WebSocket client for real-time events
 export { WebSocketCallbackClient } from './events/websocket-client';
 
@@ -44,7 +47,7 @@ export type {
   TextContent,
   ImageContent,
   AgentBase,
-  LLM,
+  LLM as LLMConfig,
   ServerInfo,
   Success,
   EventPage,
@@ -117,6 +120,24 @@ export type { ConversationOptions, CreateConversationOptions } from './conversat
 
 export type { ConversationManagerOptions } from './conversation/conversation-manager';
 
+// LLM types and interfaces
+export type {
+  ILLM,
+  BaseLLMOptions,
+  LLMProviderType,
+  MessageRole,
+  ContentPart,
+  ChatMessage,
+  Tool,
+  ToolCall,
+  ChatCompletionOptions,
+  ChatCompletionChoice,
+  TokenUsage,
+  ChatCompletionResponse,
+  ChatCompletionChunk,
+} from './llm';
+export type { OpenRouterLLMOptions, LLMOptions, CreateLLMOptions } from './llm';
+
 // Re-import for default export
 import { RemoteConversation } from './conversation/remote-conversation';
 import { LocalConversation } from './conversation/local-conversation';
@@ -135,6 +156,7 @@ import { WebSocketCallbackClient } from './events/websocket-client';
 import { HttpClient, HttpError } from './client/http-client';
 import { EventSortOrder, AgentExecutionStatus } from './types/base';
 import { Agent } from './agent/agent';
+import { LLM, OpenRouterLLM, createLLM, createOpenRouterLLM } from './llm';
 
 // Default export for convenience
 export default {
@@ -157,4 +179,8 @@ export default {
   EventSortOrder,
   AgentExecutionStatus,
   Agent,
+  LLM,
+  OpenRouterLLM,
+  createLLM,
+  createOpenRouterLLM,
 };

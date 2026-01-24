@@ -85,6 +85,51 @@ src/workspace/
 - `createWorkspace({ type, options })` - Explicit type selection
 - `createWorkspaceAuto(options)` - Auto-detect based on presence of `host` option
 
+### LLM Architecture
+
+The LLM module provides a unified interface for interacting with Large Language Models:
+
+```
+src/llm/
+├── base.ts           # ILLM interface and message types
+├── openrouter-llm.ts # OpenRouterLLM - implementation using @openrouter/sdk
+├── llm.ts            # Factory functions and LLM class
+└── index.ts          # Module exports
+```
+
+**ILLM Interface**: Defines the common contract for all LLM implementations:
+- `chatCompletion()` - Send a chat completion request
+- `chatCompletionStream()` - Stream a chat completion response
+- `generate()` - Simple helper for single-turn generation
+- `close()` - Cleanup resources
+
+**OpenRouterLLM**: Implementation using the official `@openrouter/sdk` package, providing access to 300+ models.
+
+**Usage Example**:
+```typescript
+import { createOpenRouterLLM } from '@openhands/typescript-client';
+
+const llm = createOpenRouterLLM({
+  apiKey: 'your-openrouter-api-key',
+  defaultModel: 'anthropic/claude-3.5-sonnet'
+});
+
+// Simple generation
+const response = await llm.generate('Hello, how are you?');
+
+// Full chat completion
+const completion = await llm.chatCompletion({
+  messages: [{ role: 'user', content: 'Explain quantum computing' }],
+  temperature: 0.7,
+  maxTokens: 1000
+});
+
+// Streaming
+for await (const chunk of llm.chatCompletionStream({ messages })) {
+  process.stdout.write(chunk.choices[0]?.delta?.content || '');
+}
+```
+
 ### Conversation Architecture
 
 The conversation module follows the same pattern as workspaces:

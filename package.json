@@ -29,10 +29,12 @@
   "author": "OpenHands Team",
   "license": "MIT",
   "dependencies": {
+    "@openrouter/sdk": "^0.4.0",
     "uuid": "^13.0.0",
     "ws": "^8.14.2"
   },
   "devDependencies": {
+    "@babel/preset-env": "^7.28.6",
     "@eslint/js": "^9.39.2",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.0.3",
