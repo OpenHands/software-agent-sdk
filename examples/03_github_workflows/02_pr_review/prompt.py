@@ -6,7 +6,7 @@ for conducting pull request reviews.
 
 The template uses skill triggers:
 - {skill_trigger} will be replaced with '/codereview' or '/codereview-roasted'
-- /github-pr-review provides instructions for posting review comments via GitHub API
+- /github-pr-review provides instructions for posting review comments via GitHub API (from public skills)
 
 The template includes:
 - {diff} - The complete git diff for the PR (may be truncated for large files)
