@@ -56,7 +56,7 @@ export function ChatInterface({ llm, model }: ChatInterfaceProps) {
       }));
 
       // Call the LLM
-      const response = await llm.completion({
+      const response = await llm.chatCompletion({
         messages: conversationMessages,
         model,
       });

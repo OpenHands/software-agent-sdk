@@ -1,15 +1,14 @@
 /**
- * Local workspace stub for executing commands and file operations
+ * Local workspace stub for browser compatibility
  *
  * This is a stub implementation of the IWorkspace interface for local execution.
  * The actual implementation requires Node.js APIs (child_process, fs) which are
  * not available in browser environments.
  *
- * This stub allows the library to be imported in browser environments without
- * causing build errors. All methods throw an error indicating that LocalWorkspace
- * is not available in the browser.
+ * For Node.js environments, a full implementation can be provided separately.
+ * This stub allows the SDK to be imported in browser environments without errors.
  *
- * For browser environments, use RemoteWorkspace instead.
+ * This mirrors the Python SDK's LocalWorkspace class architecture.
  */
 
 import {
@@ -26,26 +25,44 @@ import { IWorkspace, BaseWorkspaceOptions } from './base';
  */
 export type LocalWorkspaceOptions = BaseWorkspaceOptions;
 
-const NOT_IMPLEMENTED_ERROR = 'LocalWorkspace is not available in browser environments. Use RemoteWorkspace instead, or use a Node.js-specific build.';
+/**
+ * Error thrown when LocalWorkspace methods are called in browser environments.
+ */
+class LocalWorkspaceNotSupportedError extends Error {
+  constructor(method: string) {
+    super(
+      `LocalWorkspace.${method}() is not supported in browser environments. ` +
+        `LocalWorkspace requires Node.js APIs (child_process, fs). ` +
+        `Use RemoteWorkspace for browser-based applications.`
+    );
+    this.name = 'LocalWorkspaceNotSupportedError';
+  }
+}
 
 /**
- * Local workspace stub that throws errors for all operations.
+ * Local workspace stub for browser compatibility.
  *
- * This is a placeholder for the LocalWorkspace implementation. The actual
- * implementation requires Node.js APIs (child_process, fs) which are not
- * available in browser environments.
+ * This is a placeholder implementation that throws descriptive errors when methods
+ * are called. It allows the SDK to be imported in browser environments without
+ * causing module resolution errors for Node.js-specific modules.
  *
- * For browser environments, use RemoteWorkspace to connect to an OpenHands
- * agent server.
+ * For actual local workspace functionality, use this class in a Node.js environment
+ * with a proper implementation, or use RemoteWorkspace for browser applications.
  *
- * Example (browser - use RemoteWorkspace):
+ * Example (browser - will throw errors):
  * ```typescript
- * import { RemoteWorkspace } from '@openhands/typescript-client';
+ * const workspace = new LocalWorkspace({ workingDir: '/path/to/project' });
+ * // This will throw LocalWorkspaceNotSupportedError
+ * await workspace.executeCommand('ls -la');
+ * ```
  *
+ * For browser applications, use RemoteWorkspace instead:
+ * ```typescript
  * const workspace = new RemoteWorkspace({
  *   host: 'http://localhost:8000',
  *   workingDir: '/workspace'
  * });
+ * const result = await workspace.executeCommand('ls -la');
  * ```
  */
 export class LocalWorkspace implements IWorkspace {
@@ -55,55 +72,101 @@ export class LocalWorkspace implements IWorkspace {
     this.workingDir = options.workingDir;
   }
 
-  async executeCommand(
-    _command: string,
-    _cwd?: string,
-    _timeout?: number
-  ): Promise<CommandResult> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+  /**
+   * Execute a bash command locally.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
+  async executeCommand(_command: string, _cwd?: string, _timeout?: number): Promise<CommandResult> {
+    throw new LocalWorkspaceNotSupportedError('executeCommand');
   }
 
+  /**
+   * Write content to a file in the workspace.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async fileUpload(
     _content: string | Blob | File,
     _destinationPath: string,
     _fileName?: string
   ): Promise<FileOperationResult> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('fileUpload');
   }
 
+  /**
+   * Read a file from the workspace.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async fileDownload(_sourcePath: string): Promise<FileDownloadResult> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('fileDownload');
   }
 
+  /**
+   * Get git changes for a repository.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async gitChanges(_repoPath: string): Promise<GitChange[]> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('gitChanges');
   }
 
+  /**
+   * Get git diff for a repository.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async gitDiff(_repoPath: string): Promise<GitDiff> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('gitDiff');
   }
 
+  /**
+   * Convenience method to write text content as a file.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async uploadText(
     _text: string,
     _destinationPath: string,
     _fileName?: string
   ): Promise<FileOperationResult> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('uploadText');
   }
 
+  /**
+   * Convenience method to upload a File object.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async uploadFileObject(_file: File, _destinationPath: string): Promise<FileOperationResult> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('uploadFileObject');
   }
 
+  /**
+   * Convenience method to download file content as text.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async downloadAsText(_sourcePath: string): Promise<string> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('downloadAsText');
   }
 
+  /**
+   * Convenience method to download file content as a Blob.
+   *
+   * @throws LocalWorkspaceNotSupportedError - Always throws in browser environments
+   */
   async downloadAsBlob(_sourcePath: string): Promise<Blob> {
-    throw new Error(NOT_IMPLEMENTED_ERROR);
+    throw new LocalWorkspaceNotSupportedError('downloadAsBlob');
   }
 
+  /**
+   * Close/cleanup the workspace.
+   *
+   * For the stub implementation, this is a no-op.
+   */
   close(): void {
-    // No-op for stub
+    // No-op for stub implementation
   }
 }

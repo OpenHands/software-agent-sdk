@@ -19,18 +19,8 @@ import {
   Event,
 } from '../types/base';
 import { LocalWorkspace } from '../workspace/local-workspace';
-import {
-  IConversation,
-  IConversationState,
-  IEventsList,
-  BaseConversationOptions,
-} from './base';
-import {
-  ILLM,
-  ChatMessage,
-  Tool,
-  ToolCall,
-} from '../llm/base';
+import { IConversation, IConversationState, IEventsList, BaseConversationOptions } from './base';
+import { ILLM, ChatMessage, Tool, ToolCall } from '../llm/base';
 import { generateSystemPrompt, TOOL_DESCRIPTIONS } from '../prompts';
 
 /**
@@ -111,7 +101,8 @@ const BUILTIN_TOOLS: Tool[] = [
         properties: {
           command: {
             type: 'string',
-            description: 'The bash command to execute. You can only execute one bash command at a time. If you need to run multiple commands sequentially, use `&&` or `;` to chain them together.',
+            description:
+              'The bash command to execute. You can only execute one bash command at a time. If you need to run multiple commands sequentially, use `&&` or `;` to chain them together.',
           },
           cwd: {
             type: 'string',
@@ -237,11 +228,7 @@ export class LocalConversation implements IConversation {
   private _isFinished: boolean = false;
   private secrets: Record<string, SecretValue> = {};
 
-  constructor(
-    agent: AgentBase,
-    workspace: LocalWorkspace,
-    options: LocalConversationOptions
-  ) {
+  constructor(agent: AgentBase, workspace: LocalWorkspace, options: LocalConversationOptions) {
     this.agent = agent;
     this.workspace = workspace;
     this.llm = options.llm;
@@ -250,9 +237,11 @@ export class LocalConversation implements IConversation {
     this.persistenceDir = options.persistenceDir;
 
     // Generate system prompt - use custom if provided, otherwise generate default
-    this.systemPrompt = options.systemPrompt || generateSystemPrompt({
-      workingDir: workspace.workingDir,
-    });
+    this.systemPrompt =
+      options.systemPrompt ||
+      generateSystemPrompt({
+        workingDir: workspace.workingDir,
+      });
 
     if (options.maxIterations !== undefined) {
       this.maxIterations = options.maxIterations;
@@ -298,9 +287,7 @@ export class LocalConversation implements IConversation {
     }
 
     // Initialize message history with system prompt
-    this.messages = [
-      { role: 'system', content: this.systemPrompt },
-    ];
+    this.messages = [{ role: 'system', content: this.systemPrompt }];
 
     // Add initial message if provided
     if (options.initialMessage) {
@@ -411,12 +398,14 @@ export class LocalConversation implements IConversation {
           // No tool calls and stop reason - agent is done
           this._isFinished = true;
         }
-
       } catch (error) {
         this.emitEvent({
           type: 'error',
           timestamp: Date.now(),
-          data: { kind: 'agent_error', error: error instanceof Error ? error.message : String(error) },
+          data: {
+            kind: 'agent_error',
+            error: error instanceof Error ? error.message : String(error),
+          },
         });
         this._state.executionStatus = 'finished';
         throw error;
@@ -569,8 +558,8 @@ export class LocalConversation implements IConversation {
 
     // Get a summary of the conversation
     const userMessages = this.messages
-      .filter(m => m.role === 'user')
-      .map(m => typeof m.content === 'string' ? m.content : JSON.stringify(m.content))
+      .filter((m) => m.role === 'user')
+      .map((m) => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
       .slice(0, 3)
       .join('\n');
 
@@ -647,7 +636,7 @@ export class LocalConversation implements IConversation {
         id: this.generateEventId(),
         kind: (event.data as { kind?: string })?.kind || event.type,
         timestamp: new Date(event.timestamp).toISOString(),
-        ...event.data as Record<string, unknown>,
+        ...(event.data as Record<string, unknown>),
       };
       this.callback(callbackEvent);
     }

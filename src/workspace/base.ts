@@ -41,11 +41,7 @@ export interface IWorkspace {
    * @param timeout - Timeout in seconds (defaults to 30.0)
    * @returns CommandResult containing stdout, stderr, exit_code, and other metadata
    */
-  executeCommand(
-    command: string,
-    cwd?: string,
-    timeout?: number
-  ): Promise<CommandResult>;
+  executeCommand(command: string, cwd?: string, timeout?: number): Promise<CommandResult>;
 
   /**
    * Upload content to the workspace.

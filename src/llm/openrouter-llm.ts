@@ -288,7 +288,11 @@ export class OpenRouterLLM implements ILLM {
             role: choice.delta?.role as 'assistant' | undefined,
             content: choice.delta?.content,
             tool_calls: choice.delta?.toolCalls?.map(
-              (tc: NonNullable<NonNullable<OpenRouterStreamChunk['choices'][0]['delta']>['toolCalls']>[0]) => ({
+              (
+                tc: NonNullable<
+                  NonNullable<OpenRouterStreamChunk['choices'][0]['delta']>['toolCalls']
+                >[0]
+              ) => ({
                 index: tc.index,
                 id: tc.id,
                 type: tc.type as 'function' | undefined,

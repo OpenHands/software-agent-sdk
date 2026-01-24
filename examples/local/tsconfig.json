@@ -14,7 +14,11 @@
     "strict": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noFallthroughCasesInSwitch": true
+    "noFallthroughCasesInSwitch": true,
+    "baseUrl": ".",
+    "paths": {
+      "@openhands/typescript-client": ["../../dist"]
+    }
   },
   "include": ["src"]
 }
