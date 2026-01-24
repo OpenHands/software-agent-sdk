@@ -142,30 +142,31 @@ export function AgentChatInterface({ llm, model }: AgentChatInterfaceProps) {
         maxIterations: 10,
         callback: (event) => {
           // Handle events from the conversation
-          const data = event.data as Record<string, unknown>;
+          // Event properties are spread directly on the event object (not nested under event.data)
+          const eventData = event as Record<string, unknown>;
           
-          if (data.kind === 'assistant_message' && data.content) {
+          if (eventData.kind === 'assistant_message' && eventData.content) {
             newMessages.push({
               id: `${Date.now()}-assistant`,
               role: 'assistant',
-              content: data.content as string,
+              content: eventData.content as string,
               timestamp: new Date(),
             });
-          } else if (data.kind === 'tool_call') {
+          } else if (eventData.kind === 'tool_call') {
             // Tool calls are handled by toolExecutor
-          } else if (data.kind === 'tool_result') {
+          } else if (eventData.kind === 'tool_result') {
             newMessages.push({
               id: `${Date.now()}-tool`,
               role: 'tool',
-              content: data.result as string,
+              content: eventData.result as string,
               timestamp: new Date(),
-              toolName: data.tool as string,
+              toolName: eventData.tool as string,
             });
-          } else if (data.kind === 'finish') {
+          } else if (eventData.kind === 'finish') {
             newMessages.push({
               id: `${Date.now()}-finish`,
               role: 'assistant',
-              content: data.message as string,
+              content: eventData.message as string,
               timestamp: new Date(),
             });
           }
