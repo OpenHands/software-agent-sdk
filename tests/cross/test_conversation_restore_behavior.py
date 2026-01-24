@@ -25,6 +25,7 @@ from openhands.sdk.context.condenser.llm_summarizing_condenser import (
     LLMSummarizingCondenser,
 )
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+from openhands.sdk.event.llm_convertible.message import MessageEvent
 from openhands.sdk.llm import LLM
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.file_editor import FileEditorTool
@@ -470,8 +471,9 @@ def test_conversation_restore_succeeds_when_llm_condenser_and_skills_change(
 
             restored.send_message("beta: please use the new skill")
             last_event = restored.state.events[-1]
-            assert getattr(last_event, "source", None) == "user"
-            assert getattr(last_event, "activated_skills", []) == ["skill-v2"]
+            assert isinstance(last_event, MessageEvent)
+            assert last_event.source == "user"
+            assert last_event.activated_skills == ["skill-v2"]
 
             restored.run()
             assert len(restored.state.events) > initial["event_count"]
