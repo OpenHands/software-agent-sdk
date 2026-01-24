@@ -9,7 +9,6 @@ High-value behavior:
 """
 
 import threading
-import time
 from unittest.mock import MagicMock, patch
 
 from openhands.sdk.conversation.impl.remote_conversation import (
