@@ -104,14 +104,15 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <header className="header">
-        <h1>
+    <div id="app-container" className="app">
+      <header id="app-header" className="header">
+        <h1 id="app-title">
           <span className="logo">🤖</span>
           OpenHands Agent
         </h1>
-        <div className="header-right">
+        <div id="header-controls" className="header-right">
           <select
+            id="model-selector"
             className="model-select"
             value={config.model}
             onChange={(e) => handleModelChange(e.target.value)}
@@ -122,14 +123,14 @@ function App() {
               </option>
             ))}
           </select>
-          <div className="status-badge connected">
+          <div id="status-badge" className="status-badge connected">
             <span className="status-dot"></span>
             Agent Ready
           </div>
-          <button className="btn btn-secondary" onClick={() => setShowSettings(true)}>
+          <button id="settings-button" className="btn btn-secondary" onClick={() => setShowSettings(true)}>
             ⚙️
           </button>
-          <button className="btn btn-danger" onClick={handleLogout}>
+          <button id="logout-button" className="btn btn-danger" onClick={handleLogout}>
             Logout
           </button>
         </div>
