@@ -145,13 +145,13 @@ class TestPollingDuplicatesOutput:
 
         # Start command
         next(generator)
-        poll_kwargs = generator.send(start_response)
+        generator.send(start_response)
 
         # Poll 1
-        poll_kwargs = generator.send(poll_response_1)
+        generator.send(poll_response_1)
 
         # Poll 2
-        poll_kwargs = generator.send(poll_response_2)
+        generator.send(poll_response_2)
 
         # Poll 3 - command completes
         try:
@@ -159,9 +159,6 @@ class TestPollingDuplicatesOutput:
             pytest.fail("Generator should have stopped")
         except StopIteration as e:
             result = e.value
-
-        # The correct output should be exactly the 3 chunks
-        expected_output = "CHUNK1CHUNK2CHUNK3"
 
         # BUG: The actual output has duplicates!
         # Due to the bug, output is: CHUNK1 + CHUNK1 + CHUNK2 + CHUNK1 + CHUNK2 + CHUNK3
@@ -325,7 +322,7 @@ class TestPollingDuplicatesOutput:
 
         # Verify the bug produces the expected duplicated output
         assert duplicated_output == buggy_output, (
-            f"Expected duplicated output pattern but got different result"
+            "Expected duplicated output pattern but got different result"
         )
 
         # Verify the output is NOT the correct base64
