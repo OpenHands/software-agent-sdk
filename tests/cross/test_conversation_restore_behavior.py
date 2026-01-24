@@ -169,6 +169,8 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
 
         initial = lifecycle.run_initial_session(persisted_agent)
 
+        # Tool *ordering* is intentionally different from persisted_tools; restore
+        # should be order-insensitive as long as the toolset is identical.
         runtime_tools = [Tool(name="FileEditorTool"), Tool(name="TerminalTool")]
         runtime_agent = _agent(
             llm_model="gpt-4o-mini",
@@ -189,7 +191,7 @@ def test_conversation_restore_lifecycle_happy_path(mock_completion):
 
             last_call = captured_completion_kwargs[-1]
             assert last_call["model"] == "gpt-4o-mini"
-            assert last_call["temperature"] == pytest.approx(0.42)
+            assert last_call["temperature"] == 0.42
             assert "messages" in last_call
         finally:
             restored.close()
@@ -233,8 +235,7 @@ def test_conversation_restore_fails_when_removing_tools(mock_completion):
         with pytest.raises(
             ValueError, match="tools cannot be changed mid-conversation"
         ) as exc:
-            restored = lifecycle.restore(runtime_agent)
-            restored.close()
+            lifecycle.restore(runtime_agent)
 
         assert "removed:" in str(exc.value)
         assert "FileEditorTool" in str(exc.value)
@@ -278,8 +279,7 @@ def test_conversation_restore_fails_when_adding_tools(mock_completion):
         with pytest.raises(
             ValueError, match="tools cannot be changed mid-conversation"
         ) as exc:
-            restored = lifecycle.restore(runtime_agent)
-            restored.close()
+            lifecycle.restore(runtime_agent)
 
         assert "added:" in str(exc.value)
         assert "FileEditorTool" in str(exc.value)
@@ -369,8 +369,7 @@ def test_conversation_restore_fails_when_default_tools_removed(mock_completion):
         with pytest.raises(
             ValueError, match="tools cannot be changed mid-conversation"
         ) as exc:
-            restored = lifecycle.restore(runtime_agent)
-            restored.close()
+            lifecycle.restore(runtime_agent)
 
         assert "removed:" in str(exc.value)
         assert "think" in str(exc.value)
@@ -416,8 +415,7 @@ def test_conversation_restore_fails_when_default_tools_added(mock_completion):
         with pytest.raises(
             ValueError, match="tools cannot be changed mid-conversation"
         ) as exc:
-            restored = lifecycle.restore(runtime_agent)
-            restored.close()
+            lifecycle.restore(runtime_agent)
 
         assert "added:" in str(exc.value)
         assert "think" in str(exc.value)
