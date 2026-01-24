@@ -16,7 +16,10 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    WebSocketConnectionError,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -714,10 +717,11 @@ class RemoteConversation(BaseConversation):
         # Wait for WebSocket subscription to complete before allowing operations.
         # This ensures events emitted during send_message() are not missed.
         # The server sends a ConversationStateUpdateEvent after subscription.
-        if not self._ws_client.wait_until_ready(timeout=10.0):
-            logger.warning(
-                f"WebSocket subscription did not complete within timeout for "
-                f"conversation {self._id}. Events may be missed."
+        ws_timeout = 30.0
+        if not self._ws_client.wait_until_ready(timeout=ws_timeout):
+            raise WebSocketConnectionError(
+                conversation_id=self._id,
+                timeout=ws_timeout,
             )
 
         # Reconcile events after WebSocket is ready to catch any events that
