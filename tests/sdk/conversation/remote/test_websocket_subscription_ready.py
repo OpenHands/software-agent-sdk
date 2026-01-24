@@ -44,7 +44,7 @@ class TestWebSocketReadySignaling:
         waiter.start()
 
         # Ensure it doesn't return immediately (i.e. it actually blocks).
-        waiter.join(timeout=0.02)
+        waiter.join(timeout=0.1)
         assert waiter.is_alive()
 
         client._ready.set()
