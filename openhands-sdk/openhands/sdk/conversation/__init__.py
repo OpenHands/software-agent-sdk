@@ -11,6 +11,12 @@ from openhands.sdk.conversation.state import (
     ConversationState,
 )
 from openhands.sdk.conversation.stuck_detector import StuckDetector
+from openhands.sdk.conversation.token_display import (
+    TokenDisplay,
+    TokenDisplayMode,
+    compute_token_display,
+    get_default_mode_from_env,
+)
 from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationTokenCallbackType,
@@ -37,4 +43,9 @@ __all__ = [
     "RemoteConversation",
     "EventsListBase",
     "get_agent_final_response",
+    # Token display utilities (public SDK API)
+    "TokenDisplay",
+    "TokenDisplayMode",
+    "compute_token_display",
+    "get_default_mode_from_env",
 ]

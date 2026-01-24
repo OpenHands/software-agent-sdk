@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from collections.abc import Callable
 
@@ -7,6 +8,10 @@ from rich.console import Console, Group
 from rich.rule import Rule
 from rich.text import Text
 
+from openhands.sdk.conversation.token_display import (
+    compute_token_display,
+    get_default_mode_from_env,
+)
 from openhands.sdk.conversation.visualizer.base import (
     ConversationVisualizerBase,
 )
@@ -323,20 +328,28 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
         )
 
     def _format_metrics_subtitle(self) -> str | None:
-        """Format LLM metrics as a visually appealing subtitle string with icons,
-        colors, and k/m abbreviations using conversation stats."""
+        """Format LLM metrics subtitle based on conversation stats.
+
+        Uses TokenDisplay utility to compute values and supports env-configured
+        mode (per-context vs accumulated) and optional since-last delta.
+        """
+        display_mode = get_default_mode_from_env()
+        include_since_last = os.environ.get(
+            "OH_TOKENS_VIEW_DELTA", "false"
+        ).lower() in {"1", "true", "yes"}
+
         stats = self.conversation_stats
         if not stats:
             return None
 
-        combined_metrics = stats.get_combined_metrics()
-        if not combined_metrics or not combined_metrics.accumulated_token_usage:
+        data = compute_token_display(
+            stats=stats,
+            mode=display_mode,
+            include_since_last=include_since_last,
+        )
+        if not data:
             return None
 
-        usage = combined_metrics.accumulated_token_usage
-        cost = combined_metrics.accumulated_cost or 0.0
-
-        # helper: 1234 -> "1.2K", 1200000 -> "1.2M"
         def abbr(n: int | float) -> str:
             n = int(n or 0)
             if n >= 1_000_000_000:
@@ -349,25 +362,24 @@ class DefaultConversationVisualizer(ConversationVisualizerBase):
                 return str(n)
             return f"{val:.2f}".rstrip("0").rstrip(".") + suffix
 
-        input_tokens = abbr(usage.prompt_tokens or 0)
-        output_tokens = abbr(usage.completion_tokens or 0)
+        cache_rate = (
+            f"{(data.cache_hit_rate * 100):.2f}%"
+            if data.cache_hit_rate is not None
+            else "N/A"
+        )
+        cost_str = f"{data.total_cost:.4f}"
 
-        # Cache hit rate (prompt + cache)
-        prompt = usage.prompt_tokens or 0
-        cache_read = usage.cache_read_tokens or 0
-        cache_rate = f"{(cache_read / prompt * 100):.2f}%" if prompt > 0 else "N/A"
-        reasoning_tokens = usage.reasoning_tokens or 0
-
-        # Cost
-        cost_str = f"{cost:.4f}" if cost > 0 else "0.00"
-
-        # Build with fixed color scheme
         parts: list[str] = []
-        parts.append(f"[cyan]↑ input {input_tokens}[/cyan]")
+        input_part = f"[cyan]↑ input {abbr(data.input_tokens)}"
+        if include_since_last and data.since_last_input_tokens is not None:
+            input_part += f" (+{abbr(data.since_last_input_tokens)})"
+        input_part += "[/cyan]"
+        parts.append(input_part)
+
         parts.append(f"[magenta]cache hit {cache_rate}[/magenta]")
-        if reasoning_tokens > 0:
-            parts.append(f"[yellow] reasoning {abbr(reasoning_tokens)}[/yellow]")
-        parts.append(f"[blue]↓ output {output_tokens}[/blue]")
-        parts.append(f"[green]$ {cost_str}[/green]")
+        if data.reasoning_tokens > 0:
+            parts.append(f"[yellow] reasoning {abbr(data.reasoning_tokens)}[/yellow]")
+        parts.append(f"[blue]↓ output {abbr(data.output_tokens)}[/blue]")
+        parts.append(f"[green]$ {cost_str} (total)[/green]")
 
         return "Tokens: " + " • ".join(parts)
