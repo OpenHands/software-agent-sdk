@@ -282,6 +282,8 @@ jobs:
                       cp "$dat_file" .coverage.sdk
                     elif [[ "$dat_file" == *coverage-tools.dat ]]; then
                       cp "$dat_file" .coverage.tools  
+                    elif [[ "$dat_file" == *coverage-agent-server.dat ]]; then
+                      cp "$dat_file" .coverage.agent-server
                     elif [[ "$dat_file" == *coverage-cross.dat ]]; then
                       cp "$dat_file" .coverage.cross
                     fi

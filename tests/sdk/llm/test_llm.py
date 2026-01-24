@@ -576,31 +576,31 @@ def test_llm_force_string_serializer_override():
         usage_id="test-force-true",
     )
     assert llm_force_true.force_string_serializer is True
-    # Even with vision or cache enabled, should force string serialization
+    # force_string_serializer=True should force string serialization
     messages = [
         Message(
             role="user",
             content=[TextContent(text="Test")],
-            cache_enabled=True,  # Would normally trigger list serialization
         )
     ]
     formatted = llm_force_true.format_messages_for_llm(messages)
     assert isinstance(formatted[0]["content"], str)
 
     # Explicitly set force_string_serializer=False for a model that normally needs it
+    # Use a model that supports caching to test list serialization
     llm_force_false = LLM(
-        model="deepseek-v3",
+        model="anthropic/claude-sonnet-4-20250514",  # Supports caching
         api_key=SecretStr("test_key"),
         force_string_serializer=False,
+        caching_prompt=True,  # Enable caching to trigger list serialization
         usage_id="test-force-false",
     )
     assert llm_force_false.force_string_serializer is False
-    # With cache enabled and force_string_serializer=False, should use list
+    # With caching enabled and force_string_serializer=False, should use list
     messages_cache = [
         Message(
             role="user",
             content=[TextContent(text="Test")],
-            cache_enabled=True,
         )
     ]
     formatted_cache = llm_force_false.format_messages_for_llm(messages_cache)

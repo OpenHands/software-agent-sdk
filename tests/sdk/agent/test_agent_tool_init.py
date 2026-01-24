@@ -59,8 +59,12 @@ def test_agent_initializes_tools_from_toolspec_locally(monkeypatch):
     llm = LLM(model="test-model", usage_id="test-llm")
     agent = Agent(llm=llm, tools=[Tool(name="upper")])
 
-    # Build a conversation; this should call agent._initialize() internally
-    Conversation(agent=agent, visualizer=None)
+    # Build a conversation; agent init is lazy (deferred to first run/send_message)
+    conv = Conversation(agent=agent, visualizer=None)
+
+    # Trigger agent initialization by calling _ensure_agent_ready()
+    # This is needed because agent.tools_map requires initialization
+    conv._ensure_agent_ready()
 
     # Access the agent's runtime tools via a small shim
     # (We don't rely on private internals; we verify init_state produced a system prompt
@@ -77,7 +81,9 @@ def test_agent_include_only_finish_tool():
     llm = LLM(model="test-model", usage_id="test-llm")
     agent = Agent(llm=llm, tools=[], include_default_tools=["FinishTool"])
 
-    Conversation(agent=agent, visualizer=None)
+    conv = Conversation(agent=agent, visualizer=None)
+    # Trigger lazy agent initialization
+    conv._ensure_agent_ready()
 
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map
@@ -90,7 +96,9 @@ def test_agent_include_only_think_tool():
     llm = LLM(model="test-model", usage_id="test-llm")
     agent = Agent(llm=llm, tools=[], include_default_tools=["ThinkTool"])
 
-    Conversation(agent=agent, visualizer=None)
+    conv = Conversation(agent=agent, visualizer=None)
+    # Trigger lazy agent initialization
+    conv._ensure_agent_ready()
 
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map
@@ -103,7 +111,9 @@ def test_agent_disable_all_default_tools():
     llm = LLM(model="test-model", usage_id="test-llm")
     agent = Agent(llm=llm, tools=[], include_default_tools=[])
 
-    Conversation(agent=agent, visualizer=None)
+    conv = Conversation(agent=agent, visualizer=None)
+    # Trigger lazy agent initialization
+    conv._ensure_agent_ready()
 
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map
@@ -168,7 +178,9 @@ def test_agent_replace_finish_with_custom_tool():
         ],  # Only include ThinkTool, exclude FinishTool
     )
 
-    Conversation(agent=agent, visualizer=None)
+    conv = Conversation(agent=agent, visualizer=None)
+    # Trigger lazy agent initialization
+    conv._ensure_agent_ready()
 
     with patch.object(Agent, "step", wraps=agent.step):
         runtime_tools = agent.tools_map

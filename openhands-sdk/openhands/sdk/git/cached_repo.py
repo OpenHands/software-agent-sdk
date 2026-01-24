@@ -170,6 +170,25 @@ class GitHelper:
             # origin/HEAD may not be set (e.g., bare clone, or never configured)
             return None
 
+    def get_head_commit(self, repo_path: Path, timeout: int = 10) -> str:
+        """Get the current HEAD commit SHA.
+
+        Args:
+            repo_path: Path to the repository.
+            timeout: Timeout in seconds.
+
+        Returns:
+            Full 40-character commit SHA of HEAD.
+
+        Raises:
+            GitCommandError: If command fails.
+        """
+        return run_git_command(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_path,
+            timeout=timeout,
+        )
+
 
 def try_cached_clone_or_update(
     url: str,

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
@@ -16,6 +18,7 @@ from pydantic import (
 from openhands.sdk.context.agent_context import AgentContext
 from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
 from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
@@ -36,7 +39,6 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
-
 
 logger = get_logger(__name__)
 
@@ -174,6 +176,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
+    critic: CriticBase | None = Field(
+        default=None,
+        description=(
+            "EXPERIMENTAL: Optional critic to evaluate agent actions and messages "
+            "in real-time. API and behavior may change without notice. "
+            "May impact performance, especially in 'all_actions' mode."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
     _initialized: bool = PrivateAttr(default=False)
@@ -226,8 +238,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def init_state(
         self,
-        state: "ConversationState",
-        on_event: "ConversationCallbackType",  # noqa: ARG002
+        state: ConversationState,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -238,7 +250,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: "ConversationState"):
+    def _initialize(self, state: ConversationState):
         """Create an AgentBase instance from an AgentSpec."""
 
         if self._initialized:
@@ -310,9 +322,9 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     @abstractmethod
     def step(
         self,
-        conversation: "LocalConversation",
-        on_event: "ConversationCallbackType",
-        on_token: "ConversationTokenCallbackType | None" = None,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -332,29 +344,29 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
     def verify(
         self,
-        persisted: "AgentBase",
-        events: "Sequence[Any] | None" = None,
-    ) -> "AgentBase":
+        persisted: AgentBase,
+        events: Sequence[Any] | None = None,  # noqa: ARG002
+    ) -> AgentBase:
         """Verify that we can resume this agent from persisted state.
 
-        This PR's goal is to *not* reconcile configuration between persisted and
-        runtime Agent instances. Instead, we verify compatibility requirements
-        and then continue with the runtime-provided Agent.
+        We do not merge configuration between persisted and runtime Agent
+        instances. Instead, we verify compatibility requirements and then
+        continue with the runtime-provided Agent.
 
         Compatibility requirements:
         - Agent class/type must match.
-        - Tools:
-          - If events are provided, only tools that were actually used in history
-            must exist in runtime.
-          - If events are not provided, tool names must match exactly.
+        - Tools must match exactly (same tool names).
 
-        All other configuration (LLM, agent_context, condenser, system prompts,
-        etc.) can be freely changed between sessions.
+        Tools are part of the system prompt and cannot be changed mid-conversation.
+        To use different tools, start a new conversation or use conversation forking
+        (see https://github.com/OpenHands/OpenHands/issues/8560).
+
+        All other configuration (LLM, agent_context, condenser, etc.) can be
+        freely changed between sessions.
 
         Args:
             persisted: The agent loaded from persisted state.
-            events: Optional event sequence to scan for used tools if tool names
-                don't match.
+            events: Unused, kept for API compatibility.
 
         Returns:
             This runtime agent (self) if verification passes.
@@ -369,52 +381,39 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{self.__class__.__name__}."
             )
 
+        # Collect explicit tool names
         runtime_names = {tool.name for tool in self.tools}
         persisted_names = {tool.name for tool in persisted.tools}
+
+        # Add builtin tool names from include_default_tools
+        # These are runtime names like 'finish', 'think'
+        for tool_class_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                runtime_names.add(tool_class.name)
+
+        for tool_class_name in persisted.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                persisted_names.add(tool_class.name)
 
         if runtime_names == persisted_names:
             return self
 
-        if events is not None:
-            from openhands.sdk.event import ActionEvent
-
-            used_tools = {
-                event.tool_name
-                for event in events
-                if isinstance(event, ActionEvent) and event.tool_name
-            }
-
-            # Add builtin tool names from include_default_tools
-            # These are runtime names like 'finish', 'think'
-            for tool_class_name in self.include_default_tools:
-                tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
-                if tool_class is not None:
-                    runtime_names.add(tool_class.name)
-
-            # Only require tools that were actually used in history.
-            missing_used_tools = used_tools - runtime_names
-            if missing_used_tools:
-                raise ValueError(
-                    "Cannot resume conversation: tools that were used in history "
-                    f"are missing from runtime: {sorted(missing_used_tools)}. "
-                    f"Available tools: {sorted(runtime_names)}"
-                )
-
-            return self
-
-        # No events provided: strict tool name matching.
+        # Tools don't match - this is not allowed
         missing_in_runtime = persisted_names - runtime_names
-        missing_in_persisted = runtime_names - persisted_names
+        added_in_runtime = runtime_names - persisted_names
 
         details: list[str] = []
         if missing_in_runtime:
-            details.append(f"Missing in runtime: {sorted(missing_in_runtime)}")
-        if missing_in_persisted:
-            details.append(f"Missing in persisted: {sorted(missing_in_persisted)}")
+            details.append(f"removed: {sorted(missing_in_runtime)}")
+        if added_in_runtime:
+            details.append(f"added: {sorted(added_in_runtime)}")
 
-        suffix = f" ({'; '.join(details)})" if details else ""
         raise ValueError(
-            "Tools don't match between runtime and persisted agents." + suffix
+            f"Cannot resume conversation: tools cannot be changed mid-conversation "
+            f"({'; '.join(details)}). "
+            f"To use different tools, start a new conversation."
         )
 
     def model_dump_succint(self, **kwargs):

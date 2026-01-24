@@ -36,6 +36,9 @@ def test_conversation_close_calls_executor_close(mock_llm):
         )
         conversation = Conversation(agent=agent, workspace=temp_dir)
 
+        # Trigger lazy agent initialization to create tools
+        conversation._ensure_agent_ready()
+
         # Close the conversation
         conversation.close()
 
@@ -65,6 +68,9 @@ def test_conversation_del_calls_close(mock_llm):
             tools=[Tool(name="test_terminal")],
         )
         conversation = Conversation(agent=agent, workspace=temp_dir)
+
+        # Trigger lazy agent initialization to create tools
+        conversation._ensure_agent_ready()
 
         # Manually call __del__ to simulate garbage collection
         conversation.__del__()

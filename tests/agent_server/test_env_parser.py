@@ -1220,3 +1220,161 @@ def test_discriminated_union_zero_kinds_returns_missing(clean_env):
     # Should return MISSING because there are no parsers
     result = parser.from_env("TEST")
     assert result is MISSING
+
+
+def test_discriminated_union_full_class_name_imports_and_registers(clean_env):
+    """Test that DiscriminatedUnionEnvParser handles full class names with dots."""
+    # Start with an empty parser
+    parser = DiscriminatedUnionEnvParser(parsers={})
+
+    # Set KIND to a full class name (using the test Dog class)
+    os.environ["TEST_KIND"] = "tests.sdk.utils.test_discriminated_union.Dog"
+    os.environ["TEST_NAME"] = "Fido"
+    os.environ["TEST_BARKING"] = "1"
+
+    result = parser.from_env("TEST")
+
+    # Should import the class, create a parser, and return the data
+    assert result == {"name": "Fido", "barking": True, "kind": "Dog"}
+    # Parser should now be registered with the unqualified class name
+    assert "Dog" in parser.parsers
+
+
+def test_discriminated_union_full_class_name_already_registered(clean_env):
+    """Test that full class names work when class is already registered."""
+    # Pre-register a Dog parser
+    dog_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser(), "barking": BoolEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(parsers={"Dog": dog_parser})
+
+    # Set KIND to a full class name for the already registered class
+    os.environ["TEST_KIND"] = "tests.sdk.utils.test_discriminated_union.Dog"
+    os.environ["TEST_NAME"] = "Rex"
+    os.environ["TEST_BARKING"] = "0"
+
+    result = parser.from_env("TEST")
+
+    # Should use the existing parser (not re-import)
+    assert result == {"name": "Rex", "barking": False, "kind": "Dog"}
+
+
+def test_discriminated_union_full_class_name_different_classes(clean_env):
+    """Test that multiple full class names can be used to import different classes."""
+    parser = DiscriminatedUnionEnvParser(parsers={})
+
+    # First, import Dog using full class name
+    os.environ["TEST_KIND"] = "tests.sdk.utils.test_discriminated_union.Dog"
+    os.environ["TEST_NAME"] = "Fido"
+    os.environ["TEST_BARKING"] = "1"
+
+    result = parser.from_env("TEST")
+    assert result == {"name": "Fido", "barking": True, "kind": "Dog"}
+    assert "Dog" in parser.parsers
+
+    # Clean up for next test
+    del os.environ["TEST_BARKING"]
+
+    # Now import Cat using full class name
+    os.environ["TEST_KIND"] = "tests.sdk.utils.test_discriminated_union.Cat"
+    os.environ["TEST_NAME"] = "Whiskers"
+
+    result = parser.from_env("TEST")
+    assert result == {"name": "Whiskers", "kind": "Cat"}
+    assert "Cat" in parser.parsers
+    # Both parsers should be registered now
+    assert len(parser.parsers) == 2
+
+
+def test_discriminated_union_full_class_name_invalid_module(clean_env):
+    """Test that invalid module names raise ImportError."""
+    parser = DiscriminatedUnionEnvParser(parsers={})
+
+    os.environ["TEST_KIND"] = "nonexistent.module.SomeClass"
+    os.environ["TEST_NAME"] = "Test"
+
+    with pytest.raises(ModuleNotFoundError):
+        parser.from_env("TEST")
+
+
+def test_discriminated_union_full_class_name_invalid_class(clean_env):
+    """Test that invalid class names raise AttributeError."""
+    parser = DiscriminatedUnionEnvParser(parsers={})
+
+    os.environ["TEST_KIND"] = (
+        "tests.sdk.utils.test_discriminated_union.NonexistentClass"
+    )
+    os.environ["TEST_NAME"] = "Test"
+
+    with pytest.raises(AttributeError):
+        parser.from_env("TEST")
+
+
+def test_discriminated_union_kind_only_no_other_variables(clean_env):
+    """Test that DiscriminatedUnionEnvParser handles types that define only a kind
+    without any other variables."""
+    # Create a parser with no additional fields (empty parser that returns MISSING)
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    parser = DiscriminatedUnionEnvParser(parsers={"EmptyKind": empty_parser})
+
+    # Set KIND but no other environment variables
+    os.environ["TEST_KIND"] = "EmptyKind"
+
+    # Should return just the kind, not MISSING
+    result = parser.from_env("TEST")
+    assert result == {"kind": "EmptyKind"}
+
+
+def test_discriminated_union_kind_only_multiple_kinds(clean_env):
+    """Test that when KIND is set to a type with no fields among multiple kinds,
+    it still works correctly."""
+    # Create parsers - one with fields, one without
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    dog_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser(), "barking": BoolEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(
+        parsers={"EmptyKind": empty_parser, "Dog": dog_parser}
+    )
+
+    # Set KIND to the empty type
+    os.environ["TEST_KIND"] = "EmptyKind"
+
+    # Should return just the kind
+    result = parser.from_env("TEST")
+    assert result == {"kind": "EmptyKind"}
+
+
+def test_discriminated_union_no_kind_no_variables_returns_missing(clean_env):
+    """Test that when KIND is not set and parser returns MISSING,
+    the result is MISSING (not an empty dict with no kind)."""
+    # Create a parser with no additional fields
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    non_empty_parser = ModelEnvParser(
+        parsers={"name": StrEnvParser()},
+        descriptions={},
+    )
+    parser = DiscriminatedUnionEnvParser(
+        parsers={"EmptyKind": empty_parser, "NonEmpty": non_empty_parser}
+    )
+
+    # Don't set KIND or any other variables
+    # Should return MISSING because there are multiple kinds and no KIND is set
+    result = parser.from_env("TEST")
+    assert result is MISSING
+
+
+def test_discriminated_union_single_empty_kind_no_variables(clean_env):
+    """Test that when there's exactly one empty kind and no env vars are set,
+    the result is MISSING (the entry is not configured)."""
+    # Create a single empty parser
+    empty_parser = ModelEnvParser(parsers={}, descriptions={})
+    parser = DiscriminatedUnionEnvParser(parsers={"EmptyKind": empty_parser})
+
+    # Don't set any environment variables (not even KIND)
+    # With a single kind, it should try the parser but still return MISSING
+    # because there's no indication that this entry is configured
+    result = parser.from_env("TEST")
+    assert result is MISSING

@@ -71,7 +71,8 @@ def select_chat_options(
         out.pop("temperature", None)
         out.pop("top_p", None)
 
-    # Mistral / Gemini safety
+    # REMOVE_AT: 1.15.0 - Remove this block along with LLM.safety_settings field
+    # Mistral / Gemini safety (deprecated)
     if llm.safety_settings:
         ml = llm.model.lower()
         if "mistral" in ml or "gemini" in ml:
