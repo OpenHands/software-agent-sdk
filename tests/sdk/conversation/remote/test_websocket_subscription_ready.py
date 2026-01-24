@@ -70,7 +70,7 @@ class TestWebSocketReadySignaling:
         waiter = threading.Thread(target=wait_for_ready)
         waiter.start()
 
-        waiter.join(timeout=0.02)
+        waiter.join(timeout=0.1)
         assert waiter.is_alive()
 
         client._stop.set()
