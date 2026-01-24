@@ -1,120 +1,156 @@
-# Local Conversation Examples
+# OpenHands Local Chat
 
-This directory contains examples demonstrating how to use the TypeScript SDK's local execution capabilities with OpenRouter for LLM integration.
+A browser-based chat UI that demonstrates the OpenHands TypeScript SDK with OpenRouter integration.
 
-## Prerequisites
+![OpenHands Chat Screenshot](https://via.placeholder.com/800x500?text=OpenHands+Chat+UI)
 
-1. **Node.js 18+** - Required for the local workspace implementation
-2. **OpenRouter API Key** - Get one at [openrouter.ai](https://openrouter.ai)
+## Features
 
-## Setup
+- 🔐 **OpenRouter Authentication** - Securely connect with your API key
+- 💬 **Real-time Chat** - Conversational interface with message history
+- 🤖 **Multiple Models** - Switch between Claude, GPT-4, Gemini, Llama, and more
+- ⚙️ **Configurable Settings** - Adjust temperature and max tokens
+- 🌙 **Dark Mode** - Beautiful dark theme UI
+- 📱 **Responsive** - Works on desktop and mobile
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+
+- An OpenRouter API key ([get one here](https://openrouter.ai/keys))
+
+### Setup
 
 ```bash
-# From the typescript-client directory
+# From the typescript-client directory, build the SDK first
+cd /path/to/typescript-client
 npm install
-
-# Build the SDK (required before running examples)
 npm run build
 
-# Set your OpenRouter API key
-export OPENROUTER_API_KEY="your-api-key-here"
+# Then set up the example app
+cd examples/local
+npm install
+npm run dev
 ```
 
-## Examples
+### Running
 
-### 1. Simple Task (`simple-task.ts`)
+1. Open http://localhost:12000 in your browser
+2. Enter your OpenRouter API key
+3. Select a model and start chatting!
 
-A minimal "hello world" example to verify everything is working.
+## Available Models
 
-```bash
-npx ts-node examples/local/simple-task.ts
-```
+The app comes pre-configured with popular models:
 
-### 2. Basic Local Agent (`basic-local-agent.ts`)
+| Model | Description |
+|-------|-------------|
+| Claude 3.5 Sonnet | Best for complex reasoning and coding |
+| Claude 3 Haiku | Fast and efficient |
+| GPT-4o | OpenAI's latest flagship |
+| GPT-4o Mini | Faster, cheaper GPT-4 |
+| Gemini Pro 1.5 | Google's advanced model |
+| Llama 3.1 70B | Meta's open source model |
+| Mistral Large | Mistral's premium model |
 
-Shows how to create a local conversation that can execute commands, read/write files, and interact with the filesystem.
+You can access 300+ more models through OpenRouter's unified API.
 
-```bash
-npx ts-node examples/local/basic-local-agent.ts
-```
-
-### 3. Interactive CLI (`interactive-cli.ts`)
-
-An interactive command-line interface for chatting with the local agent.
-
-```bash
-npx ts-node examples/local/interactive-cli.ts [optional-working-directory]
-```
-
-### 4. Code Review Agent (`code-review-agent.ts`)
-
-An example agent that reviews code in a directory and provides feedback.
-
-```bash
-npx ts-node examples/local/code-review-agent.ts /path/to/your/project
-```
-
-## Architecture
-
-The local execution stack consists of:
+## Project Structure
 
 ```
-┌─────────────────────────────────────┐
-│         LocalConversation           │
-│  (Agent loop, message handling)     │
-├─────────────────────────────────────┤
-│           OpenRouterLLM             │
-│  (LLM calls via OpenRouter API)     │
-├─────────────────────────────────────┤
-│          LocalWorkspace             │
-│  (Command exec, file operations)    │
-└─────────────────────────────────────┘
+examples/local/
+├── index.html           # Entry HTML file
+├── package.json         # Dependencies
+├── tsconfig.json        # TypeScript config
+├── vite.config.ts       # Vite bundler config
+└── src/
+    ├── main.tsx         # React entry point
+    ├── App.tsx          # Main app component
+    ├── styles.css       # Global styles
+    └── components/
+        ├── AuthScreen.tsx      # API key input
+        ├── ChatInterface.tsx   # Chat messages & input
+        └── SettingsModal.tsx   # Model settings
 ```
 
-## Available Tools
+## How It Works
 
-The local agent has access to these tools:
-
-| Tool | Description |
-|------|-------------|
-| `execute_command` | Run bash commands in the workspace |
-| `read_file` | Read file contents |
-| `write_file` | Create or modify files |
-| `think` | Log reasoning/brainstorming (no side effects) |
-| `finish` | Signal task completion |
-
-## Configuration Options
-
-### LocalConversation Options
+This example demonstrates using the `OpenRouterLLM` class from the TypeScript SDK:
 
 ```typescript
-const conversation = new LocalConversation(agent, workspace, {
-  llm: llmInstance,           // Required: ILLM instance
-  maxIterations: 50,          // Max agent loop iterations (default: 50)
-  systemPrompt: customPrompt, // Custom system prompt (optional)
-  callback: (event) => {},    // Event callback (optional)
-});
-```
+import { OpenRouterLLM } from '@openhands/typescript-client';
 
-### OpenRouterLLM Options
-
-```typescript
+// Create LLM instance
 const llm = new OpenRouterLLM({
-  apiKey: 'your-key',
-  defaultModel: 'anthropic/claude-3.5-sonnet',  // or any OpenRouter model
+  apiKey: 'your-api-key',
+  defaultModel: 'anthropic/claude-3.5-sonnet',
   defaultTemperature: 0.7,
   defaultMaxTokens: 4096,
 });
+
+// Send a message
+const response = await llm.completion({
+  messages: [
+    { role: 'user', content: [{ type: 'text', text: 'Hello!' }] }
+  ],
+  model: 'anthropic/claude-3.5-sonnet',
+});
+
+console.log(response.choices[0].message.content);
 ```
 
-## Supported Models
+## Configuration
 
-OpenRouter provides access to 300+ models. Some recommended options:
+### Environment Variables
 
-- `anthropic/claude-3.5-sonnet` - Best for coding tasks
-- `anthropic/claude-3-haiku` - Fast and cheap
-- `openai/gpt-4o` - OpenAI's latest
-- `google/gemini-pro-1.5` - Google's model
-- `meta-llama/llama-3.1-70b-instruct` - Open source option
+The app stores settings in localStorage:
+- `openrouter_api_key` - Your OpenRouter API key
+- `openrouter_model` - Selected model ID
 
-See [OpenRouter Models](https://openrouter.ai/models) for the full list.
+### Settings
+
+Click the ⚙️ button to adjust:
+- **Model** - Switch between available models
+- **Temperature** - 0.0 (precise) to 2.0 (creative)
+- **Max Tokens** - Response length limit (256-8192)
+
+## Development
+
+```bash
+# Start dev server with hot reload
+npm run dev
+
+# Build for production
+npm run build
+
+# Preview production build
+npm run preview
+```
+
+## Security Notes
+
+- API keys are stored in localStorage (client-side only)
+- Keys are validated against OpenRouter's API before use
+- All API calls go directly to OpenRouter (no backend proxy)
+- Click "Logout" to clear stored credentials
+
+## Troubleshooting
+
+### "Invalid API key" error
+- Make sure your API key starts with `sk-or-v1-`
+- Check that your key has available credits at openrouter.ai
+
+### Build errors
+- Ensure the main SDK is built first: `cd ../.. && npm run build`
+- Try clearing node_modules: `rm -rf node_modules && npm install`
+
+### CORS issues
+- OpenRouter's API supports browser requests
+- If issues persist, check your API key permissions
+
+## Related
+
+- [OpenRouter Documentation](https://openrouter.ai/docs)
+- [OpenHands TypeScript SDK](../../README.md)
+- [Model Pricing](https://openrouter.ai/models)
