@@ -187,7 +187,10 @@ def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_pat
     assert ask_agent_llm.caching_prompt is False
 
 
-def test_remote_conversation_ask_agent(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_ask_agent(mock_ws_client, agent):
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
     mock_client = create_mock_http_client("12345678-1234-5678-9abc-123456789abc")
 
@@ -423,8 +426,11 @@ def test_local_conversation_ask_agent_raises_failed_to_generate_summary_non_text
     mock_completion.assert_called_once()
 
 
-def test_remote_conversation_ask_agent_raises_http_status_error(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_ask_agent_raises_http_status_error(mock_ws_client, agent):
     """RemoteConversation ask_agent properly propagates HTTPStatusError from server."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     import httpx
 
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
@@ -473,8 +479,11 @@ def test_remote_conversation_ask_agent_raises_http_status_error(agent):
         assert "500 Internal Server Error" in str(exc_info.value)
 
 
-def test_remote_conversation_ask_agent_raises_request_error(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_ask_agent_raises_request_error(mock_ws_client, agent):
     """RemoteConversation ask_agent properly propagates RequestError from network."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     import httpx
 
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
