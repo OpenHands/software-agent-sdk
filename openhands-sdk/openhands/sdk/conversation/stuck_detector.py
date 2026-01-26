@@ -53,7 +53,7 @@ class StuckDetector:
     def alternating_pattern_threshold(self) -> int:
         return self.thresholds.alternating_pattern
 
-    _max_events_to_scan: int = 200
+    _max_events_to_scan: int = 20
 
     def is_stuck(self) -> bool:
         """Check if the agent is currently stuck.

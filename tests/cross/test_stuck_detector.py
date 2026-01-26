@@ -73,33 +73,46 @@ def test_history_too_short():
     assert stuck_detector.is_stuck() is False
 
 
-def test_is_stuck_does_not_materialize_full_history():
+class _SpySequence:
+    def __init__(self, items):
+        self._items = list(items)
+        self.slice_requests = []
+
+    def __len__(self):
+        return len(self._items)
+
+    def __getitem__(self, idx):
+        if isinstance(idx, slice):
+            self.slice_requests.append(idx)
+            return self._items[idx]
+        return self._items[idx]
+
+
+class _SpyState:
+    def __init__(self, events):
+        self.events = events
+
+
+def test_is_stuck_uses_only_recent_event_window():
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
-    agent = Agent(llm=llm)
-    state = ConversationState.create(
-        id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
-    )
+    Agent(llm=llm)
 
-    # Create a large backlog of irrelevant events before the last user message.
-    for i in range(500):
-        state.events.append(
-            MessageEvent(
-                source="user",
-                llm_message=Message(
-                    role="user", content=[TextContent(text=f"old-{i}")]
-                ),
-            )
-        )
-
-    # Last user message.
-    state.events.append(
+    # Create 50 old events (should not be scanned).
+    old_events = [
         MessageEvent(
             source="user",
-            llm_message=Message(role="user", content=[TextContent(text="start")]),
+            llm_message=Message(role="user", content=[TextContent(text=f"old-{i}")]),
         )
+        for i in range(50)
+    ]
+
+    # Ensure the last 20 events contain a user message and a repeating loop.
+    last_user = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="start")]),
     )
 
-    # Trigger repeating action/observation loop.
+    loop_events = []
     for i in range(4):
         action = ActionEvent(
             source="agent",
@@ -115,23 +128,42 @@ def test_is_stuck_does_not_materialize_full_history():
             ),
             llm_response_id=f"response_{i}",
         )
-        state.events.append(action)
-
-        observation = ObservationEvent(
-            source="environment",
-            observation=TerminalObservation.from_text(
-                text="file1.txt\nfile2.txt",
-                command="ls",
-                exit_code=0,
-            ),
-            action_id=action.id,
-            tool_name="terminal",
-            tool_call_id=f"call_{i}",
+        loop_events.append(action)
+        loop_events.append(
+            ObservationEvent(
+                source="environment",
+                observation=TerminalObservation.from_text(
+                    text="file1.txt\nfile2.txt",
+                    command="ls",
+                    exit_code=0,
+                ),
+                action_id=action.id,
+                tool_name="terminal",
+                tool_call_id=f"call_{i}",
+            )
         )
-        state.events.append(observation)
 
-    stuck_detector = StuckDetector(state)
+    # Add a few filler events so total length is > 20.
+    filler = [
+        MessageEvent(
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
+        )
+        for _ in range(3)
+    ]
+
+    all_events = old_events + [last_user] + filler + loop_events
+    spy_events = _SpySequence(all_events)
+
+    stuck_detector = StuckDetector(_SpyState(spy_events))  # pyright: ignore[reportArgumentType]
     assert stuck_detector.is_stuck() is True
+
+    # Must have requested a single slice that only covers the last 20 items.
+    assert spy_events.slice_requests
+    sl = spy_events.slice_requests[0]
+    assert sl.step is None
+    assert sl.stop is None
+    assert sl.start == -stuck_detector._max_events_to_scan
 
 
 def test_repeating_action_observation_not_stuck_less_than_4_repeats():
