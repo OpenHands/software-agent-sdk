@@ -168,10 +168,12 @@ class TerminalObservation(Observation):
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
 
         # Use enhanced truncation with file saving if working directory is available
+        # The full output (if any) is already optionally persisted when we truncate
+        # for storage. Avoid saving again here.
         truncated_text = maybe_truncate(
             content=ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
-            save_dir=self.full_output_save_dir,
+            save_dir=None,
             tool_prefix="bash",
         )
         llm_content.append(TextContent(text=truncated_text))

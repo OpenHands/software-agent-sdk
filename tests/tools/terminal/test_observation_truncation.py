@@ -74,7 +74,6 @@ def test_terminal_observation_truncation_over_limit():
     assert "<response clipped>" in result  # Should contain truncation notice
 
 
-
 def test_terminal_observation_truncates_content_on_init():
     """Ensure TerminalObservation content itself is truncated before persistence.
 
