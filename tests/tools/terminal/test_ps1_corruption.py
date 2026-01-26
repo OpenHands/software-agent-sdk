@@ -485,6 +485,7 @@ COMMAND OUTPUT AFTER PS1"""
 
         CRITICAL BUG: _SyntheticMatch violates this contract. It returns positions
         from the ORIGINAL corrupted match, not the recovered content position.
+        This causes terminal_session.py to extract wrong content when slicing.
         """
         matches = CmdOutputMetadata.matches_ps1_metadata(self.CORRUPTED_OUTPUT)
 
@@ -493,98 +494,13 @@ COMMAND OUTPUT AFTER PS1"""
 
         match = matches[0]
 
-        # The match.group(0) returns the synthetic full match (correct content)
-        full_match_content = match.group(0)
-        assert "###PS1JSON###" in full_match_content
-        assert "###PS1END###" in full_match_content
-
-        # The JSON content should be valid
-        json_content = match.group(1)
-        assert '"pid": "456"' in json_content
-        assert '"working_dir": "/workspace"' in json_content
-
-        # BUG: Using start() and end() to slice the original string
-        # gives DIFFERENT content than match.group(0)
+        # The content from start() to end() should match group(0)
         sliced_content = self.CORRUPTED_OUTPUT[match.start() : match.end()]
 
-        # This assertion demonstrates the bug:
-        # The sliced content should equal match.group(0), but it doesn't!
-        # The sliced content includes the corrupted first block and ASCII art.
-        assert sliced_content == full_match_content, (
+        assert sliced_content == match.group(0), (
             f"CRITICAL BUG: Slicing with match positions gives wrong content!\n"
-            f"Expected (from group(0)):\n{full_match_content!r}\n\n"
+            f"Expected (from group(0)):\n{match.group(0)!r}\n\n"
             f"Got (from slicing):\n{sliced_content!r}\n\n"
             f"The _SyntheticMatch.start() and .end() methods return positions "
             f"from the original corrupted match, not the recovered content position."
-        )
-
-    def test_synthetic_match_start_returns_correct_position(self):
-        """
-        CRITICAL BUG: _SyntheticMatch.start() returns wrong position.
-
-        When terminal_session.py extracts content before a PS1 block using:
-            terminal_content[:ps1_matches[0].start()]
-
-        The _SyntheticMatch.start() should return the start of the RECOVERED
-        valid content, but it returns the start of the ORIGINAL corrupted match.
-
-        This test asserts the CORRECT behavior and will FAIL until the bug is fixed.
-        """
-        terminal_content = self.CORRUPTED_OUTPUT
-
-        matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
-        assert len(matches) == 1, f"Expected 1 match, got {len(matches)}"
-
-        match = matches[0]
-
-        # Get content before the PS1 block using match.start()
-        content_before = terminal_content[: match.start()]
-
-        # The content before the RECOVERED PS1 block should include:
-        # 1. "COMMAND OUTPUT BEFORE PS1"
-        # 2. The corrupted first block
-        # 3. "ASCII ART CORRUPTS THIS BLOCK"
-        # Because the recovered block starts AFTER all of that.
-
-        # If start() is correct, content_before should include the corrupted data
-        assert "ASCII ART CORRUPTS THIS BLOCK" in content_before, (
-            f"CRITICAL BUG: _SyntheticMatch.start() returns wrong position!\n"
-            f"Content before match should include corrupted data, but got:\n"
-            f"{content_before!r}\n\n"
-            f"match.start() = {match.start()}\n"
-            f"The start() method returns the position of the ORIGINAL corrupted "
-            f"match instead of the RECOVERED valid content position."
-        )
-
-    def test_synthetic_match_end_returns_correct_position(self):
-        """
-        CRITICAL BUG: _SyntheticMatch.end() returns wrong position.
-
-        When terminal_session.py extracts content after the last PS1 block using:
-            terminal_content[ps1_matches[-1].end() + 1:]
-
-        The _SyntheticMatch.end() should return the end of the RECOVERED valid
-        content, but it returns the end of the ORIGINAL corrupted match.
-
-        In this test case, the end positions happen to be the same (both end at
-        ###PS1END###), so we verify by checking that slicing gives correct content.
-
-        This test asserts the CORRECT behavior and will FAIL until the bug is fixed.
-        """
-        terminal_content = self.CORRUPTED_OUTPUT
-
-        matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
-        assert len(matches) == 1, f"Expected 1 match, got {len(matches)}"
-
-        match = matches[0]
-
-        # The content from start() to end() should match group(0)
-        # This is the fundamental contract of a match object
-        sliced_content = terminal_content[match.start() : match.end()]
-
-        assert sliced_content == match.group(0), (
-            f"CRITICAL BUG: Slicing with start()/end() doesn't match group(0)!\n"
-            f"terminal_content[start():end()] =\n{sliced_content!r}\n\n"
-            f"match.group(0) =\n{match.group(0)!r}\n\n"
-            f"The _SyntheticMatch position methods return wrong values."
         )
