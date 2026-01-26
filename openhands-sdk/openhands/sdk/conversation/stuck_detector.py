@@ -62,9 +62,11 @@ class StuckDetector:
     def is_stuck(self) -> bool:
         """Check if the agent is currently stuck.
 
-        Note: we only need a window of the most recent events to detect loops.
-        This avoids materializing the full event history (which may be file-backed
-        and very large) into memory.
+        Note: To avoid materializing potentially large file-backed event histories,
+        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events are analyzed.
+        If a user message exists within this window, only events after it are checked.
+        Otherwise, all events in the window are analyzed.
+        """
         """
         events = list(self.state.events[-MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION:])
 
