@@ -36,7 +36,7 @@ curl -X POST \
 - `model_ids`: See `.github/run-eval/resolve_model_config.py` for available models
 - `benchmarks_branch`: Use feature branch from the benchmarks repo to test benchmark changes before merging
 
-**Note:** When running a full eval, you must select an `eval_limit` that is greater than or equal to the actual number of instances in the benchmark.
+**Note:** When running a full eval, you must select an `eval_limit` that is greater than or equal to the actual number of instances in the benchmark. If you specify a smaller limit, only that many instances will be evaluated (partial eval).
 
 ## Monitoring
 
