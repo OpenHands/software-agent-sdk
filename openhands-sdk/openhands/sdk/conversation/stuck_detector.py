@@ -73,11 +73,8 @@ class StuckDetector:
             ),
             -1,  # Default to -1 if no user message found
         )
-        if last_user_msg_index == -1:
-            logger.warning("No user message found in history, skipping stuck detection")
-            return False
-
-        events = events[last_user_msg_index + 1 :]
+        if last_user_msg_index != -1:
+            events = events[last_user_msg_index + 1 :]
 
         # Determine minimum events needed
         min_threshold = min(

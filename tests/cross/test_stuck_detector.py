@@ -166,6 +166,57 @@ def test_is_stuck_uses_only_recent_event_window():
     assert sl.start == -stuck_detector._max_events_to_scan
 
 
+def test_is_stuck_without_recent_user_message_still_detects_loop():
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    Agent(llm=llm)
+
+    # No user messages at all in the last-20 window.
+    filler = [
+        MessageEvent(
+            source="agent",
+            llm_message=Message(role="assistant", content=[TextContent(text="ok")]),
+        )
+        for _ in range(12)
+    ]
+
+    loop_events = []
+    for i in range(4):
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+            tool_call=MessageToolCall(
+                id=f"call_{i}",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id=f"response_{i}",
+        )
+        loop_events.append(action)
+        loop_events.append(
+            ObservationEvent(
+                source="environment",
+                observation=TerminalObservation.from_text(
+                    text="file1.txt\nfile2.txt",
+                    command="ls",
+                    exit_code=0,
+                ),
+                action_id=action.id,
+                tool_name="terminal",
+                tool_call_id=f"call_{i}",
+            )
+        )
+
+    all_events = filler + loop_events  # 12 + 8 == 20
+    spy_events = _SpySequence(all_events)
+
+    stuck_detector = StuckDetector(_SpyState(spy_events))  # pyright: ignore[reportArgumentType]
+    assert stuck_detector.is_stuck() is True
+
+
 def test_repeating_action_observation_not_stuck_less_than_4_repeats():
     """Test detection of repeating action-observation cycles."""
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
