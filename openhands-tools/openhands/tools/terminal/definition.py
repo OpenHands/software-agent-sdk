@@ -125,8 +125,6 @@ class TerminalObservation(Observation):
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
 
         # Ensure the LLM payload remains bounded.
-        # The full output (if any) is already optionally persisted when we truncate
-        # for storage. Avoid saving again here.
         truncated_text = maybe_truncate(
             content=ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
