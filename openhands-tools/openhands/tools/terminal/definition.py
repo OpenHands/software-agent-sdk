@@ -128,7 +128,7 @@ class TerminalObservation(Observation):
         truncated_text = maybe_truncate(
             content=ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
-            save_dir=None,
+            save_dir=self.full_output_save_dir,
             tool_prefix="bash",
         )
         llm_content.append(TextContent(text=truncated_text))
