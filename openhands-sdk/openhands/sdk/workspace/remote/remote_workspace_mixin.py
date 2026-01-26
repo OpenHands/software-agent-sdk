@@ -96,6 +96,7 @@ class RemoteWorkspaceMixin(BaseModel):
                     "command_id__eq": command_id,
                     "sort_order": "TIMESTAMP",
                     "limit": 100,
+                    "kind__eq": "BashOutput",
                 }
                 if last_order >= 0:
                     params["order__gt"] = last_order
@@ -112,16 +113,19 @@ class RemoteWorkspaceMixin(BaseModel):
 
                 # Process BashOutput events
                 for event in search_result.get("items", []):
-                    # Assert no duplicates - the API should filter them via order__gt
-                    event_id = event.get("id")
-                    if event_id is not None:
-                        assert event_id not in seen_event_ids, (
-                            f"Duplicate event received: {event_id}. "
-                            f"The API should have filtered this via order__gt"
-                        )
-                        seen_event_ids.add(event_id)
-
                     if event.get("kind") == "BashOutput":
+                        # Check for duplicates - safety check in case caller
+                        # forgets to add kind__eq filter or API has a bug
+                        event_id = event.get("id")
+                        if event_id is not None:
+                            if event_id in seen_event_ids:
+                                raise RuntimeError(
+                                    f"Duplicate event received: {event_id}. "
+                                    "This should not happen with order__gt "
+                                    "filtering and kind filtering."
+                                )
+                            seen_event_ids.add(event_id)
+
                         # Track the highest order we've seen
                         event_order = event.get("order")
                         if event_order is not None and event_order > last_order:

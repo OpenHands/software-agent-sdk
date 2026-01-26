@@ -477,3 +477,145 @@ class TestPollingDeduplication:
             result = e.value
 
         assert result.stdout == "CHUNK1CHUNK2CHUNK3"
+
+    @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
+    def test_mixed_event_types_with_kind_filtering(self, mock_time):
+        """Test that mixed event types (BashCommand + BashOutput) work correctly.
+
+        This test verifies that:
+        1. The kind__eq=BashOutput filter is applied server-side
+        2. If BashCommand events are returned (API doesn't filter), ignored
+        3. Only BashOutput events are processed for stdout/stderr
+
+        The duplicate detection only applies to BashOutput events since
+        BashCommand events don't have an order field.
+        """
+        mixin = RemoteWorkspaceMixinHelper(
+            host="http://localhost:8000", working_dir="workspace"
+        )
+
+        mock_time.time.side_effect = [0, 1, 2, 3, 4]
+        mock_time.sleep = Mock()
+
+        start_response = Mock()
+        start_response.raise_for_status = Mock()
+        start_response.json.return_value = {"id": "cmd-mixed"}
+
+        # Poll 1: Returns BashCommand (no order) + BashOutput (order=0)
+        # Note: With kind__eq=BashOutput, the API should only return BashOutput
+        # But we test the case where BashCommand might be returned anyway
+        poll_response_1 = Mock()
+        poll_response_1.raise_for_status = Mock()
+        poll_response_1.json.return_value = {
+            "items": [
+                {
+                    "id": "cmd-mixed",
+                    "kind": "BashCommand",
+                    "command": "echo test",
+                    # BashCommand events don't have order field
+                },
+                {
+                    "id": "event-1",
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": "CHUNK1",
+                    "stderr": None,
+                    "exit_code": None,
+                },
+            ]
+        }
+
+        # Poll 2: Returns BashCommand again (no order) + BashOutput (order=1)
+        # BashCommand would be returned again since it has no order field
+        poll_response_2 = Mock()
+        poll_response_2.raise_for_status = Mock()
+        poll_response_2.json.return_value = {
+            "items": [
+                {
+                    "id": "cmd-mixed",
+                    "kind": "BashCommand",
+                    "command": "echo test",
+                },
+                {
+                    "id": "event-2",
+                    "kind": "BashOutput",
+                    "order": 1,
+                    "stdout": "CHUNK2",
+                    "stderr": None,
+                    "exit_code": 0,
+                },
+            ]
+        }
+
+        generator = mixin._execute_command_generator("echo test", None, 30.0)
+
+        next(generator)
+        generator.send(start_response)
+        generator.send(poll_response_1)
+
+        try:
+            generator.send(poll_response_2)
+            pytest.fail("Generator should have stopped")
+        except StopIteration as e:
+            result = e.value
+
+        # Output should only contain BashOutput events, no duplication
+        assert result.stdout == "CHUNK1CHUNK2", (
+            f"Expected 'CHUNK1CHUNK2' but got '{result.stdout}'. "
+            "BashCommand events should be ignored, only BashOutput processed."
+        )
+        assert result.exit_code == 0
+
+    @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
+    def test_bash_command_events_are_ignored(self, mock_time):
+        """Test that BashCommand events are properly ignored.
+
+        BashCommand events don't have stdout/stderr/exit_code fields,
+        so they should be skipped during processing.
+        """
+        mixin = RemoteWorkspaceMixinHelper(
+            host="http://localhost:8000", working_dir="workspace"
+        )
+
+        mock_time.time.side_effect = [0, 1]
+        mock_time.sleep = Mock()
+
+        start_response = Mock()
+        start_response.raise_for_status = Mock()
+        start_response.json.return_value = {"id": "cmd-ignore"}
+
+        # Single poll with BashCommand and BashOutput events
+        poll_response = Mock()
+        poll_response.raise_for_status = Mock()
+        poll_response.json.return_value = {
+            "items": [
+                {
+                    "id": "cmd-ignore",
+                    "kind": "BashCommand",
+                    "command": "ls -la",
+                },
+                {
+                    "id": "event-1",
+                    "kind": "BashOutput",
+                    "order": 0,
+                    "stdout": "file1.txt\nfile2.txt\n",
+                    "stderr": None,
+                    "exit_code": 0,
+                },
+            ]
+        }
+
+        generator = mixin._execute_command_generator("ls -la", None, 30.0)
+
+        next(generator)
+        generator.send(start_response)
+
+        try:
+            generator.send(poll_response)
+            pytest.fail("Generator should have stopped")
+        except StopIteration as e:
+            result = e.value
+
+        # Only BashOutput content should be in stdout
+        assert result.stdout == "file1.txt\nfile2.txt\n"
+        assert result.exit_code == 0
