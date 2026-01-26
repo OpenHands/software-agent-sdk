@@ -475,19 +475,16 @@ ASCII ART CORRUPTS THIS BLOCK
 ###PS1END###
 COMMAND OUTPUT AFTER PS1"""
 
-    def test_synthetic_match_positions_are_incorrect(self):
+    def test_slicing_with_match_positions_returns_group_zero(self):
         """
-        CRITICAL BUG: _SyntheticMatch.start() and .end() return wrong positions.
+        Test that terminal_content[match.start():match.end()] equals match.group(0).
 
-        When a PS1 block is corrupted and we recover the nested valid block,
-        the _SyntheticMatch class returns positions from the ORIGINAL corrupted
-        match, not the actual position of the recovered content.
+        This is the fundamental contract of a regex match object. When we slice
+        the original string using start() and end(), we should get the same
+        content as group(0).
 
-        This causes terminal_session.py to extract wrong content when slicing:
-            terminal_content[match.start():match.end()]
-
-        The sliced content will include the corrupted first block and ASCII art,
-        instead of just the recovered valid PS1 block.
+        CRITICAL BUG: _SyntheticMatch violates this contract. It returns positions
+        from the ORIGINAL corrupted match, not the recovered content position.
         """
         matches = CmdOutputMetadata.matches_ps1_metadata(self.CORRUPTED_OUTPUT)
 
