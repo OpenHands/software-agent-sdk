@@ -100,7 +100,6 @@ class TerminalObservation(Observation):
         description="Directory where full output files are saved",
     )
 
-
     @model_validator(mode="before")
     @classmethod
     def _truncate_content_for_storage(cls, data):
