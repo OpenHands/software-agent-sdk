@@ -49,7 +49,7 @@ async def health() -> str:
 
 
 @server_details_router.get("/ready")
-async def ready(response: Response):
+async def ready(response: Response) -> dict[str, str]:
     """Readiness check - returns OK only if the server has completed initialization.
 
     This endpoint should be used by Kubernetes readiness probes to determine
