@@ -65,5 +65,5 @@ kubectl logs -f job/eval-eval-<RUN_ID>-<MODEL_SLUG> -n evaluation-jobs
 
 ## Limits
 
-- Max 256 parallel runtimes
-- Full evals take 1-3 hours
+- Max 256 parallel runtimes (jobs will queue if this limit is exceeded)
+- Full evals typically take 1-3 hours depending on benchmark size
