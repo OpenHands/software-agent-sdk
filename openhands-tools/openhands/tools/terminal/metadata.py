@@ -29,9 +29,18 @@ class _SyntheticMatch:
     rest of the code can work with it transparently.
     """
 
-    def __init__(self, content: str, original_match: "Match[str]"):
+    def __init__(
+        self, content: str, original_match: "Match[str]", content_start_in_original: int
+    ):
         self._content = content
-        self._original_match = original_match
+        # Calculate actual positions in the original string
+        # content_start_in_original is the position where the nested ###PS1JSON###
+        # marker starts within the original match's group(1)
+        group1_start = original_match.start(1)
+        # The actual start is: start of group(1) + position of nested marker
+        self._actual_start = group1_start + content_start_in_original
+        # The actual end is the same as original match end (ends at ###PS1END###)
+        self._actual_end = original_match.end(0)
 
     def group(self, index: int = 0) -> str:
         if index == 0:
@@ -47,10 +56,20 @@ class _SyntheticMatch:
         raise IndexError(f"no such group: {index}")
 
     def start(self, group: int = 0) -> int:
-        return self._original_match.start(group)
+        if group == 0:
+            return self._actual_start
+        elif group == 1:
+            # Group 1 starts after the ###PS1JSON### marker and newline
+            return self._actual_start + len(CMD_OUTPUT_PS1_BEGIN.strip()) + 1
+        raise IndexError(f"no such group: {group}")
 
     def end(self, group: int = 0) -> int:
-        return self._original_match.end(group)
+        if group == 0:
+            return self._actual_end
+        elif group == 1:
+            # Group 1 ends before the newline and ###PS1END### marker
+            return self._actual_end - len(CMD_OUTPUT_PS1_END.strip()) - 1
+        raise IndexError(f"no such group: {group}")
 
 
 class CmdOutputMetadata(BaseModel):
@@ -118,18 +137,25 @@ class CmdOutputMetadata(BaseModel):
                 # This happens when the first PS1 block gets corrupted by
                 # command output (e.g., grunt's ASCII cat art)
                 nested_marker = CMD_OUTPUT_PS1_BEGIN.strip()
-                if nested_marker in content:
+                # Use original (unstripped) group(1) to get correct positions
+                original_content = match.group(1)
+                if nested_marker in original_content:
                     # Find the LAST occurrence of the marker
-                    last_marker_pos = content.rfind(nested_marker)
+                    last_marker_pos = original_content.rfind(nested_marker)
                     if last_marker_pos != -1:
                         # Extract content after the last marker
-                        last_block_content = content[
+                        last_block_content = original_content[
                             last_marker_pos + len(nested_marker) :
                         ].strip()
                         try:
                             json.loads(last_block_content)
                             # Create a synthetic match-like object
-                            matches.append(_SyntheticMatch(last_block_content, match))
+                            # Pass the position of the nested marker within group(1)
+                            matches.append(
+                                _SyntheticMatch(
+                                    last_block_content, match, last_marker_pos
+                                )
+                            )
                             logger.debug(
                                 "Recovered valid PS1 block from corrupted "
                                 f"output: {last_block_content[:80]}..."

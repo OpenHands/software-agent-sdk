@@ -443,19 +443,19 @@ Some command output here
         assert meta2.exit_code == 1
 
 
-class TestSyntheticMatchPositionBug:
-    """Tests for the critical bug in _SyntheticMatch position methods.
+def test_synthetic_match_slicing_returns_group_zero():
+    """
+    Test that terminal_content[match.start():match.end()] equals match.group(0).
 
-    The _SyntheticMatch class returns positions from the original corrupted match,
-    not the actual position of the recovered content. This causes incorrect slicing
-    in terminal_session.py when extracting command output between PS1 blocks.
+    This is the fundamental contract of a regex match object. When we slice
+    the original string using start() and end(), we should get the same
+    content as group(0).
 
     See: https://github.com/OpenHands/software-agent-sdk/pull/1817#discussion_r2727556034
     """
-
     # Corrupted output where ASCII art interrupts the first PS1 block
     # The second PS1 block is valid and should be recovered
-    CORRUPTED_OUTPUT = """\
+    corrupted_output = """\
 COMMAND OUTPUT BEFORE PS1
 ###PS1JSON###
 {
@@ -475,32 +475,18 @@ ASCII ART CORRUPTS THIS BLOCK
 ###PS1END###
 COMMAND OUTPUT AFTER PS1"""
 
-    def test_slicing_with_match_positions_returns_group_zero(self):
-        """
-        Test that terminal_content[match.start():match.end()] equals match.group(0).
+    matches = CmdOutputMetadata.matches_ps1_metadata(corrupted_output)
 
-        This is the fundamental contract of a regex match object. When we slice
-        the original string using start() and end(), we should get the same
-        content as group(0).
+    # We should get 1 match (the recovered valid block)
+    assert len(matches) == 1, f"Expected 1 recovered match, got {len(matches)}"
 
-        CRITICAL BUG: _SyntheticMatch violates this contract. It returns positions
-        from the ORIGINAL corrupted match, not the recovered content position.
-        This causes terminal_session.py to extract wrong content when slicing.
-        """
-        matches = CmdOutputMetadata.matches_ps1_metadata(self.CORRUPTED_OUTPUT)
+    match = matches[0]
 
-        # We should get 1 match (the recovered valid block)
-        assert len(matches) == 1, f"Expected 1 recovered match, got {len(matches)}"
+    # The content from start() to end() should match group(0)
+    sliced_content = corrupted_output[match.start() : match.end()]
 
-        match = matches[0]
-
-        # The content from start() to end() should match group(0)
-        sliced_content = self.CORRUPTED_OUTPUT[match.start() : match.end()]
-
-        assert sliced_content == match.group(0), (
-            f"CRITICAL BUG: Slicing with match positions gives wrong content!\n"
-            f"Expected (from group(0)):\n{match.group(0)!r}\n\n"
-            f"Got (from slicing):\n{sliced_content!r}\n\n"
-            f"The _SyntheticMatch.start() and .end() methods return positions "
-            f"from the original corrupted match, not the recovered content position."
-        )
+    assert sliced_content == match.group(0), (
+        f"Slicing with match positions gives wrong content!\n"
+        f"Expected (from group(0)):\n{match.group(0)!r}\n\n"
+        f"Got (from slicing):\n{sliced_content!r}"
+    )
