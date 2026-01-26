@@ -187,10 +187,6 @@ def patched_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(LLM, "completion", fake_completion, raising=True)
 
 
-@pytest.mark.skip(
-    reason="Flaky due to WebSocket race condition - see issue #1785: "
-    "https://github.com/OpenHands/software-agent-sdk/issues/1785"
-)
 def test_remote_conversation_over_real_server(server_env, patched_llm):
     import shutil
     from pathlib import Path
@@ -562,9 +558,322 @@ def test_conversation_stats_with_live_server(
     conv.close()
 
 
+def test_events_not_lost_during_client_disconnection(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Test that events are NOT lost during client disconnection.
+
+    This is a regression test for the bug described in PR #1791 review where
+    events emitted during client disconnection could be lost. The fix adds a
+    reconciliation sync after run() completes to ensure all events are captured.
+
+    The original bug scenario:
+    1. Test runs conversation with a mocked `finish` tool call
+    2. Server emits `ActionEvent` + `ObservationEvent`
+    3. `conv.run()` returns when status becomes "finished"
+    4. Client starts closing WebSocket
+    5. Events emitted during disconnect may not be delivered via WebSocket
+
+    The fix: After run() completes, we call reconcile() to fetch any events
+    that may have been missed via WebSocket. This ensures the client always
+    has a complete view of all events.
+
+    See PR #1791 review for details: https://github.com/OpenHands/software-agent-sdk/pull/1791#pullrequestreview-3694259068
+    """
+    import httpx
+
+    def fake_completion_with_finish_tool(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        # Return a finish tool call to end the conversation
+        litellm_msg = LiteLLMMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_finish",
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "arguments": '{"message": "Task complete"}',
+                        },
+                    }
+                ],
+            }
+        )
+
+        raw_response = ModelResponse(
+            id="test-resp-finish",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(
+        LLM, "completion", fake_completion_with_finish_tool, raising=True
+    )
+
+    # Create an Agent with empty tools list (finish is a built-in tool)
+    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    # Send message and run - this will trigger the finish tool
+    conv.send_message("Complete the task")
+    conv.run()
+
+    # At this point, conv.run() has returned because status became "finished".
+    # The WebSocket client may have started closing, but the server may still
+    # be trying to send events.
+
+    # Get events received via WebSocket (cached in RemoteEventsList)
+    ws_events = list(conv.state.events)
+
+    # Fetch events directly from REST API to get the authoritative list
+    # This bypasses the WebSocket and shows what's actually persisted on server
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get(
+            f"/api/conversations/{conv._id}/events/search",
+            params={"limit": 100},
+        )
+        response.raise_for_status()
+        rest_data = response.json()
+        rest_events = [Event.model_validate(item) for item in rest_data["items"]]
+
+    # Count ActionEvents in each source
+    ws_action_events = [
+        e for e in ws_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
+    rest_action_events = [
+        e for e in rest_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
+
+    ws_observation_events = [
+        e
+        for e in ws_events
+        if isinstance(e, ObservationEvent) and e.tool_name == "finish"
+    ]
+    rest_observation_events = [
+        e
+        for e in rest_events
+        if isinstance(e, ObservationEvent) and e.tool_name == "finish"
+    ]
+
+    # Log what we found for debugging
+    ws_event_summary = [
+        f"{type(e).__name__}({getattr(e, 'tool_name', 'N/A')})" for e in ws_events
+    ]
+    rest_event_summary = [
+        f"{type(e).__name__}({getattr(e, 'tool_name', 'N/A')})" for e in rest_events
+    ]
+
+    conv.close()
+
+    # The bug: Events may be lost during client disconnection
+    # REST API should always have the events (they're persisted)
+    # WebSocket may miss events if they're emitted during disconnect
+
+    # First, verify REST API has the expected events (sanity check)
+    assert len(rest_action_events) >= 1, (
+        f"REST API should have ActionEvent with finish tool. "
+        f"REST events: {rest_event_summary}"
+    )
+    assert len(rest_observation_events) >= 1, (
+        f"REST API should have ObservationEvent with finish tool. "
+        f"REST events: {rest_event_summary}"
+    )
+
+    # Verify client has all events (reconciliation should have fetched any missed)
+    ws_has_action = len(ws_action_events) >= 1
+    ws_has_observation = len(ws_observation_events) >= 1
+
+    # These assertions verify the fix works - reconciliation ensures no events are lost
+    assert ws_has_action, (
+        f"ActionEvent with finish tool not found in client events. "
+        f"REST API has {len(rest_action_events)} ActionEvent(s) but client has "
+        f"{len(ws_action_events)}. Reconciliation should have fetched missing events. "
+        f"Client events: {ws_event_summary}. REST events: {rest_event_summary}"
+    )
+
+    assert ws_has_observation, (
+        f"ObservationEvent with finish tool not found in client events. "
+        f"Client events: {ws_event_summary}"
+    )
+
+
+def test_post_run_reconcile_needed_under_ws_callback_lag(
+    server_env, monkeypatch: pytest.MonkeyPatch
+):
+    """Controlled repro for the *client-side* tail-event race.
+
+    We delay processing of finish-tool WS events in the client's WS callback.
+    This can make `conv.run()` return (polling sees a terminal status) before
+    the WS thread appends the final Action/Observation events.
+
+    Then we show that a REST reconcile after run completion recovers those events.
+
+    This test is intentionally conservative: it doesn't change production logic
+    except for injecting a delay into the client-side callback.
+    """
+
+    import httpx
+
+    ws_delay_s = 0.75
+
+    def fake_completion_with_finish_tool(
+        self,
+        messages,
+        tools,
+        return_metrics=False,
+        add_security_risk_prediction=False,
+        **kwargs,
+    ):  # type: ignore[no-untyped-def]
+        from openhands.sdk.llm.llm_response import LLMResponse
+        from openhands.sdk.llm.message import Message
+        from openhands.sdk.llm.utils.metrics import MetricsSnapshot
+
+        litellm_msg = LiteLLMMessage.model_validate(
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_finish",
+                        "type": "function",
+                        "function": {
+                            "name": "finish",
+                            "arguments": '{"message": "Task complete"}',
+                        },
+                    }
+                ],
+            }
+        )
+
+        raw_response = ModelResponse(
+            id="test-resp-finish",
+            created=int(time.time()),
+            model="test-model",
+            choices=[Choices(index=0, finish_reason="stop", message=litellm_msg)],
+        )
+
+        message = Message.from_llm_chat_message(litellm_msg)
+        metrics_snapshot = MetricsSnapshot(
+            model_name="test-model",
+            accumulated_cost=0.0,
+            max_budget_per_task=None,
+            accumulated_token_usage=None,
+        )
+
+        return LLMResponse(
+            message=message, metrics=metrics_snapshot, raw_response=raw_response
+        )
+
+    monkeypatch.setattr(
+        LLM, "completion", fake_completion_with_finish_tool, raising=True
+    )
+
+    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    agent = Agent(llm=llm, tools=[])
+    workspace = RemoteWorkspace(
+        host=server_env["host"], working_dir="/tmp/workspace/project"
+    )
+
+    conv: RemoteConversation = Conversation(agent=agent, workspace=workspace)
+
+    # Inject WS lag *only* for finish Action/Observation events.
+    assert conv._ws_client is not None
+    orig_cb = conv._ws_client.callback
+
+    def delayed_cb(event: Event) -> None:
+        if (
+            isinstance(event, (ActionEvent, ObservationEvent))
+            and getattr(event, "tool_name", None) == "finish"
+        ):
+            time.sleep(ws_delay_s)
+        orig_cb(event)
+
+    conv._ws_client.callback = delayed_cb
+
+    conv.send_message("Complete the task")
+    conv.run()
+
+    ws_events = list(conv.state.events)
+
+    with httpx.Client(base_url=server_env["host"]) as client:
+        response = client.get(
+            f"/api/conversations/{conv._id}/events/search",
+            params={"limit": 100},
+        )
+        response.raise_for_status()
+        rest_data = response.json()
+        rest_events = [Event.model_validate(item) for item in rest_data["items"]]
+
+    ws_action = [
+        e for e in ws_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
+    rest_action = [
+        e for e in rest_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
+
+    # Server must have persisted the finish ActionEvent.
+    assert len(rest_action) >= 1
+
+    # Under WS lag, the client *may* be missing it immediately.
+    # If we already have it, the system behaved correctly without needing
+    # a post-run reconcile for this timing.
+    #
+    # What we must always ensure is that reconcile() is harmless and yields a
+    # complete event list.
+    if len(ws_action) == 0:
+        # Reconcile after completion should fetch the missing event.
+        conv.state.events.reconcile()
+        ws_events_after = list(conv.state.events)
+        ws_action_after = [
+            e
+            for e in ws_events_after
+            if isinstance(e, ActionEvent) and e.tool_name == "finish"
+        ]
+        assert len(ws_action_after) >= 1
+    else:
+        # Still validate reconcile is idempotent / does not drop events.
+        before_ids = {e.id for e in conv.state.events}
+        conv.state.events.reconcile()
+        after_ids = {e.id for e in conv.state.events}
+        assert before_ids.issubset(after_ids)
+
+    conv.close()
+
+
 @pytest.mark.skip(
-    reason="Flaky due to WebSocket race condition - see issue #1785: "
-    "https://github.com/OpenHands/software-agent-sdk/issues/1785"
+    reason="Flaky due to WebSocket disconnect timing - ActionEvent may be emitted "
+    "after client starts closing, causing delivery failure. This is a separate issue "
+    "from #1785 (subscription race). Test should use REST API for event verification."
 )
 def test_security_risk_field_with_live_server(
     server_env, monkeypatch: pytest.MonkeyPatch

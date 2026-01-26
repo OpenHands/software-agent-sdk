@@ -14,7 +14,6 @@ Precedence (later overrides earlier):
 sandbox < public < user < org < project
 """
 
-import os
 import shutil
 import subprocess
 import tempfile
@@ -37,6 +36,7 @@ from openhands.sdk.context.skills.utils import (
     update_skills_repository,
 )
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 
 
 logger = get_logger(__name__)
@@ -120,6 +120,8 @@ def load_org_skills_from_url(
         # Clone the organization repository (shallow clone for efficiency)
         logger.info(f"Cloning organization skills repository for {org_name}")
         try:
+            env = sanitized_env()
+            env["GIT_TERMINAL_PROMPT"] = "0"
             subprocess.run(
                 [
                     "git",
@@ -132,7 +134,7 @@ def load_org_skills_from_url(
                 check=True,
                 capture_output=True,
                 timeout=120,
-                env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+                env=env,
             )
         except subprocess.CalledProcessError:
             # Repository doesn't exist or access denied - this is expected.
