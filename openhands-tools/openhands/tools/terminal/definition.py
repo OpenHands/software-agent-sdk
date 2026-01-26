@@ -4,7 +4,7 @@ import os
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field
 
 
 if TYPE_CHECKING:
@@ -99,49 +99,6 @@ class TerminalObservation(Observation):
         default=None,
         description="Directory where full output files are saved",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _truncate_content_for_storage(cls, data):
-        """Truncate large terminal outputs before events are persisted.
-
-        TerminalObservation.to_llm_content already truncates what is *sent to the LLM*.
-        However, without this guard we can still persist and stream extremely large
-        command outputs (e.g. massive `ls -R`) that will never be used by the model.
-
-        This keeps the event stream lighter for persistence, REST, and WebSocket
-        consumers.
-        """
-        if not isinstance(data, dict):
-            return data
-
-        content = data.get("content")
-        if not content or not isinstance(content, list):
-            return data
-
-        text_parts: list[str] = []
-        non_text: list[object] = []
-        for item in content:
-            if isinstance(item, TextContent):
-                text_parts.append(item.text)
-            elif isinstance(item, dict) and item.get("type") == "text":
-                text_parts.append(item.get("text") or "")
-            else:
-                non_text.append(item)
-
-        raw_text = "".join(text_parts)
-        if len(raw_text) <= MAX_CMD_OUTPUT_SIZE:
-            return data
-
-        truncated_text = maybe_truncate(
-            content=raw_text,
-            truncate_after=MAX_CMD_OUTPUT_SIZE,
-            save_dir=data.get("full_output_save_dir"),
-            tool_prefix="bash",
-        )
-
-        data["content"] = [TextContent(text=truncated_text)] + non_text
-        return data
 
     @property
     def command_id(self) -> int | None:

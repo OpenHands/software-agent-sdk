@@ -17,6 +17,7 @@ import pytest
 
 from openhands.sdk import TextContent
 from openhands.sdk.logger import get_logger
+from openhands.tools.terminal.constants import MAX_CMD_OUTPUT_SIZE
 from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
@@ -112,6 +113,21 @@ def test_basic_command(terminal_type):
     # Note: prefix may vary between terminal implementations
     assert obs.metadata.exit_code == 0
     assert session.prev_status == TerminalCommandStatus.COMPLETED
+
+    session.close()
+
+
+@parametrize_terminal_types
+def test_session_truncates_large_command_output(terminal_type):
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+
+    # Single-line output that exceeds MAX_CMD_OUTPUT_SIZE.
+    # Use single quotes around the Python snippet to avoid nested-quote issues.
+    obs = session.execute(TerminalAction(command="python3 -c 'print(\"A\" * 40000)'"))
+
+    assert "<response clipped>" in obs.text
+    assert len(obs.text) <= MAX_CMD_OUTPUT_SIZE
 
     session.close()
 

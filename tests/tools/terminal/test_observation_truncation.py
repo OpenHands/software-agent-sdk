@@ -74,68 +74,6 @@ def test_terminal_observation_truncation_over_limit():
     assert "<response clipped>" in result  # Should contain truncation notice
 
 
-def test_terminal_observation_truncates_content_on_init():
-    """Ensure TerminalObservation content itself is truncated before persistence.
-
-    This is distinct from to_llm_content truncation: we want to avoid persisting
-    huge command outputs in the event stream at all.
-    """
-    metadata = CmdOutputMetadata(
-        prefix="",
-        suffix="",
-        working_dir="/tmp",
-        py_interpreter_path="/usr/bin/python",
-        exit_code=0,
-        pid=123,
-    )
-
-    long_output = "X" * (MAX_CMD_OUTPUT_SIZE + 1000)
-
-    observation = TerminalObservation(
-        command="echo test",
-        content=[TextContent(text=long_output)],
-        metadata=metadata,
-    )
-
-    # Stored content should be truncated.
-    assert len(observation.text) <= MAX_CMD_OUTPUT_SIZE
-    assert "<response clipped>" in observation.text
-
-
-def test_terminal_observation_saves_full_output_once(tmp_path):
-    """Full output should be saved once when truncation happens at storage layer."""
-    metadata = CmdOutputMetadata(
-        prefix="",
-        suffix="",
-        working_dir="/tmp",
-        py_interpreter_path="/usr/bin/python",
-        exit_code=0,
-        pid=123,
-    )
-
-    long_output = "Y" * (MAX_CMD_OUTPUT_SIZE + 1000)
-
-    observation = TerminalObservation(
-        command="echo test",
-        content=[TextContent(text=long_output)],
-        metadata=metadata,
-        full_output_save_dir=str(tmp_path),
-    )
-
-    # Stored content should be truncated.
-    assert len(observation.text) <= MAX_CMD_OUTPUT_SIZE
-    assert "<response clipped>" in observation.text
-
-    saved_files = list(tmp_path.glob("bash_output_*.txt"))
-    assert len(saved_files) == 1
-    assert saved_files[0].read_text() == long_output
-
-    # Calling to_llm_content should not create another file.
-    _ = observation.to_llm_content
-    saved_files_after = list(tmp_path.glob("bash_output_*.txt"))
-    assert len(saved_files_after) == 1
-
-
 def test_terminal_observation_truncation_with_error():
     """Test TerminalObservation truncates with error prefix."""
     metadata = CmdOutputMetadata(

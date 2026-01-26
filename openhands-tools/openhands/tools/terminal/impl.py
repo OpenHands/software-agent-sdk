@@ -193,11 +193,6 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
             except Exception:
                 pass
 
-        if observation.full_output_save_dir is None and self.full_output_save_dir:
-            observation = observation.model_copy(
-                update={"full_output_save_dir": self.full_output_save_dir}
-            )
-
         return observation
 
     def close(self) -> None:
