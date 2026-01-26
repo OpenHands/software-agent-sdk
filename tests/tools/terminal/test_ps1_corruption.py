@@ -441,3 +441,174 @@ Some command output here
         assert meta2.pid == 101
         assert meta1.exit_code == 0
         assert meta2.exit_code == 1
+
+
+class TestSyntheticMatchPositionBug:
+    """Tests for the critical bug in _SyntheticMatch position methods.
+
+    The _SyntheticMatch class returns positions from the original corrupted match,
+    not the actual position of the recovered content. This causes incorrect slicing
+    in terminal_session.py when extracting command output between PS1 blocks.
+
+    See: https://github.com/OpenHands/software-agent-sdk/pull/1817#discussion_r2727556034
+    """
+
+    # Corrupted output where ASCII art interrupts the first PS1 block
+    # The second PS1 block is valid and should be recovered
+    CORRUPTED_OUTPUT = """\
+COMMAND OUTPUT BEFORE PS1
+###PS1JSON###
+{
+  "pid": "123",
+  "exit_code": "0",
+  "username": "openhands"
+ASCII ART CORRUPTS THIS BLOCK
+###PS1JSON###
+{
+  "pid": "456",
+  "exit_code": "0",
+  "username": "openhands",
+  "hostname": "localhost",
+  "working_dir": "/workspace",
+  "py_interpreter_path": "/usr/bin/python"
+}
+###PS1END###
+COMMAND OUTPUT AFTER PS1"""
+
+    def test_synthetic_match_positions_are_incorrect(self):
+        """
+        CRITICAL BUG: _SyntheticMatch.start() and .end() return wrong positions.
+
+        When a PS1 block is corrupted and we recover the nested valid block,
+        the _SyntheticMatch class returns positions from the ORIGINAL corrupted
+        match, not the actual position of the recovered content.
+
+        This causes terminal_session.py to extract wrong content when slicing:
+            terminal_content[match.start():match.end()]
+
+        The sliced content will include the corrupted first block and ASCII art,
+        instead of just the recovered valid PS1 block.
+        """
+        matches = CmdOutputMetadata.matches_ps1_metadata(self.CORRUPTED_OUTPUT)
+
+        # We should get 1 match (the recovered valid block)
+        assert len(matches) == 1, f"Expected 1 recovered match, got {len(matches)}"
+
+        match = matches[0]
+
+        # The match.group(0) returns the synthetic full match (correct content)
+        full_match_content = match.group(0)
+        assert "###PS1JSON###" in full_match_content
+        assert "###PS1END###" in full_match_content
+
+        # The JSON content should be valid
+        json_content = match.group(1)
+        assert '"pid": "456"' in json_content
+        assert '"working_dir": "/workspace"' in json_content
+
+        # BUG: Using start() and end() to slice the original string
+        # gives DIFFERENT content than match.group(0)
+        sliced_content = self.CORRUPTED_OUTPUT[match.start() : match.end()]
+
+        # This assertion demonstrates the bug:
+        # The sliced content should equal match.group(0), but it doesn't!
+        # The sliced content includes the corrupted first block and ASCII art.
+        assert sliced_content == full_match_content, (
+            f"CRITICAL BUG: Slicing with match positions gives wrong content!\n"
+            f"Expected (from group(0)):\n{full_match_content!r}\n\n"
+            f"Got (from slicing):\n{sliced_content!r}\n\n"
+            f"The _SyntheticMatch.start() and .end() methods return positions "
+            f"from the original corrupted match, not the recovered content position."
+        )
+
+    def test_content_after_synthetic_match_is_wrong(self):
+        """
+        Test that content AFTER a _SyntheticMatch is extracted incorrectly.
+
+        When terminal_session.py extracts content after the last PS1 block using:
+            terminal_content[ps1_matches[-1].end() + 1:]
+
+        The _SyntheticMatch.end() returns the end of the ORIGINAL corrupted match,
+        not the end of the recovered valid content. This means we miss content
+        that appears after the recovered block but before the original match end.
+        """
+        # Terminal content where the synthetic match's end() is wrong
+        terminal_content = self.CORRUPTED_OUTPUT
+
+        matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
+        assert len(matches) == 1, f"Expected 1 match, got {len(matches)}"
+
+        match = matches[0]
+
+        # Get content after the PS1 block using match.end()
+        # This is what terminal_session.py does
+        content_after = terminal_content[match.end() + 1 :]
+
+        # The expected content after the PS1 block is "COMMAND OUTPUT AFTER PS1"
+        expected_after = "COMMAND OUTPUT AFTER PS1"
+
+        assert expected_after in content_after, (
+            f"CRITICAL BUG: Content after PS1 block is wrong!\n"
+            f"Expected to find: {expected_after!r}\n"
+            f"Got: {content_after!r}\n\n"
+            f"match.end() = {match.end()}\n"
+            f"len(terminal_content) = {len(terminal_content)}\n"
+            f"The _SyntheticMatch.end() returns the wrong position."
+        )
+
+    def test_content_before_synthetic_match_includes_corrupted_data(self):
+        """
+        Test that content BEFORE a _SyntheticMatch includes corrupted data.
+
+        When terminal_session.py extracts content before a PS1 block using:
+            terminal_content[:ps1_matches[0].start()]
+
+        The _SyntheticMatch.start() returns the start of the ORIGINAL corrupted
+        match, not the start of the recovered valid content. This means the
+        "content before" doesn't include the corrupted first block and ASCII art.
+        """
+        terminal_content = self.CORRUPTED_OUTPUT
+
+        matches = CmdOutputMetadata.matches_ps1_metadata(terminal_content)
+        assert len(matches) == 1, f"Expected 1 match, got {len(matches)}"
+
+        match = matches[0]
+
+        # Get content before the PS1 block using match.start()
+        content_before = terminal_content[: match.start()]
+
+        # The expected content before should be "COMMAND OUTPUT BEFORE PS1\n"
+        # But due to the bug, we get less content because start() points to
+        # the beginning of the corrupted block, not the recovered block
+        expected_before = "COMMAND OUTPUT BEFORE PS1"
+
+        assert expected_before in content_before, (
+            f"Content before PS1 block should include: {expected_before!r}\n"
+            f"Got: {content_before!r}\n"
+            f"match.start() = {match.start()}"
+        )
+
+        # The actual position of the recovered content is AFTER the corrupted
+        # first block. Let's verify the bug by checking that the content
+        # between start() and the actual recovered content position is NOT empty
+        recovered_json = match.group(1)
+        actual_recovered_start = terminal_content.find(recovered_json)
+
+        # The bug: match.start() points to the corrupted block start,
+        # not the recovered content start
+        content_between_start_and_recovered = terminal_content[
+            match.start() : actual_recovered_start
+        ]
+
+        # This content should be empty if positions were correct,
+        # but it contains the corrupted first block
+        assert len(content_between_start_and_recovered) > 0, (
+            "If positions were correct, there would be no content between "
+            "match.start() and the actual recovered content position"
+        )
+        assert "ASCII ART CORRUPTS THIS BLOCK" in content_between_start_and_recovered, (
+            f"CRITICAL BUG: The content between match.start() and actual "
+            f"recovered position contains corrupted data:\n"
+            f"{content_between_start_and_recovered!r}\n\n"
+            f"This proves _SyntheticMatch.start() returns the wrong position."
+        )
