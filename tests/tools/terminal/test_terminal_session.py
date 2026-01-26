@@ -122,7 +122,9 @@ def test_session_truncates_large_command_output(monkeypatch, terminal_type):
     # (Avoid generating 30k+ output in unit tests.)
     small_max = 600
 
-    from openhands.tools.terminal.terminal import terminal_session as terminal_session_mod
+    from openhands.tools.terminal.terminal import (
+        terminal_session as terminal_session_mod,
+    )
 
     monkeypatch.setattr(terminal_session_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
 
@@ -138,19 +140,20 @@ def test_session_truncates_large_command_output(monkeypatch, terminal_type):
     session.close()
 
 
-
 @parametrize_terminal_types
 def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type):
     # Ensure that even if the final formatted text is truncated for the LLM,
     # we still preserve the metadata suffix (exit code / timeout messages).
     small_max = 600
 
-    from openhands.tools.terminal.terminal import terminal_session as terminal_session_mod
     from openhands.tools.terminal import definition as terminal_definition_mod
+    from openhands.tools.terminal.terminal import (
+        terminal_session as terminal_session_mod,
+    )
 
-    # TerminalSession truncates obs.text (command output) before creating the observation.
+    # TerminalSession truncates obs.text (command output) before creating obs.
     monkeypatch.setattr(terminal_session_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
-    # TerminalObservation.to_llm_content also truncates the combined string.
+    # TerminalObservation.to_llm_content truncates the combined formatted string.
     monkeypatch.setattr(terminal_definition_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
 
     session = create_terminal_session(
@@ -163,7 +166,10 @@ def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type
 
     assert obs.metadata.suffix == "\n[The command completed with exit code 0.]"
 
-    llm_text = obs.to_llm_content[0].text
+    llm_content = obs.to_llm_content
+    assert isinstance(llm_content[0], TextContent)
+    llm_text = llm_content[0].text
+
     assert "<response clipped>" in llm_text
     assert "[The command completed with exit code 0.]" in llm_text
 
