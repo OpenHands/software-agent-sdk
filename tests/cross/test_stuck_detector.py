@@ -73,6 +73,67 @@ def test_history_too_short():
     assert stuck_detector.is_stuck() is False
 
 
+def test_is_stuck_does_not_materialize_full_history():
+    llm = LLM(model="gpt-4o-mini", usage_id="test-llm")
+    agent = Agent(llm=llm)
+    state = ConversationState.create(
+        id=uuid.uuid4(), agent=agent, workspace=LocalWorkspace(working_dir="/tmp")
+    )
+
+    # Create a large backlog of irrelevant events before the last user message.
+    for i in range(500):
+        state.events.append(
+            MessageEvent(
+                source="user",
+                llm_message=Message(
+                    role="user", content=[TextContent(text=f"old-{i}")]
+                ),
+            )
+        )
+
+    # Last user message.
+    state.events.append(
+        MessageEvent(
+            source="user",
+            llm_message=Message(role="user", content=[TextContent(text="start")]),
+        )
+    )
+
+    # Trigger repeating action/observation loop.
+    for i in range(4):
+        action = ActionEvent(
+            source="agent",
+            thought=[TextContent(text="I need to run ls command")],
+            action=TerminalAction(command="ls"),
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+            tool_call=MessageToolCall(
+                id=f"call_{i}",
+                name="terminal",
+                arguments='{"command": "ls"}',
+                origin="completion",
+            ),
+            llm_response_id=f"response_{i}",
+        )
+        state.events.append(action)
+
+        observation = ObservationEvent(
+            source="environment",
+            observation=TerminalObservation.from_text(
+                text="file1.txt\nfile2.txt",
+                command="ls",
+                exit_code=0,
+            ),
+            action_id=action.id,
+            tool_name="terminal",
+            tool_call_id=f"call_{i}",
+        )
+        state.events.append(observation)
+
+    stuck_detector = StuckDetector(state)
+    assert stuck_detector.is_stuck() is True
+
+
 def test_repeating_action_observation_not_stuck_less_than_4_repeats():
     """Test detection of repeating action-observation cycles."""
     llm = LLM(model="gpt-4o-mini", usage_id="test-llm")

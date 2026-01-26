@@ -53,9 +53,16 @@ class StuckDetector:
     def alternating_pattern_threshold(self) -> int:
         return self.thresholds.alternating_pattern
 
+    _max_events_to_scan: int = 200
+
     def is_stuck(self) -> bool:
-        """Check if the agent is currently stuck."""
-        events = list(self.state.events)
+        """Check if the agent is currently stuck.
+
+        Note: we only need a window of the most recent events to detect loops.
+        This avoids materializing the full event history (which may be file-backed
+        and very large) into memory.
+        """
+        events = list(self.state.events[-self._max_events_to_scan :])
 
         # Only look at history after the last user message
         last_user_msg_index = next(
