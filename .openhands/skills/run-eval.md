@@ -40,11 +40,8 @@ curl -X POST \
 
 ## Monitoring
 
-**Datadog script** (requires `OpenHands/evaluation` repo):
+**Datadog script** (requires `OpenHands/evaluation` repo; DD_API_KEY, DD_APP_KEY, and DD_SITE environment variables are set):
 ```bash
-# Clone the evaluation repo first if not already done
-# git clone https://github.com/OpenHands/evaluation.git
-cd evaluation
 DD_API_KEY=$DD_API_KEY DD_APP_KEY=$DD_APP_KEY DD_SITE=$DD_SITE \
   python scripts/analyze_evals.py --job-prefix <EVAL_RUN_ID> --time-range 60
 # EVAL_RUN_ID format: typically the workflow run ID from GitHub Actions
@@ -59,7 +56,7 @@ kubectl logs -f job/eval-eval-<RUN_ID>-<MODEL_SLUG> -n evaluation-jobs
 
 | Error | Cause | Fix |
 |-------|-------|-----|
-| `503 Service Unavailable` | Infrastructure overloaded | Ask user to stop some evaluation runs using kubectl |
+| `503 Service Unavailable` | Infrastructure overloaded | Ask user to stop some evaluation runs |
 | `429 Too Many Requests` | Rate limiting | Wait or reduce concurrency |
 | `failed after 3 retries` | Instance failures | Check Datadog logs for root cause |
 
