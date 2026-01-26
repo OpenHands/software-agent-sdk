@@ -40,11 +40,14 @@ curl -X POST \
 
 ## Monitoring
 
-**Datadog script** (in `OpenHands/evaluation` repo):
+**Datadog script** (requires `OpenHands/evaluation` repo):
 ```bash
+# Clone the evaluation repo first if not already done
+# git clone https://github.com/OpenHands/evaluation.git
+cd evaluation
 DD_API_KEY=$DD_API_KEY DD_APP_KEY=$DD_APP_KEY DD_SITE=$DD_SITE \
   python scripts/analyze_evals.py --job-prefix <EVAL_RUN_ID> --time-range 60
-```
+# EVAL_RUN_ID format: typically the workflow run ID from GitHub Actions
 
 **kubectl** (requires cluster access):
 ```bash
