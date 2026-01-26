@@ -34,7 +34,7 @@ curl -X POST \
 - `benchmark`: `swebench`, `swebenchmultimodal`, `gaia`, `swtbench`, `commit0`, `multiswebench`
 - `eval_limit`: `1`, `50`, `100`, `200`, `500`
 - `model_ids`: See `.github/run-eval/resolve_model_config.py` for available models
-- `benchmarks_branch`: Use feature branch to test benchmarks changes before merging
+- `benchmarks_branch`: Use feature branch from the benchmarks repo to test benchmark changes before merging
 
 **Alternative:** Add labels `run-eval-1`, `run-eval-50`, `run-eval-200`, `run-eval-500` to PRs.
 
