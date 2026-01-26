@@ -25,7 +25,7 @@ def update_last_execution_time():
     _last_event_time = time.time()
 
 
-def mark_initialization_complete():
+def mark_initialization_complete() -> None:
     """Mark the server as fully initialized and ready to serve requests.
 
     This should be called after all services (VSCode, desktop, tool preload, etc.)
