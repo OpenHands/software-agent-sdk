@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
-from typing import SupportsIndex, overload
+from typing import TYPE_CHECKING, SupportsIndex, overload
 from urllib.parse import urlparse
 
 import httpx
@@ -14,6 +14,10 @@ import websockets
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
 from openhands.sdk.conversation.exceptions import (
@@ -1112,6 +1116,28 @@ class RemoteConversation(BaseConversation):
             HTTPError: If the server returns an error (e.g., no condenser configured).
         """
         _send_request(self._client, "POST", f"/api/conversations/{self._id}/condense")
+
+    def execute_tool(self, tool_name: str, action: "Action") -> "Observation":
+        """Execute a tool directly without going through the agent loop.
+
+        Note: This method is not yet supported for RemoteConversation.
+        Tool execution for remote conversations happens on the server side
+        during the normal agent loop.
+
+        Args:
+            tool_name: The name of the tool to execute
+            action: The action to pass to the tool executor
+
+        Raises:
+            NotImplementedError: Always, as this feature is not yet supported
+                for remote conversations.
+        """
+        raise NotImplementedError(
+            "execute_tool is not yet supported for RemoteConversation. "
+            "Tool execution for remote conversations happens on the server side "
+            "during the normal agent loop. Use LocalConversation for direct "
+            "tool execution."
+        )
 
     def close(self) -> None:
         """Close the conversation and clean up resources.
