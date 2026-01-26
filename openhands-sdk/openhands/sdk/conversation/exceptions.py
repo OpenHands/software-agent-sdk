@@ -4,6 +4,24 @@ from openhands.sdk.conversation.types import ConversationID
 ISSUE_URL = "https://github.com/OpenHands/software-agent-sdk/issues/new"
 
 
+class WebSocketConnectionError(RuntimeError):
+    """Raised when WebSocket connection fails to establish within the timeout."""
+
+    def __init__(
+        self,
+        conversation_id: ConversationID,
+        timeout: float,
+        message: str | None = None,
+    ) -> None:
+        self.conversation_id = conversation_id
+        self.timeout = timeout
+        default_msg = (
+            f"WebSocket subscription did not complete within {timeout} seconds "
+            f"for conversation {conversation_id}. Events may be missed."
+        )
+        super().__init__(message or default_msg)
+
+
 class ConversationRunError(RuntimeError):
     """Raised when a conversation run fails.
 
