@@ -124,7 +124,7 @@ class TerminalObservation(Observation):
         if self.metadata.exit_code != -1:
             ret += f"\n[Command finished with exit code {self.metadata.exit_code}]"
 
-        # Ensure the LLM payload remains bounded.
+        # Use enhanced truncation with file saving if working directory is available
         truncated_text = maybe_truncate(
             content=ret,
             truncate_after=MAX_CMD_OUTPUT_SIZE,
