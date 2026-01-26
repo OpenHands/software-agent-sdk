@@ -2,7 +2,10 @@ import uuid
 
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation.state import ConversationState
-from openhands.sdk.conversation.stuck_detector import StuckDetector
+from openhands.sdk.conversation.stuck_detector import (
+    MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION,
+    StuckDetector,
+)
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -163,7 +166,7 @@ def test_is_stuck_uses_only_recent_event_window():
     sl = spy_events.slice_requests[0]
     assert sl.step is None
     assert sl.stop is None
-    assert sl.start == -stuck_detector._max_events_to_scan
+    assert sl.start == -MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION
 
 
 def test_is_stuck_without_recent_user_message_still_detects_loop():
