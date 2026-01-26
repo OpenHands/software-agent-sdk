@@ -116,7 +116,7 @@ class TerminalObservation(Observation):
             return data
 
         content = data.get("content")
-        if not content:
+        if not content or not isinstance(content, list):
             return data
 
         text_parts: list[str] = []
