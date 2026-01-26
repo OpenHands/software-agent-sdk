@@ -15,6 +15,9 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+# Maximum recent events to scan for stuck detection.
+# This window should be large enough to capture repetitive patterns
+# (4 repeats × 2 events per cycle = 8 events minimum, plus buffer for user messages)
 MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION: int = 20
 
 
