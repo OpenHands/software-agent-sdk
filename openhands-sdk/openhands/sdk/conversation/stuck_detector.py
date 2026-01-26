@@ -67,7 +67,6 @@ class StuckDetector:
         If a user message exists within this window, only events after it are checked.
         Otherwise, all events in the window are analyzed.
         """
-        """
         events = list(self.state.events[-MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION:])
 
         # Only look at history after the last user message
@@ -263,10 +262,10 @@ class StuckDetector:
         return False
 
     def _is_stuck_context_window_error(self, _events: list[Event]) -> bool:
-        """Detects if we're stuck in a loop of context window errors.
+        """Detects if we are stuck in a loop of context window errors.
 
         This happens when we repeatedly get context window errors and try to trim,
-        but the trimming doesn't work, causing us to get more context window errors.
+        but the trimming does not work, causing us to get more context window errors.
         The pattern is repeated AgentCondensationObservation events without any other
         events between them.
         """
