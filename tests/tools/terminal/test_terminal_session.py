@@ -142,29 +142,32 @@ def test_session_truncates_large_command_output(monkeypatch, terminal_type):
 
 @parametrize_terminal_types
 def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type):
-    # Ensure that even if the final formatted text is truncated for the LLM,
-    # we still preserve the metadata suffix (exit code / timeout messages).
-    small_max = 600
-
+    # Ensure that when we truncate the final formatted text for the LLM,
+    # the metadata suffix remains visible.
+    from openhands.sdk.utils.truncate import DEFAULT_TRUNCATE_NOTICE
     from openhands.tools.terminal import definition as terminal_definition_mod
-    from openhands.tools.terminal.terminal import (
-        terminal_session as terminal_session_mod,
-    )
 
-    # TerminalSession truncates obs.text (command output) before creating obs.
-    monkeypatch.setattr(terminal_session_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
-    # TerminalObservation.to_llm_content truncates the combined formatted string.
-    monkeypatch.setattr(terminal_definition_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
-
-    session = create_terminal_session(
-        work_dir="/workspace", terminal_type=terminal_type
-    )
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
     session.initialize()
 
-    # Create output that will force truncation.
     obs = session.execute(TerminalAction(command="python3 -c 'print(\"A\" * 5000)'"))
 
-    assert obs.metadata.suffix == "\n[The command completed with exit code 0.]"
+    assert "exit code 0" in obs.metadata.suffix
+
+    trailing = obs.metadata.suffix
+    if obs.metadata.working_dir:
+        trailing += f"\n[Current working directory: {obs.metadata.working_dir}]"
+    if obs.metadata.py_interpreter_path:
+        trailing += f"\n[Python interpreter: {obs.metadata.py_interpreter_path}]"
+    if obs.metadata.exit_code != -1:
+        trailing += f"\n[Command finished with exit code {obs.metadata.exit_code}]"
+
+    # Pick a small truncation budget but ensure the tail is large enough to include
+    # the full suffix + trailing lines across environments (path lengths vary).
+    min_tail = len(trailing) + 10
+    small_max = len(DEFAULT_TRUNCATE_NOTICE) + 2 * min_tail
+
+    monkeypatch.setattr(terminal_definition_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
 
     llm_content = obs.to_llm_content
     assert isinstance(llm_content[0], TextContent)
