@@ -1,8 +1,6 @@
 ---
 name: run-eval
-type: knowledge
-version: 1.0.0
-agent: CodeActAgent
+description: Trigger and monitor evaluation runs for benchmarks like SWE-bench, GAIA, and others. Use when running evaluations via GitHub Actions or monitoring eval progress through Datadog and kubectl.
 triggers:
 - run eval
 - trigger eval
