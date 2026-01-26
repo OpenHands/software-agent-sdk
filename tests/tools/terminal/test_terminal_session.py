@@ -17,7 +17,6 @@ import pytest
 
 from openhands.sdk import TextContent
 from openhands.sdk.logger import get_logger
-from openhands.tools.terminal.constants import MAX_CMD_OUTPUT_SIZE
 from openhands.tools.terminal.definition import (
     TerminalAction,
     TerminalObservation,
@@ -118,16 +117,55 @@ def test_basic_command(terminal_type):
 
 
 @parametrize_terminal_types
-def test_session_truncates_large_command_output(terminal_type):
+def test_session_truncates_large_command_output(monkeypatch, terminal_type):
+    # Keep this test fast by temporarily lowering the max truncation size.
+    # (Avoid generating 30k+ output in unit tests.)
+    small_max = 600
+
+    from openhands.tools.terminal.terminal import terminal_session as terminal_session_mod
+
+    monkeypatch.setattr(terminal_session_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
+
     session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
     session.initialize()
 
-    # Single-line output that exceeds MAX_CMD_OUTPUT_SIZE.
-    # Use single quotes around the Python snippet to avoid nested-quote issues.
-    obs = session.execute(TerminalAction(command="python3 -c 'print(\"A\" * 40000)'"))
+    # Single-line output that exceeds our patched MAX.
+    obs = session.execute(TerminalAction(command="python3 -c 'print(\"A\" * 5000)'"))
 
     assert "<response clipped>" in obs.text
-    assert len(obs.text) <= MAX_CMD_OUTPUT_SIZE
+    assert len(obs.text) <= small_max
+
+    session.close()
+
+
+
+@parametrize_terminal_types
+def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type):
+    # Ensure that even if the final formatted text is truncated for the LLM,
+    # we still preserve the metadata suffix (exit code / timeout messages).
+    small_max = 600
+
+    from openhands.tools.terminal.terminal import terminal_session as terminal_session_mod
+    from openhands.tools.terminal import definition as terminal_definition_mod
+
+    # TerminalSession truncates obs.text (command output) before creating the observation.
+    monkeypatch.setattr(terminal_session_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
+    # TerminalObservation.to_llm_content also truncates the combined string.
+    monkeypatch.setattr(terminal_definition_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
+
+    session = create_terminal_session(
+        work_dir="/workspace", terminal_type=terminal_type
+    )
+    session.initialize()
+
+    # Create output that will force truncation.
+    obs = session.execute(TerminalAction(command="python3 -c 'print(\"A\" * 5000)'"))
+
+    assert obs.metadata.suffix == "\n[The command completed with exit code 0.]"
+
+    llm_text = obs.to_llm_content[0].text
+    assert "<response clipped>" in llm_text
+    assert "[The command completed with exit code 0.]" in llm_text
 
     session.close()
 
