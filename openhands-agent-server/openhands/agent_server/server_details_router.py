@@ -36,11 +36,6 @@ def mark_initialization_complete():
     _initialization_complete = True
 
 
-def is_ready() -> bool:
-    """Check if the server has completed initialization."""
-    return _initialization_complete
-
-
 @server_details_router.get("/alive")
 async def alive():
     """Basic liveness check - returns OK if the server process is running."""
