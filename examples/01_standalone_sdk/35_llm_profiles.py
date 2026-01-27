@@ -55,7 +55,7 @@ def ensure_profile_exists(registry: LLMRegistry, name: str) -> None:
 
 def load_profile(registry: LLMRegistry, name: str) -> LLM:
     """Load profile and merge credentials from environment if needed.
-    
+
     Note: Profiles should be saved without secrets (include_secrets=False)
     and credentials provided via environment variables for better security.
     """
