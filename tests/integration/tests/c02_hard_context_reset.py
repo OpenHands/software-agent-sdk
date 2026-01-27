@@ -11,6 +11,7 @@ from tests.integration.base import BaseIntegrationTest, TestResult
 
 INSTRUCTION: str = "This test defines its own instructions in run_instructions()."
 
+
 class HardContextResetTest(BaseIntegrationTest):
     """Test hard context reset when condensation range is invalid.
 
