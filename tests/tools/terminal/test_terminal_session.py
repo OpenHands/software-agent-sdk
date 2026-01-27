@@ -141,6 +141,36 @@ def test_session_truncates_large_command_output(monkeypatch, terminal_type):
 
 
 @parametrize_terminal_types
+def test_session_truncates_multiline_output(monkeypatch, terminal_type):
+    small_max = 600
+
+    from openhands.tools.terminal.terminal import (
+        terminal_session as terminal_session_mod,
+    )
+
+    monkeypatch.setattr(terminal_session_mod, "MAX_CMD_OUTPUT_SIZE", small_max)
+
+    session = create_terminal_session(work_dir=os.getcwd(), terminal_type=terminal_type)
+    session.initialize()
+
+    # Multi-line output that exceeds our patched MAX.
+    # Use printf to generate many short lines, exercising newline boundaries.
+    obs = session.execute(
+        TerminalAction(command="bash -lc \"printf 'A\\n%.0s' {1..5000}\"")
+    )
+
+    assert "<response clipped>" in obs.text
+    assert len(obs.text) <= small_max
+
+    # Some backends may include terminal control sequences (e.g. bracketed paste).
+    # Ensure we still get newline-separated output and truncation doesn't break it.
+    assert "A\n" in obs.text
+    assert obs.text.count("\n") > 10
+
+    session.close()
+
+
+@parametrize_terminal_types
 def test_truncation_preserves_metadata_in_llm_content(monkeypatch, terminal_type):
     # Ensure that when we truncate the final formatted text for the LLM,
     # the metadata suffix remains visible.
