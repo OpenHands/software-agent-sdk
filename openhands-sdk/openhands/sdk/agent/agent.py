@@ -113,16 +113,42 @@ class Agent(AgentBase):
 
         # NOTE: state.events may be file-backed (EventLog). Avoid materializing full
         # history via list(state.events) here.
-        has_system_prompt = any(
-            isinstance(e, SystemPromptEvent) for e in state.events[:5]
-        )
+        #
+        # init_state is normally called on a fresh conversation (very few events),
+        # but can also be hit on resume. In the resume case we still need to avoid
+        # loading the full history into memory.
+        #
+        # Semantics:
+        # - SystemPromptEvent should be the first event. We do a fast head check and,
+        #   if needed, fall back to a bounded scan of the tail (to avoid false
+        #   negatives without scanning N events).
+        # - User messages should never exist without a system prompt; we check the
+        #   head and, for large histories, the tail as well.
+        INIT_STATE_HEAD_CHECK = 5
+        INIT_STATE_TAIL_CHECK = 200
+
+        head_events = state.events[:INIT_STATE_HEAD_CHECK]
+        tail_events = state.events[-INIT_STATE_TAIL_CHECK:]
+
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in head_events)
+        if not has_system_prompt and event_count > INIT_STATE_HEAD_CHECK:
+            has_system_prompt = any(
+                isinstance(e, SystemPromptEvent) for e in tail_events
+            )
+
         has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user"
-            for e in state.events[:50]
+            isinstance(e, MessageEvent) and e.source == "user" for e in head_events
         )
-        has_any_llm_event = any(
-            isinstance(e, LLMConvertibleEvent) for e in state.events[:50]
-        )
+        if not has_user_message and event_count > INIT_STATE_HEAD_CHECK:
+            has_user_message = any(
+                isinstance(e, MessageEvent) and e.source == "user" for e in tail_events
+            )
+
+        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in head_events)
+        if not has_any_llm_event and event_count > INIT_STATE_HEAD_CHECK:
+            has_any_llm_event = any(
+                isinstance(e, LLMConvertibleEvent) for e in tail_events
+            )
 
         # Log state for debugging initialization order issues
         logger.debug(
@@ -146,8 +172,7 @@ class Agent(AgentBase):
         # Assert: If there are user messages but no system prompt, something is wrong
         # The system prompt should always be added before any user messages
         if has_user_message:
-            debug_events = list(state.events[:50])
-            event_types = [type(e).__name__ for e in debug_events]
+            event_types = [type(e).__name__ for e in state.events[:50]]
             logger.error(
                 f"init_state: User message exists without SystemPromptEvent! "
                 f"conversation_id={state.id}, events={event_types}"
