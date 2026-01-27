@@ -133,12 +133,13 @@ class Agent(AgentBase):
         # - Local conversations start empty and init_state is responsible for adding
         #   the SystemPromptEvent as the first event.
         # - Remote conversations may receive an initial ConversationStateUpdateEvent
-        #   from the agent-server immediately after subscription, making the
-        #   SystemPromptEvent appear as the second event.
+        #   from the agent-server immediately after subscription. In a typical remote
+        #   session prefix you may see:
+        #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
         #
-        # We intentionally only inspect the first 2 events to enforce this invariant
-        # without scanning full history.
-        INIT_STATE_PREFIX_EVENTS = 2
+        # We intentionally only inspect the first 3 events to enforce this invariant
+        # and catch out-of-order early user messages without scanning full history.
+        INIT_STATE_PREFIX_EVENTS = 3
 
         prefix_events = state.events[:INIT_STATE_PREFIX_EVENTS]
 
