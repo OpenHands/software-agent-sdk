@@ -142,6 +142,13 @@ def test_session_truncates_large_command_output(monkeypatch, terminal_type):
 
 @parametrize_terminal_types
 def test_session_truncates_multiline_output(monkeypatch, terminal_type):
+    """Ensure session-level truncation handles large multi-line outputs safely.
+
+    This specifically exercises newline-heavy output to catch regressions where
+    truncation might split/strip lines unexpectedly or behave differently than
+    single-line output.
+    """
+
     small_max = 600
 
     from openhands.tools.terminal.terminal import (
