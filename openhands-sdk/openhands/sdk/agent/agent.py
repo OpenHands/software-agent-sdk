@@ -139,7 +139,7 @@ class Agent(AgentBase):
         #
         # We intentionally only inspect the first 3 events to enforce this invariant.
         # Note: Do NOT assume this prefix contains all early user interactions; on
-        # remote conversations additional events can be inserted/reordered at the
+        # remote conversations an additional event can be inserted at the
         # head during initial sync (e.g., ConversationStateUpdateEvent).
         INIT_STATE_PREFIX_EVENTS = 3
 
