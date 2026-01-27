@@ -127,6 +127,10 @@ def test_validate_profile_reports_errors(tmp_path):
     assert not ok
     assert any("model" in message for message in errors)
 
+    ok, errors = registry.validate_profile({"kind": "profile_ref", "profile_id": "x"})
+    assert not ok
+    assert any("kind=profile_ref" in message for message in errors)
+
 
 def test_get_profile_path_rejects_traversal(tmp_path):
     registry = LLMRegistry(profile_dir=tmp_path)

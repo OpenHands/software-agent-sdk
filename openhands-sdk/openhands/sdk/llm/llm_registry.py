@@ -94,6 +94,17 @@ class _LLMProfileStore:
 
     @staticmethod
     def validate_profile(data: Mapping[str, Any]) -> tuple[bool, list[str]]:
+        """Validate an on-disk profile payload.
+
+        Profiles are full LLM payloads (optionally without secrets). They must not
+        be persisted profile references (kind=profile_ref).
+        """
+
+        if data.get("kind") == "profile_ref":
+            return False, [
+                "Profiles must be full LLM payloads; kind=profile_ref is invalid"
+            ]
+
         try:
             LLM.model_validate(dict(data))
         except ValidationError as exc:
