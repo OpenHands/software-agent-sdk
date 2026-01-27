@@ -25,6 +25,7 @@ dev = [
     "pyinstaller>=6.16.0",
     "streamlit>=1.49.1",
     "pytest-timeout>=2.4.0",
+    "build>=1.4.0",
 ]
 
 # Ruff configuration

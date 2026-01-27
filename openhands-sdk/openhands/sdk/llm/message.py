@@ -14,7 +14,6 @@ from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import warn_deprecated
 
 
@@ -170,21 +169,12 @@ class TextContent(BaseContent):
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", populate_by_name=True
     )
-    enable_truncation: bool = True
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""
-        text = self.text
-        if self.enable_truncation and len(text) > DEFAULT_TEXT_CONTENT_LIMIT:
-            logger.warning(
-                f"TextContent text length ({len(text)}) exceeds limit "
-                f"({DEFAULT_TEXT_CONTENT_LIMIT}), truncating"
-            )
-            text = maybe_truncate(text, DEFAULT_TEXT_CONTENT_LIMIT)
-
         data: dict[str, str | dict[str, str]] = {
             "type": self.type,
-            "text": text,
+            "text": self.text,
         }
         if self.cache_prompt:
             data["cache_control"] = {"type": "ephemeral"}
