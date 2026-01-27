@@ -13,7 +13,7 @@ on:
             base_image:
                 description: Base runtime image
                 type: string
-                default: nikolaik/python-nodejs:python3.12-nodejs22-slim
+                default: nikolaik/python-nodejs:python3.13-nodejs22-slim
             image:
                 description: GHCR image name
                 type: string
@@ -40,6 +40,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
+                  python-version: '3.13'
             - name: Install dependencies
               run: uv sync --dev
 
@@ -127,6 +128,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
+                  python-version: '3.13'
 
             - name: Install Node.js (for npx)
               uses: actions/setup-node@v6
@@ -162,13 +164,13 @@ jobs:
                     # Python variant
                     - variant: python
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
                       runner: blacksmith-8vcpu-ubuntu-2404
                       platform: linux/amd64
 
                     - variant: python
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
                       runner: blacksmith-8vcpu-ubuntu-2404-arm
                       platform: linux/arm64
 
@@ -220,6 +222,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
+                  python-version: '3.13'
 
             - name: Set up Docker Buildx with Blacksmith
               uses: useblacksmith/setup-docker-builder@v1
