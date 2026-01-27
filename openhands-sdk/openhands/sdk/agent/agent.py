@@ -137,10 +137,8 @@ class Agent(AgentBase):
         #   session prefix you may see:
         #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
         #
-        # We intentionally only inspect the first 3 events to enforce this invariant.
-        # Note: Do NOT assume this prefix contains all early user interactions; on
-        # remote conversations an additional event can be inserted at the
-        # head during initial sync (e.g., ConversationStateUpdateEvent).
+        # We intentionally only inspect the first 3 events (cheap for both local and
+        # remote) to enforce this invariant.
         INIT_STATE_PREFIX_EVENTS = 3
 
         prefix_events = state.events[:INIT_STATE_PREFIX_EVENTS]
@@ -149,17 +147,12 @@ class Agent(AgentBase):
         has_user_message = any(
             isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
         )
-        has_any_llm_event = any(
-            isinstance(e, LLMConvertibleEvent) for e in prefix_events
-        )
-
         # Log state for debugging initialization order issues
         logger.debug(
             f"init_state called: conversation_id={state.id}, "
             f"event_count={event_count}, "
             f"has_system_prompt={has_system_prompt}, "
-            f"has_user_message={has_user_message}, "
-            f"has_any_llm_event={has_any_llm_event}"
+            f"has_user_message={has_user_message}"
         )
 
         if has_system_prompt:
@@ -174,7 +167,8 @@ class Agent(AgentBase):
         # Assert: A user message should never appear before the system prompt.
         #
         # NOTE: This is a best-effort check based on the first few events only.
-        # Remote conversations may reorder events during initial sync.
+        # Remote conversations can include a ConversationStateUpdateEvent near the
+        # start, so we scan a small prefix window.
         if has_user_message:
             event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
