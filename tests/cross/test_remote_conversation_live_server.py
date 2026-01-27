@@ -133,9 +133,11 @@ def server_env(
         thread.join(timeout=2)
 
         # Clean up any leftover directories created during the test
+        # Use ignore_errors=True to handle race conditions where the server may still
+        # be writing files during cleanup
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
-            shutil.rmtree(cwd_conversations)
+            shutil.rmtree(cwd_conversations, ignore_errors=True)
 
 
 @pytest.fixture
@@ -306,9 +308,11 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     conv.close()
 
     # Clean up any conversation directories that might have been created in cwd
+    # Use ignore_errors=True to handle race conditions where the server may still
+    # be writing files during cleanup
     cwd_conversations = Path("workspace/conversations")
     if cwd_conversations.exists():
-        shutil.rmtree(cwd_conversations)
+        shutil.rmtree(cwd_conversations, ignore_errors=True)
 
 
 def test_bash_command_endpoint_with_live_server(server_env):
