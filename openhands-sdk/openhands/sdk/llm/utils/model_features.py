@@ -155,7 +155,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
     "kimi-k2-thinking",
-    "kimi-k2.5",  # Kimi K2.5 also requires reasoning_content in messages
+    "kimi-k2.5",
     "openrouter/minimax-m2",  # MiniMax-M2 via OpenRouter (interleaved thinking)
     "deepseek/deepseek-reasoner",
 ]
@@ -182,7 +182,7 @@ def get_features(model: str) -> ModelFeatures:
 # Each entry: (pattern, default_temperature)
 DEFAULT_TEMPERATURE_MODELS: list[tuple[str, float]] = [
     ("kimi-k2-thinking", 1.0),
-    ("kimi-k2.5", 1.0),  # Kimi K2.5 requires temperature=1.0
+    ("kimi-k2.5", 1.0),
 ]
 
 
