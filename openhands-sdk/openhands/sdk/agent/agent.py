@@ -102,6 +102,17 @@ class Agent(AgentBase):
         state: ConversationState,
         on_event: ConversationCallbackType,
     ) -> None:
+        """Initialize conversation state.
+
+        Invariants enforced by this method:
+        - If a SystemPromptEvent is already present, it must be among the first 2
+          events (index 0 or 1).
+        - A user MessageEvent should not appear before the SystemPromptEvent.
+
+        These invariants keep event ordering predictable for downstream components
+        (condenser, UI, etc.) and also prevent accidentally materializing the full
+        event history during initialization.
+        """
         super().init_state(state, on_event=on_event)
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
@@ -114,41 +125,29 @@ class Agent(AgentBase):
         # NOTE: state.events may be file-backed (EventLog). Avoid materializing full
         # history via list(state.events) here.
         #
-        # init_state is normally called on a fresh conversation (very few events),
-        # but can also be hit on resume. In the resume case we still need to avoid
-        # loading the full history into memory.
+        # Invariant: when init_state is called, SystemPromptEvent (if present) must be
+        # at index 0 or 1.
         #
-        # Semantics:
-        # - SystemPromptEvent should be the first event. We do a fast head check and,
-        #   if needed, fall back to a bounded scan of the tail (to avoid false
-        #   negatives without scanning N events).
-        # - User messages should never exist without a system prompt; we check the
-        #   head and, for large histories, the tail as well.
-        INIT_STATE_HEAD_CHECK = 5
-        INIT_STATE_TAIL_CHECK = 200
+        # Rationale:
+        # - Local conversations start empty and init_state is responsible for adding
+        #   the SystemPromptEvent as the first event.
+        # - Remote conversations may receive an initial ConversationStateUpdateEvent
+        #   from the agent-server immediately after subscription, making the
+        #   SystemPromptEvent appear as the second event.
+        #
+        # We intentionally only inspect the first 2 events to enforce this invariant
+        # without scanning full history.
+        INIT_STATE_PREFIX_EVENTS = 2
 
-        head_events = state.events[:INIT_STATE_HEAD_CHECK]
-        tail_events = state.events[-INIT_STATE_TAIL_CHECK:]
+        prefix_events = state.events[:INIT_STATE_PREFIX_EVENTS]
 
-        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in head_events)
-        if not has_system_prompt and event_count > INIT_STATE_HEAD_CHECK:
-            has_system_prompt = any(
-                isinstance(e, SystemPromptEvent) for e in tail_events
-            )
-
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
         has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user" for e in head_events
+            isinstance(e, MessageEvent) and e.source == "user" for e in prefix_events
         )
-        if not has_user_message and event_count > INIT_STATE_HEAD_CHECK:
-            has_user_message = any(
-                isinstance(e, MessageEvent) and e.source == "user" for e in tail_events
-            )
-
-        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in head_events)
-        if not has_any_llm_event and event_count > INIT_STATE_HEAD_CHECK:
-            has_any_llm_event = any(
-                isinstance(e, LLMConvertibleEvent) for e in tail_events
-            )
+        has_any_llm_event = any(
+            isinstance(e, LLMConvertibleEvent) for e in prefix_events
+        )
 
         # Log state for debugging initialization order issues
         logger.debug(
