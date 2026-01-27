@@ -1,16 +1,4 @@
-"""Test hard context reset when condensation range is invalid.
-
-This test verifies that:
-1. When condensation is explicitly requested via conversation.condense()
-2. But condensation range is invalid due to insufficient events in history
-3. A hard context reset is performed instead of raising an exception
-4. The conversation can continue successfully after the hard context reset
-5. After continuing, a second condensation (normal, not hard reset) can occur
-6. The view is well-formed with both the hard context reset and normal summary
-7. All events are forgotten in hard reset, only some in normal condensation
-8. Forgotten events are excluded from the final view
-9. Summary events are at correct positions in the view
-"""
+"""Test hard context reset when condensation range is invalid."""
 
 from openhands.sdk import Tool
 from openhands.sdk.context.condenser import LLMSummarizingCondenser
@@ -21,43 +9,17 @@ from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
-# Module-level instruction for test runner
-# This task is designed to generate sufficient events (6+ separate bash commands)
-# to ensure a valid condensation range exists after the first run.
-# With keep_first=4, we need at least 5+ events for normal condensation.
-# IMPORTANT: Each step must be a SEPARATE terminal command
-INSTRUCTION = """Echo back `hello world`."""
-
-# Second instruction to continue conversation after both condensations
-SECOND_INSTRUCTION = """Using bc calculator, compute:
-1. Compound interest on $5000 at 6% annual rate for 10 years (compounded annually)
-   Formula: A = P(1 + r/n)^(nt) where n=1
-2. Simple interest on the same principal, rate, and time
-   Formula: I = P * r * t
-3. The difference between compound and simple interest
-
-Show your calculations step by step."""
-
-
 class HardContextResetTest(BaseIntegrationTest):
     """Test hard context reset when condensation range is invalid.
 
-    This test validates:
-    - Hard reset occurs when condensation is requested but insufficient events exist
-    - ALL events are forgotten during hard reset (summary_offset=0)
-    - Normal condensation occurs when sufficient events exist
-    - Condensation ordering is correct (hard reset first, then normal)
-    - Task completion is verified through actual outputs
-    - Summary content is meaningful and non-empty
-    - View is constructed successfully from conversation state
-    - View has correct structure with both condensations
-    - Forgotten events are excluded from the view
-    - CondensationSummaryEvent exists in the view
-    - Summary event is at correct position matching the summary_offset
-    - View can be used by the LLM (events are accessible)
+    This test sets up a situation where an explicit condensation is requested but there
+    isn't one available, which should trigger a hard context reset. Then we verify that
+    we can continue the conversation normally afterward, that we can perform a normal
+    condensation when sufficient events exist, and that both condensations are reflected
+    correctly in the conversation state.
     """
 
-    INSTRUCTION: str = INSTRUCTION
+    INSTRUCTION: str = "This test defines its own instructions in run_instructions()."
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking for condensation events."""
@@ -76,10 +38,12 @@ class HardContextResetTest(BaseIntegrationTest):
         condenser_llm = self.create_llm_copy("test-condenser-llm")
         return LLMSummarizingCondenser(
             llm=condenser_llm,
-            max_size=10,  # High to prevent automatic triggering
+            max_size=100,  # High to prevent automatic triggering
             # keep_first=4 ensures that when we have sufficient events (5+),
             # a normal condensation can occur (keeping first 4, condensing the rest).
             # With fewer events, condensation will still trigger hard reset.
+            # Validation requires: max_size // 2 - keep_first - 1 > 0
+            # With max_size=100: 100 // 2 - 4 - 1 = 45 > 0 ✓
             keep_first=4,
         )
 
@@ -96,32 +60,41 @@ class HardContextResetTest(BaseIntegrationTest):
             self.condensations.append(event)
 
     def run_instructions(self, conversation: LocalConversation) -> None:
-        """Test explicit condense() with insufficient events triggers hard reset.
-
-        Steps:
-        1. Send initial message (creates 1 event)
-        2. Verify insufficient events exist (triggers hard reset)
-        3. Try to explicitly condense - should trigger hard context reset
-        4. Continue the conversation to verify it still works
-        5. Verify sufficient events exist for normal condensation
-        6. Explicitly condense again - should trigger normal condensation
-        7. Continue the conversation to verify it still works after both condensations
-        """
-        conversation.send_message(message=self.instruction_message)
+        """Test explicit condense() with insufficient events triggers hard reset."""
+        conversation.send_message(message="""Echo back `hello world`.""")
         conversation.run()
 
         # Trigger a condensation. Because we've set keep_first=4 and should only have a
         # few events so far, this will be a hard context reset.
         conversation.condense()
 
-        # Send a follow-up command that requires multiple actions. This should trigger a
-        # condensation again based on the number of events.
-        conversation.send_message(message=SECOND_INSTRUCTION)
+        # Send a follow-up command sequence to generate events. This sequence works
+        # reliably in other integration tests to generate a valid condensation point.
+        conversation.send_message(
+            message="""Using bc calculator, compute:
+1. Compound interest on $5000 at 6% annual rate for 10 years (compounded annually)
+   Formula: A = P(1 + r/n)^(nt) where n=1
+2. Simple interest on the same principal, rate, and time
+   Formula: I = P * r * t
+3. The difference between compound and simple interest
+
+Show your calculations step by step."""
+        )
         conversation.run()
+
+        conversation.send_message(
+            message="""Rerun the calculations, step by step, with a 7.5% annual rate
+instead of 6%."""
+        )
+        conversation.run()
+
+        # Explicitly condense again - should trigger normal condensation now that we
+        # have sufficient events.
+        conversation.condense()
 
         # Send one last simple message to verify the conversation can continue without
         # issues.
-        conversation.send_message(message=self.instruction_message)
+        conversation.send_message(message="""Echo back `hello world`.""")
         conversation.run()
 
     def verify_result(self) -> TestResult:
@@ -141,8 +114,7 @@ class HardContextResetTest(BaseIntegrationTest):
                 reason="First condensation is not a hard reset (summary_offset != 0)",
             )
 
-        # Check 3: the second condensation is a normal condensation that preserves the
-        # first summary.
+        # Check 3: the second condensation is a normal condensation.
         normal_condensation = self.condensations[1]
         if (
             normal_condensation.summary_offset is None
@@ -154,6 +126,7 @@ class HardContextResetTest(BaseIntegrationTest):
                 "(summary_offset <= 0)",
             )
 
+        # Check 4: the normal condensation does not forget the hard reset summary event.
         if (
             hard_reset_condensation.summary_event.id
             in normal_condensation.forgotten_event_ids
