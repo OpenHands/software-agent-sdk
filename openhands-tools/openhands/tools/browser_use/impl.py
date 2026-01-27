@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
+from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
 from openhands.tools.browser_use.server import CustomBrowserUseServer
@@ -53,6 +54,7 @@ def _install_chromium() -> bool:
             capture_output=True,
             text=True,
             timeout=300,  # 5 minutes timeout for installation
+            env=sanitized_env(),
         )
 
         if result.returncode == 0:
