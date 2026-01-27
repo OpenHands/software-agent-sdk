@@ -14,6 +14,7 @@ from openai.types.responses.response_reasoning_item import ResponseReasoningItem
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
 from openhands.sdk.utils.deprecation import warn_deprecated
 
 
@@ -355,6 +356,26 @@ class Message(BaseModel):
         for item in self.content:
             # All content types now return list[dict[str, Any]]
             item_dicts = item.to_llm_dict()
+
+            # Emergency truncation for huge tool observations only.
+            # We intentionally avoid truncating user/system prompts or assistant text.
+            if self.role == "tool" and item_dicts:
+                for d in item_dicts:
+                    if d.get("type") == "text":
+                        text_val = d.get("text")
+                        if (
+                            isinstance(text_val, str)
+                            and len(text_val) > DEFAULT_TEXT_CONTENT_LIMIT
+                        ):
+                            logger.warning(
+                                "Tool TextContent text length (%s) exceeds limit (%s), "
+                                "truncating",
+                                len(text_val),
+                                DEFAULT_TEXT_CONTENT_LIMIT,
+                            )
+                            d["text"] = maybe_truncate(
+                                text_val, DEFAULT_TEXT_CONTENT_LIMIT
+                            )
 
             # We have to remove cache_prompt for tool content and move it up to the
             # message level
