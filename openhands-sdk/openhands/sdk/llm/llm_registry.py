@@ -218,21 +218,25 @@ class LLMRegistry:
         return llm
 
     def ensure_default_profile(self, llm: LLM) -> LLM:
-        """Persist ``llm`` as the default profile if it isn't already profiled.
+        """Persist ``llm`` as a profile if it isn't already profiled.
 
         When an LLM instance without ``profile_id`` is used in a persisted
         conversation, we want the conversation to store a profile reference
         instead of embedding the full configuration inline.
 
-        This helper creates or overwrites ``default.json`` in the profiles
+        The profile is named after the LLM's ``usage_id`` (e.g., "agent",
+        "condenser"), making it easy to identify which LLM config it represents.
+
+        This helper creates or overwrites the profile in the profiles
         directory and returns a copy of ``llm`` with ``profile_id`` set.
         """
 
         if llm.profile_id:
             return llm
 
-        self.save_profile(DEFAULT_PROFILE_ID, llm)
-        return llm.model_copy(update={"profile_id": DEFAULT_PROFILE_ID})
+        profile_id = llm.usage_id or DEFAULT_PROFILE_ID
+        self.save_profile(profile_id, llm)
+        return llm.model_copy(update={"profile_id": profile_id})
 
     def get(self, usage_id: str) -> LLM:
         """Get an LLM instance from the registry.

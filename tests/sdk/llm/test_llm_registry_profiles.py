@@ -169,22 +169,30 @@ def test_profile_id_validation_rejects_invalid_characters(tmp_path):
             registry.save_profile(invalid_id, llm)
 
 
-def test_ensure_default_profile_creates_and_overwrites_default(tmp_path):
+def test_ensure_default_profile_uses_usage_id_as_profile_name(tmp_path):
+    """Test that ensure_default_profile uses usage_id as profile name."""
     registry = LLMRegistry(profile_dir=tmp_path)
 
-    llm_a = LLM(model="gpt-4o-mini", usage_id="svc", api_key=SecretStr("k1"))
+    llm_a = LLM(model="gpt-4o-mini", usage_id="agent", api_key=SecretStr("k1"))
     profiled_a = registry.ensure_default_profile(llm_a)
-    assert profiled_a.profile_id == "default"
+    assert profiled_a.profile_id == "agent"
 
-    path = registry.get_profile_path("default")
+    path = registry.get_profile_path("agent")
     assert path.exists()
 
-    llm_b = LLM(model="gpt-4o", usage_id="svc", api_key=SecretStr("k2"))
+    # Same usage_id overwrites the profile
+    llm_b = LLM(model="gpt-4o", usage_id="agent", api_key=SecretStr("k2"))
     profiled_b = registry.ensure_default_profile(llm_b)
-    assert profiled_b.profile_id == "default"
+    assert profiled_b.profile_id == "agent"
 
-    loaded = registry.load_profile("default")
+    loaded = registry.load_profile("agent")
     assert loaded.model == "gpt-4o"
+
+    # Different usage_id creates a separate profile
+    llm_c = LLM(model="gpt-3.5", usage_id="condenser", api_key=SecretStr("k3"))
+    profiled_c = registry.ensure_default_profile(llm_c)
+    assert profiled_c.profile_id == "condenser"
+    assert registry.get_profile_path("condenser").exists()
 
 
 def test_profile_id_validation_accepts_valid_characters(tmp_path):

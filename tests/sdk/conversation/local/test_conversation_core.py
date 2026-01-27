@@ -44,7 +44,7 @@ def test_conversation_basic_creation(tmp_path, monkeypatch):
         assert conv.id is not None
         assert isinstance(conv.id, uuid.UUID)  # UUID type
         assert conv.state is not None
-        # Agent gets profile_id='default' assigned during conversation creation
+        # Agent gets profile_id assigned (based on usage_id) during creation
         # Compare core properties rather than exact equality
         assert conv._state.agent.llm.model == agent.llm.model
         assert conv._state.agent.tools == agent.tools
