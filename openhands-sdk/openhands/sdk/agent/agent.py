@@ -122,8 +122,9 @@ class Agent(AgentBase):
         # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
         event_count = len(state.events)
 
-        # NOTE: state.events may be file-backed (EventLog). Avoid materializing full
-        # history via list(state.events) here.
+        # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
+        # a plain list. Avoid materializing the full history via list(state.events)
+        # here (conversations can reach 30k+ events).
         #
         # Invariant: when init_state is called, SystemPromptEvent (if present) must be
         # at index 0 or 1.
@@ -168,20 +169,17 @@ class Agent(AgentBase):
             )
             return
 
-        # Assert: If there are user messages but no system prompt, something is wrong
-        # The system prompt should always be added before any user messages
+        # Assert: A user message should never appear before the system prompt.
         if has_user_message:
-            event_types = [type(e).__name__ for e in state.events[:50]]
+            event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
                 f"init_state: User message exists without SystemPromptEvent! "
-                f"conversation_id={state.id}, events={event_types}"
+                f"conversation_id={state.id}, prefix_events={event_types}"
             )
-            assert not has_user_message, (
-                f"Unexpected state: User message exists before SystemPromptEvent. "
+            raise AssertionError(
+                "Unexpected state: user message exists before SystemPromptEvent. "
                 f"conversation_id={state.id}, event_count={event_count}, "
-                f"event_types={event_types}. "
-                f"This indicates an initialization order bug - init_state should be "
-                f"called before any user messages are added to the conversation."
+                f"prefix_event_types={event_types}."
             )
 
         # Prepare system message
