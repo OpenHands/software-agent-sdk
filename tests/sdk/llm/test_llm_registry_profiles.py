@@ -94,11 +94,11 @@ def test_load_profile_ignores_unknown_fields(tmp_path):
     assert llm.usage_id == "svc"
 
 
-def test_llm_serializer_emits_profile_reference_when_profile_id_present():
+def test_llm_to_profile_ref_returns_explicit_payload():
     llm = LLM(model="gpt-4o-mini", usage_id="service", profile_id="sample")
 
-    payload = llm.model_dump(mode="json")
-    assert payload == {"profile_id": "sample"}
+    payload = llm.to_profile_ref()
+    assert payload == {"kind": "profile_ref", "profile_id": "sample"}
 
 
 def test_llm_validator_loads_profile_reference(tmp_path):
@@ -107,7 +107,7 @@ def test_llm_validator_loads_profile_reference(tmp_path):
     registry.save_profile("profile-tests", source_llm)
 
     parsed = LLM.model_validate(
-        {"profile_id": "profile-tests"},
+        {"kind": "profile_ref", "profile_id": "profile-tests"},
         context={"llm_registry": registry},
     )
 
@@ -244,7 +244,7 @@ def test_load_profile_without_registry_context_requires_registry(tmp_path):
     registry.save_profile("test-profile", llm)
 
     with pytest.raises(ValueError, match="LLM registry required"):
-        LLM.model_validate({"profile_id": "test-profile"})
+        LLM.model_validate({"kind": "profile_ref", "profile_id": "test-profile"})
 
 
 def test_save_profile_sets_restrictive_permissions_on_create(tmp_path):
@@ -286,8 +286,8 @@ def test_profile_id_preserved_through_serialization_roundtrip(tmp_path):
     llm = LLM(model="gpt-4o-mini", usage_id="svc", profile_id="test-profile")
 
     # Serialize
-    inline_data = llm.model_dump(mode="json")
-    assert inline_data == {"profile_id": "test-profile"}
+    inline_data = llm.to_profile_ref()
+    assert inline_data == {"kind": "profile_ref", "profile_id": "test-profile"}
 
     # Deserialize requires a registry (to expand profile)
     registry = LLMRegistry(profile_dir=tmp_path)
@@ -360,13 +360,9 @@ def test_registry_subscriber_notification_on_add(tmp_path):
     assert notifications[0].llm.usage_id == "test"
 
 
-def test_profile_serialization_mode_reference_only(tmp_path):
-    """Test that non-inline mode returns only profile_id reference."""
+def test_to_profile_ref_returns_reference_only():
     llm = LLM(model="gpt-4o-mini", usage_id="svc", profile_id="ref-test")
 
-    ref_data = llm.model_dump(mode="json")
+    ref_data = llm.to_profile_ref()
 
-    # Should only contain profile_id
-    assert ref_data == {"profile_id": "ref-test"}
-    assert "model" not in ref_data
-    assert "usage_id" not in ref_data
+    assert ref_data == {"kind": "profile_ref", "profile_id": "ref-test"}

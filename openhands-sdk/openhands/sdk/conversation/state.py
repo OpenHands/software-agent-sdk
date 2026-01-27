@@ -187,8 +187,16 @@ class ConversationState(OpenHandsModel):
                 "redacted and lost on restore. Consider providing a cipher to "
                 "preserve secrets."
             )
-        payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        payload = self.model_dump(
+            mode="json",
+            exclude_none=True,
+            context=context,
+        )
+        llm_payload = payload.get("agent", {}).get("llm")
+        if isinstance(llm_payload, dict) and llm_payload.get("profile_id"):
+            payload["agent"]["llm"] = self.agent.llm.to_profile_ref()
+
+        fs.write(BASE_STATE, json.dumps(payload))
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -262,12 +270,11 @@ class ConversationState(OpenHandsModel):
             registry = LLMRegistry()
         context["llm_registry"] = registry
 
-        # Ensure that any runtime-provided LLM without an explicit profile is
-        # persisted as a stable "default" profile, so conversation state can
-        # safely store only a profile reference.
-        agent = agent.model_copy(
-            update={"llm": registry.ensure_default_profile(agent.llm)}
-        )
+        # Ensure we have a registry available during both dump and validate.
+        #
+        # We do NOT implicitly write profile files here. Instead, persistence will
+        # store a profile reference only when the runtime LLM already has an
+        # explicit ``profile_id``.
 
         # ---- Resume path ----
         if base_text:
@@ -297,11 +304,20 @@ class ConversationState(OpenHandsModel):
             agent.verify(persisted_agent, events=event_log)
 
             # Use runtime-provided Agent directly (PR #1542 / issue #1451)
-            base_payload["agent"] = agent.model_dump(
+            #
+            # Persist LLMs as profile references only when an explicit profile_id is
+            # set on the runtime LLM.
+            agent_payload = agent.model_dump(
                 mode="json",
                 exclude_none=True,
                 context={"expose_secrets": True},
             )
+            llm_payload = agent_payload.get("llm")
+            if isinstance(llm_payload, dict) and llm_payload.get("profile_id"):
+                llm = agent.llm
+                agent_payload["llm"] = llm.to_profile_ref()
+
+            base_payload["agent"] = agent_payload
             base_payload["workspace"] = workspace.model_dump(mode="json")
             base_payload["max_iterations"] = max_iterations
 

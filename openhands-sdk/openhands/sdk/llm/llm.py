@@ -15,12 +15,9 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
-    SerializationInfo,
-    SerializerFunctionWrapHandler,
     ValidationInfo,
     field_serializer,
     field_validator,
-    model_serializer,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -351,25 +348,16 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         extra="ignore", arbitrary_types_allowed=True
     )
 
-    @model_serializer(mode="wrap", when_used="json")
-    def _serialize_with_profiles(
-        self, handler: SerializerFunctionWrapHandler, _info: SerializationInfo
-    ) -> Mapping[str, Any]:
-        """Serialize LLMs as profile references when possible.
+    def to_profile_ref(self) -> dict[str, str]:
+        """Return a persisted profile reference payload.
 
-        In JSON mode we avoid persisting full LLM configuration (and any secrets)
-        into conversation state. Instead, when an LLM has ``profile_id`` we emit a
-        compact reference: ``{"profile_id": ...}``.
-
-        If no ``profile_id`` is set, we fall back to the full payload so existing
-        non-profile workflows keep working.
+        This is an explicit opt-in persistence format used by ConversationState to
+        avoid persisting full LLM configuration (and secrets) into serialized state.
         """
 
-        data = handler(self)
-        profile_id = data.get("profile_id") if isinstance(data, dict) else None
-        if profile_id:
-            return {"profile_id": profile_id}
-        return data
+        if not self.profile_id:
+            raise ValueError("Cannot build profile ref payload without profile_id")
+        return {"kind": "profile_ref", "profile_id": self.profile_id}
 
     # =========================================================================
     # Validators
@@ -406,8 +394,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return data
         d = dict(data)
 
-        profile_id = d.get("profile_id")
-        if profile_id and "model" not in d:
+        if d.get("kind") == "profile_ref":
+            profile_id = d.get("profile_id")
+            if not profile_id:
+                raise ValueError("profile_id must be specified in LLM profile refs")
+
             if info.context is None or "llm_registry" not in info.context:
                 raise ValueError(
                     "LLM registry required in context to load profile references."
@@ -417,7 +408,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             llm = registry.load_profile(profile_id)
             expanded = llm.model_dump(exclude_none=True)
             expanded["profile_id"] = profile_id
-            d.update(expanded)
+            d = {**expanded, **d}
+            d.pop("kind", None)
+
+        profile_id = d.get("profile_id")
+        if profile_id and "model" not in d:
+            raise ValueError(
+                "Invalid LLM payload: profile_id without model. "
+                "Use kind=profile_ref for persisted profile references."
+            )
 
         model_val = d.get("model")
         if not model_val:

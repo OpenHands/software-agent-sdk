@@ -214,7 +214,10 @@ def test_conversation_state_profile_reference_mode(tmp_path, monkeypatch):
     )
 
     base_state = json.loads((Path(persistence_dir) / "base_state.json").read_text())
-    assert base_state["agent"]["llm"] == {"profile_id": "profile-tests"}
+    assert base_state["agent"]["llm"] == {
+        "kind": "profile_ref",
+        "profile_id": "profile-tests",
+    }
 
     conversation = Conversation(
         agent=agent,
