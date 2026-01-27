@@ -68,6 +68,14 @@ logger = get_logger(__name__)
 maybe_init_laminar()
 
 
+# Bound the reverse scan for the most recent user message.
+#
+# We only need this to check whether the *latest* user message was blocked by a
+# UserPromptSubmit hook (blocked_messages is keyed by message_id). Scanning the
+# full event history can be expensive when events are persisted lazily.
+MAX_EVENTS_TO_SCAN_FOR_LATEST_USER_MESSAGE: int = 200
+
+
 class Agent(AgentBase):
     """Main agent implementation for OpenHands.
 
@@ -234,7 +242,9 @@ class Agent(AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
+        for event in reversed(
+            state.events[-MAX_EVENTS_TO_SCAN_FOR_LATEST_USER_MESSAGE:]
+        ):
             if isinstance(event, MessageEvent) and event.source == "user":
                 reason = state.pop_blocked_message(event.id)
                 if reason is not None:
