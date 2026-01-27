@@ -550,9 +550,7 @@ class Message(BaseModel):
                 )
                 for c in self.content:
                     if isinstance(c, TextContent):
-                        output_text = c.text
-                        if output_text:
-                            output_text = self._maybe_truncate_tool_text(output_text)
+                        output_text = self._maybe_truncate_tool_text(c.text)
                         items.append(
                             {
                                 "type": "function_call_output",
@@ -565,7 +563,7 @@ class Message(BaseModel):
         return items
 
     def _maybe_truncate_tool_text(self, text: str) -> str:
-        if len(text) <= DEFAULT_TEXT_CONTENT_LIMIT:
+        if not text or len(text) <= DEFAULT_TEXT_CONTENT_LIMIT:
             return text
         logger.warning(
             "Tool TextContent text length (%s) exceeds limit (%s), truncating",
