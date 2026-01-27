@@ -160,12 +160,11 @@ class Agent(AgentBase):
         )
 
         if has_system_prompt:
-            # SystemPromptEvent already exists - this is unexpected during normal flow
-            # but could happen in persistence/resume scenarios
-            logger.warning(
-                f"init_state called but SystemPromptEvent already exists. "
-                f"conversation_id={state.id}, event_count={event_count}. "
-                f"This may indicate double initialization or a resume scenario."
+            # Restoring/resuming conversations is normal: a system prompt already
+            # present means this conversation was initialized previously.
+            logger.debug(
+                "init_state: SystemPromptEvent already present; skipping init. "
+                f"conversation_id={state.id}, event_count={event_count}."
             )
             return
 
