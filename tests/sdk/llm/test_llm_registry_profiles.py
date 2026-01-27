@@ -15,6 +15,14 @@ def test_list_profiles_returns_sorted_names(tmp_path):
     assert registry.list_profiles() == ["a", "b"]
 
 
+def test_profile_dir_defaults_to_env_var(tmp_path, monkeypatch):
+    monkeypatch.setenv("LLM_PROFILES_DIR", str(tmp_path / "profiles"))
+
+    registry = LLMRegistry()
+
+    assert registry.profile_dir == tmp_path / "profiles"
+
+
 def test_save_profile_includes_secret_fields_by_default(tmp_path):
     registry = LLMRegistry(profile_dir=tmp_path)
     llm = LLM(
