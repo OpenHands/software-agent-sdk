@@ -22,7 +22,7 @@ class DockerDevWorkspace(DockerWorkspace):
 
     Example:
         with DockerDevWorkspace(
-            base_image="python:3.12",
+            base_image="python:3.13",
             target="source"
         ) as workspace:
             result = workspace.execute_command("ls -la")
