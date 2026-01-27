@@ -51,6 +51,9 @@ def test_agent_triggers_condensation_request_when_ctx_exceeded_with_condenser(
     agent = Agent(llm=llm, tools=[], condenser=HandlesRequestsCondenser())
     convo = Conversation(agent=agent)
 
+    # Trigger lazy agent initialization before calling step()
+    convo._ensure_agent_ready()
+
     seen = []
 
     def on_event(e):
@@ -68,6 +71,9 @@ def test_agent_raises_ctx_exceeded_when_no_condenser(force_responses: bool):
     agent = Agent(llm=llm, tools=[], condenser=None)
     convo = Conversation(agent=agent)
 
+    # Trigger lazy agent initialization before calling step()
+    convo._ensure_agent_ready()
+
     with pytest.raises(LLMContextWindowExceedError):
         agent.step(convo, on_event=lambda e: None)
 
@@ -80,6 +86,9 @@ def test_agent_logs_warning_when_no_condenser_on_ctx_exceeded(
     llm = RaisingLLM(force_responses=force_responses)
     agent = Agent(llm=llm, tools=[], condenser=None)
     convo = Conversation(agent=agent)
+
+    # Trigger lazy agent initialization before calling step()
+    convo._ensure_agent_ready()
 
     with pytest.raises(LLMContextWindowExceedError):
         agent.step(convo, on_event=lambda e: None)
@@ -116,6 +125,9 @@ def test_agent_logs_warning_with_non_handling_condenser_on_ctx_exceeded(
     condenser = NoHandlesRequestsCondenser()
     agent = Agent(llm=llm, tools=[], condenser=condenser)
     convo = Conversation(agent=agent)
+
+    # Trigger lazy agent initialization before calling step()
+    convo._ensure_agent_ready()
 
     with pytest.raises(LLMContextWindowExceedError):
         agent.step(convo, on_event=lambda e: None)

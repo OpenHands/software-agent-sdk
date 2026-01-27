@@ -17,6 +17,7 @@ from openhands.agent_server.bash_service import get_default_bash_event_service
 from openhands.agent_server.config import get_default_config
 from openhands.agent_server.conversation_service import get_default_conversation_service
 from openhands.agent_server.models import ExecuteBashRequest, Success
+from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.sdk.logger import get_logger
 
 
@@ -33,6 +34,7 @@ async def upload_file(
     file: Annotated[UploadFile, File(...)],
 ) -> Success:
     """Upload a file to the workspace."""
+    update_last_execution_time()
     logger.info(f"Uploading file: {path}")
     try:
         target_path = Path(path)
@@ -66,6 +68,7 @@ async def download_file(
     path: Annotated[str, FastApiPath(description="Absolute file path.")],
 ) -> FileResponse:
     """Download a file from the workspace."""
+    update_last_execution_time()
     logger.info(f"Downloading file: {path}")
     try:
         target_path = Path(path)

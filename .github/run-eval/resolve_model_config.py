@@ -24,14 +24,6 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "gpt-5-mini-2025-08-07": {
-        "id": "gpt-5-mini-2025-08-07",
-        "display_name": "GPT-5 Mini",
-        "llm_config": {
-            "model": "litellm_proxy/gpt-5-mini-2025-08-07",
-            "temperature": 1.0,
-        },
-    },
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
@@ -60,6 +52,11 @@ MODELS = {
         "display_name": "GPT-5.2",
         "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
     },
+    "gpt-5.2-codex": {
+        "id": "gpt-5.2-codex",
+        "display_name": "GPT-5.2 Codex",
+        "llm_config": {"model": "litellm_proxy/gpt-5.2-codex"},
+    },
     "gpt-5.2-high-reasoning": {
         "id": "gpt-5.2-high-reasoning",
         "display_name": "GPT-5.2 High Reasoning",
@@ -73,6 +70,11 @@ MODELS = {
         "display_name": "MiniMax M2",
         "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
     },
+    "minimax-m2.1": {
+        "id": "minimax-m2.1",
+        "display_name": "MiniMax M2.1",
+        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
+    },
     "deepseek-v3.2-reasoner": {
         "id": "deepseek-v3.2-reasoner",
         "display_name": "DeepSeek V3.2 Reasoner",
@@ -83,6 +85,14 @@ MODELS = {
         "display_name": "Qwen 3 Coder",
         "llm_config": {
             "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
+        },
+    },
+    "nemotron-3-nano-30b": {
+        "id": "nemotron-3-nano-30b",
+        "display_name": "NVIDIA Nemotron 3 Nano 30B",
+        "llm_config": {
+            "model": "litellm_proxy/openai/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+            "temperature": 0.0,
         },
     },
 }

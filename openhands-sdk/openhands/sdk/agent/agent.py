@@ -17,6 +17,7 @@ from openhands.sdk.conversation import (
     LocalConversation,
 )
 from openhands.sdk.conversation.state import ConversationExecutionStatus
+from openhands.sdk.critic.base import CriticResult
 from openhands.sdk.event import (
     ActionEvent,
     AgentErrorEvent,
@@ -105,20 +106,103 @@ class Agent(AgentBase):
         # TODO(openhands): we should add test to test this init_state will actually
         # modify state in-place
 
-        llm_convertible_messages = [
-            event for event in state.events if isinstance(event, LLMConvertibleEvent)
-        ]
-        if len(llm_convertible_messages) == 0:
-            # Prepare system message
-            event = SystemPromptEvent(
-                source="agent",
-                system_prompt=TextContent(text=self.system_message),
-                # Tools are stored as ToolDefinition objects and converted to
-                # OpenAI format with security_risk parameter during LLM completion.
-                # See make_llm_completion() in agent/utils.py for details.
-                tools=list(self.tools_map.values()),
+        # Defensive check: Analyze state to detect unexpected initialization scenarios
+        # These checks help diagnose issues related to lazy loading and event ordering
+        # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
+        events = list(state.events)
+        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in events)
+        has_user_message = any(
+            isinstance(e, MessageEvent) and e.source == "user" for e in events
+        )
+        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in events)
+
+        # Log state for debugging initialization order issues
+        logger.debug(
+            f"init_state called: conversation_id={state.id}, "
+            f"event_count={len(events)}, "
+            f"has_system_prompt={has_system_prompt}, "
+            f"has_user_message={has_user_message}, "
+            f"has_any_llm_event={has_any_llm_event}"
+        )
+
+        if has_system_prompt:
+            # SystemPromptEvent already exists - this is unexpected during normal flow
+            # but could happen in persistence/resume scenarios
+            logger.warning(
+                f"init_state called but SystemPromptEvent already exists. "
+                f"conversation_id={state.id}, event_count={len(events)}. "
+                f"This may indicate double initialization or a resume scenario."
             )
-            on_event(event)
+            return
+
+        # Assert: If there are user messages but no system prompt, something is wrong
+        # The system prompt should always be added before any user messages
+        if has_user_message:
+            event_types = [type(e).__name__ for e in events]
+            logger.error(
+                f"init_state: User message exists without SystemPromptEvent! "
+                f"conversation_id={state.id}, events={event_types}"
+            )
+            assert not has_user_message, (
+                f"Unexpected state: User message exists before SystemPromptEvent. "
+                f"conversation_id={state.id}, event_count={len(events)}, "
+                f"event_types={event_types}. "
+                f"This indicates an initialization order bug - init_state should be "
+                f"called before any user messages are added to the conversation."
+            )
+
+        # Prepare system message
+        event = SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text=self.system_message),
+            # Tools are stored as ToolDefinition objects and converted to
+            # OpenAI format with security_risk parameter during LLM completion.
+            # See make_llm_completion() in agent/utils.py for details.
+            tools=list(self.tools_map.values()),
+        )
+        on_event(event)
+
+    def _should_evaluate_with_critic(self, action: Action | None) -> bool:
+        """Determine if critic should evaluate based on action type and mode."""
+        if self.critic is None:
+            return False
+
+        if self.critic.mode == "all_actions":
+            return True
+
+        # For "finish_and_message" mode, only evaluate FinishAction
+        # (MessageEvent will be handled separately in step())
+        if isinstance(action, FinishAction):
+            return True
+
+        return False
+
+    def _evaluate_with_critic(
+        self, conversation: LocalConversation, event: ActionEvent | MessageEvent
+    ) -> CriticResult | None:
+        """Run critic evaluation on the current event and history."""
+        if self.critic is None:
+            return None
+
+        try:
+            # Build event history including the current event
+            events = list(conversation.state.events) + [event]
+            llm_convertible_events = [
+                e for e in events if isinstance(e, LLMConvertibleEvent)
+            ]
+
+            # Evaluate without git_patch for now
+            critic_result = self.critic.evaluate(
+                events=llm_convertible_events, git_patch=None
+            )
+            logger.info(
+                f"✓ Critic evaluation: score={critic_result.score:.3f}, "
+                f"success={critic_result.success}"
+            )
+            return critic_result
+        except Exception as e:
+            logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
+            return None
 
     def _execute_actions(
         self,
@@ -237,6 +321,7 @@ class Agent(AgentBase):
             for i, tool_call in enumerate(message.tool_calls):
                 action_event = self._get_action_event(
                     tool_call,
+                    conversation=conversation,
                     llm_response_id=llm_response.id,
                     on_event=on_event,
                     security_analyzer=state.security_analyzer,
@@ -275,6 +360,14 @@ class Agent(AgentBase):
             llm_message=message,
             llm_response_id=llm_response.id,
         )
+        # Run critic evaluation if configured for finish_and_message mode
+        if self.critic is not None and self.critic.mode == "finish_and_message":
+            critic_result = self._evaluate_with_critic(conversation, msg_event)
+            if critic_result is not None:
+                # Create new event with critic result
+                msg_event = msg_event.model_copy(
+                    update={"critic_result": critic_result}
+                )
         on_event(msg_event)
 
         # Emit VLLM token ids if enabled
@@ -389,6 +482,7 @@ class Agent(AgentBase):
     def _get_action_event(
         self,
         tool_call: MessageToolCall,
+        conversation: LocalConversation,
         llm_response_id: str,
         on_event: ConversationCallbackType,
         security_analyzer: analyzer.SecurityAnalyzerBase | None = None,
@@ -477,6 +571,7 @@ class Agent(AgentBase):
             on_event(event)
             return
 
+        # Create initial action event
         action_event = ActionEvent(
             action=action,
             thought=thought or [],
@@ -490,6 +585,16 @@ class Agent(AgentBase):
             security_risk=security_risk,
             summary=summary,
         )
+
+        # Run critic evaluation if configured
+        if self._should_evaluate_with_critic(action):
+            critic_result = self._evaluate_with_critic(conversation, action_event)
+            if critic_result is not None:
+                # Create new event with critic result
+                action_event = action_event.model_copy(
+                    update={"critic_result": critic_result}
+                )
+
         on_event(action_event)
         return action_event
 

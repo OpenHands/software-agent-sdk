@@ -112,11 +112,12 @@ def test_conversation_restarted_with_changed_working_directory(tmp_path_factory)
 
 
 # Tests for agent tools restriction and LLM flexibility
-def test_conversation_allows_removing_unused_tools():
-    """Test that removing tools that weren't used in history is allowed.
+def test_conversation_fails_when_removing_tools():
+    """Test that removing tools fails even if they weren't used.
 
-    With relaxed tool matching, only tools that were actually USED in the
-    conversation history need to be present. Unused tools can be removed.
+    Tools are part of the system prompt and cannot be changed mid-conversation.
+    To use different tools, start a new conversation or use conversation forking.
+    See: https://github.com/OpenHands/OpenHands/issues/8560
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with original agent having 2 tools
@@ -143,29 +144,33 @@ def test_conversation_allows_removing_unused_tools():
         conversation_id = conversation.state.id
         del conversation
 
-        # Resume with only one tool - should succeed since no tools were used
+        # Resume with only one tool - should FAIL (tools must match exactly)
         reduced_tools = [Tool(name="TerminalTool")]  # Removed FileEditorTool
         llm2 = LLM(
             model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
         reduced_agent = Agent(llm=llm2, tools=reduced_tools)
 
-        # This should succeed - FileEditorTool was never used
-        new_conversation = LocalConversation(
-            agent=reduced_agent,
-            workspace=temp_dir,
-            persistence_dir=temp_dir,
-            conversation_id=conversation_id,
-            visualizer=None,
-        )
-        assert new_conversation.id == conversation_id
+        with pytest.raises(ValueError) as exc_info:
+            LocalConversation(
+                agent=reduced_agent,
+                workspace=temp_dir,
+                persistence_dir=temp_dir,
+                conversation_id=conversation_id,
+                visualizer=None,
+            )
+
+        assert "tools cannot be changed mid-conversation" in str(exc_info.value)
+        assert "removed:" in str(exc_info.value)
+        assert "FileEditorTool" in str(exc_info.value)
 
 
-def test_conversation_allows_adding_new_tools():
-    """Test that adding new tools not in the original conversation is allowed.
+def test_conversation_fails_when_adding_tools():
+    """Test that adding new tools fails.
 
-    With relaxed tool matching, new tools can be added when resuming a
-    conversation without causing failures.
+    Tools are part of the system prompt and cannot be changed mid-conversation.
+    To use different tools, start a new conversation or use conversation forking.
+    See: https://github.com/OpenHands/OpenHands/issues/8560
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create conversation with only one tool
@@ -189,7 +194,7 @@ def test_conversation_allows_adding_new_tools():
         conversation_id = conversation.state.id
         del conversation
 
-        # Resume with additional tools - should succeed
+        # Resume with additional tools - should FAIL (tools must match exactly)
         expanded_tools = [
             Tool(name="TerminalTool"),
             Tool(name="FileEditorTool"),  # New tool added
@@ -199,24 +204,26 @@ def test_conversation_allows_adding_new_tools():
         )
         expanded_agent = Agent(llm=llm2, tools=expanded_tools)
 
-        # This should succeed - adding new tools is allowed
-        new_conversation = LocalConversation(
-            agent=expanded_agent,
-            workspace=temp_dir,
-            persistence_dir=temp_dir,
-            conversation_id=conversation_id,
-            visualizer=None,
-        )
-        assert new_conversation.id == conversation_id
-        # Verify the new tools are available
-        assert len(new_conversation.agent.tools) == 2
+        with pytest.raises(ValueError) as exc_info:
+            LocalConversation(
+                agent=expanded_agent,
+                workspace=temp_dir,
+                persistence_dir=temp_dir,
+                conversation_id=conversation_id,
+                visualizer=None,
+            )
+
+        assert "tools cannot be changed mid-conversation" in str(exc_info.value)
+        assert "added:" in str(exc_info.value)
+        assert "FileEditorTool" in str(exc_info.value)
 
 
 def test_conversation_fails_when_used_tool_is_missing():
     """Test that removing a tool that WAS used in history fails.
 
-    This is the core correctness requirement: if a tool was actually used
-    in the conversation history, it MUST be present when resuming.
+    Tools cannot be changed mid-conversation, regardless of whether they
+    were used or not. This test verifies the behavior when a used tool
+    is removed.
     """
     from openhands.sdk.event import ActionEvent
 
@@ -267,8 +274,10 @@ def test_conversation_fails_when_used_tool_is_missing():
         )
         reduced_agent = Agent(llm=llm2, tools=reduced_tools)
 
-        # This should raise - TerminalTool was used in history but is now missing
-        with pytest.raises(ValueError, match="tools that were used in history"):
+        # This should raise - tools cannot be changed mid-conversation
+        with pytest.raises(
+            ValueError, match="tools cannot be changed mid-conversation"
+        ):
             LocalConversation(
                 agent=reduced_agent,
                 workspace=temp_dir,

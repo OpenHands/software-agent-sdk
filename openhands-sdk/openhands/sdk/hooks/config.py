@@ -22,8 +22,9 @@ def _pascal_to_snake(name: str) -> str:
     return result
 
 
-# Valid snake_case field names for hook events
-_VALID_HOOK_FIELDS: frozenset[str] = frozenset(
+# Valid snake_case field names for hook events.
+# This is the single source of truth for hook event types.
+HOOK_EVENT_FIELDS: frozenset[str] = frozenset(
     {
         "pre_tool_use",
         "post_tool_use",
@@ -188,8 +189,8 @@ class HookConfig(BaseModel):
 
             if is_pascal_case:
                 # Validate that PascalCase key maps to a known field
-                if snake_key not in _VALID_HOOK_FIELDS:
-                    valid_types = ", ".join(sorted(_VALID_HOOK_FIELDS))
+                if snake_key not in HOOK_EVENT_FIELDS:
+                    valid_types = ", ".join(sorted(HOOK_EVENT_FIELDS))
                     raise ValueError(
                         f"Unknown event type '{key}'. Valid types: {valid_types}"
                     )
@@ -287,3 +288,42 @@ class HookConfig(BaseModel):
 
         with open(path, "w") as f:
             json.dump(self.model_dump(mode="json", exclude_defaults=True), f, indent=2)
+
+    @classmethod
+    def merge(cls, configs: list["HookConfig"]) -> "HookConfig | None":
+        """Merge multiple hook configs by concatenating handlers per event type.
+
+        Each hook config may have multiple event types (pre_tool_use,
+        post_tool_use, etc.). This method combines all matchers from all
+        configs for each event type.
+
+        Args:
+            configs: List of HookConfig objects to merge.
+
+        Returns:
+            A merged HookConfig with all matchers concatenated, or None if no configs
+            or if the result is empty.
+
+        Example:
+            >>> config1 = HookConfig(pre_tool_use=[HookMatcher(matcher="*")])
+            >>> config2 = HookConfig(pre_tool_use=[HookMatcher(matcher="terminal")])
+            >>> merged = HookConfig.merge([config1, config2])
+            >>> len(merged.pre_tool_use)  # Both matchers combined
+            2
+        """
+        if not configs:
+            return None
+
+        # Collect all matchers by event type using the canonical field list
+        collected: dict[str, list] = {field: [] for field in HOOK_EVENT_FIELDS}
+        for config in configs:
+            for field in HOOK_EVENT_FIELDS:
+                collected[field].extend(getattr(config, field))
+
+        merged = cls(**collected)
+
+        # Return None if the merged config is empty
+        if merged.is_empty():
+            return None
+
+        return merged
