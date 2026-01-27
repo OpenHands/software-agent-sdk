@@ -302,6 +302,29 @@ def test_user_message_does_not_truncate_text_over_limit():
         assert result["content"] == long_text
 
 
+def test_tool_message_truncates_text_over_limit_with_string_serializer():
+    """Tool-role truncation must also apply on the string-serializer path."""
+    from openhands.sdk.llm.message import Message, TextContent
+    from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
+
+    long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
+
+    with patch("openhands.sdk.llm.message.logger") as mock_logger:
+        msg = Message(role="tool", content=[TextContent(text=long_text)])
+        result = msg.to_chat_dict(
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=True,
+            send_reasoning_content=False,
+        )
+
+        mock_logger.warning.assert_called_once()
+        assert result["content"] != long_text
+        assert len(result["content"]) == DEFAULT_TEXT_CONTENT_LIMIT
+        assert "<response clipped>" in result["content"]
+
+
 def test_text_content_truncation_exact_limit():
     """Test TextContent doesn't truncate when exactly at limit."""
     from openhands.sdk.llm.message import TextContent

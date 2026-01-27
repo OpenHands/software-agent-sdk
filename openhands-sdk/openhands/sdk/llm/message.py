@@ -328,11 +328,23 @@ class Message(BaseModel):
 
         return message_dict
 
+    def _maybe_truncate_tool_text(self, text: str) -> str:
+        if len(text) <= DEFAULT_TEXT_CONTENT_LIMIT:
+            return text
+        logger.warning(
+            "Tool TextContent text length (%s) exceeds limit (%s), truncating",
+            len(text),
+            DEFAULT_TEXT_CONTENT_LIMIT,
+        )
+        return maybe_truncate(text, DEFAULT_TEXT_CONTENT_LIMIT)
+
     def _string_serializer(self) -> dict[str, Any]:
         # convert content to a single string
         content = "\n".join(
             item.text for item in self.content if isinstance(item, TextContent)
         )
+        if self.role == "tool":
+            content = self._maybe_truncate_tool_text(content)
         message_dict: dict[str, Any] = {"content": content, "role": self.role}
 
         # tool call keys are added in to_chat_dict to centralize behavior
@@ -357,25 +369,11 @@ class Message(BaseModel):
             # All content types now return list[dict[str, Any]]
             item_dicts = item.to_llm_dict()
 
-            # Emergency truncation for huge tool observations only.
-            # We intentionally avoid truncating user/system prompts or assistant text.
             if self.role == "tool" and item_dicts:
                 for d in item_dicts:
-                    if d.get("type") == "text":
-                        text_val = d.get("text")
-                        if (
-                            isinstance(text_val, str)
-                            and len(text_val) > DEFAULT_TEXT_CONTENT_LIMIT
-                        ):
-                            logger.warning(
-                                "Tool TextContent text length (%s) exceeds limit (%s), "
-                                "truncating",
-                                len(text_val),
-                                DEFAULT_TEXT_CONTENT_LIMIT,
-                            )
-                            d["text"] = maybe_truncate(
-                                text_val, DEFAULT_TEXT_CONTENT_LIMIT
-                            )
+                    text_val = d.get("text")
+                    if d.get("type") == "text" and isinstance(text_val, str):
+                        d["text"] = self._maybe_truncate_tool_text(text_val)
 
             # We have to remove cache_prompt for tool content and move it up to the
             # message level
