@@ -2,10 +2,12 @@
 
 Run with::
 
-    uv run python examples/01_standalone_sdk/34_llm_profiles.py
+    uv run python examples/01_standalone_sdk/35_llm_profiles.py
 
-Profiles are stored under ``~/.openhands/llm-profiles/<name>.json`` by default.
-Set ``LLM_PROFILE_NAME`` to pick a profile.
+Profiles are stored under ``$LLM_PROFILES_DIR/<name>.json`` when the env var is
+set, otherwise ``~/.openhands/llm-profiles/<name>.json``.
+
+Set ``LLM_PROFILE_NAME`` to choose which profile file to load.
 
 Notes on credentials:
 - New profiles include API keys by default when saved
@@ -121,9 +123,11 @@ if __name__ == "__main__":  # pragma: no cover
     state_payload = json.loads(base_state_path.read_text())
     llm_entry = state_payload.get("agent", {}).get("llm", {})
     profile_in_state = llm_entry.get("profile_id")
-    print(f"Profile recorded in base_state.json: {profile_in_state}")
-    if profile_in_state != PROFILE_NAME:
+    kind_in_state = llm_entry.get("kind")
+    print(f"Profile recorded in base_state.json: {kind_in_state} / {profile_in_state}")
+    if kind_in_state != "profile_ref" or profile_in_state != PROFILE_NAME:
         print(
-            "Warning: profile_id in base_state.json does not match the profile "
-            "used at runtime."
+            "Warning: base_state.json did not persist the expected profile_ref payload."
+            " This likely means your runtime LLM did not have profile_id set,"
+            " or persistence was configured differently."
         )
