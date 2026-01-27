@@ -108,7 +108,7 @@ class LLMRegistry:
 
     def _ensure_safe_profile_id(self, profile_id: str) -> str:
         if not profile_id or profile_id in {".", ".."}:
-            raise ValueError("Invalid profile ID.")
+            raise ValueError("Profile ID cannot be empty, '.', or '..'.")
         if Path(profile_id).name != profile_id:
             raise ValueError("Profile IDs cannot contain path separators.")
         if not _PROFILE_ID_PATTERN.fullmatch(profile_id):

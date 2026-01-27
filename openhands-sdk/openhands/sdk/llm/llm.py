@@ -300,7 +300,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     profile_id: str | None = Field(
         default=None,
-        description="Optional profile id (filename under the profiles directory).",
+        description=(
+            "Optional profile id (filename under the profiles directory). "
+            "When set, JSON serialization emits only the profile reference "
+            "instead of full LLM config, avoiding credential persistence."
+        ),
     )
     usage_id: str = Field(
         default="default",
