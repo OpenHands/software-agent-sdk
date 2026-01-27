@@ -550,11 +550,14 @@ class Message(BaseModel):
                 )
                 for c in self.content:
                     if isinstance(c, TextContent):
+                        output_text = c.text
+                        if output_text:
+                            output_text = self._maybe_truncate_tool_text(output_text)
                         items.append(
                             {
                                 "type": "function_call_output",
                                 "call_id": resp_call_id,
-                                "output": c.text,
+                                "output": output_text,
                             }
                         )
             return items
