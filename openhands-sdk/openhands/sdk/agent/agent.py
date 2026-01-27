@@ -114,8 +114,6 @@ class Agent(AgentBase):
         event history during initialization.
         """
         super().init_state(state, on_event=on_event)
-        # TODO(openhands): we should add test to test this init_state will actually
-        # modify state in-place
 
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
