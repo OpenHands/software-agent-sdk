@@ -61,7 +61,7 @@ class HardContextResetTest(BaseIntegrationTest):
 
     def run_instructions(self, conversation: LocalConversation) -> None:
         """Test explicit condense() with insufficient events triggers hard reset."""
-        conversation.send_message(message="""Echo back `hello world`.""")
+        conversation.send_message(message='Echo back "hello world".')
         conversation.run()
 
         # Trigger a condensation. Because we've set keep_first=4 and should only have a
@@ -71,20 +71,25 @@ class HardContextResetTest(BaseIntegrationTest):
         # Send a follow-up command sequence to generate events. This sequence works
         # reliably in other integration tests to generate a valid condensation point.
         conversation.send_message(
-            message="""Using bc calculator, compute:
-1. Compound interest on $5000 at 6% annual rate for 10 years (compounded annually)
-   Formula: A = P(1 + r/n)^(nt) where n=1
-2. Simple interest on the same principal, rate, and time
-   Formula: I = P * r * t
-3. The difference between compound and simple interest
-
-Show your calculations step by step."""
+            message=(
+                "Using bc calculator, compute:\n"
+                "1. Compound interest on $5000 at 6% annual rate for 10 years "
+                "(compounded annually)\n"
+                "   Formula: A = P(1 + r/n)^(nt) where n=1\n"
+                "2. Simple interest on the same principal, rate, and time\n"
+                "   Formula: I = P * r * t\n"
+                "3. The difference between compound and simple interest\n"
+                "\n"
+                "Show your calculations step by step."
+            )
         )
         conversation.run()
 
         conversation.send_message(
-            message="""Rerun the calculations, step by step, with a 7.5% annual rate
-instead of 6%."""
+            message=(
+                "Rerun the calculations, step by step, "
+                "with a 7.5% annual rate instead of 6%."
+            )
         )
         conversation.run()
 
@@ -94,7 +99,7 @@ instead of 6%."""
 
         # Send one last simple message to verify the conversation can continue without
         # issues.
-        conversation.send_message(message="""Echo back `hello world`.""")
+        conversation.send_message(message='Echo back "hello world".')
         conversation.run()
 
     def verify_result(self) -> TestResult:
