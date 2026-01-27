@@ -9,6 +9,8 @@ from openhands.tools.terminal import TerminalTool
 from tests.integration.base import BaseIntegrationTest, TestResult
 
 
+INSTRUCTION: str = "This test defines its own instructions in run_instructions()."
+
 class HardContextResetTest(BaseIntegrationTest):
     """Test hard context reset when condensation range is invalid.
 
@@ -19,7 +21,7 @@ class HardContextResetTest(BaseIntegrationTest):
     correctly in the conversation state.
     """
 
-    INSTRUCTION: str = "This test defines its own instructions in run_instructions()."
+    INSTRUCTION: str = INSTRUCTION
 
     def __init__(self, *args, **kwargs):
         """Initialize test with tracking for condensation events."""
