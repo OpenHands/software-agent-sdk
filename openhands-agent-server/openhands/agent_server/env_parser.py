@@ -2,6 +2,7 @@
 We couldn't use pydantic-settings for this as we need complex nested types
 and polymorphism."""
 
+import importlib
 import inspect
 import json
 import os
@@ -277,21 +278,64 @@ class DiscriminatedUnionEnvParser(EnvParser):
 
     def from_env(self, key: str) -> JsonType:
         kind = os.environ.get(f"{key}_KIND", MISSING)
+        kind_missing = False
         if kind is MISSING:
-            # If there is exactly one kind, use it directly
+            kind_missing = True
+            # If there are other fields and there is exactly one kind, use it directly
             if len(self.parsers) == 1:
                 kind = next(iter(self.parsers.keys()))
             else:
                 return MISSING
         # Type narrowing: kind is str here (from os.environ.get or dict keys)
         kind = cast(str, kind)
+
+        # If kind contains dots, treat it as a full class name
+        if "." in kind:
+            kind = self._import_and_register_class(kind)
+
         # Intentionally raise KeyError for invalid KIND - typos should fail early
         parser = self.parsers[kind]
         parser_result = parser.from_env(key)
+
+        # A kind was defined without other fields
+        if parser_result is MISSING:
+            # If the kind was not defined, the entry is MISSING
+            if kind_missing:
+                return MISSING
+            # Only a kind was defined
+            parser_result = {}
+
         # Type narrowing: discriminated union parsers always return dicts
         parser_result = cast(dict, parser_result)
         parser_result["kind"] = kind
         return parser_result
+
+    def _import_and_register_class(self, full_class_name: str) -> str:
+        """Import a class from its full module path and register its parser.
+
+        Args:
+            full_class_name: Full class path (e.g., 'mymodule.submodule.MyClass')
+
+        Returns:
+            The unqualified class name (e.g., 'MyClass')
+        """
+        parts = full_class_name.rsplit(".", 1)
+        module_name = parts[0]
+        class_name = parts[1]
+
+        # If class already registered, just return the name
+        if class_name in self.parsers:
+            return class_name
+
+        # Import the module and get the class
+        module = importlib.import_module(module_name)
+        cls = getattr(module, class_name)
+
+        # Create and register the parser for this class
+        parser = get_env_parser(cls, _get_default_parsers())
+        self.parsers[class_name] = parser
+
+        return class_name
 
     def to_env(self, key: str, value: Any, output: IO):
         parser = self.parsers[value.kind]

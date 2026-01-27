@@ -46,6 +46,9 @@ class MockConversation(BaseConversation):
     def set_confirmation_policy(self, policy: Any) -> None:
         pass
 
+    def set_security_analyzer(self, analyzer: Any) -> None:
+        pass
+
     @property
     def state(self) -> Any:
         return MagicMock()
