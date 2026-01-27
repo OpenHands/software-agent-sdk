@@ -52,6 +52,11 @@ MODELS = {
         "display_name": "GPT-5.2",
         "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
     },
+    "gpt-5.2-codex": {
+        "id": "gpt-5.2-codex",
+        "display_name": "GPT-5.2 Codex",
+        "llm_config": {"model": "litellm_proxy/gpt-5.2-codex"},
+    },
     "gpt-5.2-high-reasoning": {
         "id": "gpt-5.2-high-reasoning",
         "display_name": "GPT-5.2 High Reasoning",

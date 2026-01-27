@@ -146,8 +146,8 @@ def test_base_slug_short_image():
     from openhands.agent_server.docker.build import _base_slug
 
     # Simple image name, no truncation needed
-    result = _base_slug("python:3.12")
-    assert result == "python_tag_3.12"
+    result = _base_slug("python:3.13")
+    assert result == "python_tag_3.13"
 
     # With registry
     result = _base_slug("ghcr.io/org/repo:v1.0")
@@ -294,9 +294,9 @@ def test_base_slug_edge_case_exact_max_len():
     from openhands.agent_server.docker.build import _base_slug
 
     # Create an image that results in exactly 30 characters
-    # "python_tag_3.12" is 15 chars, let's use it with max_len=15
-    result = _base_slug("python:3.12", max_len=15)
-    assert result == "python_tag_3.12"
+    # "python_tag_3.13" is 15 chars, let's use it with max_len=15
+    result = _base_slug("python:3.13", max_len=15)
+    assert result == "python_tag_3.13"
     assert len(result) == 15
 
 
