@@ -299,8 +299,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         description=(
             "Optional profile id (filename under the profiles directory). "
-            "When set, JSON serialization emits only the profile reference "
-            "instead of full LLM config, avoiding credential persistence."
+            "When set, ConversationState persistence may store a profile "
+            "reference (kind=profile_ref) instead of embedding full LLM config, "
+            "avoiding credential persistence."
         ),
     )
     usage_id: str = Field(
