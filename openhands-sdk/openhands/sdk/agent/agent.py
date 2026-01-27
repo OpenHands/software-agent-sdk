@@ -109,17 +109,25 @@ class Agent(AgentBase):
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
         # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
-        events = list(state.events)
-        has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in events)
-        has_user_message = any(
-            isinstance(e, MessageEvent) and e.source == "user" for e in events
+        event_count = len(state.events)
+
+        # NOTE: state.events may be file-backed (EventLog). Avoid materializing full
+        # history via list(state.events) here.
+        has_system_prompt = any(
+            isinstance(e, SystemPromptEvent) for e in state.events[:5]
         )
-        has_any_llm_event = any(isinstance(e, LLMConvertibleEvent) for e in events)
+        has_user_message = any(
+            isinstance(e, MessageEvent) and e.source == "user"
+            for e in state.events[:50]
+        )
+        has_any_llm_event = any(
+            isinstance(e, LLMConvertibleEvent) for e in state.events[:50]
+        )
 
         # Log state for debugging initialization order issues
         logger.debug(
             f"init_state called: conversation_id={state.id}, "
-            f"event_count={len(events)}, "
+            f"event_count={event_count}, "
             f"has_system_prompt={has_system_prompt}, "
             f"has_user_message={has_user_message}, "
             f"has_any_llm_event={has_any_llm_event}"
@@ -130,7 +138,7 @@ class Agent(AgentBase):
             # but could happen in persistence/resume scenarios
             logger.warning(
                 f"init_state called but SystemPromptEvent already exists. "
-                f"conversation_id={state.id}, event_count={len(events)}. "
+                f"conversation_id={state.id}, event_count={event_count}. "
                 f"This may indicate double initialization or a resume scenario."
             )
             return
@@ -138,14 +146,15 @@ class Agent(AgentBase):
         # Assert: If there are user messages but no system prompt, something is wrong
         # The system prompt should always be added before any user messages
         if has_user_message:
-            event_types = [type(e).__name__ for e in events]
+            debug_events = list(state.events[:50])
+            event_types = [type(e).__name__ for e in debug_events]
             logger.error(
                 f"init_state: User message exists without SystemPromptEvent! "
                 f"conversation_id={state.id}, events={event_types}"
             )
             assert not has_user_message, (
                 f"Unexpected state: User message exists before SystemPromptEvent. "
-                f"conversation_id={state.id}, event_count={len(events)}, "
+                f"conversation_id={state.id}, event_count={event_count}, "
                 f"event_types={event_types}. "
                 f"This indicates an initialization order bug - init_state should be "
                 f"called before any user messages are added to the conversation."
