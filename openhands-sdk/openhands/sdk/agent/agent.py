@@ -105,8 +105,9 @@ class Agent(AgentBase):
         """Initialize conversation state.
 
         Invariants enforced by this method:
-        - If a SystemPromptEvent is already present, it must be among the first 2
-          events (index 0 or 1).
+        - If a SystemPromptEvent is already present, it must be within the first 3
+          events (index 0 or 1 in practice; index 2 is included in the scan window
+          to detect a user message appearing before the system prompt).
         - A user MessageEvent should not appear before the SystemPromptEvent.
 
         These invariants keep event ordering predictable for downstream components
@@ -137,9 +138,9 @@ class Agent(AgentBase):
         #
         # We intentionally only inspect the first 3 events (cheap for both local and
         # remote) to enforce this invariant.
-        INIT_STATE_PREFIX_EVENTS = 3
+        INIT_STATE_PREFIX_SCAN_WINDOW = 3
 
-        prefix_events = state.events[:INIT_STATE_PREFIX_EVENTS]
+        prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
 
         has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
         has_user_message = any(
