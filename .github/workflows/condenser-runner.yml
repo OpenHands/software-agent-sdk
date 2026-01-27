@@ -53,7 +53,7 @@ jobs:
             pull-requests: write
         strategy:
             matrix:
-                python-version: ['3.12']
+                python-version: ['3.13']
                 job-config:
                     # Only run against 2 LLMs for condenser tests:
                     # - Claude Opus 4.5 (primary - supports thinking blocks)
@@ -179,7 +179,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.12'
+                  python-version: '3.13'
 
             - name: Install Python dependencies using uv
               run: |

@@ -26,6 +26,7 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
@@ -286,10 +287,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     seed: int | None = Field(
         default=None, description="The seed to use for random number generation."
     )
+    # REMOVE_AT: 1.15.0 - Remove this field and its handling in chat_options.py
     safety_settings: list[dict[str, str]] | None = Field(
         default=None,
         description=(
-            "Safety settings for models that support them (like Mistral AI and Gemini)"
+            "Deprecated: Safety settings for models that support them "
+            "(like Mistral AI and Gemini). This field is deprecated in 1.10.0 "
+            "and will be removed in 1.15.0. Safety settings are designed for "
+            "consumer-facing content moderation, which is not relevant for "
+            "coding agents."
         ),
     )
     profile_id: str | None = Field(
@@ -368,6 +374,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
+
+    # REMOVE_AT: 1.15.0 - Remove this validator
+    @field_validator("safety_settings", mode="before")
+    @classmethod
+    def _warn_safety_settings_deprecated(
+        cls, v: list[dict[str, str]] | None
+    ) -> list[dict[str, str]] | None:
+        """Emit deprecation warning when safety_settings is explicitly set."""
+        if v is not None:
+            warn_deprecated(
+                "LLM.safety_settings",
+                deprecated_in="1.10.0",
+                removed_in="1.15.0",
+                details=(
+                    "Safety settings are designed for consumer-facing content "
+                    "moderation, which is not relevant for coding agents."
+                ),
+                stacklevel=4,
+            )
+        return v
 
     @model_validator(mode="before")
     @classmethod
@@ -1029,19 +1055,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
 
-        for message in messages:
-            message.cache_enabled = self.is_caching_prompt_active()
-            message.vision_enabled = self.vision_is_active()
-            message.function_calling_enabled = self.native_tool_calling
-            model_features = get_features(self._model_name_for_capabilities())
-            message.force_string_serializer = (
-                self.force_string_serializer
-                if self.force_string_serializer is not None
-                else model_features.force_string_serializer
-            )
-            message.send_reasoning_content = model_features.send_reasoning_content
+        model_features = get_features(self._model_name_for_capabilities())
+        cache_enabled = self.is_caching_prompt_active()
+        vision_enabled = self.vision_is_active()
+        function_calling_enabled = self.native_tool_calling
+        force_string_serializer = (
+            self.force_string_serializer
+            if self.force_string_serializer is not None
+            else model_features.force_string_serializer
+        )
+        send_reasoning_content = model_features.send_reasoning_content
 
-        formatted_messages = [message.to_chat_dict() for message in messages]
+        formatted_messages = [
+            message.to_chat_dict(
+                cache_enabled=cache_enabled,
+                vision_enabled=vision_enabled,
+                function_calling_enabled=function_calling_enabled,
+                force_string_serializer=force_string_serializer,
+                send_reasoning_content=send_reasoning_content,
+            )
+            for message in messages
+        ]
 
         return formatted_messages
 
