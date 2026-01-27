@@ -54,6 +54,11 @@ def ensure_profile_exists(registry: LLMRegistry, name: str) -> None:
 
 
 def load_profile(registry: LLMRegistry, name: str) -> LLM:
+    """Load profile and merge credentials from environment if needed.
+    
+    Note: Profiles should be saved without secrets (include_secrets=False)
+    and credentials provided via environment variables for better security.
+    """
     llm = registry.load_profile(name)
     # If profile was saved without secrets, allow providing API key via env var
     if llm.api_key is None:
