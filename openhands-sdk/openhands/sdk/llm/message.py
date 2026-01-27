@@ -328,16 +328,6 @@ class Message(BaseModel):
 
         return message_dict
 
-    def _maybe_truncate_tool_text(self, text: str) -> str:
-        if len(text) <= DEFAULT_TEXT_CONTENT_LIMIT:
-            return text
-        logger.warning(
-            "Tool TextContent text length (%s) exceeds limit (%s), truncating",
-            len(text),
-            DEFAULT_TEXT_CONTENT_LIMIT,
-        )
-        return maybe_truncate(text, DEFAULT_TEXT_CONTENT_LIMIT)
-
     def _string_serializer(self) -> dict[str, Any]:
         # convert content to a single string
         content = "\n".join(
@@ -570,6 +560,16 @@ class Message(BaseModel):
             return items
 
         return items
+
+    def _maybe_truncate_tool_text(self, text: str) -> str:
+        if len(text) <= DEFAULT_TEXT_CONTENT_LIMIT:
+            return text
+        logger.warning(
+            "Tool TextContent text length (%s) exceeds limit (%s), truncating",
+            len(text),
+            DEFAULT_TEXT_CONTENT_LIMIT,
+        )
+        return maybe_truncate(text, DEFAULT_TEXT_CONTENT_LIMIT)
 
     @classmethod
     def from_llm_chat_message(cls, message: LiteLLMMessage) -> "Message":
