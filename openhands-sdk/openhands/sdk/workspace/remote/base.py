@@ -1,3 +1,4 @@
+import time
 from collections.abc import Generator
 from pathlib import Path
 from typing import Any
@@ -60,12 +61,20 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
             self._client = client
         return client
 
-    def _execute(self, generator: Generator[dict[str, Any], httpx.Response, Any]):
+    def _execute(self, generator: Generator[dict[str, Any], Any, Any]):
         try:
             kwargs = next(generator)
             while True:
-                response = self.client.request(**kwargs)
-                kwargs = generator.send(response)
+                # Check if this is a sleep request
+                if "_sleep" in kwargs:
+                    sleep_duration = kwargs["_sleep"]
+                    time.sleep(sleep_duration)
+                    # Send None back to the generator after sleeping
+                    kwargs = generator.send(None)
+                else:
+                    # Regular HTTP request
+                    response = self.client.request(**kwargs)
+                    kwargs = generator.send(response)
         except StopIteration as e:
             return e.value
 

@@ -141,16 +141,15 @@ def test_execute_command_generator_with_path_cwd():
     assert start_kwargs["json"]["cwd"] == "/tmp/test"
 
 
-@patch("time.sleep")
-@patch("time.time")
-def test_execute_command_generator_polling_loop(mock_time, mock_sleep):
-    """Test _execute_command_generator polling loop behavior."""
+@patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
+def test_execute_command_generator_polling_loop(mock_time):
+    """Test _execute_command_generator polling loop behavior with sleep requests."""
     mixin = RemoteWorkspaceMixinHelper(
         host="http://localhost:8000", working_dir="workspace"
     )
 
     # Mock time progression
-    mock_time.side_effect = [0, 0.1, 0.2, 0.3]  # Simulate time passing
+    mock_time.time.side_effect = [0, 0.1, 0.2, 0.3]  # Simulate time passing
 
     # Mock responses
     start_response = Mock()
@@ -185,13 +184,20 @@ def test_execute_command_generator_polling_loop(mock_time, mock_sleep):
     # Start command
     next(generator)
 
-    # First poll
-    generator.send(start_response)
+    # First poll request
+    poll_kwargs_1 = generator.send(start_response)
+    assert poll_kwargs_1["method"] == "GET"
 
-    # Second poll
-    generator.send(poll_response_1)
+    # First poll response - no exit code, should yield sleep request
+    sleep_request = generator.send(poll_response_1)
+    assert "_sleep" in sleep_request
+    assert sleep_request["_sleep"] == 0.1
 
-    # Final result
+    # After sleep, should yield second poll request
+    poll_kwargs_2 = generator.send(None)  # Send None after sleep
+    assert poll_kwargs_2["method"] == "GET"
+
+    # Second poll response - has exit code, should complete
     try:
         generator.send(poll_response_2)
         assert False, "Generator should have stopped"
@@ -199,9 +205,6 @@ def test_execute_command_generator_polling_loop(mock_time, mock_sleep):
         result = e.value
         assert result.stdout == "processing...\ndone\n"
         assert result.exit_code == 0
-
-    # Verify sleep was called between polls
-    mock_sleep.assert_called_with(0.1)
 
 
 @patch("openhands.sdk.workspace.remote.remote_workspace_mixin.time")
@@ -211,7 +214,8 @@ def test_execute_command_generator_timeout(mock_time):
         host="http://localhost:8000", working_dir="workspace"
     )
 
-    # Mock time to simulate timeout
+    # Mock time to simulate timeout after first poll
+    # time.time() is called: at start, before first poll, after first poll (timeout)
     mock_time.time.side_effect = [
         0,
         0,
@@ -241,12 +245,16 @@ def test_execute_command_generator_timeout(mock_time):
     # Start command
     next(generator)
 
-    # Poll once
+    # First poll request
     generator.send(start_response)
 
-    # Send poll response and get timeout result
+    # First poll response - no exit code, yields sleep request
+    sleep_request = generator.send(poll_response)
+    assert "_sleep" in sleep_request
+
+    # After sleep, time check shows timeout - should return timeout result
     try:
-        generator.send(poll_response)
+        generator.send(None)  # Send None after sleep
         assert False, "Generator should have stopped"
     except StopIteration as e:
         result = e.value
