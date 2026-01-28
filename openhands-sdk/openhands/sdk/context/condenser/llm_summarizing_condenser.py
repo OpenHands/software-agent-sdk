@@ -51,6 +51,14 @@ class LLMSummarizingCondenser(RollingCondenser):
     `keep_first` events in the conversation will never be condensed or summarized.
     """
 
+    hard_context_reset_max_retries: int = Field(default=5, gt=0)
+    """Number of attempts to perform hard context reset before raising an error."""
+
+    hard_context_reset_context_scaling: float = Field(default=0.8, gt=0.0, lt=1.0)
+    """When performing hard context reset, if the summarization fails, reduce the max
+    size of each event string by this factor and retry.
+    """
+
     @model_validator(mode="after")
     def validate_keep_first_vs_max_size(self):
         events_from_tail = self.max_size // 2 - self.keep_first - 1
@@ -286,7 +294,7 @@ class LLMSummarizingCondenser(RollingCondenser):
         trimming down the contents until a summary can be generated.
         """
         max_event_str_length: int | None = None
-        attempts_remaining: int = 5
+        attempts_remaining: int = self.hard_context_reset_max_retries
 
         while attempts_remaining > 0:
             try:
@@ -303,7 +311,9 @@ class LLMSummarizingCondenser(RollingCondenser):
 
                 # Since the summarization failed, reduce the max_event_str_length by 20%
                 assert max_event_str_length is not None
-                max_event_str_length = int(max_event_str_length * 0.8)
+                max_event_str_length = int(
+                    max_event_str_length * self.hard_context_reset_context_scaling
+                )
 
                 # Log the exception so we can track these failures
                 logger.warning(
