@@ -1,4 +1,6 @@
 ---
+name: code-review
+description: Structured code review covering style, readability, and security concerns with actionable feedback. Use when reviewing pull requests or merge requests to identify issues and suggest improvements.
 triggers:
 - /codereview
 ---
