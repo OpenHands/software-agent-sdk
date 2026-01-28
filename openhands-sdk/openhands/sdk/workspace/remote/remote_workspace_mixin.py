@@ -87,26 +87,50 @@ class RemoteWorkspaceMixin(BaseModel):
             stdout_parts = []
             stderr_parts = []
             exit_code = None
+            last_order = -1  # Track highest order seen to fetch only new events
+            seen_event_ids: set[str] = set()  # Track seen IDs to detect duplicates
 
             while time.time() - start_time < timeout:
-                # Search for all events
+                # Search for new events (order > last_order)
+                params: dict[str, str | int] = {
+                    "command_id__eq": command_id,
+                    "sort_order": "TIMESTAMP",
+                    "limit": 100,
+                    "kind__eq": "BashOutput",
+                }
+                if last_order >= 0:
+                    params["order__gt"] = last_order
+
                 response = yield {
                     "method": "GET",
                     "url": f"{self.host}/api/bash/bash_events/search",
-                    "params": {
-                        "command_id__eq": command_id,
-                        "sort_order": "TIMESTAMP",
-                        "limit": 100,
-                    },
+                    "params": params,
                     "headers": self._headers,
                     "timeout": timeout,
                 }
                 response.raise_for_status()
                 search_result = response.json()
 
-                # Filter for BashOutput events for this command
+                # Process BashOutput events
                 for event in search_result.get("items", []):
                     if event.get("kind") == "BashOutput":
+                        # Check for duplicates - safety check in case caller
+                        # forgets to add kind__eq filter or API has a bug
+                        event_id = event.get("id")
+                        if event_id is not None:
+                            if event_id in seen_event_ids:
+                                raise RuntimeError(
+                                    f"Duplicate event received: {event_id}. "
+                                    "This should not happen with order__gt "
+                                    "filtering and kind filtering."
+                                )
+                            seen_event_ids.add(event_id)
+
+                        # Track the highest order we've seen
+                        event_order = event.get("order")
+                        if event_order is not None and event_order > last_order:
+                            last_order = event_order
+
                         if event.get("stdout"):
                             stdout_parts.append(event["stdout"])
                         if event.get("stderr"):
