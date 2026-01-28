@@ -752,10 +752,14 @@ openhands_plugin_security_scanner = [
 
 ## References
 
-- **Merged Plugin System**: PRs #1611, #1647, #1651, #1676 in software-agent-sdk
-- **Custom Agent Design**: PR #11876 in OpenHands/OpenHands
-- **Dynamic Tool Registration**: PR #1383 in software-agent-sdk
-- **Python Package-Based Loading POC**: PR #1399 in software-agent-sdk (open)
+- **Merged Plugin System**:
+  - [feat: Add Plugin data model and basic loading from directories](https://github.com/OpenHands/software-agent-sdk/pull/1611)
+  - [feat(plugin): Add Plugin.fetch() for remote plugin fetching and caching](https://github.com/OpenHands/software-agent-sdk/pull/1647)
+  - [feat(agent-server): Support plugin loading when starting conversations](https://github.com/OpenHands/software-agent-sdk/pull/1651)
+  - [feat(plugin): Load commands as keyword-triggered skills](https://github.com/OpenHands/software-agent-sdk/pull/1676)
+- **Custom Agent Design**: [Designs for Custom Agent (2 Scenarios)](https://github.com/OpenHands/OpenHands/pull/11876)
+- **Dynamic Tool Registration**: [feat: Add support for custom tools with remote agent server](https://github.com/OpenHands/software-agent-sdk/pull/1383)
+- **Python Package-Based Loading POC**: [POC: support for Python package-based plugin loading](https://github.com/OpenHands/software-agent-sdk/pull/1399)
 
 ---
 
