@@ -138,3 +138,32 @@ def test_static_secret_deserialization_redacted():
     # The value should be None since it was redacted
     assert validated.value is None
     assert validated.get_value() is None
+
+
+def test_lookup_secret_redacts_token_and_cookie_headers():
+    """Test that X-Access-Token and Cookie headers are properly redacted.
+
+    This is a regression test to prevent leaking authentication tokens in
+    trajectory exports. Headers like X-Access-Token and Cookie should be
+    treated as sensitive and redacted during serialization.
+    """
+    secret = LookupSecret(
+        url="https://api.example.com/secrets",
+        headers={
+            "X-Access-Token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+            "Cookie": "session_id=abc123; keycloak_auth=eyJhbGci...",
+            "X-Auth-Token": "bearer_token_value",
+            "Content-Type": "application/json",
+        },
+    )
+
+    # Serialize without expose_secrets context (default behavior)
+    serialized = secret.model_dump(mode="json")
+
+    # Check that token-based headers are redacted
+    assert serialized["headers"]["X-Access-Token"] == "**********"
+    assert serialized["headers"]["Cookie"] == "**********"
+    assert serialized["headers"]["X-Auth-Token"] == "**********"
+
+    # Check that non-secret headers are preserved
+    assert serialized["headers"]["Content-Type"] == "application/json"
