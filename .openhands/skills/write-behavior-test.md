@@ -1,8 +1,6 @@
 ---
 name: write-behavior-test
-type: knowledge
-version: 1.0.0
-agent: CodeActAgent
+description: Guide for writing behavior tests that verify agents follow system message guidelines and avoid undesirable behaviors. Use when creating integration tests for agent behavior validation.
 triggers:
 - /write_behavior_test
 ---
