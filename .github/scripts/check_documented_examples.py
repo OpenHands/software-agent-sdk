@@ -29,7 +29,12 @@ def find_documented_examples(docs_path: Path) -> set[str]:
     """
     documented_examples: set[str] = set()
 
-    # Pattern to match example file references with arbitrary nesting depth.
+    # Pattern to match example file references.
+    #
+    # The agent-sdk examples tree includes nested modules (e.g.
+    # examples/02_remote_agent_server/05_custom_tool/custom_tools/log_data.py),
+    # so we intentionally support *arbitrary* nesting depth under examples/.
+    #
     # Matches: examples/<dir>/.../<file>.py
     pattern = r"examples/(?:[-\w]+/)+[-\w]+\.py"
 
@@ -81,8 +86,9 @@ def find_agent_sdk_examples(agent_sdk_path: Path) -> set[str]:
                 if relative_path_str.startswith("examples/03_github_workflows/"):
                     continue
 
-                # Skip LLM-specific tools examples: these are intentionally not
-                # enforced by the docs check. See discussion in PR #1486.
+                # Skip LLM-specific tools examples: these depend on external
+                # model/provider availability and are intentionally excluded from
+                # docs example enforcement.
                 if relative_path_str.startswith("examples/04_llm_specific_tools/"):
                     continue
 

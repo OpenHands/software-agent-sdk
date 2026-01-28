@@ -420,6 +420,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """Like model_dump, but excludes None fields by default."""
         if "exclude_none" not in kwargs:
             kwargs["exclude_none"] = True
+
         dumped = super().model_dump(**kwargs)
         # remove tool schema details for brevity
         if "tools" in dumped and isinstance(dumped["tools"], dict):
