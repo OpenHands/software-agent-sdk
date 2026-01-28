@@ -234,35 +234,95 @@ def test_text_content_truncation_under_limit():
     assert result[0]["text"] == "Short text"
 
 
-def test_text_content_truncation_over_limit():
-    """Test TextContent truncates when over limit."""
+def test_text_content_no_truncation_over_limit():
+    """TextContent itself should not truncate; truncation is role=tool only."""
     from openhands.sdk.llm.message import TextContent
     from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
 
-    # Create text that exceeds the limit
     long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
 
     with patch("openhands.sdk.llm.message.logger") as mock_logger:
         content = TextContent(text=long_text)
         result = content.to_llm_dict()
 
-        # Check that warning was logged
-        mock_logger.warning.assert_called_once()
-        warning_call = mock_logger.warning.call_args[0][0]
-        assert "exceeds limit" in warning_call
-        assert str(DEFAULT_TEXT_CONTENT_LIMIT + 1000) in warning_call
-        assert str(DEFAULT_TEXT_CONTENT_LIMIT) in warning_call
-
-        # Check that text was truncated
+        mock_logger.warning.assert_not_called()
         assert len(result) == 1
-        text_result = result[0]["text"]
+        assert result[0]["text"] == long_text
+
+
+def test_tool_message_truncates_text_over_limit():
+    """Tool-role messages should truncate huge TextContent blocks."""
+    from openhands.sdk.llm.message import Message, TextContent
+    from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
+
+    long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
+
+    with patch("openhands.sdk.llm.message.logger") as mock_logger:
+        msg = Message(role="tool", content=[TextContent(text=long_text)])
+        result = msg.to_chat_dict(
+            cache_enabled=True,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=False,
+            send_reasoning_content=False,
+        )
+
+        mock_logger.warning.assert_called_once()
+        args = mock_logger.warning.call_args[0]
+        assert "Tool TextContent text length" in args[0]
+        assert args[1] == DEFAULT_TEXT_CONTENT_LIMIT + 1000
+        assert args[2] == DEFAULT_TEXT_CONTENT_LIMIT
+
+        content_item = result["content"][0]
+        assert content_item["type"] == "text"
+        text_result = content_item["text"]
         assert isinstance(text_result, str)
-        assert len(text_result) < len(long_text)
         assert len(text_result) == DEFAULT_TEXT_CONTENT_LIMIT
-        # With head-and-tail truncation, should start and end with original content
-        assert text_result.startswith("A")  # Should start with original content
-        assert text_result.endswith("A")  # Should end with original content
-        assert "<response clipped>" in text_result  # Should contain truncation notice
+        assert "<response clipped>" in text_result
+
+
+def test_user_message_does_not_truncate_text_over_limit():
+    """User-role messages should not truncate at serialization."""
+    from openhands.sdk.llm.message import Message, TextContent
+    from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
+
+    long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
+
+    with patch("openhands.sdk.llm.message.logger") as mock_logger:
+        msg = Message(role="user", content=[TextContent(text=long_text)])
+        result = msg.to_chat_dict(
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=True,
+            send_reasoning_content=False,
+        )
+
+        mock_logger.warning.assert_not_called()
+        assert result["content"] == long_text
+
+
+def test_tool_message_truncates_text_over_limit_with_string_serializer():
+    """Tool-role truncation must also apply on the string-serializer path."""
+    from openhands.sdk.llm.message import Message, TextContent
+    from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
+
+    long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
+
+    with patch("openhands.sdk.llm.message.logger") as mock_logger:
+        msg = Message(role="tool", content=[TextContent(text=long_text)])
+        result = msg.to_chat_dict(
+            cache_enabled=False,
+            vision_enabled=False,
+            function_calling_enabled=False,
+            force_string_serializer=True,
+            send_reasoning_content=False,
+        )
+
+        mock_logger.warning.assert_called_once()
+        assert result["content"] != long_text
+        assert len(result["content"]) == DEFAULT_TEXT_CONTENT_LIMIT
+        assert "<response clipped>" in result["content"]
 
 
 def test_text_content_truncation_exact_limit():
