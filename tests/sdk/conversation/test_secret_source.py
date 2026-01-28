@@ -13,6 +13,8 @@ def lookup_secret():
         url="https://my-oauth-service.com",
         headers={
             "authorization": "Bearer Token",
+            "cookie": "sessionid=abc123;",
+            "x-access-token": "token-abc123",
             "some-key": "a key",
             "not-sensitive": "hello there",
         },
@@ -28,6 +30,8 @@ def test_lookup_secret_serialization_default(lookup_secret):
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "**********",
+            "cookie": "**********",
+            "x-access-token": "**********",
             "some-key": "**********",
             "not-sensitive": "hello there",
         },
@@ -44,6 +48,8 @@ def test_lookup_secret_serialization_expose_secrets(lookup_secret):
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "Bearer Token",
+            "cookie": "sessionid=abc123;",
+            "x-access-token": "token-abc123",
             "some-key": "a key",
             "not-sensitive": "hello there",
         },
@@ -74,6 +80,8 @@ def test_lookup_secret_deserialization_redacted_headers():
         "url": "https://my-oauth-service.com",
         "headers": {
             "authorization": "**********",  # Redacted
+            "cookie": "**********",  # Redacted
+            "x-access-token": "**********",  # Redacted
             "some-key": "**********",  # Redacted
             "not-sensitive": "hello there",  # Not a secret header
         },
@@ -86,6 +94,8 @@ def test_lookup_secret_deserialization_redacted_headers():
     assert validated.url == "https://my-oauth-service.com"
     # Secret headers should be removed (since their values were redacted)
     assert "authorization" not in validated.headers
+    assert "cookie" not in validated.headers
+    assert "x-access-token" not in validated.headers
     assert "some-key" not in validated.headers
     # Non-sensitive headers should be preserved
     assert validated.headers["not-sensitive"] == "hello there"

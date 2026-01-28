@@ -27,14 +27,9 @@ from openhands.sdk.context.skills.utils import (
     validate_skill_name,
 )
 from openhands.sdk.logger import get_logger
-from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
-
-# Maximum characters for third-party skill files (e.g., AGENTS.md, CLAUDE.md, GEMINI.md)
-# These files are always active, so we want to keep them reasonably sized
-THIRD_PARTY_SKILL_MAX_CHARS = 10_000
 
 
 class SkillInfo(BaseModel):
@@ -485,32 +480,14 @@ class Skill(BaseModel):
         """Handle third-party skill files (e.g., .cursorrules, AGENTS.md).
 
         Creates a Skill with None trigger (always active) if the file type
-        is recognized. Truncates content if it exceeds the limit.
+        is recognized.
         """
         skill_name = cls.PATH_TO_THIRD_PARTY_SKILL_NAME.get(path.name.lower())
 
         if skill_name is not None:
-            truncated_content = maybe_truncate(
-                file_content,
-                truncate_after=THIRD_PARTY_SKILL_MAX_CHARS,
-                truncate_notice=(
-                    f"\n\n<TRUNCATED><NOTE>The file {path} exceeded the "
-                    f"maximum length ({THIRD_PARTY_SKILL_MAX_CHARS} "
-                    f"characters) and has been truncated. Only the "
-                    f"beginning and end are shown. You can read the full "
-                    f"file if needed.</NOTE>\n\n"
-                ),
-            )
-
-            if len(file_content) > THIRD_PARTY_SKILL_MAX_CHARS:
-                logger.warning(
-                    f"Third-party skill file {path} ({len(file_content)} chars) "
-                    f"exceeded limit ({THIRD_PARTY_SKILL_MAX_CHARS} chars), truncating"
-                )
-
             return Skill(
                 name=skill_name,
-                content=truncated_content,
+                content=file_content,
                 source=str(path),
                 trigger=None,
             )
