@@ -33,6 +33,7 @@ def agent_server():
     port = find_free_port()
     api_key = "test-wsproto-key"
 
+    creator_pid = os.getpid()
     process = multiprocessing.Process(target=run_agent_server, args=(port, api_key))
     process.start()
 
@@ -45,17 +46,21 @@ def agent_server():
             pass
         time.sleep(2)
     else:
-        process.terminate()
+        if process.is_alive():
+            process.terminate()
         process.join()
         pytest.fail(f"Agent server failed to start on port {port}")
 
     yield {"port": port, "api_key": api_key}
 
-    process.terminate()
-    process.join(timeout=5)
-    if process.is_alive():
-        process.kill()
-        process.join()
+    # Only the process that created the child should perform teardown.
+    if os.getpid() == creator_pid:
+        if process.is_alive():
+            process.terminate()
+        process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join()
 
 
 def test_agent_server_starts_with_wsproto(agent_server):
