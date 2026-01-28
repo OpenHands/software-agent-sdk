@@ -13,7 +13,17 @@ from enum import Enum
 from io import StringIO
 from pathlib import Path
 from types import UnionType
-from typing import IO, Annotated, Any, Literal, Union, cast, get_args, get_origin
+from typing import (
+    IO,
+    Annotated,
+    Any,
+    Literal,
+    TypeVar,
+    Union,
+    cast,
+    get_args,
+    get_origin,
+)
 from uuid import UUID
 
 from pydantic import BaseModel, SecretStr, TypeAdapter
@@ -31,6 +41,8 @@ class MissingType:
 
 MISSING = MissingType()
 JsonType = str | int | float | bool | dict | list | None | MissingType
+
+T = TypeVar("T")
 
 
 class EnvParser(ABC):
@@ -480,11 +492,11 @@ def _create_sample(type_: type):
     return type_()
 
 
-def from_env(
-    target_type: type,
+def from_env[T](
+    target_type: type[T],
     prefix: str = "",
     parsers: dict[type, EnvParser] | None = None,
-):
+) -> T:
     if parsers is None:
         parsers = _get_default_parsers()
     parser = get_env_parser(target_type, parsers)
@@ -492,6 +504,14 @@ def from_env(
     if json_data is MISSING:
         result = target_type()
     else:
+        # For DiscriminatedUnionMixin, check for KIND environment variable
+        # and include it in the data if present
+        if issubclass(target_type, DiscriminatedUnionMixin) and (
+            inspect.isabstract(target_type) or ABC in target_type.__bases__
+        ):
+            kind_key = f"{prefix}_KIND" if prefix else "KIND"
+            if kind_key in os.environ and isinstance(json_data, dict):
+                json_data["kind"] = os.environ[kind_key]
         json_str = json.dumps(json_data)
         type_adapter = TypeAdapter(target_type)
         result = type_adapter.validate_json(json_str)

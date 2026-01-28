@@ -7,12 +7,20 @@ This addresses issue #1330.
 """
 
 import os
+import platform
 import tempfile
 
 import pytest
 
 from openhands.tools.terminal.definition import TerminalAction
 from openhands.tools.terminal.terminal import create_terminal_session
+
+
+# Skip all tests in this file on Windows since tmux is not available
+pytestmark = pytest.mark.skipif(
+    platform.system() == "Windows",
+    reason="Tmux is not available on Windows",
+)
 
 
 @pytest.mark.parametrize("terminal_type", ["tmux"])

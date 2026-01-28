@@ -1,5 +1,7 @@
 """Tests for error handling in file editor."""
 
+import sys
+
 from openhands.tools.file_editor.impl import file_editor
 
 from .conftest import assert_error_result
@@ -7,9 +9,17 @@ from .conftest import assert_error_result
 
 def test_validation_error_formatting():
     """Test that validation errors are properly formatted in the output."""
+    # Use platform-appropriate nonexistent absolute path
+    if sys.platform == "win32":
+        nonexistent_path = "C:\\nonexistent\\file.txt"
+        temp_dir = "C:\\Windows\\Temp"
+    else:
+        nonexistent_path = "/nonexistent/file.txt"
+        temp_dir = "/tmp"
+
     result = file_editor(
         command="view",
-        path="/nonexistent/file.txt",
+        path=nonexistent_path,
     )
     assert_error_result(result)
     assert result.is_error and "does not exist" in result.text
@@ -17,7 +27,7 @@ def test_validation_error_formatting():
     # Test directory validation for non-view commands
     result = file_editor(
         command="str_replace",
-        path="/tmp",
+        path=temp_dir,
         old_str="something",
         new_str="new",
     )
