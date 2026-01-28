@@ -668,6 +668,95 @@ class BrowserSetStorageTool(
         ]
 
 
+# ============================================
+# `browser_start_recording`
+# ============================================
+class BrowserStartRecordingAction(BrowserAction):
+    """Schema for starting browser session recording."""
+
+    pass
+
+
+BROWSER_START_RECORDING_DESCRIPTION = """Start recording the browser session.
+
+This tool starts recording all browser interactions using rrweb. The recording
+captures DOM mutations, mouse movements, clicks, scrolls, and other user interactions.
+
+Call browser_stop_recording to stop recording and retrieve the recorded events.
+
+Note: Recording is per-page. Navigation to a new page will require calling
+start_recording again on the new page.
+"""
+
+
+class BrowserStartRecordingTool(
+    ToolDefinition[BrowserStartRecordingAction, BrowserObservation]
+):
+    """Tool for starting browser session recording."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_START_RECORDING_DESCRIPTION,
+                action_type=BrowserStartRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_start_recording",
+                    readOnlyHint=False,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
+# ============================================
+# `browser_stop_recording`
+# ============================================
+class BrowserStopRecordingAction(BrowserAction):
+    """Schema for stopping browser session recording."""
+
+    pass
+
+
+BROWSER_STOP_RECORDING_DESCRIPTION = """Stop recording and retrieve the recorded events.
+
+This tool stops the current recording session and returns all captured events as JSON.
+The events can be replayed using rrweb-player to visualize the recorded session.
+
+Returns a JSON object with:
+- events: Array of rrweb events
+- count: Number of events recorded
+"""
+
+
+class BrowserStopRecordingTool(
+    ToolDefinition[BrowserStopRecordingAction, BrowserObservation]
+):
+    """Tool for stopping browser session recording."""
+
+    @classmethod
+    def create(cls, executor: "BrowserToolExecutor") -> Sequence[Self]:
+        return [
+            cls(
+                description=BROWSER_STOP_RECORDING_DESCRIPTION,
+                action_type=BrowserStopRecordingAction,
+                observation_type=BrowserObservation,
+                annotations=ToolAnnotations(
+                    title="browser_stop_recording",
+                    readOnlyHint=True,
+                    destructiveHint=False,
+                    idempotentHint=False,
+                    openWorldHint=False,
+                ),
+                executor=executor,
+            )
+        ]
+
+
 class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
     """A set of all browser tools.
 
@@ -721,6 +810,8 @@ class BrowserToolSet(ToolDefinition[BrowserAction, BrowserObservation]):
             BrowserCloseTabTool,
             BrowserGetStorageTool,
             BrowserSetStorageTool,
+            BrowserStartRecordingTool,
+            BrowserStopRecordingTool,
         ]:
             tools.extend(tool_class.create(executor))
         return tools
