@@ -82,7 +82,7 @@ COPY --from=ghcr.io/astral-sh/uv /uv /uvx /bin/
 
 USER ${USERNAME}
 WORKDIR /
-ENV OH_ENABLE_VNC=false
+ENV OH_ENABLE_VNC=true
 ENV LOG_JSON=true
 EXPOSE ${PORT}
 
@@ -194,7 +194,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server/openhands/agent_serv
 
 USER ${USERNAME}
 WORKDIR /
-ENV OH_ENABLE_VNC=false
+ENV OH_ENABLE_VNC=true
 ENV LOG_JSON=true
 EXPOSE ${PORT} ${NOVNC_PORT}
 

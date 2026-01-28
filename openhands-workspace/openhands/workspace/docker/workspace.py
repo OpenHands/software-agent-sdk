@@ -209,6 +209,10 @@ class DockerWorkspace(RemoteWorkspace):
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
+        # Enable VNC if extra_ports is set
+        if self.extra_ports:
+            flags += ["-e", "OH_ENABLE_VNC=true"]
+
         for volume in self.volumes:
             flags += ["-v", volume]
             logger.info(f"Adding volume mount: {volume}")
