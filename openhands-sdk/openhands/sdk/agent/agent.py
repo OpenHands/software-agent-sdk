@@ -67,6 +67,10 @@ from openhands.sdk.tool.builtins import (
 logger = get_logger(__name__)
 maybe_init_laminar()
 
+# Maximum number of events to scan during init_state defensive checks.
+# SystemPromptEvent must appear within this prefix (at index 0 or 1).
+INIT_STATE_PREFIX_SCAN_WINDOW = 3
+
 
 class Agent(AgentBase):
     """Main agent implementation for OpenHands.
@@ -119,6 +123,8 @@ class Agent(AgentBase):
         # Defensive check: Analyze state to detect unexpected initialization scenarios
         # These checks help diagnose issues related to lazy loading and event ordering
         # See: https://github.com/OpenHands/software-agent-sdk/issues/1785
+        #
+        # NOTE: len() is O(1) for EventLog (file-backed implementation).
         event_count = len(state.events)
 
         # NOTE: state.events is intentionally an EventsListBase (Sequence-like), not
@@ -136,10 +142,8 @@ class Agent(AgentBase):
         #   session prefix you may see:
         #     [ConversationStateUpdateEvent, SystemPromptEvent, MessageEvent, ...]
         #
-        # We intentionally only inspect the first 3 events (cheap for both local and
+        # We intentionally only inspect the first few events (cheap for both local and
         # remote) to enforce this invariant.
-        INIT_STATE_PREFIX_SCAN_WINDOW = 3
-
         prefix_events = state.events[:INIT_STATE_PREFIX_SCAN_WINDOW]
 
         has_system_prompt = any(isinstance(e, SystemPromptEvent) for e in prefix_events)
@@ -171,7 +175,7 @@ class Agent(AgentBase):
         if has_user_message:
             event_types = [type(e).__name__ for e in prefix_events]
             logger.error(
-                f"init_state: User message exists without SystemPromptEvent! "
+                f"init_state: User message found in prefix before SystemPromptEvent! "
                 f"conversation_id={state.id}, prefix_events={event_types}"
             )
             raise AssertionError(
