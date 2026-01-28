@@ -92,8 +92,10 @@ class LookupSecret(SecretSource):
         return result
 
 
+# Patterns used for substring matching against header names (case-insensitive).
+# Headers containing any of these patterns will be redacted during serialization.
+# Examples: X-Access-Token, Cookie, Authorization, X-API-Key, X-API-Secret
 _SECRET_HEADERS = [
-    "AUTH",
     "AUTHORIZATION",
     "COOKIE",
     "CREDENTIAL",

@@ -167,3 +167,30 @@ def test_lookup_secret_redacts_token_and_cookie_headers():
 
     # Check that non-secret headers are preserved
     assert serialized["headers"]["Content-Type"] == "application/json"
+
+
+def test_lookup_secret_author_header_not_redacted():
+    """Test that legitimate 'Author' headers are NOT falsely redacted.
+
+    Regression test to ensure substring pattern matching doesn't cause
+    false positives with headers like Author, Co-Author, GitHub-Author.
+    """
+    secret = LookupSecret(
+        url="https://api.example.com/data",
+        headers={
+            "Author": "john.doe@example.com",
+            "Co-Author": "jane.doe@example.com",
+            "GitHub-Author": "contributor@example.com",
+            "Authorization": "Bearer secret_token",
+        },
+    )
+
+    serialized = secret.model_dump(mode="json")
+
+    # Author-related headers should NOT be redacted (false positive check)
+    assert serialized["headers"]["Author"] == "john.doe@example.com"
+    assert serialized["headers"]["Co-Author"] == "jane.doe@example.com"
+    assert serialized["headers"]["GitHub-Author"] == "contributor@example.com"
+
+    # But Authorization should be redacted
+    assert serialized["headers"]["Authorization"] == "**********"
