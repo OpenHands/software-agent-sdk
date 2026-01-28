@@ -94,6 +94,7 @@ def test_nonexistent_tool_returns_error_and_continues_conversation():
     assert "not found" in error_event.error
     assert error_event.tool_name == "nonexistent_tool"
     assert error_event.tool_call_id == "call_1"
+    assert error_event.recoverable is True
 
     # Verify that the conversation is NOT finished (this is the key fix)
     with conversation.state:
