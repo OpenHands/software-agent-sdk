@@ -141,9 +141,7 @@ class TestAsyncHookExecution:
         """Test that async hooks return immediately without waiting."""
         import time
 
-        hook = HookDefinition.model_validate(
-            {"command": "sleep 5", "async": True}
-        )
+        hook = HookDefinition.model_validate({"command": "sleep 5", "async": True})
 
         start = time.time()
         result = executor.execute(hook, sample_event)
@@ -155,9 +153,7 @@ class TestAsyncHookExecution:
 
     def test_execute_async_hook_result_fields(self, executor, sample_event):
         """Test that async hook result has expected field values."""
-        hook = HookDefinition.model_validate(
-            {"command": "echo 'test'", "async": True}
-        )
+        hook = HookDefinition.model_validate({"command": "echo 'test'", "async": True})
         result = executor.execute(hook, sample_event)
 
         assert result.success is True
@@ -210,9 +206,7 @@ class TestAsyncHookExecution:
 
     def test_sync_hook_not_marked_async(self, executor, sample_event):
         """Test that synchronous hooks are not marked as async_started."""
-        hook = HookDefinition.model_validate(
-            {"command": "echo 'sync'", "async": False}
-        )
+        hook = HookDefinition.model_validate({"command": "echo 'sync'", "async": False})
         result = executor.execute(hook, sample_event)
 
         assert result.success
