@@ -79,14 +79,14 @@ class EventLog(EventsListBase):
             i += self._length
         if i < 0 or i >= self._length:
             raise IndexError("Event index out of range")
-        txt = self._fs.read(self._path(i), True)
+        txt = self._fs.read(self._path(i))
         if not txt:
             raise FileNotFoundError(f"Missing event file: {self._path(i)}")
         return Event.model_validate_json(txt)
 
     def __iter__(self) -> Iterator[Event]:
         for i in range(self._length):
-            txt = self._fs.read(self._path(i), True)
+            txt = self._fs.read(self._path(i))
             if not txt:
                 continue
             evt = Event.model_validate_json(txt)
@@ -121,7 +121,8 @@ class EventLog(EventsListBase):
 
                 target_path = self._path(self._length, event_id=evt_id)
                 self._fs.write(
-                    target_path, event.model_dump_json(exclude_none=True), True
+                    target_path,
+                    event.model_dump_json(exclude_none=True),
                 )
                 self._idx_to_id[self._length] = evt_id
                 self._id_to_idx[evt_id] = self._length

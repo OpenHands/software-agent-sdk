@@ -23,15 +23,21 @@ class InMemoryFileStore(FileStore):
         if files is not None:
             self.files = files
 
-    def write(self, path: str, contents: str | bytes, cache: bool = True) -> None:
+    def write(self, path: str, contents: str | bytes) -> None:
         if isinstance(contents, bytes):
             contents = contents.decode("utf-8")
         self.files[path] = contents
 
-    def read(self, path: str, cache: bool = True) -> str:
+    def directWrite(self, path, contents):
+        return self.write(path, contents)
+
+    def read(self, path: str) -> str:
         if path not in self.files:
             raise FileNotFoundError(path)
         return self.files[path]
+
+    def directRead(self, path):
+        return self.read(path)
 
     def list(self, path: str) -> list[str]:
         files = []
