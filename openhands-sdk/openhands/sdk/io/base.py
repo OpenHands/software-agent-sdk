@@ -20,6 +20,7 @@ class FileStore(ABC):
         Args:
             path: The file path where contents should be written.
             contents: The data to write, either as string or bytes.
+            cache: Whether to cache the written content in memory after successful write.
         """
 
     @abstractmethod
@@ -28,6 +29,7 @@ class FileStore(ABC):
 
         Args:
             path: The file path to read from.
+            cache: Whether to cache the written content in memory after successful write.
 
         Returns:
             The file contents as a string.
