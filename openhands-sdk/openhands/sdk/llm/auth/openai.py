@@ -503,7 +503,18 @@ class OpenAISubscriptionAuth:
         site = web.TCPSite(runner, "localhost", self._oauth_port)
 
         try:
-            await site.start()
+            try:
+                await site.start()
+            except OSError as exc:
+                if "address already in use" in str(exc).lower():
+                    raise RuntimeError(
+                        "OAuth callback server port "
+                        f"{self._oauth_port} is already in use. "
+                        "Please free the port or set a different one via "
+                        "OPENHANDS_OAUTH_PORT."
+                    ) from exc
+                raise
+
             logger.debug(f"OAuth callback server started on port {self._oauth_port}")
 
             if open_browser:

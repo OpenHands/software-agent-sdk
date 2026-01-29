@@ -60,9 +60,8 @@ class CredentialStore:
         """Get the credentials directory, creating it if necessary."""
         self._credentials_dir.mkdir(parents=True, exist_ok=True)
         # Set directory permissions to owner-only (rwx------)
-        if os.name != 'nt':
+        if os.name != "nt":
             self._credentials_dir.chmod(0o700)
-        return self._credentials_dir
         return self._credentials_dir
 
     def _get_credentials_file(self, vendor: str) -> Path:
