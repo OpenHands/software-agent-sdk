@@ -14,26 +14,44 @@ class FileStore(ABC):
     """
 
     @abstractmethod
-    def write(self, path: str, contents: str | bytes, cache: bool = False) -> None:
+    def write(self, path: str, contents: str | bytes) -> None:
         """Write contents to a file at the specified path.
 
         Args:
             path: The file path where contents should be written.
             contents: The data to write, either as string or bytes.
-            cache: Whether to cache the written content in memory after successful write.
         """
 
     @abstractmethod
-    def read(self, path: str, cache: bool = False) -> str:
+    def directWrite(self, path: str, contents: str | bytes) -> None:
+        """Write contents directly to a file at the specified path (no caching).
+
+        Args:
+            path: The file path where contents should be written.
+            contents: The data to write, either as string or bytes.
+        """
+
+    @abstractmethod
+    def read(self, path: str) -> str:
         """Read and return the contents of a file as a string.
 
         Args:
             path: The file path to read from.
-            cache: Whether to cache the written content in memory after successful write.
 
         Returns:
             The file contents as a string.
         """
+    @abstractmethod
+    def directRead(self, path: str) -> str:
+         """Read and return file contents as a string directly (no caching).
+
+        Args:
+            path: The file path to read from.
+    
+        Returns:
+            The file contents as a string.
+        """
+
 
     @abstractmethod
     def list(self, path: str) -> list[str]:
