@@ -3,6 +3,7 @@
 import json
 import re
 import traceback
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
@@ -14,7 +15,42 @@ from openhands.tools.terminal.constants import (
 )
 
 
+if TYPE_CHECKING:
+    from re import Match
+
 logger = get_logger(__name__)
+
+
+class _SyntheticMatch:
+    """A match-like object for recovered PS1 blocks.
+
+    When ASCII art corrupts the PS1 output, we need to extract the last
+    valid JSON block. This class provides a match-like interface so the
+    rest of the code can work with it transparently.
+    """
+
+    def __init__(self, content: str, original_match: "Match[str]"):
+        self._content = content
+        self._original_match = original_match
+
+    def group(self, index: int = 0) -> str:
+        if index == 0:
+            # Full match - return PS1JSON markers + content + PS1END
+            return (
+                f"{CMD_OUTPUT_PS1_BEGIN.strip()}\n"
+                f"{self._content}\n"
+                f"{CMD_OUTPUT_PS1_END.strip()}"
+            )
+        elif index == 1:
+            # Group 1 - the JSON content
+            return self._content
+        raise IndexError(f"no such group: {index}")
+
+    def start(self, group: int = 0) -> int:
+        return self._original_match.start(group)
+
+    def end(self, group: int = 0) -> int:
+        return self._original_match.end(group)
 
 
 class CmdOutputMetadata(BaseModel):
@@ -64,14 +100,46 @@ class CmdOutputMetadata(BaseModel):
 
     @classmethod
     def matches_ps1_metadata(cls, string: str) -> list[re.Match[str]]:
+        """Find all valid PS1 metadata blocks in the string.
+
+        Handles corruption scenarios where ASCII art or command output
+        interrupts a PS1 block, causing a nested ###PS1JSON### marker.
+        In such cases, we extract the LAST valid JSON block before each
+        ###PS1END### marker.
+        """
         matches = []
         for match in CMD_OUTPUT_METADATA_PS1_REGEX.finditer(string):
+            content = match.group(1).strip()
             try:
-                json.loads(match.group(1).strip())  # Try to parse as JSON
+                json.loads(content)  # Try to parse as JSON
                 matches.append(match)
             except json.JSONDecodeError:
+                # Check if there's a nested ###PS1JSON### marker inside
+                # This happens when the first PS1 block gets corrupted by
+                # command output (e.g., grunt's ASCII cat art)
+                nested_marker = CMD_OUTPUT_PS1_BEGIN.strip()
+                if nested_marker in content:
+                    # Find the LAST occurrence of the marker
+                    last_marker_pos = content.rfind(nested_marker)
+                    if last_marker_pos != -1:
+                        # Extract content after the last marker
+                        last_block_content = content[
+                            last_marker_pos + len(nested_marker) :
+                        ].strip()
+                        try:
+                            json.loads(last_block_content)
+                            # Create a synthetic match-like object
+                            matches.append(_SyntheticMatch(last_block_content, match))
+                            logger.debug(
+                                "Recovered valid PS1 block from corrupted "
+                                f"output: {last_block_content[:80]}..."
+                            )
+                            continue
+                        except json.JSONDecodeError:
+                            pass  # Fall through to the debug log below
+
                 logger.debug(
-                    f"Failed to parse PS1 metadata -  Skipping: [{match.group(1)}]"
+                    f"Failed to parse PS1 metadata - Skipping: [{content[:200]}...]"
                     + traceback.format_exc()
                 )
                 continue  # Skip if not valid JSON
