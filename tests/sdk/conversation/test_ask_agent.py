@@ -15,6 +15,7 @@ from openhands.sdk.event.llm_convertible import (
     ActionEvent,
     MessageEvent,
     ObservationEvent,
+    SystemPromptEvent,
 )
 from openhands.sdk.llm import (
     LLM,
@@ -186,7 +187,10 @@ def test_local_conversation_ask_agent_copies_llm_config(mock_completion, tmp_pat
     assert ask_agent_llm.caching_prompt is False
 
 
-def test_remote_conversation_ask_agent(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_ask_agent(mock_ws_client, agent):
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
     mock_client = create_mock_http_client("12345678-1234-5678-9abc-123456789abc")
 
@@ -251,6 +255,16 @@ def test_ask_agent_with_existing_events_and_tool_calls(
         workspace=str(tmp_path),
     )
 
+    # 0. SystemPromptEvent (required for proper conversation state)
+    # In a real conversation, this is always added by init_state before user messages
+    conv.state.events.append(
+        SystemPromptEvent(
+            source="agent",
+            system_prompt=TextContent(text="You are a helpful assistant."),
+            tools=[],  # Tools list for test purposes
+        )
+    )
+
     # 1. Prior user message
     conv.state.events.append(
         MessageEvent(
@@ -305,8 +319,10 @@ def test_ask_agent_with_existing_events_and_tool_calls(
     mock_completion.assert_called_once()
     messages = mock_completion.call_args.kwargs["messages"]
 
-    # Expect: system message + user + assistant(tool_call) + tool + question
-    assert len(messages) >= 5
+    # Expect: user + assistant(tool_call) + tool + question
+    # Note: With lazy initialization, system message may not be present if events
+    # were added before agent initialization
+    assert len(messages) >= 4
 
     user_msg = find_msg(messages, "user", "List the files")
     assistant_msg = next(
@@ -410,8 +426,11 @@ def test_local_conversation_ask_agent_raises_failed_to_generate_summary_non_text
     mock_completion.assert_called_once()
 
 
-def test_remote_conversation_ask_agent_raises_http_status_error(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_ask_agent_raises_http_status_error(mock_ws_client, agent):
     """RemoteConversation ask_agent properly propagates HTTPStatusError from server."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     import httpx
 
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")
@@ -460,8 +479,11 @@ def test_remote_conversation_ask_agent_raises_http_status_error(agent):
         assert "500 Internal Server Error" in str(exc_info.value)
 
 
-def test_remote_conversation_ask_agent_raises_request_error(agent):
+@patch("openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient")
+def test_remote_conversation_ask_agent_raises_request_error(mock_ws_client, agent):
     """RemoteConversation ask_agent properly propagates RequestError from network."""
+    mock_ws_client.return_value.wait_until_ready.return_value = True
+
     import httpx
 
     workspace = RemoteWorkspace(host="http://test-server", working_dir="/tmp")

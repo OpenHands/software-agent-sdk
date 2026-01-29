@@ -15,6 +15,12 @@ from openhands.sdk.logger import get_logger
 logger = get_logger(__name__)
 
 
+# Maximum recent events to scan for stuck detection.
+# This window should be large enough to capture repetitive patterns
+# (4 repeats × 2 events per cycle = 8 events minimum, plus buffer for user messages)
+MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION: int = 20
+
+
 class StuckDetector:
     """Detects when an agent is stuck in repetitive or unproductive patterns.
 
@@ -54,8 +60,14 @@ class StuckDetector:
         return self.thresholds.alternating_pattern
 
     def is_stuck(self) -> bool:
-        """Check if the agent is currently stuck."""
-        events = list(self.state.events)
+        """Check if the agent is currently stuck.
+
+        Note: To avoid materializing potentially large file-backed event histories,
+        only the last MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION events are analyzed.
+        If a user message exists within this window, only events after it are checked.
+        Otherwise, all events in the window are analyzed.
+        """
+        events = list(self.state.events[-MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION:])
 
         # Only look at history after the last user message
         last_user_msg_index = next(
@@ -66,11 +78,8 @@ class StuckDetector:
             ),
             -1,  # Default to -1 if no user message found
         )
-        if last_user_msg_index == -1:
-            logger.warning("No user message found in history, skipping stuck detection")
-            return False
-
-        events = events[last_user_msg_index + 1 :]
+        if last_user_msg_index != -1:
+            events = events[last_user_msg_index + 1 :]
 
         # Determine minimum events needed
         min_threshold = min(
@@ -253,10 +262,10 @@ class StuckDetector:
         return False
 
     def _is_stuck_context_window_error(self, _events: list[Event]) -> bool:
-        """Detects if we're stuck in a loop of context window errors.
+        """Detects if we are stuck in a loop of context window errors.
 
         This happens when we repeatedly get context window errors and try to trim,
-        but the trimming doesn't work, causing us to get more context window errors.
+        but the trimming does not work, causing us to get more context window errors.
         The pattern is repeated AgentCondensationObservation events without any other
         events between them.
         """

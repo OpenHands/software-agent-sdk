@@ -82,10 +82,21 @@ def run_conversation(
 
     llm_messages = []
 
+    # Default serialization options for test fixture generation
+    default_serialization_opts = {
+        "cache_enabled": False,
+        "vision_enabled": False,
+        "function_calling_enabled": True,
+        "force_string_serializer": False,
+        "send_reasoning_content": False,
+    }
+
     def conversation_callback(event: Event):
         logger.info(f"Found a conversation message: {str(event)[:200]}...")
         if isinstance(event, LLMConvertibleEvent):
-            llm_messages.append(event.to_llm_message().to_chat_dict())
+            llm_messages.append(
+                event.to_llm_message().to_chat_dict(**default_serialization_opts)
+            )
 
     conversation = Conversation(agent=agent, callbacks=[conversation_callback])
     message = Message(role="user", content=[TextContent(text=user_message)])

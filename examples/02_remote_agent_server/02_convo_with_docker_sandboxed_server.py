@@ -41,7 +41,7 @@ def detect_platform():
 #    image or `DockerDevWorkspace` to automatically build the image on-demand.
 #    with DockerDevWorkspace(
 #        # dynamically build agent-server image
-#        base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+#        base_image="nikolaik/python-nodejs:python3.13-nodejs22",
 #        host_port=8010,
 #        platform=detect_platform(),
 #    ) as workspace:

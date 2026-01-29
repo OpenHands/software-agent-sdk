@@ -13,6 +13,7 @@ import time
 from collections import deque
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
@@ -106,7 +107,7 @@ class SubprocessTerminal(TerminalInterface):
         logger.info(f"Using shell: {resolved_shell_path}")
 
         # Inherit environment variables from the parent process
-        env = os.environ.copy()
+        env = sanitized_env()
         env["PS1"] = self.PS1
         env["PS2"] = ""
         env["TERM"] = "xterm-256color"
