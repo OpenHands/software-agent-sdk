@@ -44,14 +44,35 @@ logger = logging.getLogger(__name__)
 
 
 class AsyncProcessManager:
-    """Manages background hook processes for cleanup."""
+    """Manages background hook processes for cleanup.
+
+    Tracks async hook processes and ensures they are terminated when they
+    exceed their timeout or when the session ends. Prevents zombie processes
+    by properly waiting for termination.
+    """
 
     def __init__(self):
         self._processes: list[tuple[subprocess.Popen, float, int]] = []
 
     def add_process(self, process: subprocess.Popen, timeout: int) -> None:
-        """Track a background process for cleanup."""
+        """Track a background process for cleanup.
+
+        Args:
+            process: The subprocess to track
+            timeout: Maximum runtime in seconds before termination
+        """
         self._processes.append((process, time.time(), timeout))
+
+    def _terminate_process(self, process: subprocess.Popen) -> None:
+        """Safely terminate a process and prevent zombies."""
+        try:
+            process.terminate()
+            process.wait(timeout=1)  # Wait for graceful termination
+        except subprocess.TimeoutExpired:
+            process.kill()  # Force kill if it doesn't terminate
+            process.wait()
+        except OSError as e:
+            logger.debug(f"Process already terminated: {e}")
 
     def cleanup_expired(self) -> None:
         """Terminate processes that have exceeded their timeout."""
@@ -60,22 +81,18 @@ class AsyncProcessManager:
         for process, start_time, timeout in self._processes:
             if process.poll() is None:  # Still running
                 if current_time - start_time > timeout:
-                    try:
-                        process.terminate()
-                    except OSError:
-                        pass  # Process may have already exited
+                    logger.debug(f"Terminating expired async hook (PID {process.pid})")
+                    self._terminate_process(process)
                 else:
                     active.append((process, start_time, timeout))
+            # If poll() returns non-None, process already exited - just drop it
         self._processes = active
 
     def cleanup_all(self) -> None:
         """Terminate all tracked background processes."""
         for process, _, _ in self._processes:
             if process.poll() is None:
-                try:
-                    process.terminate()
-                except OSError:
-                    pass  # Process may have already exited
+                self._terminate_process(process)
         self._processes = []
 
 
@@ -111,6 +128,9 @@ class HookExecutor:
         # Serialize event to JSON for stdin
         event_json = event.model_dump_json()
 
+        # Cleanup expired async processes before starting new ones
+        self.async_process_manager.cleanup_expired()
+
         # Handle async hooks: fire and forget
         if hook.async_:
             try:
@@ -123,13 +143,18 @@ class HookExecutor:
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
-                # Write event JSON to stdin and close
-                if process.stdin:
-                    process.stdin.write(event_json.encode())
-                    process.stdin.close()
+                # Write event JSON to stdin safely
+                try:
+                    if process.stdin and process.poll() is None:
+                        process.stdin.write(event_json.encode())
+                        process.stdin.flush()
+                        process.stdin.close()
+                except (BrokenPipeError, OSError) as e:
+                    logger.warning(f"Failed to write to async hook stdin: {e}")
 
                 # Track for cleanup
                 self.async_process_manager.add_process(process, hook.timeout)
+                logger.debug(f"Started async hook (PID {process.pid}): {hook.command}")
 
                 # Return placeholder success result
                 return HookResult(

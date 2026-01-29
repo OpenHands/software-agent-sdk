@@ -7,6 +7,7 @@ from openhands.sdk.hooks.config import HookConfig
 from openhands.sdk.hooks.executor import HookExecutor, HookResult
 from openhands.sdk.hooks.types import HookEvent, HookEventType
 
+
 logger = logging.getLogger(__name__)
 
 
