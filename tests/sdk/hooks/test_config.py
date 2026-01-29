@@ -248,10 +248,9 @@ class TestAsyncHooks:
         """Test that 'async' key in JSON is parsed correctly via alias."""
         data = {
             "hooks": {
-                "PostToolUse": [{
-                    "matcher": "*",
-                    "hooks": [{"command": "test.sh", "async": True}]
-                }]
+                "PostToolUse": [
+                    {"matcher": "*", "hooks": [{"command": "test.sh", "async": True}]}
+                ]
             }
         }
         config = HookConfig.from_dict(data)
@@ -275,13 +274,15 @@ class TestAsyncHooks:
     def test_async_hook_in_config_round_trip(self):
         """Test that async hooks survive a JSON round-trip."""
         data = {
-            "PostToolUse": [{
-                "matcher": "terminal",
-                "hooks": [
-                    {"command": "sync-hook.sh", "async": False},
-                    {"command": "async-hook.sh", "async": True, "timeout": 30}
-                ]
-            }]
+            "PostToolUse": [
+                {
+                    "matcher": "terminal",
+                    "hooks": [
+                        {"command": "sync-hook.sh", "async": False},
+                        {"command": "async-hook.sh", "async": True, "timeout": 30},
+                    ],
+                }
+            ]
         }
         config = HookConfig.from_dict(data)
         hooks = config.get_hooks_for_event(HookEventType.POST_TOOL_USE, "terminal")
@@ -294,13 +295,10 @@ class TestAsyncHooks:
     def test_multiple_async_hooks_across_events(self):
         """Test async hooks configured across multiple event types."""
         data = {
-            "PostToolUse": [{
-                "matcher": "*",
-                "hooks": [{"command": "log.sh", "async": True}]
-            }],
-            "SessionStart": [{
-                "hooks": [{"command": "notify.sh", "async": True}]
-            }]
+            "PostToolUse": [
+                {"matcher": "*", "hooks": [{"command": "log.sh", "async": True}]}
+            ],
+            "SessionStart": [{"hooks": [{"command": "notify.sh", "async": True}]}],
         }
         config = HookConfig.from_dict(data)
 
@@ -311,4 +309,3 @@ class TestAsyncHooks:
         start_hooks = config.get_hooks_for_event(HookEventType.SESSION_START)
         assert len(start_hooks) == 1
         assert start_hooks[0].async_ is True
-

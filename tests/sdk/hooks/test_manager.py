@@ -173,9 +173,9 @@ class TestAsyncHookManager:
         import logging
 
         hook = {"type": "command", "command": "echo test", "async": True}
-        config = HookConfig.from_dict({
-            "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}
-        })
+        config = HookConfig.from_dict(
+            {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+        )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)
 
@@ -189,12 +189,14 @@ class TestAsyncHookManager:
         """Test that async PreToolUse hooks still execute despite warning."""
         marker = tmp_path / "async_ran.txt"
         hook = {"type": "command", "command": f"touch {marker}", "async": True}
-        config = HookConfig.from_dict({
-            "hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}
-        })
+        config = HookConfig.from_dict(
+            {"hooks": {"PreToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+        )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)
-        should_continue, results = manager.run_pre_tool_use("BashTool", {"command": "ls"})
+        should_continue, results = manager.run_pre_tool_use(
+            "BashTool", {"command": "ls"}
+        )
 
         assert should_continue  # Async hooks cannot block
         assert len(results) == 1
@@ -202,15 +204,16 @@ class TestAsyncHookManager:
 
         # Wait for async hook to complete
         import time
+
         time.sleep(0.2)
         assert marker.exists()
 
     def test_cleanup_async_processes_on_session_end(self, tmp_working_dir, tmp_path):
         """Test that session end cleans up async processes."""
         hook = {"type": "command", "command": "sleep 60", "async": True}
-        config = HookConfig.from_dict({
-            "hooks": {"PostToolUse": [{"matcher": "*", "hooks": [hook]}]}
-        })
+        config = HookConfig.from_dict(
+            {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+        )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)
 
@@ -227,9 +230,9 @@ class TestAsyncHookManager:
     def test_cleanup_async_processes_method(self, tmp_working_dir, tmp_path):
         """Test cleanup_async_processes method directly."""
         hook = {"type": "command", "command": "sleep 60", "async": True}
-        config = HookConfig.from_dict({
-            "hooks": {"PostToolUse": [{"matcher": "*", "hooks": [hook]}]}
-        })
+        config = HookConfig.from_dict(
+            {"hooks": {"PostToolUse": [{"matcher": "*", "hooks": [hook]}]}}
+        )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)
 
@@ -246,17 +249,24 @@ class TestAsyncHookManager:
         sync_marker = tmp_path / "sync.txt"
         async_marker = tmp_path / "async.txt"
 
-        config = HookConfig.from_dict({
-            "hooks": {
-                "PostToolUse": [{
-                    "matcher": "*",
-                    "hooks": [
-                        {"command": f"touch {sync_marker}", "async": False},
-                        {"command": f"sleep 0.2 && touch {async_marker}", "async": True}
+        config = HookConfig.from_dict(
+            {
+                "hooks": {
+                    "PostToolUse": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {"command": f"touch {sync_marker}", "async": False},
+                                {
+                                    "command": f"sleep 0.2 && touch {async_marker}",
+                                    "async": True,
+                                },
+                            ],
+                        }
                     ]
-                }]
+                }
             }
-        })
+        )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)
         results = manager.run_post_tool_use("TestTool", {}, {"result": "ok"})
@@ -274,19 +284,16 @@ class TestAsyncHookManager:
 
         # Wait for async hook
         import time
+
         time.sleep(0.4)
         assert async_marker.exists()
 
     def test_session_end_runs_hooks_before_cleanup(self, tmp_working_dir, tmp_path):
         """Test that session end hooks run before async process cleanup."""
         marker = tmp_path / "session_end.txt"
-        config = HookConfig.from_dict({
-            "hooks": {
-                "SessionEnd": [{
-                    "hooks": [{"command": f"touch {marker}"}]
-                }]
-            }
-        })
+        config = HookConfig.from_dict(
+            {"hooks": {"SessionEnd": [{"hooks": [{"command": f"touch {marker}"}]}]}}
+        )
 
         manager = HookManager(config=config, working_dir=tmp_working_dir)
         results = manager.run_session_end()
@@ -294,4 +301,3 @@ class TestAsyncHookManager:
         assert len(results) == 1
         assert results[0].success
         assert marker.exists()
-

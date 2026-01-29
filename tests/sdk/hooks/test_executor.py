@@ -167,9 +167,7 @@ class TestAsyncHookExecution:
         """Test that async hooks track processes for cleanup."""
         marker = tmp_path / "async_marker.txt"
         hook = HookDefinition(
-            command=f"sleep 0.3 && touch {marker}",
-            async_=True,
-            timeout=5
+            command=f"sleep 0.3 && touch {marker}", async_=True, timeout=5
         )
 
         result = executor.execute(hook, sample_event)
@@ -180,6 +178,7 @@ class TestAsyncHookExecution:
 
         # Wait for process to complete and verify marker file created
         import time
+
         time.sleep(0.5)
         assert marker.exists()
 
@@ -187,18 +186,15 @@ class TestAsyncHookExecution:
         """Test that async hooks receive event data on stdin."""
         output_file = tmp_path / "stdin_output.json"
         # Script that reads stdin and writes to file
-        hook = HookDefinition(
-            command=f"cat > {output_file}",
-            async_=True,
-            timeout=5
-        )
+        hook = HookDefinition(command=f"cat > {output_file}", async_=True, timeout=5)
 
         result = executor.execute(hook, sample_event)
         assert result.async_started
 
         # Wait for async process to complete
-        import time
         import json
+        import time
+
         time.sleep(0.3)
 
         assert output_file.exists()
@@ -215,7 +211,9 @@ class TestAsyncHookExecution:
         assert result.async_started is False
         assert "sync" in result.stdout
 
-    def test_execute_all_with_mixed_sync_async_hooks(self, executor, sample_event, tmp_path):
+    def test_execute_all_with_mixed_sync_async_hooks(
+        self, executor, sample_event, tmp_path
+    ):
         """Test execute_all with a mix of sync and async hooks."""
         marker = tmp_path / "async_ran.txt"
         hooks = [
@@ -233,6 +231,7 @@ class TestAsyncHookExecution:
 
         # Wait for async hook to complete
         import time
+
         time.sleep(0.2)
         assert marker.exists()
 
@@ -242,8 +241,9 @@ class TestAsyncProcessManager:
 
     def test_add_process_and_cleanup_all(self, tmp_path):
         """Test that processes can be added and cleaned up."""
-        from openhands.sdk.hooks.executor import AsyncProcessManager
         import subprocess
+
+        from openhands.sdk.hooks.executor import AsyncProcessManager
 
         manager = AsyncProcessManager()
 
@@ -266,14 +266,16 @@ class TestAsyncProcessManager:
 
         # Give process time to terminate
         import time
+
         time.sleep(0.1)
         assert process.poll() is not None  # Terminated
 
     def test_cleanup_expired_terminates_old_processes(self, tmp_path):
         """Test that cleanup_expired terminates processes past their timeout."""
-        from openhands.sdk.hooks.executor import AsyncProcessManager
         import subprocess
         import time
+
+        from openhands.sdk.hooks.executor import AsyncProcessManager
 
         manager = AsyncProcessManager()
 
@@ -288,7 +290,9 @@ class TestAsyncProcessManager:
         )
 
         # Add with a timeout in the past (simulated by setting start time)
-        manager._processes.append((process, time.time() - 10, 5))  # Started 10s ago, 5s timeout
+        manager._processes.append(
+            (process, time.time() - 10, 5)
+        )  # Started 10s ago, 5s timeout
 
         assert process.poll() is None  # Still running
         manager.cleanup_expired()
@@ -299,9 +303,9 @@ class TestAsyncProcessManager:
 
     def test_cleanup_expired_keeps_active_processes(self, tmp_path):
         """Test that cleanup_expired keeps processes within their timeout."""
-        from openhands.sdk.hooks.executor import AsyncProcessManager
         import subprocess
-        import time
+
+        from openhands.sdk.hooks.executor import AsyncProcessManager
 
         manager = AsyncProcessManager()
 
@@ -324,4 +328,3 @@ class TestAsyncProcessManager:
 
         # Clean up for test teardown
         process.terminate()
-
