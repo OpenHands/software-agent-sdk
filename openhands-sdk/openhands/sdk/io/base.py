@@ -14,7 +14,7 @@ class FileStore(ABC):
     """
 
     @abstractmethod
-    def write(self, path: str, contents: str | bytes) -> None:
+    def write(self, path: str, contents: str | bytes, cache: bool = False) -> None:
         """Write contents to a file at the specified path.
 
         Args:
@@ -23,7 +23,7 @@ class FileStore(ABC):
         """
 
     @abstractmethod
-    def read(self, path: str) -> str:
+    def read(self, path: str, cache: bool = False) -> str:
         """Read and return the contents of a file as a string.
 
         Args:
