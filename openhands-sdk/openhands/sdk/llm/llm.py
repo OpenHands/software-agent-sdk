@@ -1131,17 +1131,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     ) -> tuple[str | None, list[dict[str, Any]]]:
         """Prepare (instructions, input[]) for the OpenAI Responses API.
 
+        - Skips prompt caching flags and string serializer concerns
         - Uses Message.to_responses_value to get either instructions (system)
           or input items (others)
         - Concatenates system instructions into a single instructions string
         - For subscription mode, system prompts are prepended to user content
         """
+        msgs = copy.deepcopy(messages)
+
+        # Determine vision based on model detection
         vision_active = self.vision_is_active()
+
+        # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
         system_chunks: list[str] = []
 
-        for m in copy.deepcopy(messages):
+        for m in msgs:
             val = m.to_responses_value(vision_enabled=vision_active)
             if isinstance(val, str):
                 s = val.strip()
