@@ -950,18 +950,23 @@ class RemoteConversation(BaseConversation):
                 self._run_complete_event.clear()
                 return
 
-            # Poll the server for status as a health check
-            # This handles error/stuck states that need immediate attention
-            # For normal completion, we continue waiting for WebSocket
+            # Poll the server for status as a health check.
+            # This catches ERROR/STUCK states that need immediate attention.
+            #
+            # IMPORTANT: We intentionally do NOT return here even if polling
+            # detects a terminal status (IDLE/FINISHED). Returning early would
+            # cause event loss because the WebSocket may not have delivered all
+            # events yet. Instead, we continue looping until the WebSocket
+            # delivers the terminal status event, which guarantees all events
+            # have been received through the same channel.
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
             else:
-                # _handle_conversation_status raises exceptions for ERROR/STUCK
-                # and returns True for terminal states (IDLE/FINISHED)
-                # We don't return here - we wait for WebSocket to deliver
-                # the terminal status event to ensure all events are received
+                # Raises ConversationRunError for ERROR/STUCK states.
+                # Returns True for terminal states (IDLE/FINISHED), but we
+                # ignore the return value and continue waiting for WebSocket.
                 self._handle_conversation_status(status)
 
     def _poll_status_once(self) -> str | None:
