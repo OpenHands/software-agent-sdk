@@ -45,7 +45,7 @@ body:
       attributes:
           label: Alternatives Considered
           description: Have you considered any alternative solutions or workarounds? What are their limitations?
-          placeholder: Example - I tried manually serializing agent state using pickle, but it's not portable across SDK versions and doesn't handle 
+          placeholder: "Example - I tried manually serializing agent state using pickle, but it's not portable across SDK versions and doesn't handle complex tool state properly."
               complex tool state properly.
 
     - type: dropdown
