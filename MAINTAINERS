@@ -1,4 +1,8 @@
 # Repository Maintainers
+#
+# Format: Each maintainer on a new line starting with "- @username"
+# This file is read by .github/workflows/assign-reviews.yml for automated triage
+#
 
 The following people are maintainers of this repository and are responsible for triage and review:
 
