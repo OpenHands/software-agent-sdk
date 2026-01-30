@@ -60,7 +60,8 @@ jobs:
                    - Check if it is a bug report, feature request, or question and add the appropriate label
                    - If it is a bug report and it does not have a priority label
                      * Read the MAINTAINERS file in the repository root to get the list of maintainers
-                     * Tag ALL maintainers listed in that file with: "[Automatic Post]: This issue has been waiting for triage. {maintainers}, could you please take a look and add the appropriate priority label when you have a chance?"
+                     * Tag ALL maintainers listed in that file with: "[Automatic Post]: This issue has been waiting for triage. {maintainers}, could you
+                please take a look and add the appropriate priority label when you have a chance?"
 
                 # Need Reviewer Action
 
