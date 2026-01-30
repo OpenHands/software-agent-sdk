@@ -232,61 +232,20 @@ class RemoteEventsList(EventsListBase):
         self._cached_events: list[Event] = []
         self._cached_event_ids: set[str] = set()
         self._lock = threading.RLock()
+
         # Initial fetch to sync existing events
         self._do_full_sync()
 
-    def _do_full_sync(self) -> None:
-        """Perform a full sync with the remote API."""
-        logger.debug(f"Performing full sync for conversation {self._conversation_id}")
-
-        events = []
-        page_id = None
-
-        while True:
-            params = {"limit": 100}
-            if page_id:
-                params["page_id"] = page_id
-
-            resp = _send_request(
-                self._client,
-                "GET",
-                f"/api/conversations/{self._conversation_id}/events/search",
-                params=params,
-            )
-            data = resp.json()
-
-            events.extend([Event.model_validate(item) for item in data["items"]])
-
-            if not data.get("next_page_id"):
-                break
-            page_id = data["next_page_id"]
-
-        self._cached_events = events
-        self._cached_event_ids.update(e.id for e in events)
-        logger.debug(f"Full sync completed, {len(events)} events cached")
-
-    def reconcile(self) -> int:
-        """Reconcile local cache with server by fetching and merging events.
-
-        This method fetches all events from the server and merges them with
-        the local cache, deduplicating by event ID. This ensures no events
-        are missed due to race conditions between REST sync and WebSocket
-        subscription.
-
-        Returns:
-            Number of new events added during reconciliation.
-        """
-        logger.debug(
-            f"Performing reconciliation sync for conversation {self._conversation_id}"
-        )
-
-        events = []
-        page_id = None
+    def _fetch_events_pages(
+        self, page_id: str | None = None, *, ignore_errors: bool = False
+    ) -> list[Event]:
+        events: list[Event] = []
+        next_page_id = page_id
 
         while True:
-            params = {"limit": 100}
-            if page_id:
-                params["page_id"] = page_id
+            params: dict[str, str | int] = {"limit": 100}
+            if next_page_id:
+                params["page_id"] = next_page_id
 
             try:
                 resp = _send_request(
@@ -296,15 +255,56 @@ class RemoteEventsList(EventsListBase):
                     params=params,
                 )
                 data = resp.json()
-            except Exception as e:
-                logger.warning(f"Failed to fetch events during reconciliation: {e}")
-                break  # Return partial results rather than failing completely
+            except Exception as exc:
+                if ignore_errors:
+                    logger.warning(
+                        "Failed to fetch events during sync: %s", exc, exc_info=True
+                    )
+                    break
+                raise
 
             events.extend([Event.model_validate(item) for item in data["items"]])
 
             if not data.get("next_page_id"):
                 break
-            page_id = data["next_page_id"]
+            next_page_id = data["next_page_id"]
+
+        return events
+
+    def _do_full_sync(self) -> None:
+        """Perform a full sync with the remote API."""
+        logger.debug(f"Performing full sync for conversation {self._conversation_id}")
+
+        events = self._fetch_events_pages()
+
+        self._cached_events = events
+        self._cached_event_ids.update(e.id for e in events)
+        logger.debug(f"Full sync completed, {len(events)} events cached")
+
+    def reconcile(self, page_id: str | None = None) -> int:
+        """Reconcile local cache with server by fetching and merging events.
+
+        This method fetches events from the server and merges them with
+        the local cache, deduplicating by event ID. This ensures no events
+        are missed due to race conditions between REST sync and WebSocket
+        subscription.
+
+        Args:
+            page_id: Optional pagination cursor to fetch events after a known ID.
+
+        Returns:
+            Number of new events added during reconciliation.
+        """
+        logger.debug(
+            "Performing reconciliation sync for conversation %s (page_id=%s)",
+            self._conversation_id,
+            page_id,
+        )
+
+        events = self._fetch_events_pages(page_id=page_id, ignore_errors=True)
+
+        if page_id and events and events[0].id == page_id:
+            events = events[1:]
 
         # Merge events into cache, acquiring lock once for all events
         added_count = 0
@@ -319,6 +319,12 @@ class RemoteEventsList(EventsListBase):
             f"(total: {len(self._cached_events)})"
         )
         return added_count
+
+    def get_last_event_id(self) -> str | None:
+        with self._lock:
+            if not self._cached_events:
+                return None
+            return self._cached_events[-1].id
 
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
@@ -880,6 +886,32 @@ class RemoteConversation(BaseConversation):
 
         if blocking:
             self._wait_for_run_completion(poll_interval, timeout)
+            self._finalize_events_after_run(timeout)
+
+    def _finalize_events_after_run(
+        self,
+        timeout: float,
+        settle_interval: float = 0.2,
+        max_cycles: int = 5,
+    ) -> None:
+        """Ensure REST-backed events are fully synced after run completion."""
+        if timeout <= 0:
+            return
+
+        deadline = time.monotonic() + timeout
+        logger.debug("Reconciling events after run completion")
+
+        self._state.events.reconcile()
+
+        last_event_id = self._state.events.get_last_event_id()
+        cycles = 0
+        while cycles < max_cycles and time.monotonic() < deadline:
+            time.sleep(settle_interval)
+            added = self._state.events.reconcile(page_id=last_event_id)
+            if added == 0:
+                break
+            last_event_id = self._state.events.get_last_event_id()
+            cycles += 1
 
     def _wait_for_run_completion(
         self,
