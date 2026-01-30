@@ -1,7 +1,6 @@
 import os
 from collections.abc import Sequence
 from enum import Enum
-from logging import getLogger
 
 from pydantic import Field, model_validator
 
@@ -19,10 +18,11 @@ from openhands.sdk.context.view import View
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, Message, TextContent
+from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 
 
-logger = getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Reason(Enum):
