@@ -45,6 +45,22 @@ class ConversationExecutionStatus(str, Enum):
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
 
+    def is_terminal(self) -> bool:
+        """Check if this status represents a terminal state.
+
+        Terminal states indicate the run has completed and the agent is no longer
+        actively processing. These are: IDLE, FINISHED, ERROR, STUCK.
+
+        Returns:
+            True if this is a terminal status, False otherwise.
+        """
+        return self in (
+            ConversationExecutionStatus.IDLE,
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        )
+
 
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====

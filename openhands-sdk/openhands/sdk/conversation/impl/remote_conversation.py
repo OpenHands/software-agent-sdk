@@ -712,13 +712,13 @@ class RemoteConversation(BaseConversation):
         # This ensures we wait for all events to be delivered before run() returns
         def run_complete_callback(event: Event) -> None:
             if isinstance(event, ConversationStateUpdateEvent):
-                if event.key == "execution_status" and event.value in (
-                    ConversationExecutionStatus.IDLE.value,
-                    ConversationExecutionStatus.FINISHED.value,
-                    ConversationExecutionStatus.ERROR.value,
-                    ConversationExecutionStatus.STUCK.value,
-                ):
-                    self._run_complete_event.set()
+                if event.key == "execution_status":
+                    try:
+                        status = ConversationExecutionStatus(event.value)
+                        if status.is_terminal():
+                            self._run_complete_event.set()
+                    except ValueError:
+                        pass  # Unknown status value, ignore
 
         # Compose all callbacks into a single callback
         all_callbacks = self._callbacks + [run_complete_callback]
