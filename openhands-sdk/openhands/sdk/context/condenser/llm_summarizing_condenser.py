@@ -20,6 +20,7 @@ from openhands.sdk.event.condenser import Condensation
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.utils import maybe_truncate
 
 
 logger = get_logger(__name__)
@@ -128,35 +129,6 @@ class LLMSummarizingCondenser(RollingCondenser):
         if Reason.REQUEST in reasons:
             return CondensationRequirement.HARD
 
-    @staticmethod
-    def _event_to_string(
-        event: LLMConvertibleEvent,
-        max_event_str_length: int | None = None,
-        truncation_marker: str = "<TRUNCATED CONTENT>",
-    ) -> str:
-        """Convert an event to string, applying truncation if needed.
-
-        Args:
-            event: The event to convert.
-            max_event_str_length: Optional maximum length for the event string. If
-                provided, event strings longer than this will be truncated.
-            truncation_marker: The marker to indicate truncated content.
-        Returns:
-            str: The string representation of the event, possibly truncated.
-        """
-        if max_event_str_length is None:
-            return str(event)
-
-        output = str(event)
-
-        if len(output) <= max_event_str_length:
-            return output
-
-        # Cut out the middle part of the string representation to ensure the size is
-        # within limits, while preserving the start and end of the event.
-        half_length = (max_event_str_length - len(truncation_marker)) // 2
-        return output[:half_length] + truncation_marker + output[-half_length:]
-
     def _generate_condensation(
         self,
         forgotten_events: Sequence[LLMConvertibleEvent],
@@ -182,9 +154,7 @@ class LLMSummarizingCondenser(RollingCondenser):
 
         # Convert events to strings for the template
         event_strings = [
-            self._event_to_string(
-                forgotten_event, max_event_str_length=max_event_str_length
-            )
+            maybe_truncate(str(forgotten_event), truncate_after=max_event_str_length)
             for forgotten_event in forgotten_events
         ]
 
