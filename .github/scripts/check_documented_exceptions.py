@@ -11,7 +11,6 @@ This script:
 
 import ast
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -70,20 +69,22 @@ def find_sdk_exceptions(sdk_path: Path) -> dict[str, str]:
     return exceptions
 
 
-def find_documented_exceptions(docs_path: Path) -> set[str]:
+def find_documented_exceptions(
+    docs_path: Path, sdk_exception_names: set[str]
+) -> set[str]:
     """
-    Find all exception class references in the docs repository.
+    Find which SDK exception classes are referenced in the docs repository.
 
-    Searches for exception class names in MDX/MD files.
+    Searches for the specific SDK exception class names in MDX/MD files.
+
+    Args:
+        docs_path: Path to the docs repository
+        sdk_exception_names: Set of exception class names from the SDK to search for
 
     Returns:
-        Set of exception class names found in documentation
+        Set of SDK exception class names found in documentation
     """
     documented_exceptions: set[str] = set()
-
-    # Pattern to match exception class names
-    # (PascalCase ending with Error, Exception, or Cancelled)
-    pattern = r"\b([A-Z][a-zA-Z]*(?:Error|Exception|Cancelled))\b"
 
     for root, _, files in os.walk(docs_path):
         for file in files:
@@ -91,9 +92,9 @@ def find_documented_exceptions(docs_path: Path) -> set[str]:
                 file_path = Path(root) / file
                 try:
                     content = file_path.read_text(encoding="utf-8")
-                    matches = re.findall(pattern, content)
-                    for match in matches:
-                        documented_exceptions.add(match)
+                    for exception_name in sdk_exception_names:
+                        if exception_name in content:
+                            documented_exceptions.add(exception_name)
                 except Exception as e:
                     print(f"Warning: Error reading {file_path}: {e}")
                     continue
@@ -162,17 +163,15 @@ def main() -> None:
     # Find all exceptions in SDK
     print("\n📋 Scanning SDK exceptions...")
     sdk_exceptions = find_sdk_exceptions(sdk_root)
+    sdk_exception_names = set(sdk_exceptions.keys())
     print(f"   Found {len(sdk_exceptions)} exception class(es):")
     for name, base in sorted(sdk_exceptions.items()):
         print(f"      - {name} (inherits from {base})")
 
     # Find all documented exceptions in docs
     print("\n📄 Scanning docs repository...")
-    documented_exceptions = find_documented_exceptions(docs_path)
+    documented_exceptions = find_documented_exceptions(docs_path, sdk_exception_names)
     print(f"   Found {len(documented_exceptions)} documented exception reference(s)")
-
-    # Calculate difference - only check SDK exceptions
-    sdk_exception_names = set(sdk_exceptions.keys())
     undocumented = sdk_exception_names - documented_exceptions
 
     print("\n" + "=" * 60)
