@@ -216,34 +216,60 @@ class HookConfig(BaseModel):
     ) -> "HookConfig":
         """Load config from path or search .openhands/hooks.json locations.
 
+        Also discovers hook scripts in the .openhands directory (e.g., stop.sh,
+        agent_finish.sh) and merges them with the JSON config.
+
         Args:
-            path: Explicit path to hooks.json file. If provided, working_dir is ignored.
-            working_dir: Project directory for discovering .openhands/hooks.json.
-                Falls back to cwd if not provided.
+            path: Explicit path to hooks.json file. If provided, working_dir is ignored
+                for JSON loading but still used for script discovery.
+            working_dir: Project directory for discovering .openhands/hooks.json
+                and hook scripts. Falls back to cwd if not provided.
         """
-        if path is None:
+        # Import here to avoid circular dependency
+        from openhands.sdk.hooks.utils import load_project_hooks
+
+        base_dir = Path(working_dir) if working_dir else Path.cwd()
+
+        # Load JSON config
+        json_config: HookConfig | None = None
+        config_path = path
+
+        if config_path is None:
             # Search for hooks.json in standard locations
-            base_dir = Path(working_dir) if working_dir else Path.cwd()
             search_paths = [
                 base_dir / ".openhands" / "hooks.json",
                 Path.home() / ".openhands" / "hooks.json",
             ]
             for search_path in search_paths:
                 if search_path.exists():
-                    path = search_path
+                    config_path = search_path
                     break
 
-        if path is None:
+        if config_path is not None:
+            config_path = Path(config_path)
+            if config_path.exists():
+                try:
+                    with open(config_path) as f:
+                        data = json.load(f)
+                    json_config = cls.model_validate(data)
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(f"Failed to load hooks from {config_path}: {e}")
+
+        # Load hook scripts from .openhands directory
+        script_config = load_project_hooks(base_dir)
+
+        # Merge configs: JSON config takes precedence, script hooks are appended
+        configs_to_merge = []
+        if json_config is not None and not json_config.is_empty():
+            configs_to_merge.append(json_config)
+        if not script_config.is_empty():
+            configs_to_merge.append(script_config)
+
+        if not configs_to_merge:
             return cls()
 
-        path = Path(path)
-        if not path.exists():
-            return cls()
-
-        with open(path) as f:
-            data = json.load(f)
-        # Use model_validate which triggers the model_validator
-        return cls.model_validate(data)
+        merged = cls.merge(configs_to_merge)
+        return merged if merged is not None else cls()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "HookConfig":

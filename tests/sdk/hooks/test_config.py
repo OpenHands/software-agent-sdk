@@ -1,10 +1,12 @@
 """Tests for hook configuration loading and management."""
 
 import json
+import os
 import tempfile
 
 from openhands.sdk.hooks.config import HookConfig, HookDefinition, HookMatcher
 from openhands.sdk.hooks.types import HookEventType
+from openhands.sdk.hooks.utils import discover_hook_scripts, load_project_hooks
 
 
 class TestHookMatcher:
@@ -229,3 +231,184 @@ class TestHookConfig:
             HookConfig.from_dict(
                 {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
             )
+
+    def test_load_discovers_agent_finish_script(self):
+        """Test that load() discovers .openhands/agent_finish.sh (legacy naming)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            finish_script = os.path.join(openhands_dir, "agent_finish.sh")
+            with open(finish_script, "w") as f:
+                f.write("#!/bin/bash\necho done\n")
+
+            config = HookConfig.load(working_dir=tmpdir)
+
+            assert config.has_hooks_for_event(HookEventType.STOP)
+            hooks = config.get_hooks_for_event(HookEventType.STOP, None)
+            assert len(hooks) == 1
+            assert hooks[0].command == "bash .openhands/agent_finish.sh || true"
+            assert hooks[0].timeout == 600
+
+    def test_load_discovers_stop_script(self):
+        """Test that load() discovers .openhands/stop.sh (standard naming)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            stop_script = os.path.join(openhands_dir, "stop.sh")
+            with open(stop_script, "w") as f:
+                f.write("#!/bin/bash\necho stopping\n")
+
+            config = HookConfig.load(working_dir=tmpdir)
+
+            assert config.has_hooks_for_event(HookEventType.STOP)
+            hooks = config.get_hooks_for_event(HookEventType.STOP, None)
+            assert len(hooks) == 1
+            assert hooks[0].command == "bash .openhands/stop.sh || true"
+
+    def test_load_discovers_scripts_in_hooks_subdir(self):
+        """Test that load() discovers scripts in .openhands/hooks/ subdirectory."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_dir = os.path.join(tmpdir, ".openhands", "hooks")
+            os.makedirs(hooks_dir)
+            pre_tool_script = os.path.join(hooks_dir, "pre_tool_use.sh")
+            with open(pre_tool_script, "w") as f:
+                f.write("#!/bin/bash\necho pre-tool\n")
+
+            config = HookConfig.load(working_dir=tmpdir)
+
+            assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+            hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
+            assert len(hooks) == 1
+            assert hooks[0].command == "bash .openhands/hooks/pre_tool_use.sh || true"
+
+    def test_load_merges_json_and_scripts(self):
+        """Test that load() merges hooks.json with discovered scripts."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+
+            # Create hooks.json with pre_tool_use hook
+            hooks_json = os.path.join(openhands_dir, "hooks.json")
+            data = {"PreToolUse": [{"hooks": [{"command": "json-hook.sh"}]}]}
+            with open(hooks_json, "w") as f:
+                json.dump(data, f)
+
+            # Create stop.sh script
+            stop_script = os.path.join(openhands_dir, "stop.sh")
+            with open(stop_script, "w") as f:
+                f.write("#!/bin/bash\necho stop\n")
+
+            config = HookConfig.load(working_dir=tmpdir)
+
+            # Should have both hooks
+            assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+            assert config.has_hooks_for_event(HookEventType.STOP)
+
+            pre_hooks = config.get_hooks_for_event(
+                HookEventType.PRE_TOOL_USE, "AnyTool"
+            )
+            assert len(pre_hooks) == 1
+            assert pre_hooks[0].command == "json-hook.sh"
+
+            stop_hooks = config.get_hooks_for_event(HookEventType.STOP, None)
+            assert len(stop_hooks) == 1
+            assert stop_hooks[0].command == "bash .openhands/stop.sh || true"
+
+
+class TestLoadProjectHooks:
+    """Tests for load_project_hooks utility function."""
+
+    def test_load_project_hooks_no_openhands_dir(self):
+        """Test load_project_hooks returns empty when .openhands doesn't exist."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config = load_project_hooks(tmpdir)
+            assert config.is_empty()
+
+    def test_load_project_hooks_empty_openhands_dir(self):
+        """Test load_project_hooks returns empty config when no scripts found."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.makedirs(os.path.join(tmpdir, ".openhands"))
+            config = load_project_hooks(tmpdir)
+            assert config.is_empty()
+
+    def test_load_project_hooks_discovers_all_event_types(self):
+        """Test load_project_hooks discovers scripts for all event types."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+
+            # Create scripts for multiple event types
+            scripts = [
+                "stop.sh",
+                "pre_tool_use.sh",
+                "post_tool_use.sh",
+                "session_start.sh",
+                "session_end.sh",
+                "user_prompt_submit.sh",
+            ]
+            for script in scripts:
+                with open(os.path.join(openhands_dir, script), "w") as f:
+                    f.write(f"#!/bin/bash\necho {script}\n")
+
+            config = load_project_hooks(tmpdir)
+
+            assert config.has_hooks_for_event(HookEventType.STOP)
+            assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+            assert config.has_hooks_for_event(HookEventType.POST_TOOL_USE)
+            assert config.has_hooks_for_event(HookEventType.SESSION_START)
+            assert config.has_hooks_for_event(HookEventType.SESSION_END)
+            assert config.has_hooks_for_event(HookEventType.USER_PROMPT_SUBMIT)
+
+    def test_load_project_hooks_accepts_string_path(self):
+        """Test load_project_hooks accepts string paths."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            with open(os.path.join(openhands_dir, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop\n")
+
+            # Pass string path instead of Path object
+            config = load_project_hooks(str(tmpdir))
+            assert config.has_hooks_for_event(HookEventType.STOP)
+
+
+class TestDiscoverHookScripts:
+    """Tests for discover_hook_scripts utility function."""
+
+    def test_discover_hook_scripts_nonexistent_dir(self):
+        """Test discover_hook_scripts returns empty dict for nonexistent directory."""
+        from pathlib import Path
+
+        result = discover_hook_scripts(Path("/nonexistent/path"))
+        assert result == {}
+
+    def test_discover_hook_scripts_finds_legacy_agent_finish(self):
+        """Test discover_hook_scripts finds agent_finish.sh and maps to STOP."""
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = Path(tmpdir) / ".openhands"
+            openhands_dir.mkdir()
+            (openhands_dir / "agent_finish.sh").write_text("#!/bin/bash\necho done\n")
+
+            result = discover_hook_scripts(openhands_dir)
+
+            assert HookEventType.STOP in result
+            assert len(result[HookEventType.STOP]) == 1
+            assert result[HookEventType.STOP][0].name == "agent_finish.sh"
+
+    def test_discover_hook_scripts_finds_scripts_in_hooks_subdir(self):
+        """Test discover_hook_scripts searches .openhands/hooks/ subdirectory."""
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = Path(tmpdir) / ".openhands"
+            hooks_subdir = openhands_dir / "hooks"
+            hooks_subdir.mkdir(parents=True)
+            (hooks_subdir / "pre_tool_use.sh").write_text("#!/bin/bash\necho pre\n")
+
+            result = discover_hook_scripts(openhands_dir)
+
+            assert HookEventType.PRE_TOOL_USE in result
+            assert len(result[HookEventType.PRE_TOOL_USE]) == 1
+            assert result[HookEventType.PRE_TOOL_USE][0].name == "pre_tool_use.sh"
