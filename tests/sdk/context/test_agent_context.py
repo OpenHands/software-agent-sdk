@@ -735,6 +735,9 @@ defined in user's repository.\n"
         assert "**$API_KEY**" in result
         assert "API key for external service" in result
         assert "</CUSTOM_SECRETS>" in result
+        # Verify the avoid exposing raw secrets guidance is included
+        assert "Avoid exposing raw secrets" in result
+        assert "conversation history may be logged or shared" in result
 
     def test_get_system_message_suffix_with_secrets_and_repo_skills(self):
         """Test system message suffix with both secrets and repo skills."""
