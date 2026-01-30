@@ -78,7 +78,7 @@ body:
       id: feature-area
       attributes:
           label: Feature Area
-          description: Which part of OpenHands SDK does this feature relate to? If you select "Other", please specify the area in the Additional 
+          description: Which part of OpenHands SDK does this feature relate to? If you select "Other", please specify the area in the Additional Context section below.
               Context section below.
           options:
               - Agent API / Core functionality
