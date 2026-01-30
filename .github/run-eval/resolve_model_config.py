@@ -114,6 +114,11 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "glm-4.7": {
+        "id": "glm-4.7",
+        "display_name": "GLM-4.7",
+        "llm_config": {"model": "litellm_proxy/openrouter/z-ai/glm-4.7"},
+    },
 }
 
 
