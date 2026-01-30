@@ -1,7 +1,7 @@
 from unittest.mock import patch
 
 import pytest
-from litellm.exceptions import APIConnectionError
+from litellm.exceptions import APIConnectionError, InternalServerError
 from litellm.types.utils import Choices, Message as LiteLLMMessage, ModelResponse, Usage
 from pydantic import SecretStr
 
@@ -256,3 +256,100 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
         assert isinstance(err, APIConnectionError)
         assert attempt >= 1
         assert max_attempts == default_config.num_retries
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_retries_internal_server_error(
+    mock_litellm_completion, default_config
+):
+    """Test that InternalServerError (500) is properly retried.
+
+    This test covers the scenario from issue #1697 where an LLM provider
+    returns a 500 error like 'InternalServerError: OpenAIException -
+    Error code: 500 - {"error": "Error processing the request"}'.
+    """
+    mock_response = create_mock_response("Retry successful after 500 error")
+
+    # Mock the litellm_completion to first raise an InternalServerError,
+    # then return a successful response
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message="InternalServerError: OpenAIException - Error code: 500 - "
+            "{'error': 'Error processing the request'}",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        mock_response,
+    ]
+
+    # Create an LLM instance and call completion
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+        usage_id="test-service",
+    )
+    response = llm.completion(
+        messages=[Message(role="user", content=[TextContent(text="Hello!")])],
+    )
+
+    # Verify that the retry was successful
+    assert isinstance(response, LLMResponse)
+    assert response.raw_response == mock_response
+    assert mock_litellm_completion.call_count == 2  # Initial call + 1 retry
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_completion_max_retries_internal_server_error(
+    mock_litellm_completion, default_config
+):
+    """Test that InternalServerError respects max retries and is mapped to SDK error.
+
+    This test covers the scenario from issue #1697 where all retries are exhausted
+    and the error should be mapped to LLMServiceUnavailableError.
+    """
+    # Mock the litellm_completion to raise InternalServerError multiple times
+    mock_litellm_completion.side_effect = [
+        InternalServerError(
+            message="InternalServerError: Error code: 500 - error 1",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        InternalServerError(
+            message="InternalServerError: Error code: 500 - error 2",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+        InternalServerError(
+            message="InternalServerError: Error code: 500 - error 3",
+            llm_provider="test_provider",
+            model="test_model",
+        ),
+    ]
+
+    # Create an LLM instance and call completion
+    llm = LLM(
+        model="gpt-4o",
+        api_key=SecretStr("test_key"),
+        num_retries=2,
+        retry_min_wait=1,
+        retry_max_wait=2,
+        usage_id="test-service",
+    )
+
+    # The completion should raise an SDK typed error after exhausting all retries
+    with pytest.raises(LLMServiceUnavailableError) as excinfo:
+        llm.completion(
+            messages=[Message(role="user", content=[TextContent(text="Hello!")])],
+        )
+
+    # Verify that the correct number of retries were attempted
+    assert mock_litellm_completion.call_count == default_config.num_retries
+
+    # The exception should contain the 500 error information
+    assert "500" in str(excinfo.value) or "InternalServerError" in str(excinfo.value)
+
+    # Ensure the original provider exception is preserved as the cause
+    assert isinstance(excinfo.value.__cause__, InternalServerError)
