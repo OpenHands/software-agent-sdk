@@ -19,6 +19,8 @@ def find_sdk_exceptions(sdk_path: Path) -> dict[str, str]:
     """
     Find all exception classes defined in the SDK's llm/exceptions/types.py.
 
+    Uses inheritance analysis to find all classes that are subclasses of Exception.
+
     Returns:
         Dict mapping exception class name to its base class name
     """
@@ -39,32 +41,44 @@ def find_sdk_exceptions(sdk_path: Path) -> dict[str, str]:
     content = exceptions_file.read_text(encoding="utf-8")
     tree = ast.parse(content)
 
-    exceptions: dict[str, str] = {}
+    # Build inheritance graph: class_name -> list of base class names
+    inheritance: dict[str, list[str]] = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.ClassDef):
-            # Get the base class name(s)
             bases = []
             for base in node.bases:
                 if isinstance(base, ast.Name):
                     bases.append(base.id)
                 elif isinstance(base, ast.Attribute):
                     bases.append(base.attr)
+            inheritance[node.name] = bases
 
-            # Check if this is an exception class
-            # (ends with Error or Exception, or inherits from one)
-            is_exception = (
-                node.name.endswith("Error")
-                or node.name.endswith("Exception")
-                or node.name.endswith("Cancelled")
-                or any(
-                    b.endswith("Error") or b.endswith("Exception") or b == "Exception"
-                    for b in bases
-                )
-            )
+    def is_exception_subclass(class_name: str, visited: set[str] | None = None) -> bool:
+        """Check if a class is a subclass of Exception (directly or indirectly)."""
+        if visited is None:
+            visited = set()
+        if class_name in visited:
+            return False  # Avoid cycles
+        visited.add(class_name)
 
-            if is_exception:
-                base_class = bases[0] if bases else "object"
-                exceptions[node.name] = base_class
+        # Base case: built-in Exception class
+        if class_name == "Exception":
+            return True
+
+        # Check if this class is defined in the file
+        if class_name not in inheritance:
+            return False
+
+        # Recursively check base classes
+        return any(
+            is_exception_subclass(base, visited) for base in inheritance[class_name]
+        )
+
+    exceptions: dict[str, str] = {}
+    for class_name, bases in inheritance.items():
+        if is_exception_subclass(class_name):
+            base_class = bases[0] if bases else "object"
+            exceptions[class_name] = base_class
 
     return exceptions
 
