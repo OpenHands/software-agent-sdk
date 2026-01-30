@@ -1,0 +1,119 @@
+---
+name: Feature Request or Enhancement
+description: Suggest a new feature or improvement for OpenHands SDK
+title: '[Feature]: '
+labels: [enhancement]
+body:
+    - type: markdown
+      attributes:
+          value: |
+              ## Thank you for suggesting a feature! 💡
+
+              **Please provide detailed information.** Vague or low-effort requests may be closed. Well-documented feature requests with strong community support are more likely to be added to the roadmap.
+
+    - type: checkboxes
+      attributes:
+          label: Is there an existing feature request for this?
+          description: Please search existing issues and feature requests before creating a new one. If found, react or comment to the duplicate issue
+              instead of making a new one.
+          options:
+              - label: I have searched existing issues and feature requests, and this is not a duplicate.
+                required: true
+
+    - type: textarea
+      id: problem-statement
+      attributes:
+          label: Problem or Use Case
+          description: What problem are you trying to solve? What use case would this feature enable?
+          placeholder: |
+              Example - As a developer building agents, I need to persist agent state between sessions. Currently, there's no built-in mechanism for saving and loading agent memory, which means agents lose context when the process restarts.
+      validations:
+          required: true
+
+    - type: textarea
+      id: proposed-solution
+      attributes:
+          label: Proposed Solution
+          description: Describe your ideal solution. What should this feature do? How should it work?
+          placeholder: |
+              Example - Add a StateManager class that allows saving and loading agent state to/from disk or database. Provide methods like save_state(), load_state(), and clear_state(). Support multiple backend options (JSON files, SQLite, Redis, etc.).
+      validations:
+          required: true
+
+    - type: textarea
+      id: alternatives
+      attributes:
+          label: Alternatives Considered
+          description: Have you considered any alternative solutions or workarounds? What are their limitations?
+          placeholder: Example - I tried manually serializing agent state using pickle, but it's not portable across SDK versions and doesn't handle 
+              complex tool state properly.
+
+    - type: dropdown
+      id: priority
+      attributes:
+          label: Priority / Severity
+          description: How important is this feature to your workflow?
+          options:
+              - Critical - Blocking my work, no workaround available
+              - High - Significant impact on productivity
+              - Medium - Would improve experience
+              - Low - Nice to have
+          default: 2
+      validations:
+          required: true
+
+    - type: dropdown
+      id: scope
+      attributes:
+          label: Estimated Scope
+          description: To the best of your knowledge, how complex do you think this feature would be to implement?
+          options:
+              - Small - API addition, config option, or minor change
+              - Medium - New feature with moderate complexity
+              - Large - Significant feature requiring architecture changes
+              - Unknown - Not sure about the technical complexity
+          default: 3
+
+    - type: dropdown
+      id: feature-area
+      attributes:
+          label: Feature Area
+          description: Which part of OpenHands SDK does this feature relate to? If you select "Other", please specify the area in the Additional 
+              Context section below.
+          options:
+              - Agent API / Core functionality
+              - Tools / Tool system
+              - Skills / Plugins
+              - Agent Server
+              - Workspace management
+              - Configuration / Settings
+              - Examples / Templates
+              - Documentation
+              - Testing / Development tools
+              - Performance / Optimization
+              - Integrations (GitHub, APIs, etc.)
+              - Other
+      validations:
+          required: true
+
+    - type: textarea
+      id: technical-details
+      attributes:
+          label: Technical Implementation Ideas (Optional)
+          description: If you have technical expertise, share implementation ideas, API suggestions, or relevant technical details.
+          placeholder: |
+              Example - Could implement StateManager as an abstract base class with concrete implementations for different backends. Add state_manager parameter to Agent constructor. Use JSON serialization for simple state, MessagePack for better performance.
+
+    - type: textarea
+      id: additional-context
+      attributes:
+          label: Additional Context
+          description: Add any other context, code examples, API mockups, or references that help illustrate this feature request.
+          placeholder: |
+              Example code or API design:
+              ```python
+              from openhands.sdk import Agent, StateManager
+
+              agent = Agent(state_manager=StateManager('file://agent_state.json'))
+              agent.save_state()
+              ```

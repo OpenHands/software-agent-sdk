@@ -1,0 +1,178 @@
+---
+name: Bug
+description: Report a problem with OpenHands SDK
+title: '[Bug]: '
+labels: [bug]
+body:
+    - type: markdown
+      attributes:
+          value: |
+              ## Thank you for reporting a bug! 🐛
+
+              **Please fill out all required fields.** Issues missing critical information (version, installation method, reproduction steps, etc.) will be delayed or closed until complete details are provided.
+
+              Clear, detailed reports help us resolve issues faster.
+
+    - type: checkboxes
+      attributes:
+          label: Is there an existing issue for the same bug?
+          description: Please search existing issues before creating a new one. If found, react or comment to the duplicate issue instead of making a 
+              new one.
+          options:
+              - label: I have searched existing issues and this is not a duplicate.
+                required: true
+
+    - type: textarea
+      id: bug-description
+      attributes:
+          label: Bug Description
+          description: Clearly describe what went wrong. Be specific and concise.
+          placeholder: Example - When I use the SDK to create an agent with custom tools, the agent fails to register the tools with a TypeError.
+      validations:
+          required: true
+
+    - type: textarea
+      id: expected-behavior
+      attributes:
+          label: Expected Behavior
+          description: What did you expect to happen?
+          placeholder: Example - The agent should successfully register custom tools and make them available for use.
+      validations:
+          required: false
+
+    - type: textarea
+      id: actual-behavior
+      attributes:
+          label: Actual Behavior
+          description: What actually happened?
+          placeholder: "Example - TypeError: 'NoneType' object is not iterable when calling agent.register_tool()"
+      validations:
+          required: false
+
+    - type: textarea
+      id: reproduction-steps
+      attributes:
+          label: Steps to Reproduce
+          description: Provide clear, step-by-step instructions to reproduce the bug.
+          placeholder: |
+              1. Install openhands-sdk using pip
+              2. Import and create an agent instance
+              3. Define a custom tool function
+              4. Call agent.register_tool(custom_tool)
+              5. Error appears
+      validations:
+          required: false
+
+    - type: dropdown
+      id: installation
+      attributes:
+          label: Installation Method
+          description: How did you install the OpenHands SDK?
+          options:
+              - pip install openhands-sdk
+              - pip install openhands-agent-server
+              - pip install openhands-tools
+              - pip install openhands-workspace
+              - Development mode (pip install -e .)
+              - uv (uv pip install openhands-sdk)
+              - Other
+          default: 0
+      validations:
+          required: false
+
+    - type: input
+      id: installation-other
+      attributes:
+          label: If you selected "Other", please specify
+          description: Describe your installation method
+          placeholder: ex. Poetry, conda, custom setup, etc.
+
+    - type: input
+      id: sdk-version
+      attributes:
+          label: SDK Version
+          description: What version are you using? Check with `pip show openhands-sdk` or similar for other packages.
+          placeholder: ex. 0.1.0, 0.2.0, main branch, commit hash, etc.
+      validations:
+          required: false
+
+    - type: checkboxes
+      id: version-confirmation
+      attributes:
+          label: Version Confirmation
+          description: Bugs on older versions may already be fixed. Please upgrade before submitting.
+          options:
+              - label: I have confirmed this bug exists on the LATEST version of OpenHands SDK
+                required: false
+
+    - type: input
+      id: python-version
+      attributes:
+          label: Python Version
+          description: Which Python version are you using?
+          placeholder: ex. 3.10.12, 3.11.5, 3.12.0
+      validations:
+          required: false
+
+    - type: input
+      id: model-name
+      attributes:
+          label: Model Name (if applicable)
+          description: If using an LLM-based agent, which model are you using?
+          placeholder: ex. gpt-4o, claude-3-5-sonnet-20241022, openrouter/deepseek-r1, etc.
+      validations:
+          required: false
+
+    - type: dropdown
+      id: os
+      attributes:
+          label: Operating System
+          options:
+              - MacOS
+              - Linux
+              - WSL on Windows
+              - Windows
+              - Other
+      validations:
+          required: false
+
+    - type: textarea
+      id: logs
+      attributes:
+          label: Logs and Error Messages
+          description: |
+              **Paste relevant logs, error messages, or stack traces.** Use code blocks (```) for formatting.
+
+              Include full stack traces when available.
+          placeholder: |
+              ```
+              Paste error logs here
+              ```
+
+    - type: textarea
+      id: code-sample
+      attributes:
+          label: Minimal Code Sample
+          description: |
+              If possible, provide a minimal code sample that reproduces the issue.
+          placeholder: |
+              ```python
+              from openhands.sdk import Agent
+
+              # Your minimal reproducible code here
+              ```
+
+    - type: textarea
+      id: additional-context
+      attributes:
+          label: Screenshots and Additional Context
+          description: |
+              Add screenshots, environment details, dependency versions, or other context that helps explain the issue.
+
+          placeholder: Drag and drop screenshots here, paste links, or add additional context.
+
+    - type: markdown
+      attributes:
+          value: |
+              ---
+              **Note:** Issues with incomplete information may be closed or deprioritized. Maintainers and community members have limited bandwidth and prioritize well-documented bugs that are easier to reproduce and fix. Thank you for your understanding!
