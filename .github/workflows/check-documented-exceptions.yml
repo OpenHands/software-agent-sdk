@@ -1,0 +1,57 @@
+---
+name: '[Optional] Docs exceptions'
+
+on:
+    pull_request:
+        branches:
+            - '**'
+        paths:
+            - openhands-sdk/openhands/sdk/llm/exceptions/**
+            - .github/workflows/check-documented-exceptions.yml
+            - .github/scripts/check_documented_exceptions.py
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    pull-requests: read
+
+jobs:
+    check-exceptions:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout agent-sdk repository
+              uses: actions/checkout@v5
+              with:
+                  fetch-depth: 0
+
+            - name: Checkout docs repository (try feature branch)
+              uses: actions/checkout@v5
+              continue-on-error: true
+              id: checkout-feature
+              with:
+                  repository: OpenHands/docs
+                  path: docs
+                  fetch-depth: 0
+                  ref: ${{ github.head_ref || github.ref_name }}
+
+            - name: Checkout docs repository (fallback to main)
+              if: steps.checkout-feature.outcome == 'failure'
+              uses: actions/checkout@v5
+              with:
+                  repository: OpenHands/docs
+                  path: docs
+                  fetch-depth: 0
+                  ref: main
+
+            - name: Set up Python
+              uses: actions/setup-python@v6
+              with:
+                  python-version: '3.13'
+
+            - name: Check documented exceptions
+              env:
+                  DOCS_PATH: ${{ github.workspace }}/docs
+              shell: bash
+              run: |
+                  set -euo pipefail
+                  python .github/scripts/check_documented_exceptions.py
