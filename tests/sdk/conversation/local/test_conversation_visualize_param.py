@@ -39,6 +39,9 @@ def test_conversation_with_default_visualizer(mock_agent):
         assert conversation._visualizer is not None
         assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Agent should be initialized with callbacks that include visualizer
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -56,6 +59,9 @@ def test_conversation_with_visualize_false(mock_agent):
 
         # Should not have a visualizer
         assert conversation._visualizer is None
+
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
 
         # Agent should still be initialized with callbacks (just not visualizer)
         mock_init_state.assert_called_once()
@@ -88,6 +94,9 @@ def test_conversation_with_custom_callbacks_and_default_visualizer(mock_agent):
         # Should have a visualizer
         assert conversation._visualizer is not None
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Test that callbacks are composed correctly by triggering an event
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -116,6 +125,9 @@ def test_conversation_with_custom_callbacks_and_visualize_false(mock_agent):
 
         # Should not have a visualizer
         assert conversation._visualizer is None
+
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
 
         # Test that callbacks are composed correctly
         mock_init_state.assert_called_once()
@@ -157,6 +169,9 @@ def test_conversation_callback_order(mock_agent):
             visualizer=mock_visualizer,
         )
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Get the composed callback
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -181,6 +196,9 @@ def test_conversation_no_callbacks_with_default_visualizer(mock_agent):
         # Should have a visualizer
         assert conversation._visualizer is not None
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Should still work with just visualizer and state persistence
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -201,6 +219,9 @@ def test_conversation_no_callbacks_with_visualize_false(mock_agent):
 
         # Should not have a visualizer
         assert conversation._visualizer is None
+
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
 
         # Should still work with just state persistence
         mock_init_state.assert_called_once()
@@ -230,6 +251,9 @@ def test_conversation_with_custom_visualizer_instance(mock_agent):
         assert conversation._visualizer is custom_visualizer
         assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Agent should be initialized with callbacks that include the custom visualizer
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -257,6 +281,9 @@ def test_conversation_with_custom_visualizer_and_callbacks(mock_agent):
         # Should use the custom visualizer
         assert conversation._visualizer is custom_visualizer
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Test that callbacks are composed correctly
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -282,6 +309,9 @@ def test_conversation_with_visualize_none(mock_agent):
         # Should not have a visualizer
         assert conversation._visualizer is None
 
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
+
         # Agent should still be initialized with callbacks (just not visualizer)
         mock_init_state.assert_called_once()
         args, kwargs = mock_init_state.call_args
@@ -304,6 +334,9 @@ def test_conversation_with_visualizer_class(mock_agent):
         # Should have instantiated the visualizer
         assert conversation._visualizer is not None
         assert isinstance(conversation._visualizer, DefaultConversationVisualizer)
+
+        # Agent initialization is lazy; trigger it explicitly
+        conversation._ensure_agent_ready()
 
         # Agent should be initialized with callbacks that include visualizer
         mock_init_state.assert_called_once()

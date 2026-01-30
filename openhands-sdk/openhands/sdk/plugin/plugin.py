@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
@@ -24,6 +24,9 @@ from openhands.sdk.plugin.types import (
     PluginManifest,
 )
 
+
+if TYPE_CHECKING:
+    from openhands.sdk.context import AgentContext
 
 logger = get_logger(__name__)
 
@@ -84,6 +87,135 @@ class Plugin(BaseModel):
         """Get the plugin description."""
         return self.manifest.description
 
+    def get_all_skills(self) -> list[Skill]:
+        """Get all skills including those converted from commands.
+
+        Returns skills from both the skills/ directory and commands/ directory.
+        Commands are converted to keyword-triggered skills using the format
+        /<plugin-name>:<command-name>.
+
+        Returns:
+            Combined list of skills (original + command-derived skills).
+        """
+        all_skills = list(self.skills)
+
+        # Convert commands to skills with keyword triggers
+        for command in self.commands:
+            skill = command.to_skill(self.name)
+            all_skills.append(skill)
+
+        return all_skills
+
+    def add_skills_to(
+        self,
+        agent_context: AgentContext | None = None,
+        max_skills: int | None = None,
+    ) -> AgentContext:
+        """Add this plugin's skills to an agent context.
+
+        Plugin skills override existing skills with the same name.
+        Includes both explicit skills and command-derived skills.
+
+        Args:
+            agent_context: Existing agent context (or None to create new)
+            max_skills: Optional max total skills (raises ValueError if exceeded)
+
+        Returns:
+            New AgentContext with this plugin's skills added
+
+        Raises:
+            ValueError: If max_skills limit would be exceeded
+
+        Example:
+            >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
+            >>> new_context = plugin.add_skills_to(agent.agent_context, max_skills=100)
+            >>> agent = agent.model_copy(update={"agent_context": new_context})
+        """
+        # Import at runtime to avoid circular import
+        from openhands.sdk.context import AgentContext
+
+        existing_skills = agent_context.skills if agent_context else []
+
+        # Get all skills including command-derived skills
+        all_skills = self.get_all_skills()
+
+        skills_by_name = {s.name: s for s in existing_skills}
+        for skill in all_skills:
+            if skill.name in skills_by_name:
+                logger.warning(f"Plugin skill '{skill.name}' overrides existing skill")
+            skills_by_name[skill.name] = skill
+
+        if max_skills is not None and len(skills_by_name) > max_skills:
+            raise ValueError(
+                f"Total skills ({len(skills_by_name)}) exceeds maximum ({max_skills})"
+            )
+
+        merged_skills = list(skills_by_name.values())
+
+        if agent_context:
+            return agent_context.model_copy(update={"skills": merged_skills})
+        return AgentContext(skills=merged_skills)
+
+    def add_mcp_config_to(
+        self,
+        mcp_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Add this plugin's MCP servers to an MCP config.
+
+        Plugin MCP servers override existing servers with the same name.
+
+        Merge semantics (Claude Code compatible):
+        - mcpServers: deep-merge by server name (last plugin wins for same server)
+        - Other top-level keys: shallow override (plugin wins)
+
+        Args:
+            mcp_config: Existing MCP config (or None to create new)
+
+        Returns:
+            New MCP config dict with this plugin's servers added
+
+        Example:
+            >>> plugin = Plugin.load(Plugin.fetch("github:owner/plugin"))
+            >>> new_mcp = plugin.add_mcp_config_to(agent.mcp_config)
+            >>> agent = agent.model_copy(update={"mcp_config": new_mcp})
+        """
+        base_config = mcp_config
+        plugin_config = self.mcp_config
+
+        if base_config is None and plugin_config is None:
+            return {}
+        if base_config is None:
+            return dict(plugin_config) if plugin_config else {}
+        if plugin_config is None:
+            return dict(base_config)
+
+        # Shallow copy to avoid mutating inputs
+        result = dict(base_config)
+
+        # Merge mcpServers by server name (Claude Code compatible behavior)
+        if "mcpServers" in plugin_config:
+            existing_servers = result.get("mcpServers", {})
+            for server_name in plugin_config["mcpServers"]:
+                if server_name in existing_servers:
+                    logger.warning(
+                        f"Plugin MCP server '{server_name}' overrides existing server"
+                    )
+            result["mcpServers"] = {
+                **existing_servers,
+                **plugin_config["mcpServers"],
+            }
+
+        # Other top-level keys: plugin wins (shallow override)
+        for key, value in plugin_config.items():
+            if key != "mcpServers":
+                if key in result:
+                    logger.warning(
+                        f"Plugin MCP config key '{key}' overrides existing value"
+                    )
+                result[key] = value
+
+        return result
+
     @classmethod
     def fetch(
         cls,
@@ -91,7 +223,7 @@ class Plugin(BaseModel):
         cache_dir: Path | None = None,
         ref: str | None = None,
         update: bool = True,
-        subpath: str | None = None,
+        repo_path: str | None = None,
     ) -> Path:
         """Fetch a plugin from a remote source and return the local cached path.
 
@@ -101,22 +233,24 @@ class Plugin(BaseModel):
 
         Args:
             source: Plugin source - can be:
-                - "github:owner/repo" - GitHub repository shorthand
-                - "https://github.com/owner/repo.git" - Full git URL
+                - Any git URL (GitHub, GitLab, Bitbucket, Codeberg, self-hosted, etc.)
+                  e.g., "https://gitlab.com/org/repo", "git@bitbucket.org:team/repo.git"
+                - "github:owner/repo" - GitHub shorthand (convenience syntax)
                 - "/local/path" - Local path (returned as-is)
             cache_dir: Directory for caching. Defaults to ~/.openhands/cache/plugins/
             ref: Optional branch, tag, or commit to checkout.
             update: If True and cache exists, update it. If False, use cached as-is.
-            subpath: Optional subdirectory path within the repo. If specified, the
-                returned path will point to this subdirectory instead of the
-                repository root.
+            repo_path: Subdirectory path within the git repository
+                (e.g., 'plugins/my-plugin' for monorepos). Only relevant for git
+                sources, not local paths. If specified, the returned path will
+                point to this subdirectory instead of the repository root.
 
         Returns:
             Path to the local plugin directory (ready for Plugin.load()).
-            If subpath is specified, returns the path to that subdirectory.
+            If repo_path is specified, returns the path to that subdirectory.
 
         Raises:
-            PluginFetchError: If fetching fails or subpath doesn't exist.
+            PluginFetchError: If fetching fails or repo_path doesn't exist.
 
         Example:
             >>> path = Plugin.fetch("github:owner/my-plugin")
@@ -126,15 +260,15 @@ class Plugin(BaseModel):
             >>> path = Plugin.fetch("github:owner/my-plugin", ref="v1.0.0")
             >>> plugin = Plugin.load(path)
 
-            >>> # Fetch a plugin from a subdirectory
-            >>> path = Plugin.fetch("github:owner/monorepo", subpath="plugins/sub")
+            >>> # Fetch a plugin from a subdirectory in a monorepo
+            >>> path = Plugin.fetch("github:owner/monorepo", repo_path="plugins/sub")
             >>> plugin = Plugin.load(path)
 
             >>> # Fetch and load in one step
             >>> plugin = Plugin.load(Plugin.fetch("github:owner/my-plugin"))
         """
         return fetch_plugin(
-            source, cache_dir=cache_dir, ref=ref, update=update, subpath=subpath
+            source, cache_dir=cache_dir, ref=ref, update=update, repo_path=repo_path
         )
 
     @classmethod
@@ -299,6 +433,7 @@ def _load_hooks(plugin_dir: Path) -> HookConfig | None:
         if hook_config.is_empty():
             logger.info(f"No hooks configured in {hooks_json}")
             return HookConfig()
+        logger.info(f"Loaded hooks from {hooks_json}")
         return hook_config
     except Exception as e:
         logger.warning(f"Failed to load hooks from {hooks_json}: {e}")
@@ -312,7 +447,14 @@ def _load_mcp_config(plugin_dir: Path) -> dict[str, Any] | None:
         return None
 
     try:
-        return load_mcp_config(mcp_json, skill_root=plugin_dir)
+        config = load_mcp_config(mcp_json, skill_root=plugin_dir)
+        if config and "mcpServers" in config:
+            server_names = list(config["mcpServers"].keys())
+            logger.info(
+                f"Loaded MCP config from {mcp_json} "
+                f"with {len(server_names)} server(s): {server_names}"
+            )
+        return config
     except Exception as e:
         logger.warning(f"Failed to load MCP config from {mcp_json}: {e}")
         return None

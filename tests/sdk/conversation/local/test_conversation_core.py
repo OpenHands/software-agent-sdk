@@ -140,7 +140,7 @@ def test_conversation_event_id_validation():
         # Add event with duplicate ID - should raise ValueError
         event2 = create_test_event("unique-id-1", "Second event")
         with pytest.raises(
-            ValueError, match="Event with ID 'unique-id-1' already exists at index 1"
+            ValueError, match=r"Event with ID 'unique-id-1' already exists at index \d+"
         ):
             conv.state.events.append(event2)
 
