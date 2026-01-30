@@ -320,6 +320,81 @@ class RemoteEventsList(EventsListBase):
         )
         return added_count
 
+    def reconcile_recent(self) -> int:
+        """Reconcile only recent events that may have been missed.
+
+        This is a more efficient version of reconcile() that only fetches
+        events after the last known event timestamp. This is useful for
+        catching events that were emitted during the final moments of a run
+        but weren't delivered via WebSocket before run() returned.
+
+        Returns:
+            Number of new events added during reconciliation.
+        """
+        # Get the timestamp of the last event we have
+        with self._lock:
+            if self._cached_events:
+                last_timestamp = self._cached_events[-1].timestamp
+            else:
+                # No events yet, fall back to full reconcile
+                return self.reconcile()
+
+        logger.debug(
+            f"Performing recent reconciliation sync for conversation "
+            f"{self._conversation_id} (events after {last_timestamp})"
+        )
+
+        events = []
+        page_id = None
+
+        while True:
+            # timestamp can be either a string or datetime object
+            timestamp_str = (
+                last_timestamp
+                if isinstance(last_timestamp, str)
+                else last_timestamp.isoformat()
+            )
+            params: dict[str, str | int] = {
+                "limit": 100,
+                "timestamp__gte": timestamp_str,
+            }
+            if page_id:
+                params["page_id"] = page_id
+
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._conversation_id}/events/search",
+                    params=params,
+                )
+                data = resp.json()
+            except Exception as e:
+                logger.warning(
+                    f"Failed to fetch events during recent reconciliation: {e}"
+                )
+                break
+
+            events.extend([Event.model_validate(item) for item in data["items"]])
+
+            if not data.get("next_page_id"):
+                break
+            page_id = data["next_page_id"]
+
+        # Merge events into cache
+        added_count = 0
+        with self._lock:
+            for event in events:
+                if event.id not in self._cached_event_ids:
+                    self._add_event_unsafe(event)
+                    added_count += 1
+
+        logger.debug(
+            f"Recent reconciliation completed, {added_count} new events added "
+            f"(total: {len(self._cached_events)})"
+        )
+        return added_count
+
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
         # Use bisect with key function for O(log N) insertion
@@ -555,6 +630,7 @@ class RemoteConversation(BaseConversation):
     _client: httpx.Client
     _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
+    _run_complete_event: threading.Event  # Signaled when run completes via WebSocket
 
     def __init__(
         self,
@@ -607,6 +683,7 @@ class RemoteConversation(BaseConversation):
         self._client = workspace.client
         self._hook_processor = None
         self._cleanup_initiated = False
+        self._run_complete_event = threading.Event()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -706,8 +783,21 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
+        # Add a callback that signals when run completes via WebSocket
+        # This ensures we wait for all events to be delivered before run() returns
+        def run_complete_callback(event: Event) -> None:
+            if isinstance(event, ConversationStateUpdateEvent):
+                if event.key == "execution_status" and event.value in (
+                    ConversationExecutionStatus.IDLE.value,
+                    ConversationExecutionStatus.FINISHED.value,
+                    ConversationExecutionStatus.ERROR.value,
+                    ConversationExecutionStatus.STUCK.value,
+                ):
+                    self._run_complete_event.set()
+
         # Compose all callbacks into a single callback
-        composed_callback = BaseConversation.compose_callbacks(self._callbacks)
+        all_callbacks = self._callbacks + [run_complete_callback]
+        composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
         # Initialize WebSocket client for callbacks
         self._ws_client = WebSocketCallbackClient(
@@ -886,10 +976,18 @@ class RemoteConversation(BaseConversation):
         poll_interval: float = 1.0,
         timeout: float = 1800.0,
     ) -> None:
-        """Poll the server until the conversation is no longer running.
+        """Wait for the conversation run to complete.
+
+        This method waits for the run to complete by listening for the terminal
+        status event via WebSocket. This ensures all events are delivered before
+        returning, avoiding the race condition where polling sees "finished"
+        status before WebSocket delivers the final events.
+
+        As a fallback, it also polls the server periodically in case the
+        WebSocket event is missed or delayed.
 
         Args:
-            poll_interval: Time in seconds between status polls.
+            poll_interval: Time in seconds between status polls (fallback).
             timeout: Maximum time in seconds to wait.
 
         Raises:
@@ -898,6 +996,9 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
+
+        # Clear the event in case it was set from a previous run
+        self._run_complete_event.clear()
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -910,20 +1011,42 @@ class RemoteConversation(BaseConversation):
                     ),
                 )
 
+            # Wait for either:
+            # 1. WebSocket delivers terminal status event (preferred)
+            # 2. Poll interval expires (fallback - check status via REST)
+            if self._run_complete_event.wait(timeout=poll_interval):
+                # WebSocket delivered terminal status - all events are guaranteed
+                # to be delivered since they come through the same channel
+                logger.info(
+                    "Run completed via WebSocket notification (elapsed: %.1fs)",
+                    elapsed,
+                )
+                # Clear the event for the next run
+                self._run_complete_event.clear()
+                return
+
+            # Fallback: poll the server for status
+            # This handles cases where WebSocket event is missed or delayed
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
             else:
                 if self._handle_conversation_status(status):
+                    # Polling detected terminal status before WebSocket delivered it.
+                    # This is the race condition we're trying to avoid.
+                    # Use reconcile_recent() to fetch any events that may have
+                    # been emitted but not yet delivered via WebSocket.
+                    self._state.events.reconcile_recent()
                     logger.info(
-                        "Run completed with status: %s (elapsed: %.1fs)",
+                        "Run completed via polling with status: %s (elapsed: %.1fs), "
+                        "reconciled recent events",
                         status,
                         elapsed,
                     )
+                    # Clear the event for the next run
+                    self._run_complete_event.clear()
                     return
-
-            time.sleep(poll_interval)
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
