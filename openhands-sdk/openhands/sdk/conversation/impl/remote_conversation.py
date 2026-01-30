@@ -258,7 +258,10 @@ class RemoteEventsList(EventsListBase):
             except Exception as exc:
                 if ignore_errors:
                     logger.warning(
-                        "Failed to fetch events during sync: %s", exc, exc_info=True
+                        "Failed to fetch events during sync: %s (page_id=%s)",
+                        exc,
+                        next_page_id,
+                        exc_info=True,
                     )
                     break
                 raise
@@ -303,8 +306,8 @@ class RemoteEventsList(EventsListBase):
 
         events = self._fetch_events_pages(page_id=page_id, ignore_errors=True)
 
-        if page_id and events and events[0].id == page_id:
-            events = events[1:]
+        if page_id:
+            events = [event for event in events if event.id != page_id]
 
         # Merge events into cache, acquiring lock once for all events
         added_count = 0
@@ -912,6 +915,12 @@ class RemoteConversation(BaseConversation):
                 break
             last_event_id = self._state.events.get_last_event_id()
             cycles += 1
+
+        if cycles >= max_cycles:
+            logger.warning(
+                "Event reconciliation hit max cycles (%d), results may be incomplete",
+                max_cycles,
+            )
 
     def _wait_for_run_completion(
         self,
