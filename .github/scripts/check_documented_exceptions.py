@@ -24,7 +24,13 @@ def find_sdk_exceptions(sdk_path: Path) -> dict[str, str]:
         Dict mapping exception class name to its base class name
     """
     exceptions_file = (
-        sdk_path / "openhands-sdk" / "openhands" / "sdk" / "llm" / "exceptions" / "types.py"
+        sdk_path
+        / "openhands-sdk"
+        / "openhands"
+        / "sdk"
+        / "llm"
+        / "exceptions"
+        / "types.py"
     )
 
     if not exceptions_file.exists():
@@ -44,15 +50,19 @@ def find_sdk_exceptions(sdk_path: Path) -> dict[str, str]:
                     bases.append(base.id)
                 elif isinstance(base, ast.Attribute):
                     bases.append(base.attr)
-            
-            # Check if this is an exception class (ends with Error or Exception, or inherits from one)
+
+            # Check if this is an exception class
+            # (ends with Error or Exception, or inherits from one)
             is_exception = (
                 node.name.endswith("Error")
                 or node.name.endswith("Exception")
                 or node.name.endswith("Cancelled")
-                or any(b.endswith("Error") or b.endswith("Exception") or b == "Exception" for b in bases)
+                or any(
+                    b.endswith("Error") or b.endswith("Exception") or b == "Exception"
+                    for b in bases
+                )
             )
-            
+
             if is_exception:
                 base_class = bases[0] if bases else "object"
                 exceptions[node.name] = base_class
@@ -71,7 +81,8 @@ def find_documented_exceptions(docs_path: Path) -> set[str]:
     """
     documented_exceptions: set[str] = set()
 
-    # Pattern to match exception class names (PascalCase ending with Error, Exception, or Cancelled)
+    # Pattern to match exception class names
+    # (PascalCase ending with Error, Exception, or Cancelled)
     pattern = r"\b([A-Z][a-zA-Z]*(?:Error|Exception|Cancelled))\b"
 
     for root, _, files in os.walk(docs_path):
@@ -185,7 +196,9 @@ def main() -> None:
         print("   with a description of when it's raised.")
         print()
         print("4. See existing documentation at:")
-        print("   https://github.com/OpenHands/docs/blob/main/sdk/guides/llm-error-handling.mdx")
+        print(
+            "   https://github.com/OpenHands/docs/blob/main/sdk/guides/llm-error-handling.mdx"
+        )
         print("=" * 60)
         sys.exit(1)
     else:
