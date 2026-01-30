@@ -93,7 +93,7 @@ class LLMConvertibleEvent(Event, ABC):
         # TODO: We should add extensive tests for this
         from openhands.sdk.event.llm_convertible import ActionEvent
 
-        messages = []
+        messages: list[Message] = []
         i = 0
 
         while i < len(events):
@@ -123,7 +123,50 @@ class LLMConvertibleEvent(Event, ABC):
                 messages.append(event.to_llm_message())
                 i += 1
 
-        return messages
+        return _reorder_tool_results(messages)
+
+
+def _reorder_tool_results(messages: list[Message]) -> list[Message]:
+    """Ensure tool results immediately follow their tool calls in message order."""
+    reordered: list[Message] = []
+    i = 0
+
+    while i < len(messages):
+        message = messages[i]
+        tool_calls = message.tool_calls or []
+        if message.role == "assistant" and tool_calls:
+            tool_call_ids = {call.id for call in tool_calls}
+            tool_result_indexes = [
+                j
+                for j in range(i + 1, len(messages))
+                if messages[j].role == "tool"
+                and messages[j].tool_call_id in tool_call_ids
+            ]
+
+            if tool_result_indexes:
+                last_index = max(tool_result_indexes)
+                tool_results: list[Message] = []
+                deferred: list[Message] = []
+                for j in range(i + 1, last_index + 1):
+                    candidate = messages[j]
+                    if (
+                        candidate.role == "tool"
+                        and candidate.tool_call_id in tool_call_ids
+                    ):
+                        tool_results.append(candidate)
+                    else:
+                        deferred.append(candidate)
+
+                reordered.append(message)
+                reordered.extend(tool_results)
+                reordered.extend(deferred)
+                i = last_index + 1
+                continue
+
+        reordered.append(message)
+        i += 1
+
+    return reordered
 
 
 def _combine_action_events(events: list["ActionEvent"]) -> Message:

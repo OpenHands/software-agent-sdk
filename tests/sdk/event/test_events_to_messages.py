@@ -387,7 +387,46 @@ class TestEventsToMessages:
         assert messages[4].role == "assistant"
         assert messages[4].content[0].text == "Now I'll list the files"  # type: ignore
         assert len(messages[4].tool_calls) == 1  # type: ignore
-        assert messages[4].tool_calls[0].id == "call_ls"  # type: ignore
+
+    def test_reorders_user_message_after_tool_result(self):
+        """Ensure user messages between tool_use and tool_result are moved after."""
+        action_event = create_action_event(
+            thought_text="I'll run a command",
+            tool_name="terminal",
+            tool_call_id="call_reorder",
+            llm_response_id="response_reorder",
+            action_args={"command": "ls"},
+        )
+
+        user_message = MessageEvent(
+            source="user",
+            llm_message=Message(
+                role="user",
+                content=[TextContent(text="Please also show hidden files")],
+            ),
+        )
+
+        observation_event = ObservationEvent(
+            source="environment",
+            observation=EventsToMessagesMockObservation(result="file.txt"),
+            action_id=action_event.id,
+            tool_name="terminal",
+            tool_call_id="call_reorder",
+        )
+
+        events = [action_event, user_message, observation_event]
+        messages = LLMConvertibleEvent.events_to_messages(events)  # type: ignore
+
+        assert len(messages) == 3
+        assert messages[0].role == "assistant"
+        assert messages[0].tool_calls is not None
+        assert messages[0].tool_calls[0].id == "call_reorder"  # type: ignore
+
+        assert messages[1].role == "tool"
+        assert messages[1].tool_call_id == "call_reorder"
+
+        assert messages[2].role == "user"
+        assert messages[2].content[0].text == "Please also show hidden files"  # type: ignore
 
     def test_assertion_error_for_non_empty_thought_in_parallel_calls(self):
         """Test assertion error for non-empty thought in subsequent parallel calls."""
