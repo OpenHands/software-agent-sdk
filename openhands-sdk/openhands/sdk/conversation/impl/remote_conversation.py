@@ -320,81 +320,6 @@ class RemoteEventsList(EventsListBase):
         )
         return added_count
 
-    def reconcile_recent(self) -> int:
-        """Reconcile only recent events that may have been missed.
-
-        This is a more efficient version of reconcile() that only fetches
-        events after the last known event timestamp. This is useful for
-        catching events that were emitted during the final moments of a run
-        but weren't delivered via WebSocket before run() returned.
-
-        Returns:
-            Number of new events added during reconciliation.
-        """
-        # Get the timestamp of the last event we have
-        with self._lock:
-            if self._cached_events:
-                last_timestamp = self._cached_events[-1].timestamp
-            else:
-                # No events yet, fall back to full reconcile
-                return self.reconcile()
-
-        logger.debug(
-            f"Performing recent reconciliation sync for conversation "
-            f"{self._conversation_id} (events after {last_timestamp})"
-        )
-
-        events = []
-        page_id = None
-
-        while True:
-            # timestamp can be either a string or datetime object
-            timestamp_str = (
-                last_timestamp
-                if isinstance(last_timestamp, str)
-                else last_timestamp.isoformat()
-            )
-            params: dict[str, str | int] = {
-                "limit": 100,
-                "timestamp__gte": timestamp_str,
-            }
-            if page_id:
-                params["page_id"] = page_id
-
-            try:
-                resp = _send_request(
-                    self._client,
-                    "GET",
-                    f"/api/conversations/{self._conversation_id}/events/search",
-                    params=params,
-                )
-                data = resp.json()
-            except Exception as e:
-                logger.warning(
-                    f"Failed to fetch events during recent reconciliation: {e}"
-                )
-                break
-
-            events.extend([Event.model_validate(item) for item in data["items"]])
-
-            if not data.get("next_page_id"):
-                break
-            page_id = data["next_page_id"]
-
-        # Merge events into cache
-        added_count = 0
-        with self._lock:
-            for event in events:
-                if event.id not in self._cached_event_ids:
-                    self._add_event_unsafe(event)
-                    added_count += 1
-
-        logger.debug(
-            f"Recent reconciliation completed, {added_count} new events added "
-            f"(total: {len(self._cached_events)})"
-        )
-        return added_count
-
     def _add_event_unsafe(self, event: Event) -> None:
         """Add event to cache without acquiring lock (caller must hold lock)."""
         # Use bisect with key function for O(log N) insertion
@@ -1025,28 +950,19 @@ class RemoteConversation(BaseConversation):
                 self._run_complete_event.clear()
                 return
 
-            # Fallback: poll the server for status
-            # This handles cases where WebSocket event is missed or delayed
+            # Poll the server for status as a health check
+            # This handles error/stuck states that need immediate attention
+            # For normal completion, we continue waiting for WebSocket
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
             else:
-                if self._handle_conversation_status(status):
-                    # Polling detected terminal status before WebSocket delivered it.
-                    # This is the race condition we're trying to avoid.
-                    # Use reconcile_recent() to fetch any events that may have
-                    # been emitted but not yet delivered via WebSocket.
-                    self._state.events.reconcile_recent()
-                    logger.info(
-                        "Run completed via polling with status: %s (elapsed: %.1fs), "
-                        "reconciled recent events",
-                        status,
-                        elapsed,
-                    )
-                    # Clear the event for the next run
-                    self._run_complete_event.clear()
-                    return
+                # _handle_conversation_status raises exceptions for ERROR/STUCK
+                # and returns True for terminal states (IDLE/FINISHED)
+                # We don't return here - we wait for WebSocket to deliver
+                # the terminal status event to ensure all events are received
+                self._handle_conversation_status(status)
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
