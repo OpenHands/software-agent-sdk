@@ -100,8 +100,8 @@ class MCPToolExecutor(ToolExecutor):
         except TimeoutError:
             error_msg = (
                 f"MCP tool '{self.tool_name}' timed out after {self.timeout} seconds. "
-                "The tool server may be unresponsive or the operation is taking too long. "
-                "Consider retrying or using an alternative approach."
+                "The tool server may be unresponsive or the operation is taking "
+                "too long. Consider retrying or using an alternative approach."
             )
             logger.error(error_msg)
             return MCPToolObservation.from_text(

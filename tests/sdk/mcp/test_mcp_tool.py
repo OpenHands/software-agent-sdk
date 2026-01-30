@@ -219,7 +219,7 @@ class TestMCPToolExecutor:
         assert "Connection failed" in observation.text
 
     def test_call_tool_timeout(self):
-        """Test tool execution with timeout error returns observation instead of raising."""
+        """Test tool execution with timeout error returns observation."""
         # Mock action
         mock_action = MagicMock()
         mock_action.model_dump.return_value = {"param": "value"}
