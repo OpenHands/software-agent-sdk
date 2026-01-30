@@ -939,7 +939,7 @@ class RemoteConversation(BaseConversation):
             # Wait for either:
             # 1. WebSocket delivers terminal status event (preferred)
             # 2. Poll interval expires (fallback - check status via REST)
-            if self._run_complete_event.wait(timeout=5 * poll_interval):
+            if self._run_complete_event.wait(timeout=poll_interval):
                 # WebSocket delivered terminal status - all events are guaranteed
                 # to be delivered since they come through the same channel
                 logger.info(
