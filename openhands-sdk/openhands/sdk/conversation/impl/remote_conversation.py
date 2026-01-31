@@ -307,6 +307,9 @@ class RemoteEventsList(EventsListBase):
         events = self._fetch_events_pages(page_id=page_id, ignore_errors=True)
 
         if page_id:
+            # The API may return the page_id event again depending on whether
+            # pagination is inclusive. Drop it to avoid duplicates regardless
+            # of position in the page.
             events = [event for event in events if event.id != page_id]
 
         # Merge events into cache, acquiring lock once for all events
@@ -746,7 +749,11 @@ class RemoteConversation(BaseConversation):
         # Reconcile events after WebSocket is ready to catch any events that
         # were emitted between the initial REST sync and WebSocket subscription.
         # This is the "reconciliation" part of the subscription handshake.
-        self._state.events.reconcile()
+        last_event_id = self._state.events.get_last_event_id()
+        if last_event_id:
+            self._state.events.reconcile(page_id=last_event_id)
+        else:
+            self._state.events.reconcile()
 
         # Initialize secrets if provided
         if secrets:
@@ -904,21 +911,28 @@ class RemoteConversation(BaseConversation):
         deadline = time.monotonic() + timeout
         logger.debug("Reconciling events after run completion")
 
-        self._state.events.reconcile()
-
         last_event_id = self._state.events.get_last_event_id()
+        if not last_event_id:
+            return
+
         cycles = 0
-        while cycles < max_cycles and time.monotonic() < deadline:
+        while time.monotonic() < deadline and cycles < max_cycles:
             time.sleep(settle_interval)
             added = self._state.events.reconcile(page_id=last_event_id)
             if added == 0:
-                break
-            last_event_id = self._state.events.get_last_event_id()
+                return
+            last_event_id = self._state.events.get_last_event_id() or last_event_id
             cycles += 1
 
-        if cycles >= max_cycles:
+        if time.monotonic() >= deadline:
             logger.warning(
-                "Event reconciliation hit max cycles (%d), results may be incomplete",
+                "Event reconciliation reached deadline (timeout=%.1fs); "
+                "results may be incomplete",
+                timeout,
+            )
+        elif cycles >= max_cycles:
+            logger.warning(
+                "Event reconciliation hit max cycles (%d); results may be incomplete",
                 max_cycles,
             )
 
