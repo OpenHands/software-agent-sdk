@@ -372,7 +372,6 @@ class ConversationState(OpenHandsModel):
     def block_message(self, message_id: str, reason: str) -> None:
         """Persistently record a hook-blocked user message."""
         self.blocked_messages = {**self.blocked_messages, message_id: reason}
-        self.last_user_message_id = message_id
 
     def pop_blocked_message(self, message_id: str) -> str | None:
         """Remove and return a hook-blocked message reason, if present."""

@@ -73,6 +73,7 @@ def test_agent_step_latest_user_message_scan_is_bounded(tmp_path):
         llm_message=Message(role="user", content=[TextContent(text="hi")]),
     )
     conv._on_event(blocked_user_msg)
+    conv.state.last_user_message_id = blocked_user_msg.id
 
     conv.state.block_message(blocked_user_msg.id, "blocked")
 
