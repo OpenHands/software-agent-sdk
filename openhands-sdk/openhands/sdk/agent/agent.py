@@ -68,10 +68,6 @@ logger = get_logger(__name__)
 maybe_init_laminar()
 
 
-# The most recent user message is tracked in conversation state to avoid
-# scanning the event log for hook-blocked messages.
-
-
 class Agent(AgentBase):
     """Main agent implementation for OpenHands.
 
