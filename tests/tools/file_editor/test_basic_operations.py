@@ -287,11 +287,13 @@ def test_view_directory(editor):
     editor, test_file = editor
     parent_dir = test_file.parent
     result = editor(command="view", path=str(parent_dir))
+    # Normalize path separators for cross-platform compatibility
+    parent_dir_str = str(parent_dir).replace("\\", "/")
     assert (
         result.text
-        == f"""Here's the files and directories up to 2 levels deep in {parent_dir}, excluding hidden items:
-{parent_dir}/
-{parent_dir}/test.txt"""  # noqa: E501
+        == f"""Here's the files and directories up to 2 levels deep in {parent_dir_str}, excluding hidden items:
+{parent_dir_str}/
+{parent_dir_str}/test.txt"""  # noqa: E501
     )
 
 
@@ -697,7 +699,8 @@ def test_view_directory_with_hidden_files(tmp_path):
 
     # Verify output
     assert isinstance(result, FileEditorObservation)
-    assert str(test_dir) in result.text
+    # Normalize path separators for cross-platform compatibility
+    assert str(test_dir).replace("\\", "/") in result.text
     assert "visible.txt" in result.text  # Visible file is shown
     assert "visible_dir" in result.text  # Visible directory is shown
     assert ".hidden1" not in result.text  # Hidden files not shown
@@ -732,7 +735,8 @@ def test_view_symlinked_directory(tmp_path):
 
     # Verify that all files are listed through the symlink
     assert isinstance(result, FileEditorObservation)
-    assert str(symlink_dir) in result.text
+    # Normalize path separators for cross-platform compatibility
+    assert str(symlink_dir).replace("\\", "/") in result.text
     assert "file1.txt" in result.text
     assert "file2.txt" in result.text
     assert "subdir" in result.text
