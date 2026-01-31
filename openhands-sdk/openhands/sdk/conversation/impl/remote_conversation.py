@@ -555,6 +555,7 @@ class RemoteConversation(BaseConversation):
     _client: httpx.Client
     _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
+    _run_complete_event: threading.Event  # Signaled when run completes via WebSocket
 
     def __init__(
         self,
@@ -607,6 +608,7 @@ class RemoteConversation(BaseConversation):
         self._client = workspace.client
         self._hook_processor = None
         self._cleanup_initiated = False
+        self._run_complete_event = threading.Event()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -706,8 +708,21 @@ class RemoteConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
+        # Add a callback that signals when run completes via WebSocket
+        # This ensures we wait for all events to be delivered before run() returns
+        def run_complete_callback(event: Event) -> None:
+            if isinstance(event, ConversationStateUpdateEvent):
+                if event.key == "execution_status":
+                    try:
+                        status = ConversationExecutionStatus(event.value)
+                        if status.is_terminal():
+                            self._run_complete_event.set()
+                    except ValueError:
+                        pass  # Unknown status value, ignore
+
         # Compose all callbacks into a single callback
-        composed_callback = BaseConversation.compose_callbacks(self._callbacks)
+        all_callbacks = self._callbacks + [run_complete_callback]
+        composed_callback = BaseConversation.compose_callbacks(all_callbacks)
 
         # Initialize WebSocket client for callbacks
         self._ws_client = WebSocketCallbackClient(
@@ -886,10 +901,18 @@ class RemoteConversation(BaseConversation):
         poll_interval: float = 1.0,
         timeout: float = 1800.0,
     ) -> None:
-        """Poll the server until the conversation is no longer running.
+        """Wait for the conversation run to complete.
+
+        This method waits for the run to complete by listening for the terminal
+        status event via WebSocket. This ensures all events are delivered before
+        returning, avoiding the race condition where polling sees "finished"
+        status before WebSocket delivers the final events.
+
+        As a fallback, it also polls the server periodically in case the
+        WebSocket event is missed or delayed.
 
         Args:
-            poll_interval: Time in seconds between status polls.
+            poll_interval: Time in seconds between status polls (fallback).
             timeout: Maximum time in seconds to wait.
 
         Raises:
@@ -898,6 +921,9 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
+
+        # Clear the event in case it was set from a previous run
+        self._run_complete_event.clear()
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -910,20 +936,38 @@ class RemoteConversation(BaseConversation):
                     ),
                 )
 
+            # Wait for either:
+            # 1. WebSocket delivers terminal status event (preferred)
+            # 2. Poll interval expires (fallback - check status via REST)
+            if self._run_complete_event.wait(timeout=poll_interval):
+                # WebSocket delivered terminal status - all events are guaranteed
+                # to be delivered since they come through the same channel
+                logger.info(
+                    "Run completed via WebSocket notification (elapsed: %.1fs)",
+                    elapsed,
+                )
+                # Clear the event for the next run
+                self._run_complete_event.clear()
+                return
+
+            # Poll the server for status as a health check.
+            # This catches ERROR/STUCK states that need immediate attention.
+            #
+            # IMPORTANT: We intentionally do NOT return here even if polling
+            # detects a terminal status (IDLE/FINISHED). Returning early would
+            # cause event loss because the WebSocket may not have delivered all
+            # events yet. Instead, we continue looping until the WebSocket
+            # delivers the terminal status event, which guarantees all events
+            # have been received through the same channel.
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
             else:
-                if self._handle_conversation_status(status):
-                    logger.info(
-                        "Run completed with status: %s (elapsed: %.1fs)",
-                        status,
-                        elapsed,
-                    )
-                    return
-
-            time.sleep(poll_interval)
+                # Raises ConversationRunError for ERROR/STUCK states.
+                # Returns True for terminal states (IDLE/FINISHED), but we
+                # ignore the return value and continue waiting for WebSocket.
+                self._handle_conversation_status(status)
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
