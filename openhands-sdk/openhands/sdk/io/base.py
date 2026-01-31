@@ -23,8 +23,28 @@ class FileStore(ABC):
         """
 
     @abstractmethod
+    def directWrite(self, path: str, contents: str | bytes) -> None:
+        """Write contents directly to a file at the specified path (no caching).
+
+        Args:
+            path: The file path where contents should be written.
+            contents: The data to write, either as string or bytes.
+        """
+
+    @abstractmethod
     def read(self, path: str) -> str:
         """Read and return the contents of a file as a string.
+
+        Args:
+            path: The file path to read from.
+
+        Returns:
+            The file contents as a string.
+        """
+
+    @abstractmethod
+    def directRead(self, path: str) -> str:
+        """Read and return file contents as a string directly (no caching).
 
         Args:
             path: The file path to read from.
