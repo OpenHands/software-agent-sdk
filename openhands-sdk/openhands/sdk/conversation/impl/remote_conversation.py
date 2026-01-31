@@ -31,6 +31,7 @@ from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
+from openhands.sdk.event import MessageEvent
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
 from openhands.sdk.event.conversation_state import (
@@ -224,6 +225,7 @@ class RemoteEventsList(EventsListBase):
     _conversation_id: str
     _cached_events: list[Event]
     _cached_event_ids: set[str]
+    _last_user_message_id: str | None
     _lock: threading.RLock
 
     def __init__(self, client: httpx.Client, conversation_id: str):
@@ -231,6 +233,7 @@ class RemoteEventsList(EventsListBase):
         self._conversation_id = conversation_id
         self._cached_events: list[Event] = []
         self._cached_event_ids: set[str] = set()
+        self._last_user_message_id = None
         self._lock = threading.RLock()
         # Initial fetch to sync existing events
         self._do_full_sync()
@@ -263,6 +266,10 @@ class RemoteEventsList(EventsListBase):
 
         self._cached_events = events
         self._cached_event_ids.update(e.id for e in events)
+        for event in reversed(events):
+            if isinstance(event, MessageEvent) and event.source == "user":
+                self._last_user_message_id = event.id
+                break
         logger.debug(f"Full sync completed, {len(events)} events cached")
 
     def reconcile(self) -> int:
@@ -330,6 +337,8 @@ class RemoteEventsList(EventsListBase):
         )
         self._cached_events.insert(insert_pos, event)
         self._cached_event_ids.add(event.id)
+        if isinstance(event, MessageEvent) and event.source == "user":
+            self._last_user_message_id = event.id
         logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
 
     def add_event(self, event: Event) -> None:

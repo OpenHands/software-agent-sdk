@@ -35,6 +35,23 @@ class _LimitedIterEvents(EventLog):
         self._events.append(event)
 
 
+class _FailingIterEvents(EventLog):
+    def __init__(self, events):
+        self._events = list(events)
+
+    def __len__(self) -> int:  # type: ignore[override]
+        return len(self._events)
+
+    def __getitem__(self, idx):  # type: ignore[override]
+        return self._events[idx]
+
+    def __iter__(self) -> Iterator:  # type: ignore[override]
+        raise AssertionError("events iterated unexpectedly")
+
+    def append(self, event) -> None:  # type: ignore[override]
+        self._events.append(event)
+
+
 def test_agent_step_latest_user_message_scan_is_bounded(tmp_path):
     agent = Agent(llm=LLM(model="gpt-4o-mini", api_key="x"), tools=[])
     workspace = LocalWorkspace(working_dir=tmp_path)
@@ -59,10 +76,30 @@ def test_agent_step_latest_user_message_scan_is_bounded(tmp_path):
 
     conv.state.block_message(blocked_user_msg.id, "blocked")
 
-    # Replace the events list with a wrapper that would blow up if code does a
-    # full-history materialization via list(state.events) (which would trigger
-    # iteration over the full log).
+    # Replace the events list with a wrapper that would blow up if code iterates
+    # over the full history via list(state.events).
     conv.state._events = _LimitedIterEvents(conv.state.events, max_iter=0)
+
+    agent.step(conv, on_event=conv._on_event)
+
+    assert conv.state.execution_status == ConversationExecutionStatus.FINISHED
+
+
+def test_agent_step_uses_last_user_message_id(tmp_path):
+    agent = Agent(llm=LLM(model="gpt-4o-mini", api_key="x"), tools=[])
+    workspace = LocalWorkspace(working_dir=tmp_path)
+    conv = LocalConversation(agent=agent, workspace=workspace)
+
+    message = MessageEvent(
+        source="user",
+        llm_message=Message(role="user", content=[TextContent(text="hi")]),
+    )
+    conv._on_event(message)
+
+    conv.state.last_user_message_id = message.id
+    conv.state.block_message(message.id, "blocked")
+
+    conv.state._events = _FailingIterEvents(conv.state.events)
 
     agent.step(conv, on_event=conv._on_event)
 

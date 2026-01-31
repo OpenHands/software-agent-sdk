@@ -16,6 +16,7 @@ from openhands.sdk.conversation.secret_registry import SecretRegistry
 from openhands.sdk.conversation.types import ConversationCallbackType, ConversationID
 from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObservation
 from openhands.sdk.event.base import Event
+from openhands.sdk.event.types import EventID
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -108,6 +109,12 @@ class ConversationState(OpenHandsModel):
     blocked_messages: dict[str, str] = Field(
         default_factory=dict,
         description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
+    )
+
+    # Track the most recent user MessageEvent ID to avoid event log scans.
+    last_user_message_id: EventID | None = Field(
+        default=None,
+        description="Most recent user MessageEvent id (for hook block checks)",
     )
 
     # Conversation statistics for LLM usage tracking
@@ -365,6 +372,7 @@ class ConversationState(OpenHandsModel):
     def block_message(self, message_id: str, reason: str) -> None:
         """Persistently record a hook-blocked user message."""
         self.blocked_messages = {**self.blocked_messages, message_id: reason}
+        self.last_user_message_id = message_id
 
     def pop_blocked_message(self, message_id: str) -> str | None:
         """Remove and return a hook-blocked message reason, if present."""

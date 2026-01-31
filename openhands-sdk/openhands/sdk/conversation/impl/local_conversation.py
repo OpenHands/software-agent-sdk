@@ -474,6 +474,7 @@ class LocalConversation(BaseConversation):
                 extended_content=extended_content,
                 sender=sender,
             )
+            self._state.last_user_message_id = user_msg_event.id
             self._on_event(user_msg_event)
 
     @observe(name="conversation.run")
@@ -534,6 +535,7 @@ class LocalConversation(BaseConversation):
                                             content=[TextContent(text=prefixed)],
                                         ),
                                     )
+                                    self._state.last_user_message_id = feedback_msg.id
                                     self._on_event(feedback_msg)
                                 self._state.execution_status = (
                                     ConversationExecutionStatus.RUNNING
