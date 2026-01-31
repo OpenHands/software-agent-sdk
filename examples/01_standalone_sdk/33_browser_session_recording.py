@@ -1,0 +1,155 @@
+"""Browser Session Recording Example
+
+This example demonstrates how to use the browser session recording feature
+to capture and save a recording of the agent's browser interactions using rrweb.
+
+The recording can be replayed later using rrweb-player to visualize the agent's
+browsing session.
+
+Usage:
+    # Set your LLM API key
+    export LLM_API_KEY=your_api_key_here
+
+    # Optionally set model (defaults to claude-sonnet)
+    export LLM_MODEL=anthropic/claude-sonnet-4-5-20250929
+
+    # Run the example
+    python 33_browser_session_recording.py
+
+The recording will be automatically saved to the persistence directory when
+browser_stop_recording is called. You can replay it with:
+    - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player
+    - Online viewer: https://www.rrweb.io/demo/
+"""
+
+import glob
+import json
+import os
+
+from pydantic import SecretStr
+
+from openhands.sdk import (
+    LLM,
+    Agent,
+    Conversation,
+    Event,
+    LLMConvertibleEvent,
+    get_logger,
+)
+from openhands.sdk.tool import Tool
+from openhands.tools.browser_use import BrowserToolSet
+
+
+logger = get_logger(__name__)
+
+# Configure LLM
+api_key = os.getenv("LLM_API_KEY")
+assert api_key is not None, "LLM_API_KEY environment variable is not set."
+model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
+base_url = os.getenv("LLM_BASE_URL")
+llm = LLM(
+    usage_id="agent",
+    model=model,
+    base_url=base_url,
+    api_key=SecretStr(api_key),
+)
+
+# Tools - including browser tools with recording capability
+cwd = os.getcwd()
+tools = [
+    Tool(name=BrowserToolSet.name),
+]
+
+# Agent
+agent = Agent(llm=llm, tools=tools)
+
+llm_messages = []  # collect raw LLM messages
+
+
+def conversation_callback(event: Event):
+    if isinstance(event, LLMConvertibleEvent):
+        llm_messages.append(event.to_llm_message())
+
+
+# Create conversation with persistence_dir set to save browser recordings
+conversation = Conversation(
+    agent=agent, 
+    callbacks=[conversation_callback], 
+    workspace=cwd,
+    persistence_dir="./.conversations"
+)
+
+# The prompt instructs the agent to:
+# 1. Start recording the browser session
+# 2. Browse to a website and perform some actions
+# 3. Stop recording (auto-saves to file)
+PROMPT = """
+Please complete the following task to demonstrate browser session recording:
+
+1. First, use `browser_start_recording` to begin recording the browser session.
+
+2. Then navigate to https://docs.openhands.dev/ and:
+   - Get the page content
+   - Scroll down the page
+   - Get the browser state to see interactive elements
+
+3. Next, navigate to https://docs.openhands.dev/openhands/usage/cli/installation and:
+   - Get the page content
+   - Scroll down to see more content
+
+4. Finally, use `browser_stop_recording` to stop the recording. Events are automatically saved.
+"""
+
+print("=" * 80)
+print("Browser Session Recording Example")
+print("=" * 80)
+print("\nTask: Record an agent's browser session and save it for replay")
+print("\nStarting conversation with agent...\n")
+
+conversation.send_message(PROMPT)
+conversation.run()
+
+print("\n" + "=" * 80)
+print("Conversation finished!")
+print("=" * 80)
+
+persistence_dir = conversation.state.persistence_dir
+assert persistence_dir
+
+# Check if the recording file was created
+files = os.listdir(os.path.join(persistence_dir, "observations"))
+recording_file = files[0] if len(files) > 0 else ""
+
+recording_file = os.path.join(persistence_dir, f"observations/{recording_file}")
+if os.path.exists(recording_file):
+    with open(recording_file) as f:
+        recording_data = json.load(f)
+
+    print(f"\n✓ Recording saved to: {recording_file}")
+    print(f"✓ Number of events: {recording_data.get('count', len(recording_data.get('events', [])))}")
+    print(f"✓ File size: {os.path.getsize(recording_file)} bytes")
+
+    # Show event types
+    events = recording_data.get("events", [])
+    if events:
+        event_types = {}
+        for event in events:
+            event_type = event.get("type", "unknown")
+            event_types[event_type] = event_types.get(event_type, 0) + 1
+        print(f"✓ Event types: {event_types}")
+
+    print("\nTo replay this recording, you can use:")
+    print("  - rrweb-player: https://github.com/rrweb-io/rrweb/tree/master/packages/rrweb-player")
+else:
+    print(f"\n✗ Recording file not found at: {recording_file}")
+    print("  The agent may not have completed the recording task.")
+
+print("\n" + "=" * 100)
+print("Conversation finished.")
+print(f"Total LLM messages: {len(llm_messages)}")
+print("=" * 100)
+
+# Report cost
+cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
+print(f'Conversation ID: {conversation.id}')
+print(f"EXAMPLE_COST: {cost}")

@@ -7,6 +7,8 @@ from openhands.tools.browser_use.definition import (
     BrowserGetStateAction,
     BrowserNavigateAction,
     BrowserObservation,
+    BrowserStartRecordingAction,
+    BrowserStopRecordingAction,
 )
 from openhands.tools.browser_use.impl import BrowserToolExecutor
 
@@ -140,3 +142,46 @@ async def test_browser_executor_initialization_idempotent(mock_browser_executor)
 
     # Should only be called once
     assert mock_browser_executor._server._init_browser_session.call_count == 1
+
+
+@patch("openhands.tools.browser_use.impl.BrowserToolExecutor.start_recording")
+async def test_browser_executor_action_routing_start_recording(
+    mock_start_recording, mock_browser_executor
+):
+    """Test that start_recording actions are routed correctly."""
+    mock_start_recording.return_value = "Recording started"
+
+    action = BrowserStartRecordingAction()
+    result = await mock_browser_executor._execute_action(action)
+
+    mock_start_recording.assert_called_once()
+    assert_browser_observation_success(result, "Recording started")
+
+
+@patch("openhands.tools.browser_use.impl.BrowserToolExecutor.stop_recording")
+async def test_browser_executor_action_routing_stop_recording(
+    mock_stop_recording, mock_browser_executor
+):
+    """Test that stop_recording actions are routed correctly."""
+    mock_stop_recording.return_value = '{"events": [], "count": 0}'
+
+    action = BrowserStopRecordingAction()
+    result = await mock_browser_executor._execute_action(action)
+
+    mock_stop_recording.assert_called_once()
+    assert_browser_observation_success(result, "count")
+
+
+@patch("openhands.tools.browser_use.impl.BrowserToolExecutor.stop_recording")
+async def test_browser_executor_stop_recording_returns_json(
+    mock_stop_recording, mock_browser_executor
+):
+    """Test that stop_recording returns valid JSON with events."""
+    mock_stop_recording.return_value = '{"events": [{"type": 1}], "count": 1}'
+
+    action = BrowserStopRecordingAction()
+    result = await mock_browser_executor._execute_action(action)
+
+    assert not result.is_error
+    assert "events" in result.text
+    assert "count" in result.text
