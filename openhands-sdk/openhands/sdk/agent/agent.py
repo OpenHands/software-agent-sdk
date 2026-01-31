@@ -238,9 +238,8 @@ class Agent(AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        last_user_message_id = getattr(state, "last_user_message_id", None)
-        if last_user_message_id is not None:
-            reason = state.pop_blocked_message(last_user_message_id)
+        if state.last_user_message_id is not None:
+            reason = state.pop_blocked_message(state.last_user_message_id)
             if reason is not None:
                 logger.info(f"User message blocked by hook: {reason}")
                 state.execution_status = ConversationExecutionStatus.FINISHED

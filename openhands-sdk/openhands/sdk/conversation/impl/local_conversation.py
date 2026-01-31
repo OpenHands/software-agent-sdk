@@ -535,7 +535,6 @@ class LocalConversation(BaseConversation):
                                             content=[TextContent(text=prefixed)],
                                         ),
                                     )
-                                    self._state.last_user_message_id = feedback_msg.id
                                     self._on_event(feedback_msg)
                                 self._state.execution_status = (
                                     ConversationExecutionStatus.RUNNING
