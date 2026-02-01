@@ -38,11 +38,13 @@ indent-style = "space"
 
 [tool.ruff.lint]
 select = [
-    "E",    # pycodestyle errors
-    "F",    # pyflakes (includes F841: unused-variable)
-    "I",    # isort
-    "UP",   # pyupgrade
-    "ARG",  # flake8-unused-arguments
+    "E",      # pycodestyle errors
+    "F",      # pyflakes (includes F841: unused-variable)
+    "I",      # isort
+    "UP",     # pyupgrade
+    "UP006",  # PEP585: Use `list` instead of `List` for type annotations
+    "UP007",  # PEP604: Use `X | Y` for type unions
+    "ARG",    # flake8-unused-arguments
 ]
 # Enforce rules that catch mutable defaults and related pitfalls
 # - B006: mutable-argument-default

@@ -1,7 +1,7 @@
 import io
 import re
 from pathlib import Path
-from typing import Annotated, ClassVar, Literal, Union
+from typing import Annotated, ClassVar, Literal
 from xml.sax.saxutils import escape as xml_escape
 
 import frontmatter
@@ -476,7 +476,7 @@ class Skill(BaseModel):
             )
 
     @classmethod
-    def _handle_third_party(cls, path: Path, file_content: str) -> Union["Skill", None]:
+    def _handle_third_party(cls, path: Path, file_content: str) -> "Skill | None":
         """Handle third-party skill files (e.g., .cursorrules, AGENTS.md).
 
         Creates a Skill with None trigger (always active) if the file type
