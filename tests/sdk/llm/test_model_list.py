@@ -17,7 +17,9 @@ def test_organize_models_and_providers():
         "mistral/devstral-small-2505",
         "anthropic.claude-3-5",  # Ignore dot separator for anthropic
         "unknown-model",
-        "custom-provider/custom-model",
+        "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # invalid provider prefix
+        "1024-x-1024/gpt-image-1.5",  # invalid provider prefix
         "openai/another-model",
     ]
 
@@ -35,8 +37,40 @@ def test_organize_models_and_providers():
         assert len(result["openai"]) == 1
         assert "another-model" in result["openai"]
 
-        assert len(result["other"]) == 1
+        assert len(result["other"]) == 4
         assert "unknown-model" in result["other"]
+        assert "custom-provider/custom-model" in result["other"]
+        assert "us.anthropic.claude-3-5-sonnet-20241022-v2:0" in result["other"]
+        assert "1024-x-1024/gpt-image-1.5" in result["other"]
+
+
+def test_unverified_models_fallback_when_no_provider_list():
+    models = [
+        "openai/gpt-4o",  # treated as unverified (provider validation disabled)
+        "anthropic/claude-sonnet-4-20250514",  # treated as unverified
+        "o3",  # openhands model -> excluded
+        "custom-provider/custom-model",  # invalid provider -> bucketed under "other"
+        "us.anthropic.claude-3-5-sonnet-20241022-v2:0",  # invalid provider prefix
+        "1024-x-1024/gpt-image-1.5",  # invalid provider prefix
+    ]
+
+    with (
+        patch(
+            "openhands.sdk.llm.utils.unverified_models.get_supported_llm_models",
+            return_value=models,
+        ),
+        patch(
+            "openhands.sdk.llm.utils.unverified_models._LITELLM_PROVIDER_NAMES",
+            set(),
+        ),
+    ):
+        result = get_unverified_models()
+
+    assert "openai" not in result
+    assert "anthropic" not in result
+    assert result == {
+        "other": ["openai/gpt-4o", "anthropic/claude-sonnet-4-20250514"] + models[3:]
+    }
 
 
 def test_list_bedrock_models_without_boto3(monkeypatch):
