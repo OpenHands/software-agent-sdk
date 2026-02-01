@@ -29,6 +29,25 @@ MODELS = {
         "display_name": "Kimi K2 Thinking",
         "llm_config": {"model": "litellm_proxy/moonshot/kimi-k2-thinking"},
     },
+    # https://www.kimi.com/blog/kimi-k2-5.html
+    "kimi-k2.5": {
+        "id": "kimi-k2.5",
+        "display_name": "Kimi K2.5",
+        "llm_config": {
+            "model": "litellm_proxy/moonshot/kimi-k2.5",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
+    # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+    "qwen3-max-thinking": {
+        "id": "qwen3-max-thinking",
+        "display_name": "Qwen3 Max Thinking",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3-max-2026-01-23",
+            "litellm_extra_body": {"enable_thinking": True},
+        },
+    },
     "claude-4.5-opus": {
         "id": "claude-4.5-opus",
         "display_name": "Claude 4.5 Opus",
@@ -94,6 +113,11 @@ MODELS = {
             "model": "litellm_proxy/openai/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
             "temperature": 0.0,
         },
+    },
+    "glm-4.7": {
+        "id": "glm-4.7",
+        "display_name": "GLM-4.7",
+        "llm_config": {"model": "litellm_proxy/openrouter/z-ai/glm-4.7"},
     },
 }
 
