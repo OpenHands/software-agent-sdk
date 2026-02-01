@@ -65,6 +65,9 @@ class Plugin(BaseModel):
     mcp_config: dict[str, Any] | None = Field(
         default=None, description="MCP configuration from .mcp.json"
     )
+    lsp_config: dict[str, Any] | None = Field(
+        default=None, description="LSP configuration from .lsp.json or lspServers"
+    )
     agents: list[AgentDefinition] = Field(
         default_factory=list, description="Agent definitions from agents/ directory"
     )
@@ -301,6 +304,9 @@ class Plugin(BaseModel):
         # Load MCP config
         mcp_config = _load_mcp_config(plugin_dir)
 
+        # Load LSP config
+        lsp_config = _load_lsp_config(plugin_dir)
+
         # Load agents
         agents = _load_agents(plugin_dir)
 
@@ -313,6 +319,7 @@ class Plugin(BaseModel):
             skills=skills,
             hooks=hooks,
             mcp_config=mcp_config,
+            lsp_config=lsp_config,
             agents=agents,
             commands=commands,
         )
@@ -496,3 +503,49 @@ def _load_commands(plugin_dir: Path) -> list[CommandDefinition]:
                 logger.warning(f"Failed to load command from {item}: {e}")
 
     return commands
+
+
+def _load_lsp_config(plugin_dir: Path) -> dict[str, Any] | None:
+    """Load LSP configuration from .lsp.json.
+
+    The .lsp.json file should have the format:
+    {
+        "lspServers": {
+            "typescript": {
+                "command": "typescript-language-server",
+                "args": ["--stdio"],
+                "extensionToLanguage": {
+                    ".ts": "typescript",
+                    ".tsx": "typescriptreact"
+                }
+            }
+        }
+    }
+    """
+    lsp_json = plugin_dir / ".lsp.json"
+    if not lsp_json.exists():
+        return None
+
+    try:
+        with open(lsp_json) as f:
+            data = json.load(f)
+
+        # Validate basic structure
+        if not isinstance(data, dict):
+            logger.warning(f"Invalid LSP config format in {lsp_json}: expected dict")
+            return None
+
+        # Check for lspServers or servers key
+        servers = data.get("lspServers") or data.get("servers")
+        if not servers:
+            logger.warning(f"No lspServers found in {lsp_json}")
+            return None
+
+        logger.debug(f"Loaded LSP config with servers: {list(servers.keys())}")
+        return data
+    except json.JSONDecodeError as e:
+        logger.warning(f"Invalid JSON in {lsp_json}: {e}")
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to load LSP config from {lsp_json}: {e}")
+        return None
