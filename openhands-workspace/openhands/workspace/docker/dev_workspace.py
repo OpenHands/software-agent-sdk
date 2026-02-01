@@ -2,7 +2,7 @@
 
 from pydantic import Field, model_validator
 
-from openhands.sdk.workspace import TargetType
+from openhands.sdk.workspace import PlatformType, TargetType
 
 from .workspace import DockerWorkspace
 
@@ -22,7 +22,7 @@ class DockerDevWorkspace(DockerWorkspace):
 
     Example:
         with DockerDevWorkspace(
-            base_image="python:3.12",
+            base_image="python:3.13",
             target="source"
         ) as workspace:
             result = workspace.execute_command("ls -la")
@@ -55,6 +55,43 @@ class DockerDevWorkspace(DockerWorkspace):
                 "Use server_image=... instead."
             )
         return self
+
+    @staticmethod
+    def _build_image_from_base(
+        *, base_image: str, target: TargetType, platform: PlatformType
+    ) -> str:
+        """Build a Docker image from a base image.
+
+        Args:
+            base_image: The base Docker image to build from.
+            target: The build target (e.g., 'source', 'dev').
+            platform: The platform to build for (e.g., 'linux/amd64').
+
+        Returns:
+            The built Docker image tag.
+
+        Raises:
+            RuntimeError: If the base_image is a pre-built agent-server image
+                or if the build fails.
+        """
+        from openhands.agent_server.docker.build import BuildOptions, build
+
+        if "ghcr.io/openhands/agent-server" in base_image:
+            raise RuntimeError(
+                "base_image cannot be a pre-built agent-server image. "
+                "Use server_image=... instead."
+            )
+
+        build_opts = BuildOptions(
+            base_image=base_image,
+            target=target,
+            platforms=[platform],
+            push=False,
+        )
+        tags = build(opts=build_opts)
+        if not tags:
+            raise RuntimeError("Build failed, no image tags returned")
+        return tags[0]
 
     def get_image(self) -> str:
         """Build the image if base_image is provided, otherwise use server_image.

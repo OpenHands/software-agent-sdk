@@ -4,17 +4,12 @@ from collections.abc import Mapping
 
 from pydantic import Field, PrivateAttr, SecretStr
 
-from openhands.sdk.conversation.secret_source import (
-    SecretSource,
-    StaticSecret,
-)
 from openhands.sdk.logger import get_logger
+from openhands.sdk.secret import SecretSource, SecretValue, StaticSecret
 from openhands.sdk.utils.models import OpenHandsModel
 
 
 logger = get_logger(__name__)
-
-SecretValue = str | SecretSource
 
 
 class SecretRegistry(OpenHandsModel):

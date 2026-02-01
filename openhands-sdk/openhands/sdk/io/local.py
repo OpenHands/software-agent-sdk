@@ -1,6 +1,11 @@
 import os
 import shutil
+from collections.abc import Iterator
+from contextlib import contextmanager
 
+from filelock import FileLock, Timeout
+
+from openhands.sdk.io.cache import MemoryLRUCache
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
 
@@ -12,13 +17,31 @@ logger = get_logger(__name__)
 
 class LocalFileStore(FileStore):
     root: str
+    cache: MemoryLRUCache
 
-    def __init__(self, root: str):
+    def __init__(
+        self,
+        root: str,
+        cache_limit_size: int = 500,
+        cache_memory_size: int = 20 * 1024 * 1024,
+    ) -> None:
+        """Initialize a LocalFileStore with caching.
+
+        Args:
+            root: Root directory for file storage.
+            cache_limit_size: Maximum number of cached entries (default: 500).
+            cache_memory_size: Maximum cache memory in bytes (default: 20MB).
+
+        Note:
+            The cache assumes exclusive access to files. External modifications
+            to files will not be detected and may result in stale cache reads.
+        """
         if root.startswith("~"):
             root = os.path.expanduser(root)
         root = os.path.abspath(os.path.normpath(root))
         self.root = root
         os.makedirs(self.root, exist_ok=True)
+        self.cache = MemoryLRUCache(cache_memory_size, cache_limit_size)
 
     def get_full_path(self, path: str) -> str:
         # strip leading slash to keep relative under root
@@ -32,6 +55,7 @@ class LocalFileStore(FileStore):
         # ensure sandboxing
         if os.path.commonpath([self.root, full]) != self.root:
             raise ValueError(f"path escapes filestore root: {path}")
+
         return full
 
     @observe(name="LocalFileStore.write", span_type="TOOL")
@@ -41,14 +65,27 @@ class LocalFileStore(FileStore):
         if isinstance(contents, str):
             with open(full_path, "w", encoding="utf-8") as f:
                 f.write(contents)
+            self.cache[full_path] = contents
         else:
             with open(full_path, "wb") as f:
                 f.write(contents)
+            # Don't cache binary content - LocalFileStore is meant for JSON data
+            # If binary data is written and then read, it will error on read
 
     def read(self, path: str) -> str:
         full_path = self.get_full_path(path)
+
+        if full_path in self.cache:
+            return self.cache[full_path]
+
+        if not os.path.exists(full_path):
+            raise FileNotFoundError(path)
+
         with open(full_path, encoding="utf-8") as f:
-            return f.read()
+            result = f.read()
+
+        self.cache[full_path] = result
+        return result
 
     @observe(name="LocalFileStore.list", span_type="TOOL")
     def list(self, path: str) -> list[str]:
@@ -72,11 +109,36 @@ class LocalFileStore(FileStore):
             if not os.path.exists(full_path):
                 logger.debug(f"Local path does not exist: {full_path}")
                 return
+
             if os.path.isfile(full_path):
                 os.remove(full_path)
+                del self.cache[full_path]
                 logger.debug(f"Removed local file: {full_path}")
             elif os.path.isdir(full_path):
                 shutil.rmtree(full_path)
+                self.cache.clear()
                 logger.debug(f"Removed local directory: {full_path}")
+
         except Exception as e:
             logger.error(f"Error clearing local file store: {str(e)}")
+
+    def exists(self, path: str) -> bool:
+        """Check if a file or directory exists."""
+        return os.path.exists(self.get_full_path(path))
+
+    def get_absolute_path(self, path: str) -> str:
+        """Get absolute filesystem path."""
+        return self.get_full_path(path)
+
+    @contextmanager
+    def lock(self, path: str, timeout: float = 30.0) -> Iterator[None]:
+        """Acquire file-based lock using flock."""
+        lock_path = self.get_full_path(path)
+        os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+        file_lock = FileLock(lock_path)
+        try:
+            with file_lock.acquire(timeout=timeout):
+                yield
+        except Timeout:
+            logger.error(f"Failed to acquire lock within {timeout}s: {lock_path}")
+            raise TimeoutError(f"Lock acquisition timed out: {path}")

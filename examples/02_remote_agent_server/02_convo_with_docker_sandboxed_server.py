@@ -41,7 +41,7 @@ def detect_platform():
 #    image or `DockerDevWorkspace` to automatically build the image on-demand.
 #    with DockerDevWorkspace(
 #        # dynamically build agent-server image
-#        base_image="nikolaik/python-nodejs:python3.12-nodejs22",
+#        base_image="nikolaik/python-nodejs:python3.13-nodejs22",
 #        host_port=8010,
 #        platform=detect_platform(),
 #    ) as workspace:
@@ -105,10 +105,6 @@ with DockerWorkspace(
         conversation.run()
         logger.info("✅ Second task completed!")
 
-        # Report cost (must be before conversation.close())
-        conversation.state._cached_state = (
-            None  # Invalidate cache to fetch latest stats
-        )
         cost = conversation.conversation_stats.get_combined_metrics().accumulated_cost
         print(f"EXAMPLE_COST: {cost}")
     finally:

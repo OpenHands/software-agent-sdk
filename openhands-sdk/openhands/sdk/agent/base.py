@@ -1,21 +1,36 @@
+from __future__ import annotations
+
 import os
 import re
 import sys
 from abc import ABC, abstractmethod
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+)
 
 from openhands.sdk.context.agent_context import AgentContext
-from openhands.sdk.context.condenser import CondenserBase, LLMSummarizingCondenser
+from openhands.sdk.context.condenser import CondenserBase
 from openhands.sdk.context.prompts.prompt import render_template
+from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.llm import LLM
+from openhands.sdk.llm.utils.model_prompt_spec import get_model_prompt_spec
 from openhands.sdk.logger import get_logger
 from openhands.sdk.mcp import create_mcp_tools
-from openhands.sdk.tool import BUILT_IN_TOOLS, Tool, ToolDefinition, resolve_tool
+from openhands.sdk.tool import (
+    BUILT_IN_TOOL_CLASSES,
+    BUILT_IN_TOOLS,
+    Tool,
+    ToolDefinition,
+    resolve_tool,
+)
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
-from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
 if TYPE_CHECKING:
@@ -24,7 +39,6 @@ if TYPE_CHECKING:
         ConversationCallbackType,
         ConversationTokenCallbackType,
     )
-
 
 logger = get_logger(__name__)
 
@@ -79,6 +93,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         " added.",
         examples=["^(?!repomix)(.*)|^repomix.*pack_codebase.*$"],
     )
+    include_default_tools: list[str] = Field(
+        default_factory=lambda: [tool.__name__ for tool in BUILT_IN_TOOLS],
+        description=(
+            "List of default tool class names to include. By default, the agent "
+            "includes 'FinishTool' and 'ThinkTool'. Set to an empty list to disable "
+            "all default tools, or provide a subset to include only specific ones. "
+            "Example: include_default_tools=['FinishTool'] to only include FinishTool, "
+            "or include_default_tools=[] to disable all default tools."
+        ),
+        examples=[["FinishTool", "ThinkTool"], ["FinishTool"], []],
+    )
     agent_context: AgentContext | None = Field(
         default=None,
         description="Optional AgentContext to initialize "
@@ -87,7 +112,7 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             {
                 "skills": [
                     {
-                        "name": "repo.md",
+                        "name": "AGENTS.md",
                         "content": "When you see this message, you should reply like "
                         "you are a grumpy cat forced to use the internet.",
                         "type": "repo",
@@ -119,6 +144,15 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             "- An absolute path (e.g., '/path/to/custom_prompt.j2')"
         ),
     )
+    security_policy_filename: str = Field(
+        default="security_policy.j2",
+        description=(
+            "Security policy template filename. Can be either:\n"
+            "- A relative filename (e.g., 'security_policy.j2') loaded from the "
+            "agent's prompts directory\n"
+            "- An absolute path (e.g., '/path/to/custom_security_policy.j2')"
+        ),
+    )
     system_prompt_kwargs: dict[str, object] = Field(
         default_factory=dict,
         description="Optional kwargs to pass to the system prompt Jinja2 template.",
@@ -142,8 +176,19 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         ],
     )
 
+    critic: CriticBase | None = Field(
+        default=None,
+        description=(
+            "EXPERIMENTAL: Optional critic to evaluate agent actions and messages "
+            "in real-time. API and behavior may change without notice. "
+            "May impact performance, especially in 'all_actions' mode."
+        ),
+        examples=[{"kind": "AgentFinishedCritic"}],
+    )
+
     # Runtime materialized tools; private and non-serializable
     _tools: dict[str, ToolDefinition] = PrivateAttr(default_factory=dict)
+    _initialized: bool = PrivateAttr(default=False)
 
     @property
     def prompt_dir(self) -> str:
@@ -163,21 +208,38 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness."""
         template_kwargs = dict(self.system_prompt_kwargs)
+        # Add security_policy_filename to template kwargs
+        template_kwargs["security_policy_filename"] = self.security_policy_filename
+        template_kwargs.setdefault("model_name", self.llm.model)
+        if (
+            "model_family" not in template_kwargs
+            or "model_variant" not in template_kwargs
+        ):
+            spec = get_model_prompt_spec(
+                self.llm.model, getattr(self.llm, "model_canonical_name", None)
+            )
+            if "model_family" not in template_kwargs and spec.family:
+                template_kwargs["model_family"] = spec.family
+            if "model_variant" not in template_kwargs and spec.variant:
+                template_kwargs["model_variant"] = spec.variant
         system_message = render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
             **template_kwargs,
         )
         if self.agent_context:
-            _system_message_suffix = self.agent_context.get_system_message_suffix()
+            _system_message_suffix = self.agent_context.get_system_message_suffix(
+                llm_model=self.llm.model,
+                llm_model_canonical=self.llm.model_canonical_name,
+            )
             if _system_message_suffix:
                 system_message += "\n\n" + _system_message_suffix
         return system_message
 
     def init_state(
         self,
-        state: "ConversationState",
-        on_event: "ConversationCallbackType",  # noqa: ARG002
+        state: ConversationState,
+        on_event: ConversationCallbackType,  # noqa: ARG002
     ) -> None:
         """Initialize the empty conversation state to prepare the agent for user
         messages.
@@ -188,21 +250,33 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         """
         self._initialize(state)
 
-    def _initialize(self, state: "ConversationState"):
+    def _initialize(self, state: ConversationState):
         """Create an AgentBase instance from an AgentSpec."""
 
-        if self._tools:
+        if self._initialized:
             logger.warning("Agent already initialized; skipping re-initialization.")
             return
 
         tools: list[ToolDefinition] = []
-        for tool_spec in self.tools:
-            tools.extend(resolve_tool(tool_spec, state))
 
-        # Add MCP tools if configured
-        if self.mcp_config:
-            mcp_tools = create_mcp_tools(self.mcp_config, timeout=30)
-            tools.extend(mcp_tools)
+        # Use ThreadPoolExecutor to parallelize tool resolution
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = []
+
+            # Submit tool resolution tasks
+            for tool_spec in self.tools:
+                future = executor.submit(resolve_tool, tool_spec, state)
+                futures.append(future)
+
+            # Submit MCP tools creation if configured
+            if self.mcp_config:
+                future = executor.submit(create_mcp_tools, self.mcp_config, 30)
+                futures.append(future)
+
+            # Collect results as they complete
+            for future in futures:
+                result = future.result()
+                tools.extend(result)
 
         logger.info(
             f"Loaded {len(tools)} tools from spec: {[tool.name for tool in tools]}"
@@ -215,10 +289,17 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 f"{[tool.name for tool in tools]}",
             )
 
-        # Always include built-in tools; not subject to filtering
-        # Instantiate built-in tools using their .create() method
-        for tool_class in BUILT_IN_TOOLS:
-            tools.extend(tool_class.create(state))
+        # Include default tools from include_default_tools; not subject to regex
+        # filtering. Use explicit mapping to resolve tool class names.
+        for tool_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_name)
+            if tool_class is None:
+                raise ValueError(
+                    f"Unknown built-in tool class: '{tool_name}'. "
+                    f"Expected one of: {list(BUILT_IN_TOOL_CLASSES.keys())}"
+                )
+            tool_instances = tool_class.create(state)
+            tools.extend(tool_instances)
 
         # Check tool types
         for tool in tools:
@@ -236,13 +317,14 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
 
         # Store tools in a dict for easy access
         self._tools = {tool.name: tool for tool in tools}
+        self._initialized = True
 
     @abstractmethod
     def step(
         self,
-        conversation: "LocalConversation",
-        on_event: "ConversationCallbackType",
-        on_token: "ConversationTokenCallbackType | None" = None,
+        conversation: LocalConversation,
+        on_event: ConversationCallbackType,
+        on_token: ConversationTokenCallbackType | None = None,
     ) -> None:
         """Taking a step in the conversation.
 
@@ -260,65 +342,79 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         NOTE: state will be mutated in-place.
         """
 
-    def resolve_diff_from_deserialized(self, persisted: "AgentBase") -> "AgentBase":
-        """
-        Return a new AgentBase instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key) taken from `self`.
+    def verify(
+        self,
+        persisted: AgentBase,
+        events: Sequence[Any] | None = None,  # noqa: ARG002
+    ) -> AgentBase:
+        """Verify that we can resume this agent from persisted state.
+
+        We do not merge configuration between persisted and runtime Agent
+        instances. Instead, we verify compatibility requirements and then
+        continue with the runtime-provided Agent.
+
+        Compatibility requirements:
+        - Agent class/type must match.
+        - Tools must match exactly (same tool names).
+
+        Tools are part of the system prompt and cannot be changed mid-conversation.
+        To use different tools, start a new conversation or use conversation forking
+        (see https://github.com/OpenHands/OpenHands/issues/8560).
+
+        All other configuration (LLM, agent_context, condenser, etc.) can be
+        freely changed between sessions.
+
+        Args:
+            persisted: The agent loaded from persisted state.
+            events: Unused, kept for API compatibility.
+
+        Returns:
+            This runtime agent (self) if verification passes.
+
+        Raises:
+            ValueError: If agent class or tools don't match.
         """
         if persisted.__class__ is not self.__class__:
             raise ValueError(
-                f"Cannot resolve from deserialized: persisted agent is of type "
+                "Cannot load from persisted: persisted agent is of type "
                 f"{persisted.__class__.__name__}, but self is of type "
                 f"{self.__class__.__name__}."
             )
 
-        # Get all LLMs from both self and persisted to reconcile them
-        new_llm = self.llm.resolve_diff_from_deserialized(persisted.llm)
-        updates: dict[str, Any] = {"llm": new_llm}
+        # Collect explicit tool names
+        runtime_names = {tool.name for tool in self.tools}
+        persisted_names = {tool.name for tool in persisted.tools}
 
-        # Reconcile the condenser's LLM if it exists
-        if self.condenser is not None and persisted.condenser is not None:
-            # Check if both condensers are LLMSummarizingCondenser
-            # (which has an llm field)
+        # Add builtin tool names from include_default_tools
+        # These are runtime names like 'finish', 'think'
+        for tool_class_name in self.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                runtime_names.add(tool_class.name)
 
-            if isinstance(self.condenser, LLMSummarizingCondenser) and isinstance(
-                persisted.condenser, LLMSummarizingCondenser
-            ):
-                new_condenser_llm = self.condenser.llm.resolve_diff_from_deserialized(
-                    persisted.condenser.llm
-                )
-                new_condenser = persisted.condenser.model_copy(
-                    update={"llm": new_condenser_llm}
-                )
-                updates["condenser"] = new_condenser
+        for tool_class_name in persisted.include_default_tools:
+            tool_class = BUILT_IN_TOOL_CLASSES.get(tool_class_name)
+            if tool_class is not None:
+                persisted_names.add(tool_class.name)
 
-        # Create maps by tool name for easy lookup
-        runtime_tools_map = {tool.name: tool for tool in self.tools}
-        persisted_tools_map = {tool.name: tool for tool in persisted.tools}
+        if runtime_names == persisted_names:
+            return self
 
-        # Check that tool names match
-        runtime_names = set(runtime_tools_map.keys())
-        persisted_names = set(persisted_tools_map.keys())
+        # Tools don't match - this is not allowed
+        missing_in_runtime = persisted_names - runtime_names
+        added_in_runtime = runtime_names - persisted_names
 
-        if runtime_names != persisted_names:
-            missing_in_runtime = persisted_names - runtime_names
-            missing_in_persisted = runtime_names - persisted_names
-            error_msg = "Tools don't match between runtime and persisted agents."
-            if missing_in_runtime:
-                error_msg += f" Missing in runtime: {missing_in_runtime}."
-            if missing_in_persisted:
-                error_msg += f" Missing in persisted: {missing_in_persisted}."
-            raise ValueError(error_msg)
+        details: list[str] = []
+        if missing_in_runtime:
+            details.append(f"removed: {sorted(missing_in_runtime)}")
+        if added_in_runtime:
+            details.append(f"added: {sorted(added_in_runtime)}")
 
-        reconciled = persisted.model_copy(update=updates)
-        if self.model_dump(exclude_none=True) != reconciled.model_dump(
-            exclude_none=True
-        ):
-            raise ValueError(
-                "The Agent provided is different from the one in persisted state.\n"
-                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-            )
-        return reconciled
+        raise ValueError(
+            f"Cannot resume conversation: tools cannot be changed mid-conversation "
+            f"({'; '.join(details)}). "
+            f"To use different tools, start a new conversation."
+        )
 
     def model_dump_succint(self, **kwargs):
         """Like model_dump, but excludes None fields by default."""
@@ -406,6 +502,6 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         Raises:
             RuntimeError: If the agent has not been initialized.
         """
-        if not self._tools:
+        if not self._initialized:
             raise RuntimeError("Agent not initialized; call initialize() before use")
         return self._tools

@@ -4,6 +4,18 @@ from pydantic import ValidationError
 from openhands.sdk.mcp import MCPToolAction
 
 
+class _ChildMCPToolActionForSerialization(MCPToolAction):
+    """Child MCP action for testing declared fields with data.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    declared: int
+
+
 def test_data_field_emerges_from_to_mcp_arguments():
     """Test that data field contents are returned by to_mcp_arguments."""
     data = {"new_field": "value", "dynamic": 123}
@@ -18,12 +30,8 @@ def test_data_field_emerges_from_to_mcp_arguments():
 
 def test_declared_child_fields_with_data():
     """Test that child classes work with the data field."""
-
-    class Child(MCPToolAction):
-        declared: int
-
     data = {"tool_param": "value"}
-    a = Child(declared=7, data=data)
+    a = _ChildMCPToolActionForSerialization(declared=7, data=data)
     out = a.to_mcp_arguments()
 
     # Only data field contents should be in MCP arguments

@@ -156,3 +156,25 @@ class BaseWorkspace(DiscriminatedUnionMixin, ABC):
         Raises:
             Exception: If path is not a git repository or getting diff failed
         """
+
+    def pause(self) -> None:
+        """Pause the workspace to conserve resources.
+
+        For local workspaces, this is a no-op.
+        For container-based workspaces, this pauses the container.
+
+        Raises:
+            NotImplementedError: If the workspace type does not support pausing.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support pause()")
+
+    def resume(self) -> None:
+        """Resume a paused workspace.
+
+        For local workspaces, this is a no-op.
+        For container-based workspaces, this resumes the container.
+
+        Raises:
+            NotImplementedError: If the workspace type does not support resuming.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not support resume()")

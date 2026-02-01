@@ -1,0 +1,244 @@
+---
+name: Run Condenser Tests
+
+on:
+    # Use pull_request_target to access secrets even on fork PRs
+    # This is safe because we only run when the 'condenser-test' label is added by a maintainer
+    pull_request_target:
+        types:
+            - labeled
+    workflow_dispatch:
+        inputs:
+            reason:
+                description: Reason for manual trigger
+                required: true
+                default: ''
+
+env:
+    N_PROCESSES: 2 # Fewer parallel processes for condenser tests (only 2 LLMs)
+
+jobs:
+    post-initial-comment:
+        if: >
+            github.event_name == 'pull_request_target' &&
+            github.event.label.name == 'condenser-test'
+        runs-on: ubuntu-latest
+        permissions:
+            pull-requests: write
+        steps:
+            - name: Comment on PR
+              uses: KeisukeYamashita/create-comment@v1
+              with:
+                  unique: false
+                  comment: |
+                      Hi! I started running the condenser tests on your PR. You will receive a comment with the results shortly.
+
+                      Note: These are non-blocking tests that validate condenser functionality across different LLMs.
+
+    run-condenser-tests:
+        # Security: Only run when condenser-test label is present or via workflow_dispatch
+        # This prevents automatic execution on fork PRs without maintainer approval
+        if: |
+            always() && (
+                (
+                    github.event_name == 'pull_request_target' &&
+                    github.event.label.name == 'condenser-test'
+                ) ||
+                github.event_name == 'workflow_dispatch'
+            )
+        runs-on: blacksmith-4vcpu-ubuntu-2204
+        permissions:
+            contents: read
+            id-token: write
+            pull-requests: write
+        strategy:
+            matrix:
+                python-version: ['3.13']
+                job-config:
+                    # Only run against 2 LLMs for condenser tests:
+                    # - Claude Opus 4.5 (primary - supports thinking blocks)
+                    # - GPT-5.1 Codex Max (secondary - cross-LLM validation)
+                    - name: Claude Opus 4.5
+                      run-suffix: opus_condenser_run
+                      llm-config:
+                          model: litellm_proxy/anthropic/claude-opus-4-5-20251101
+                          extended_thinking: true
+                    - name: GPT-5.1 Codex Max
+                      run-suffix: gpt51_condenser_run
+                      llm-config:
+                          model: litellm_proxy/gpt-5.1-codex-max
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  # For pull_request_target: checkout fork PR code (requires explicit repository)
+                  # For other events: fallback to current repository and ref
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  # Security: Don't persist credentials to prevent untrusted PR code from using them
+                  persist-credentials: false
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: ${{ matrix.python-version }}
+
+            - name: Install Python dependencies using uv
+              run: |
+                  uv sync --dev
+                  uv pip install pytest
+
+            - name: Run condenser test evaluation for ${{ matrix.job-config.name }}
+              env:
+                  LLM_CONFIG: ${{ toJson(matrix.job-config.llm-config) }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
+              run: |
+                  set -eo pipefail
+
+                  AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
+                  EVAL_NOTE="${AGENT_SDK_VERSION}_${{ matrix.job-config.run-suffix }}"
+
+                  echo "Running condenser tests only (c*.py pattern)"
+
+                  uv run python tests/integration/run_infer.py \
+                    --llm-config "$LLM_CONFIG" \
+                    --num-workers $N_PROCESSES \
+                    --eval-note "$EVAL_NOTE" \
+                    --test-type condenser
+
+                  # get condenser tests JSON results
+                  RESULTS_FILE=$(find tests/integration/outputs/*${{ matrix.job-config.run-suffix }}* -name "results.json" -type f | head -n 1)
+                  echo "RESULTS_FILE: $RESULTS_FILE"
+                  if [ -f "$RESULTS_FILE" ]; then
+                    echo "JSON_RESULTS_FILE=$RESULTS_FILE" >> $GITHUB_ENV
+                  else
+                    echo "JSON_RESULTS_FILE=" >> $GITHUB_ENV
+                  fi
+
+            - name: Wait a little bit
+              run: sleep 10
+
+            - name: Create archive of evaluation outputs
+              run: |
+                  TIMESTAMP=$(date +'%y-%m-%d-%H-%M')
+                  cd tests/integration/outputs  # Change to the outputs directory
+                  tar -czvf ../../../condenser_tests_${{ matrix.job-config.run-suffix }}_${TIMESTAMP}.tar.gz *${{ matrix.job-config.run-suffix }}* # Include result directories for this model
+
+            - name: Upload evaluation results as artifact
+              uses: actions/upload-artifact@v5
+              id: upload_results_artifact
+              with:
+                  name: condenser-test-outputs-${{ matrix.job-config.run-suffix }}-${{ github.run_id }}-${{ github.run_attempt }}
+                  path: condenser_tests_${{ matrix.job-config.run-suffix }}_*.tar.gz
+
+            - name: Save test results for consolidation
+              run: |
+                  # Copy the structured JSON results file for consolidation
+                  mkdir -p test_results_summary
+
+                  if [ -n "${{ env.JSON_RESULTS_FILE }}" ] && [ -f "${{ env.JSON_RESULTS_FILE }}" ]; then
+                    # Copy the JSON results file directly
+                    cp "${{ env.JSON_RESULTS_FILE }}" "test_results_summary/${{ matrix.job-config.run-suffix }}_results.json"
+                    echo "✓ Copied JSON results file for consolidation"
+                  else
+                    echo "✗ No JSON results file found"
+                    exit 1
+                  fi
+
+            - name: Upload test results summary
+              uses: actions/upload-artifact@v5
+              with:
+                  name: test-results-${{ matrix.job-config.run-suffix }}
+                  path: test_results_summary/${{ matrix.job-config.run-suffix }}_results.json
+
+    consolidate-results:
+        needs: run-condenser-tests
+        if: |
+            always() && (
+                (
+                    github.event_name == 'pull_request_target' &&
+                    github.event.label.name == 'condenser-test'
+                ) ||
+                github.event_name == 'workflow_dispatch'
+            )
+        runs-on: blacksmith-2vcpu-ubuntu-2404
+        permissions:
+            contents: read
+            pull-requests: write
+        steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  # When using pull_request_target, explicitly checkout the PR branch
+                  # This ensures we use the scripts from the actual PR code
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+
+            - name: Install uv
+              uses: astral-sh/setup-uv@v7
+              with:
+                  version: latest
+                  python-version: '3.13'
+
+            - name: Install Python dependencies using uv
+              run: |
+                  uv sync --dev
+
+            - name: Download all test results
+              uses: actions/download-artifact@v6
+              with:
+                  pattern: test-results-*
+                  merge-multiple: true
+                  path: all_results
+
+            - name: Download all condenser test artifacts
+              uses: actions/download-artifact@v6
+              with:
+                  pattern: condenser-test-outputs-*
+                  path: artifacts
+
+            - name: Consolidate test results
+              env:
+                  EVENT_NAME: ${{ github.event_name }}
+                  PR_NUMBER: ${{ github.event.pull_request.number }}
+                  MANUAL_REASON: ${{ github.event.inputs.reason }}
+                  COMMIT_SHA: ${{ github.sha }}
+                  PYTHONPATH: ${{ github.workspace }}
+                  GITHUB_SERVER_URL: ${{ github.server_url }}
+                  GITHUB_REPOSITORY: ${{ github.repository }}
+                  GITHUB_RUN_ID: ${{ github.run_id }}
+              run: |
+                  uv run python tests/integration/utils/consolidate_json_results.py \
+                    --results-dir all_results \
+                    --artifacts-dir artifacts \
+                    --output-file consolidated_results.json
+
+                  echo "Consolidated results generated successfully"
+
+                  uv run python tests/integration/utils/generate_markdown_report.py \
+                    --input-file consolidated_results.json \
+                    --output-file consolidated_report.md
+
+            - name: Upload consolidated report
+              uses: actions/upload-artifact@v5
+              with:
+                  name: consolidated-condenser-report
+                  path: consolidated_report.md
+
+            - name: Create consolidated PR comment
+              if: github.event_name == 'pull_request_target'
+              run: |
+                  # Add header to clarify these are non-blocking tests
+                  echo "## Condenser Test Results (Non-Blocking)" > final_report.md
+                  echo "" >> final_report.md
+                  echo "> These tests validate condenser functionality and do not block PR merges." >> final_report.md
+                  echo "" >> final_report.md
+                  cat consolidated_report.md >> final_report.md
+
+                  # Sanitize @OpenHands mentions to prevent self-mention loops
+                  COMMENT_BODY=$(uv run python -c "from openhands.sdk.utils.github import sanitize_openhands_mentions; import sys; print(sanitize_openhands_mentions(sys.stdin.read()), end='')" < final_report.md)
+                  # Use GitHub CLI to create comment with explicit PR number
+                  echo "$COMMENT_BODY" | gh pr comment ${{ github.event.pull_request.number }} --body-file -
+              env:
+                  GH_TOKEN: ${{ github.token }}

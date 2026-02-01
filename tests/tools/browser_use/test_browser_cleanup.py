@@ -17,8 +17,9 @@ class TestBrowserCleanup:
         mock_async_executor = MagicMock()
 
         with (
-            patch(
-                "openhands.tools.browser_use.impl._ensure_chromium_available",
+            patch.object(
+                BrowserToolExecutor,
+                "_ensure_chromium_available",
                 return_value="/usr/bin/chromium",
             ),
             patch(

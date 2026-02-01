@@ -22,13 +22,12 @@ from pydantic import (
 from pydantic.json_schema import SkipJsonSchema
 
 from openhands.sdk.llm.utils.model_info import get_litellm_model_info
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secret
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
     from openhands.sdk.tool.tool import ToolDefinition
-
-from openhands.sdk.utils.pydantic_diff import pretty_pydantic_diff
 
 
 with warnings.catch_warnings():
@@ -139,7 +138,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     retry_min_wait: int = Field(default=8, ge=0)
     retry_max_wait: int = Field(default=64, ge=0)
 
-    timeout: int | None = Field(default=None, ge=0, description="HTTP timeout (s).")
+    timeout: int | None = Field(
+        default=300,
+        ge=0,
+        description="HTTP timeout in seconds. Default is 300s (5 minutes). "
+        "Set to None to disable timeout (not recommended for production).",
+    )
 
     max_message_chars: int = Field(
         default=30_000,
@@ -158,7 +162,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     top_p: float | None = Field(default=1.0, ge=0, le=1)
     top_k: float | None = Field(default=None, ge=0)
 
-    custom_llm_provider: str | None = Field(default=None)
     max_input_tokens: int | None = Field(
         default=None,
         ge=1,
@@ -247,10 +250,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "like HuggingFace and Groq."
         ),
     )
-    reasoning_effort: Literal["low", "medium", "high", "none"] | None = Field(
+    reasoning_effort: Literal["low", "medium", "high", "xhigh", "none"] | None = Field(
         default="high",
         description="The effort to put into reasoning. "
-        "This is a string that can be one of 'low', 'medium', 'high', or 'none'. "
+        "This is a string that can be one of 'low', 'medium', 'high', 'xhigh', "
+        "or 'none'. "
         "Can apply to all reasoning models.",
     )
     reasoning_summary: Literal["auto", "concise", "detailed"] | None = Field(
@@ -260,7 +264,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         "Requires verified OpenAI organization. Only sent when explicitly set.",
     )
     enable_encrypted_reasoning: bool = Field(
-        default=False,
+        default=True,
         description="If True, ask for ['reasoning.encrypted_content'] "
         "in Responses API include.",
     )
@@ -280,10 +284,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     seed: int | None = Field(
         default=None, description="The seed to use for random number generation."
     )
+    # REMOVE_AT: 1.15.0 - Remove this field and its handling in chat_options.py
     safety_settings: list[dict[str, str]] | None = Field(
         default=None,
         description=(
-            "Safety settings for models that support them (like Mistral AI and Gemini)"
+            "Deprecated: Safety settings for models that support them "
+            "(like Mistral AI and Gemini). This field is deprecated in 1.10.0 "
+            "and will be removed in 1.15.0. Safety settings are designed for "
+            "consumer-facing content moderation, which is not relevant for "
+            "coding agents."
         ),
     )
     usage_id: str = Field(
@@ -315,31 +324,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     # =========================================================================
     # Internal fields (excluded from dumps)
     # =========================================================================
-    retry_listener: SkipJsonSchema[Callable[[int, int], None] | None] = Field(
+    retry_listener: SkipJsonSchema[
+        Callable[[int, int, BaseException | None], None] | None
+    ] = Field(
         default=None,
         exclude=True,
     )
     _metrics: Metrics | None = PrivateAttr(default=None)
-    # ===== Plain class vars (NOT Fields) =====
-    # When serializing, these fields (SecretStr) will be dump to "****"
-    # When deserializing, these fields will be ignored and we will override
-    # them from the LLM instance provided at runtime.
-    OVERRIDE_ON_SERIALIZE: tuple[str, ...] = (
-        "api_key",
-        "aws_access_key_id",
-        "aws_secret_access_key",
-        # Dynamic runtime metadata for telemetry/routing that can differ across sessions
-        # and should not cause resume-time diffs. Always prefer the runtime value.
-        "litellm_extra_body",
-    )
-
     # Runtime-only private attrs
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
-        extra="forbid", arbitrary_types_allowed=True
+        extra="ignore", arbitrary_types_allowed=True
     )
 
     # =========================================================================
@@ -349,6 +347,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     @classmethod
     def _validate_secrets(cls, v: str | SecretStr | None, info) -> SecretStr | None:
         return validate_secret(v, info)
+
+    # REMOVE_AT: 1.15.0 - Remove this validator
+    @field_validator("safety_settings", mode="before")
+    @classmethod
+    def _warn_safety_settings_deprecated(
+        cls, v: list[dict[str, str]] | None
+    ) -> list[dict[str, str]] | None:
+        """Emit deprecation warning when safety_settings is explicitly set."""
+        if v is not None:
+            warn_deprecated(
+                "LLM.safety_settings",
+                deprecated_in="1.10.0",
+                removed_in="1.15.0",
+                details=(
+                    "Safety settings are designed for consumer-facing content "
+                    "moderation, which is not relevant for coding agents."
+                ),
+                stacklevel=4,
+            )
+        return v
 
     @model_validator(mode="before")
     @classmethod
@@ -369,8 +387,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if model_val.startswith("openhands/"):
             model_name = model_val.removeprefix("openhands/")
             d["model"] = f"litellm_proxy/{model_name}"
-            # Set base_url (default to the app proxy when base_url is unset)
-            d["base_url"] = d.get("base_url", "https://llm-proxy.app.all-hands.dev/")
+            # Set base_url (default to the app proxy when base_url is unset or None)
+            # Use `or` instead of dict.get() to handle explicit None values
+            d["base_url"] = d.get("base_url") or "https://llm-proxy.app.all-hands.dev/"
 
         # HF doesn't support the OpenAI default value for top_p (1)
         if model_val.startswith("huggingface"):
@@ -425,6 +444,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             f"temperature={self.temperature}"
         )
         return self
+
+    def _retry_listener_fn(
+        self, attempt_number: int, num_retries: int, _err: BaseException | None
+    ) -> None:
+        if self.retry_listener is not None:
+            self.retry_listener(attempt_number, num_retries, _err)
+        # NOTE: don't call Telemetry.on_error here.
+        # This function runs for each retried failure (before the next attempt),
+        # which would create noisy duplicate error logs.
+        # The completion()/responses() exception handlers call Telemetry.on_error
+        # after retries are exhausted (final failure), which is what we want to log.
 
     # =========================================================================
     # Serializers
@@ -487,8 +517,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         This is the method for getting responses from the model via Completion API.
         It handles message formatting, tool calling, and response processing.
 
+        Args:
+            messages: List of conversation messages
+            tools: Optional list of tools available to the model
+            _return_metrics: Whether to return usage metrics
+            add_security_risk_prediction: Add security_risk field to tool schemas
+            on_token: Optional callback for streaming tokens
+            **kwargs: Additional arguments passed to the LLM API
+
         Returns:
             LLMResponse containing the model's response and metadata.
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
 
         Raises:
             ValueError: If streaming is requested (not supported).
@@ -517,7 +559,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if tools:
             cc_tools = [
                 t.to_openai_tool(
-                    add_security_risk_prediction=add_security_risk_prediction
+                    add_security_risk_prediction=add_security_risk_prediction,
                 )
                 for t in tools
             ]
@@ -539,18 +581,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Behavior-preserving: delegate to select_chat_options
         call_kwargs = select_chat_options(self, kwargs, has_tools=has_tools_flag)
 
-        # 4) optional request logging context (kept small)
+        # 4) request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
-        log_ctx = None
+        # Always pass context_window so metrics are tracked even when logging disabled
+        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "messages": formatted_messages[:],  # already simple dicts
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
+            telemetry_ctx.update(
+                {
+                    "messages": formatted_messages[:],  # already simple dicts
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
             if tools and not use_native_fc:
-                log_ctx["raw_messages"] = original_fncall_msgs
+                telemetry_ctx["raw_messages"] = original_fncall_msgs
 
         # 5) do the call with retries
         @self.retry_decorator(
@@ -559,11 +603,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ModelResponse:
             assert self._telemetry is not None
-            self._telemetry.on_request(log_ctx=log_ctx)
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             # Merge retry-modified kwargs (like temperature) with call_kwargs
             final_kwargs = {**call_kwargs, **retry_kwargs}
             resp = self._transport_call(
@@ -634,6 +678,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         """Alternative invocation path using OpenAI Responses API via LiteLLM.
 
         Maps Message[] -> (instructions, input[]) and returns LLMResponse.
+
+        Args:
+            messages: List of conversation messages
+            tools: Optional list of tools available to the model
+            include: Optional list of fields to include in response
+            store: Whether to store the conversation
+            _return_metrics: Whether to return usage metrics
+            add_security_risk_prediction: Add security_risk field to tool schemas
+            on_token: Optional callback for streaming tokens (not yet supported)
+            **kwargs: Additional arguments passed to the API
+
+        Note:
+            Summary field is always added to tool schemas for transparency and
+            explainability of agent actions.
         """
         # Streaming not yet supported
         if kwargs.get("stream", False) or self.stream or on_token is not None:
@@ -647,7 +705,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         resp_tools = (
             [
                 t.to_responses_tool(
-                    add_security_risk_prediction=add_security_risk_prediction
+                    add_security_risk_prediction=add_security_risk_prediction,
                 )
                 for t in tools
             ]
@@ -660,18 +718,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             self, kwargs, include=include, store=store
         )
 
-        # Optional request logging
+        # Request context for telemetry (always include context_window for metrics)
         assert self._telemetry is not None
-        log_ctx = None
+        # Always pass context_window so metrics are tracked even when logging disabled
+        telemetry_ctx: dict[str, Any] = {"context_window": self.max_input_tokens or 0}
         if self._telemetry.log_enabled:
-            log_ctx = {
-                "llm_path": "responses",
-                "input": input_items[:],
-                "tools": tools,
-                "kwargs": {k: v for k, v in call_kwargs.items()},
-                "context_window": self.max_input_tokens or 0,
-            }
-        self._telemetry.on_request(log_ctx=log_ctx)
+            telemetry_ctx.update(
+                {
+                    "llm_path": "responses",
+                    "instructions": instructions,
+                    "input": input_items[:],
+                    "tools": tools,
+                    "kwargs": {k: v for k, v in call_kwargs.items()},
+                }
+            )
 
         # Perform call with retries
         @self.retry_decorator(
@@ -680,9 +740,11 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             retry_min_wait=self.retry_min_wait,
             retry_max_wait=self.retry_max_wait,
             retry_multiplier=self.retry_multiplier,
-            retry_listener=self.retry_listener,
+            retry_listener=self._retry_listener_fn,
         )
         def _one_attempt(**retry_kwargs) -> ResponsesAPIResponse:
+            assert self._telemetry is not None
+            self._telemetry.on_request(telemetry_ctx=telemetry_ctx)
             final_kwargs = {**call_kwargs, **retry_kwargs}
             with self._litellm_modify_params_ctx(self.modify_params):
                 with warnings.catch_warnings():
@@ -713,7 +775,6 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
                     # telemetry (latency, cost). Token usage mapping we handle after.
-                    assert self._telemetry is not None
                     self._telemetry.on_response(ret)
                     return ret
 
@@ -954,19 +1015,27 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if self.is_caching_prompt_active():
             self._apply_prompt_caching(messages)
 
-        for message in messages:
-            message.cache_enabled = self.is_caching_prompt_active()
-            message.vision_enabled = self.vision_is_active()
-            message.function_calling_enabled = self.native_tool_calling
-            model_features = get_features(self._model_name_for_capabilities())
-            message.force_string_serializer = (
-                self.force_string_serializer
-                if self.force_string_serializer is not None
-                else model_features.force_string_serializer
-            )
-            message.send_reasoning_content = model_features.send_reasoning_content
+        model_features = get_features(self._model_name_for_capabilities())
+        cache_enabled = self.is_caching_prompt_active()
+        vision_enabled = self.vision_is_active()
+        function_calling_enabled = self.native_tool_calling
+        force_string_serializer = (
+            self.force_string_serializer
+            if self.force_string_serializer is not None
+            else model_features.force_string_serializer
+        )
+        send_reasoning_content = model_features.send_reasoning_content
 
-        formatted_messages = [message.to_chat_dict() for message in messages]
+        formatted_messages = [
+            message.to_chat_dict(
+                cache_enabled=cache_enabled,
+                vision_enabled=vision_enabled,
+                function_calling_enabled=function_calling_enabled,
+                force_string_serializer=force_string_serializer,
+                send_reasoning_content=send_reasoning_content,
+            )
+            for message in messages
+        ]
 
         return formatted_messages
 
@@ -1090,39 +1159,3 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if v is not None:
                 data[field_name] = v
         return cls(**data)
-
-    def resolve_diff_from_deserialized(self, persisted: LLM) -> LLM:
-        """Resolve differences between a deserialized LLM and the current instance.
-
-        This is due to fields like api_key being serialized to "****" in dumps,
-        and we want to ensure that when loading from a file, we still use the
-        runtime-provided api_key in the self instance.
-
-        Return a new LLM instance equivalent to `persisted` but with
-        explicitly whitelisted fields (e.g. api_key) taken from `self`.
-        """
-        if persisted.__class__ is not self.__class__:
-            raise ValueError(
-                f"Cannot resolve_diff_from_deserialized between {self.__class__} "
-                f"and {persisted.__class__}"
-            )
-
-        # Copy allowed fields from runtime llm into the persisted llm
-        llm_updates = {}
-        persisted_dump = persisted.model_dump(context={"expose_secrets": True})
-        for field in self.OVERRIDE_ON_SERIALIZE:
-            if field in persisted_dump.keys():
-                llm_updates[field] = getattr(self, field)
-        if llm_updates:
-            reconciled = persisted.model_copy(update=llm_updates)
-        else:
-            reconciled = persisted
-
-        dump = self.model_dump(context={"expose_secrets": True})
-        reconciled_dump = reconciled.model_dump(context={"expose_secrets": True})
-        if dump != reconciled_dump:
-            raise ValueError(
-                "The LLM provided is different from the one in persisted state.\n"
-                f"Diff: {pretty_pydantic_diff(self, reconciled)}"
-            )
-        return reconciled

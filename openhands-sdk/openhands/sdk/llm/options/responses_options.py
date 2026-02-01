@@ -36,9 +36,11 @@ def select_responses_options(
     else:
         out.setdefault("store", False)
 
-    # Include encrypted reasoning if stateless
+    # Include encrypted reasoning only when the user enables it on the LLM,
+    # and only for stateless calls (store=False). Respect user choice.
     include_list = list(include) if include is not None else []
-    if not out.get("store", False):
+
+    if not out.get("store", False) and llm.enable_encrypted_reasoning:
         if "reasoning.encrypted_content" not in include_list:
             include_list.append("reasoning.encrypted_content")
     if include_list:

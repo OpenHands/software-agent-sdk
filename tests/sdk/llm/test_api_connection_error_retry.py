@@ -215,8 +215,8 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
     """Test that retry listener callback is called during retries."""
     retry_calls = []
 
-    def retry_listener(attempt: int, max_attempts: int):
-        retry_calls.append((attempt, max_attempts))
+    def retry_listener(attempt: int, max_attempts: int, _err: BaseException | None):
+        retry_calls.append((attempt, max_attempts, _err))
 
     mock_response = create_mock_response("Success after retry")
 
@@ -250,8 +250,9 @@ def test_retry_listener_callback(mock_litellm_completion, default_config):
 
     # Check that retry listener received correct parameters
     if retry_calls:
-        attempt, max_attempts = retry_calls[0]
+        attempt, max_attempts, err = retry_calls[0]
         assert isinstance(attempt, int)
         assert isinstance(max_attempts, int)
+        assert isinstance(err, APIConnectionError)
         assert attempt >= 1
         assert max_attempts == default_config.num_retries

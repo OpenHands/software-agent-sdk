@@ -16,6 +16,7 @@ from openhands.agent_server.models import (
 )
 from openhands.agent_server.pub_sub import PubSub, Subscriber
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 
 
 logger = get_logger(__name__)
@@ -103,6 +104,7 @@ class BashEventService:
         command_id__eq: UUID | None = None,
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
+        order__gt: int | None = None,
         sort_order: BashEventSortOrder = BashEventSortOrder.TIMESTAMP,
         page_id: str | None = None,
         limit: int = 100,
@@ -167,6 +169,11 @@ class BashEventService:
         for file_path in page_files:
             event = self._load_event_from_file(file_path)
             if event is not None:
+                # Filter by order if specified (only applies to BashOutput events)
+                if order__gt is not None:
+                    event_order = getattr(event, "order", None)
+                    if event_order is not None and event_order <= order__gt:
+                        continue
                 page_events.append(event)
 
         return BashEventPage(items=page_events, next_page_id=next_page_id)
@@ -194,6 +201,7 @@ class BashEventService:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 shell=True,
+                env=sanitized_env(),
             )
 
             # Track output order and buffers

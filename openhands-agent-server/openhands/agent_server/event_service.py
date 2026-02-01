@@ -19,6 +19,7 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import AgentErrorEvent
 from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_completion_log import LLMCompletionLogEvent
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
@@ -44,6 +45,8 @@ class EventService:
     _conversation: LocalConversation | None = field(default=None, init=False)
     _pub_sub: PubSub[Event] = field(default_factory=lambda: PubSub[Event](), init=False)
     _run_task: asyncio.Task | None = field(default=None, init=False)
+    _run_lock: asyncio.Lock = field(default_factory=asyncio.Lock, init=False)
+    _callback_wrapper: AsyncCallbackWrapper | None = field(default=None, init=False)
 
     @property
     def conversation_dir(self):
@@ -74,7 +77,8 @@ class EventService:
             raise ValueError("inactive_service")
         return self._conversation
 
-    async def get_event(self, event_id: str) -> Event | None:
+    def _get_event_sync(self, event_id: str) -> Event | None:
+        """Private sync function to get event with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
         with self._conversation._state as state:
@@ -82,7 +86,13 @@ class EventService:
             event = state.events[index]
             return event
 
-    async def search_events(
+    async def get_event(self, event_id: str) -> Event | None:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._get_event_sync, event_id)
+
+    def _search_events_sync(
         self,
         page_id: str | None = None,
         limit: int = 100,
@@ -93,6 +103,7 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> EventPage:
+        """Private sync function to search events with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -161,7 +172,34 @@ class EventService:
 
         return EventPage(items=items, next_page_id=next_page_id)
 
-    async def count_events(
+    async def search_events(
+        self,
+        page_id: str | None = None,
+        limit: int = 100,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        sort_order: EventSortOrder = EventSortOrder.TIMESTAMP,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
+    ) -> EventPage:
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._search_events_sync,
+            page_id,
+            limit,
+            kind,
+            source,
+            body,
+            sort_order,
+            timestamp__gte,
+            timestamp__lt,
+        )
+
+    def _count_events_sync(
         self,
         kind: str | None = None,
         source: str | None = None,
@@ -169,7 +207,7 @@ class EventService:
         timestamp__gte: datetime | None = None,
         timestamp__lt: datetime | None = None,
     ) -> int:
-        """Count events matching the given filters."""
+        """Private sync function to count events with state lock."""
         if not self._conversation:
             raise ValueError("inactive_service")
 
@@ -209,6 +247,28 @@ class EventService:
                 count += 1
 
         return count
+
+    async def count_events(
+        self,
+        kind: str | None = None,
+        source: str | None = None,
+        body: str | None = None,
+        timestamp__gte: datetime | None = None,
+        timestamp__lt: datetime | None = None,
+    ) -> int:
+        """Count events matching the given filters."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            self._count_events_sync,
+            kind,
+            source,
+            body,
+            timestamp__gte,
+            timestamp__lt,
+        )
 
     def _event_matches_body(self, event: Event, body: str) -> bool:
         """Check if event's message content matches body filter (case-insensitive)."""
@@ -252,7 +312,21 @@ class EventService:
             with self._conversation.state as state:
                 run = state.execution_status != ConversationExecutionStatus.RUNNING
         if run:
-            loop.run_in_executor(None, self._conversation.run)
+            conversation = self._conversation
+
+            async def _run_with_error_handling():
+                try:
+                    await loop.run_in_executor(None, conversation.run)
+                except Exception:
+                    logger.exception("Error during conversation run from send_message")
+
+            # Fire-and-forget: This task is intentionally not tracked because
+            # send_message() is designed to return immediately after queuing the
+            # message. The conversation run happens in the background and any
+            # errors are logged. Unlike the run() method which is explicitly
+            # awaited, this pattern allows clients to send messages without
+            # blocking on the full conversation execution.
+            loop.create_task(_run_with_error_handling())
 
     async def subscribe_to_events(self, subscriber: Subscriber[Event]) -> UUID:
         subscriber_id = self._pub_sub.subscribe(subscriber)
@@ -260,20 +334,23 @@ class EventService:
         # Send current state to the new subscriber immediately
         if self._conversation:
             state = self._conversation._state
+            # Create state snapshot while holding the lock to ensure consistency.
+            # ConversationStateUpdateEvent inherits from Event which has frozen=True
+            # in its model_config, making the snapshot immutable after creation.
             with state:
-                # Create state update event with current state information
                 state_update_event = (
                     ConversationStateUpdateEvent.from_conversation_state(state)
                 )
 
-                # Send state update directly to the new subscriber
-                try:
-                    await subscriber(state_update_event)
-                except Exception as e:
-                    logger.error(
-                        f"Error sending initial state to subscriber "
-                        f"{subscriber_id}: {e}"
-                    )
+            # Send state update outside the lock - the event is frozen (immutable),
+            # so we don't need to hold the lock during the async send operation.
+            # This prevents potential deadlocks between the sync FIFOLock and async I/O.
+            try:
+                await subscriber(state_update_event)
+            except Exception as e:
+                logger.error(
+                    f"Error sending initial state to subscriber {subscriber_id}: {e}"
+                )
 
         return subscriber_id
 
@@ -350,20 +427,33 @@ class EventService:
         workspace = self.stored.workspace
         assert isinstance(workspace, LocalWorkspace)
         Path(workspace.working_dir).mkdir(parents=True, exist_ok=True)
-        agent = Agent.model_validate(self.stored.agent.model_dump())
+        agent = Agent.model_validate(
+            self.stored.agent.model_dump(context={"expose_secrets": True}),
+        )
+
+        # Create LocalConversation with plugins and hook_config.
+        # Plugins are loaded lazily on first run()/send_message() call.
+        # Hook execution semantics: OpenHands runs hooks sequentially with early-exit
+        # on block (PreToolUse), unlike Claude Code's parallel execution model.
+
+        # Create and store callback wrapper to allow flushing pending events
+        self._callback_wrapper = AsyncCallbackWrapper(
+            self._pub_sub, loop=asyncio.get_running_loop()
+        )
 
         conversation = LocalConversation(
             agent=agent,
             workspace=workspace,
+            plugins=self.stored.plugins,
             persistence_dir=str(self.conversations_dir),
             conversation_id=self.stored.id,
-            callbacks=[
-                AsyncCallbackWrapper(self._pub_sub, loop=asyncio.get_running_loop())
-            ],
+            callbacks=[self._callback_wrapper],
             max_iteration_per_run=self.stored.max_iterations,
             stuck_detection=self.stored.stuck_detection,
             visualizer=None,
             secrets=self.stored.secrets,
+            cipher=self.cipher,
+            hook_config=self.stored.hook_config,
         )
 
         # Set confirmation mode if enabled
@@ -379,23 +469,105 @@ class EventService:
         # Setup stats streaming for remote execution
         self._setup_stats_streaming(self._conversation.agent)
 
+        # If the execution_status was "running" while serialized, then the
+        # conversation can't possibly be running - something is wrong
+        state = self._conversation.state
+        if state.execution_status == ConversationExecutionStatus.RUNNING:
+            state.execution_status = ConversationExecutionStatus.ERROR
+            # Add error event for the first unmatched action to inform the agent
+            unmatched_actions = ConversationState.get_unmatched_actions(state.events)
+            if unmatched_actions:
+                first_action = unmatched_actions[0]
+                error_event = AgentErrorEvent(
+                    tool_name=first_action.tool_name,
+                    tool_call_id=first_action.tool_call_id,
+                    error=(
+                        "A restart occurred while this tool was in progress. "
+                        "This may indicate a fatal memory error or system crash. "
+                        "The tool execution was interrupted and did not complete."
+                    ),
+                )
+                self._conversation._on_event(error_event)
+
         # Publish initial state update
         await self._publish_state_update()
 
     async def run(self):
-        """Run the conversation asynchronously."""
+        """Run the conversation asynchronously in the background.
+
+        This method starts the conversation run in a background task and returns
+        immediately. The conversation status can be monitored via the
+        GET /api/conversations/{id} endpoint or WebSocket events.
+
+        Raises:
+            ValueError: If the service is inactive or conversation is already running.
+        """
         if not self._conversation:
             raise ValueError("inactive_service")
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._conversation.run)
-        # Publish state update after run completes to ensure stats are updated
-        await self._publish_state_update()
+
+        # Use lock to make check-and-set atomic, preventing race conditions
+        async with self._run_lock:
+            # Check if already running
+            with self._conversation._state as state:
+                if state.execution_status == ConversationExecutionStatus.RUNNING:
+                    raise ValueError("conversation_already_running")
+
+            # Check if there's already a running task
+            if self._run_task is not None and not self._run_task.done():
+                raise ValueError("conversation_already_running")
+
+            # Capture conversation reference for the closure
+            conversation = self._conversation
+
+            # Start run in background
+            loop = asyncio.get_running_loop()
+
+            async def _run_and_publish():
+                try:
+                    await loop.run_in_executor(None, conversation.run)
+                except Exception:
+                    logger.exception("Error during conversation run")
+                finally:
+                    # Wait for all pending events to be published via
+                    # AsyncCallbackWrapper before publishing the final state update.
+                    # This prevents a race condition where the conversation status
+                    # becomes FINISHED before agent events (MessageEvent, ActionEvent,
+                    # etc.) are published to WebSocket subscribers.
+                    if self._callback_wrapper:
+                        await loop.run_in_executor(
+                            None, self._callback_wrapper.wait_for_pending, 30.0
+                        )
+
+                    # Clear task reference and publish state update
+                    self._run_task = None
+                    await self._publish_state_update()
+
+            # Create task but don't await it - runs in background
+            self._run_task = asyncio.create_task(_run_and_publish())
 
     async def respond_to_confirmation(self, request: ConfirmationResponseRequest):
         if request.accept:
-            await self.run()
+            try:
+                await self.run()
+            except ValueError as e:
+                # Treat "already running" as a no-op success
+                if str(e) == "conversation_already_running":
+                    logger.debug(
+                        "Confirmation accepted but conversation already running"
+                    )
+                else:
+                    raise
         else:
-            await self.pause()
+            await self.reject_pending_actions(request.reason)
+
+    async def reject_pending_actions(self, reason: str):
+        """Reject all pending actions and publish updated state."""
+        if not self._conversation:
+            raise ValueError("inactive_service")
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, self._conversation.reject_pending_actions, reason
+        )
 
     async def pause(self):
         if self._conversation:
@@ -474,6 +646,17 @@ class EventService:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._conversation.ask_agent, question)
 
+    async def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        Delegates to LocalConversation in an executor to avoid blocking the event loop.
+        """
+        if not self._conversation:
+            raise ValueError("inactive_service")
+
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self._conversation.condense)
+
     async def get_state(self) -> ConversationState:
         if not self._conversation:
             raise ValueError("inactive_service")
@@ -485,11 +668,18 @@ class EventService:
             return
 
         state = self._conversation._state
+        # Create state snapshot while holding the lock to ensure consistency.
+        # ConversationStateUpdateEvent inherits from Event which has frozen=True
+        # in its model_config, making the snapshot immutable after creation.
         with state:
             state_update_event = ConversationStateUpdateEvent.from_conversation_state(
                 state
             )
-            await self._pub_sub(state_update_event)
+        # Publish outside the lock - the event is frozen (immutable).
+        # Note: _pub_sub iterates through subscribers sequentially. If any subscriber
+        # is slow, it will delay subsequent subscribers. For high-throughput scenarios,
+        # consider using asyncio.gather() for concurrent notification in the future.
+        await self._pub_sub(state_update_event)
 
     async def __aenter__(self):
         await self.start()

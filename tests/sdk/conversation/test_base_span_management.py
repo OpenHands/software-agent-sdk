@@ -46,6 +46,9 @@ class MockConversation(BaseConversation):
     def set_confirmation_policy(self, policy: Any) -> None:
         pass
 
+    def set_security_analyzer(self, analyzer: Any) -> None:
+        pass
+
     @property
     def state(self) -> Any:
         return MagicMock()
@@ -55,6 +58,10 @@ class MockConversation(BaseConversation):
 
     def ask_agent(self, question: str) -> str:
         return "Mock response"
+
+    def condense(self) -> None:
+        """Mock implementation of condense method."""
+        pass
 
 
 def test_base_conversation_span_management():

@@ -51,9 +51,12 @@ def select_chat_options(
     # Extended thinking models
     if get_features(llm.model).supports_extended_thinking:
         if llm.extended_thinking_budget:
+            # Anthropic throws errors if thinking budget equals or exceeds max output
+            # tokens -- force the thinking budget lower if there's a conflict
+            budget_tokens = min(llm.extended_thinking_budget, llm.max_output_tokens - 1)
             out["thinking"] = {
                 "type": "enabled",
-                "budget_tokens": llm.extended_thinking_budget,
+                "budget_tokens": budget_tokens,
             }
             # Enable interleaved thinking
             # Merge default header with any user-provided headers; user wins on conflict
@@ -68,7 +71,8 @@ def select_chat_options(
         out.pop("temperature", None)
         out.pop("top_p", None)
 
-    # Mistral / Gemini safety
+    # REMOVE_AT: 1.15.0 - Remove this block along with LLM.safety_settings field
+    # Mistral / Gemini safety (deprecated)
     if llm.safety_settings:
         ml = llm.model.lower()
         if "mistral" in ml or "gemini" in ml:

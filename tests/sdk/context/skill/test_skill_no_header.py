@@ -1,15 +1,13 @@
-from pathlib import Path
-
 from openhands.sdk.context import Skill
 
 
-def test_load_markdown_without_frontmatter():
+def test_load_markdown_without_frontmatter(tmp_path):
     """Test loading a markdown file without frontmatter."""
     content = "# Test Content\nThis is a test markdown file without frontmatter."
-    path = Path("test.md")
+    path = tmp_path / "test.md"
+    path.write_text(content)
 
-    # Load the skill from content using keyword argument
-    skill = Skill.load(path=path, file_content=content)
+    skill = Skill.load(path=path)
 
     # Verify it's loaded as a repo skill with default values
     assert skill.trigger is None
@@ -17,15 +15,15 @@ def test_load_markdown_without_frontmatter():
     assert skill.content == content
 
 
-def test_load_markdown_with_empty_frontmatter():
+def test_load_markdown_with_empty_frontmatter(tmp_path):
     """Test loading a markdown file with empty frontmatter."""
     content = (
         "---\n---\n# Test Content\nThis is a test markdown file with empty frontmatter."
     )
-    path = Path("test.md")
+    path = tmp_path / "test.md"
+    path.write_text(content)
 
-    # Load the skill from content using keyword argument
-    skill = Skill.load(path=path, file_content=content)
+    skill = Skill.load(path=path)
 
     # Verify it's loaded as a repo skill with default values
     assert skill.trigger is None
@@ -36,17 +34,17 @@ def test_load_markdown_with_empty_frontmatter():
     )
 
 
-def test_load_markdown_with_partial_frontmatter():
+def test_load_markdown_with_partial_frontmatter(tmp_path):
     """Test loading a markdown file with partial frontmatter."""
     content = """---
 name: custom_name
 ---
 # Test Content
 This is a test markdown file with partial frontmatter."""
-    path = Path("test.md")
+    path = tmp_path / "test.md"
+    path.write_text(content)
 
-    # Load the skill from content using keyword argument
-    skill = Skill.load(path=path, file_content=content)
+    skill = Skill.load(path=path)
 
     # Verify it uses provided name but default values for other fields
     assert skill.trigger is None
@@ -57,7 +55,7 @@ This is a test markdown file with partial frontmatter."""
     )
 
 
-def test_load_markdown_with_full_frontmatter():
+def test_load_markdown_with_full_frontmatter(tmp_path):
     """Test loading a markdown file with full frontmatter still works."""
     content = """---
 name: test_agent
@@ -67,10 +65,10 @@ version: 2.0.0
 ---
 # Test Content
 This is a test markdown file with full frontmatter."""
-    path = Path("test.md")
+    path = tmp_path / "test.md"
+    path.write_text(content)
 
-    # Load the skill from content using keyword argument
-    skill = Skill.load(path=path, file_content=content)
+    skill = Skill.load(path=path)
 
     # Verify all provided values are used
     assert skill.trigger is None

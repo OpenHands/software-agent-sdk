@@ -11,10 +11,11 @@ from litellm.types.responses.main import (
 from litellm.types.utils import Message as LiteLLMMessage
 from openai.types.responses.response_output_message import ResponseOutputMessage
 from openai.types.responses.response_reasoning_item import ResponseReasoningItem
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT, maybe_truncate
+from openhands.sdk.utils.deprecation import warn_deprecated
 
 
 logger = get_logger(__name__)
@@ -120,8 +121,8 @@ class ThinkingBlock(BaseModel):
 
     type: Literal["thinking"] = "thinking"
     thinking: str = Field(..., description="The thinking content")
-    signature: str = Field(
-        ..., description="Cryptographic signature for the thinking block"
+    signature: str | None = Field(
+        default=None, description="Cryptographic signature for the thinking block"
     )
 
 
@@ -169,11 +170,12 @@ class TextContent(BaseContent):
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="forbid", populate_by_name=True
     )
+    enable_truncation: bool = True
 
     def to_llm_dict(self) -> list[dict[str, str | dict[str, str]]]:
         """Convert to LLM API format."""
         text = self.text
-        if len(text) > DEFAULT_TEXT_CONTENT_LIMIT:
+        if self.enable_truncation and len(text) > DEFAULT_TEXT_CONTENT_LIMIT:
             logger.warning(
                 f"TextContent text length ({len(text)}) exceeds limit "
                 f"({DEFAULT_TEXT_CONTENT_LIMIT}), truncating"
@@ -208,30 +210,11 @@ class Message(BaseModel):
     # These are the roles in the LLM's APIs
     role: Literal["user", "system", "assistant", "tool"]
     content: Sequence[TextContent | ImageContent] = Field(default_factory=list)
-    cache_enabled: bool = False
-    vision_enabled: bool = False
-    # function calling
-    function_calling_enabled: bool = False
     # - tool calls (from LLM)
     tool_calls: list[MessageToolCall] | None = None
     # - tool execution result (to LLM)
     tool_call_id: str | None = None
     name: str | None = None  # name of the tool
-    force_string_serializer: bool = Field(
-        default=False,
-        description=(
-            "Force using string content serializer when sending to LLM API. "
-            "Useful for providers that do not support list content, "
-            "like HuggingFace and Groq."
-        ),
-    )
-    send_reasoning_content: bool = Field(
-        default=False,
-        description=(
-            "Whether to include the full reasoning content when sending to the LLM. "
-            "Useful for models that support extended reasoning, like Kimi-K2-thinking."
-        ),
-    )
     # reasoning content (from reasoning models like o1, Claude thinking, DeepSeek R1)
     reasoning_content: str | None = Field(
         default=None,
@@ -248,6 +231,47 @@ class Message(BaseModel):
         description="OpenAI Responses reasoning item from model output",
     )
 
+    # Deprecated fields that were moved to to_chat_dict() parameters.
+    # These fields are ignored but accepted for backward compatibility.
+    # REMOVE_AT: 1.12.0 - Remove this list and the _handle_deprecated_fields validator
+    _DEPRECATED_FIELDS: ClassVar[tuple[str, ...]] = (
+        "cache_enabled",
+        "vision_enabled",
+        "function_calling_enabled",
+        "force_string_serializer",
+        "send_reasoning_content",
+    )
+
+    model_config = ConfigDict(extra="ignore")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_deprecated_fields(cls, data: Any) -> Any:
+        """Handle deprecated fields by emitting warnings and removing them.
+
+        REMOVE_AT: 1.12.0 - Remove this validator along with _DEPRECATED_FIELDS
+        """
+        if not isinstance(data, dict):
+            return data
+
+        deprecated_found = [f for f in cls._DEPRECATED_FIELDS if f in data]
+        for field in deprecated_found:
+            warn_deprecated(
+                f"Message.{field}",
+                deprecated_in="1.9.1",
+                removed_in="1.12.0",
+                details=(
+                    f"The '{field}' field has been removed from Message. "
+                    "Pass it as a parameter to to_chat_dict() instead, or use "
+                    "LLM.format_messages_for_llm() which handles this automatically."
+                ),
+                stacklevel=4,  # Adjust for validator call depth
+            )
+            # Remove the deprecated field so Pydantic doesn't complain
+            del data[field]
+
+        return data
+
     @property
     def contains_image(self) -> bool:
         return any(isinstance(content, ImageContent) for content in self.content)
@@ -263,17 +287,32 @@ class Message(BaseModel):
             return [TextContent(text=v)]
         return v
 
-    def to_chat_dict(self) -> dict[str, Any]:
+    def to_chat_dict(
+        self,
+        *,
+        cache_enabled: bool,
+        vision_enabled: bool,
+        function_calling_enabled: bool,
+        force_string_serializer: bool,
+        send_reasoning_content: bool,
+    ) -> dict[str, Any]:
         """Serialize message for OpenAI Chat Completions.
+
+        Args:
+            cache_enabled: Whether prompt caching is active.
+            vision_enabled: Whether vision/image processing is enabled.
+            function_calling_enabled: Whether native function calling is enabled.
+            force_string_serializer: Force string serializer instead of list format.
+            send_reasoning_content: Whether to include reasoning_content in output.
 
         Chooses the appropriate content serializer and then injects threading keys:
         - Assistant tool call turn: role == "assistant" and self.tool_calls
         - Tool result turn: role == "tool" and self.tool_call_id (with name)
         """
-        if not self.force_string_serializer and (
-            self.cache_enabled or self.vision_enabled or self.function_calling_enabled
+        if not force_string_serializer and (
+            cache_enabled or vision_enabled or function_calling_enabled
         ):
-            message_dict = self._list_serializer()
+            message_dict = self._list_serializer(vision_enabled=vision_enabled)
         else:
             # some providers, like HF and Groq/llama, don't support a list here, but a
             # single string
@@ -293,7 +332,7 @@ class Message(BaseModel):
             message_dict["name"] = self.name
 
         # Required for model like kimi-k2-thinking
-        if self.send_reasoning_content and self.reasoning_content:
+        if send_reasoning_content and self.reasoning_content:
             message_dict["reasoning_content"] = self.reasoning_content
 
         return message_dict
@@ -308,7 +347,7 @@ class Message(BaseModel):
         # tool call keys are added in to_chat_dict to centralize behavior
         return message_dict
 
-    def _list_serializer(self) -> dict[str, Any]:
+    def _list_serializer(self, *, vision_enabled: bool) -> dict[str, Any]:
         content: list[dict[str, Any]] = []
         role_tool_with_prompt_caching = False
 
@@ -336,7 +375,7 @@ class Message(BaseModel):
                     d.pop("cache_control", None)
 
             # Handle vision-enabled filtering for ImageContent
-            if isinstance(item, ImageContent) and self.vision_enabled:
+            if isinstance(item, ImageContent) and vision_enabled:
                 content.extend(item_dicts)
             elif not isinstance(item, ImageContent):
                 # Add non-image content (TextContent, etc.)

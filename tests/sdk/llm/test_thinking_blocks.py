@@ -59,6 +59,90 @@ def test_thinking_block_model():
     assert block.signature == "signature_hash_123"
 
 
+def test_thinking_block_without_signature():
+    """Test ThinkingBlock model with optional signature (Gemini 2.5 compatibility).
+
+    Gemini 2.5 models may return thinking blocks without signatures, unlike
+    Gemini 3 which always includes signatures. This test verifies that the
+    ThinkingBlock model correctly handles None signatures.
+
+    See: https://github.com/OpenHands/software-agent-sdk/issues/1392
+    """
+    # Test thinking block without signature (Gemini 2.5 behavior)
+    block = ThinkingBlock(
+        thinking="Let me think about this step by step...",
+        signature=None,
+    )
+
+    assert block.type == "thinking"
+    assert block.thinking == "Let me think about this step by step..."
+    assert block.signature is None
+
+    # Test that serialization works correctly
+    serialized = block.model_dump()
+    assert serialized["type"] == "thinking"
+    assert serialized["thinking"] == "Let me think about this step by step..."
+    assert serialized["signature"] is None
+
+
+def test_thinking_block_from_litellm_without_signature():
+    """Test creating ThinkingBlock from LiteLLM response without signature.
+
+    This tests the integration with LiteLLM's ChatCompletionThinkingBlock
+    when the signature field is not present (Gemini 2.5 behavior).
+    """
+    # Create a LiteLLM thinking block without signature (Gemini 2.5 style)
+    litellm_thinking_block = ChatCompletionThinkingBlock(
+        type="thinking",
+        thinking="Analyzing the problem...",
+        # No signature field - this is valid for Gemini 2.5
+    )
+
+    # Create SDK ThinkingBlock from the LiteLLM block
+    block = ThinkingBlock(
+        type=litellm_thinking_block.get("type", "thinking"),
+        thinking=litellm_thinking_block.get("thinking", ""),
+        signature=litellm_thinking_block.get("signature"),
+    )
+
+    assert block.type == "thinking"
+    assert block.thinking == "Analyzing the problem..."
+    assert block.signature is None
+
+
+def test_message_from_llm_chat_message_with_thinking_no_signature():
+    """Test Message.from_llm_chat_message with thinking blocks without signature.
+
+    This tests the full flow of parsing a LiteLLM response with thinking blocks
+    that don't have signatures (Gemini 2.5 behavior).
+    """
+    # Create a mock LiteLLM message with thinking blocks without signature
+    thinking_block = ChatCompletionThinkingBlock(
+        type="thinking",
+        thinking="Let me analyze this problem...",
+        # No signature - Gemini 2.5 style
+    )
+
+    litellm_message = LiteLLMMessage(
+        role="assistant",
+        content="The answer is 42.",
+        thinking_blocks=[thinking_block],
+    )
+
+    message = Message.from_llm_chat_message(litellm_message)
+
+    assert message.role == "assistant"
+    assert len(message.content) == 1
+    assert isinstance(message.content[0], TextContent)
+    assert message.content[0].text == "The answer is 42."
+
+    # Check thinking blocks - signature should be None
+    assert len(message.thinking_blocks) == 1
+    assert isinstance(message.thinking_blocks[0], ThinkingBlock)
+    assert message.thinking_blocks[0].thinking == "Let me analyze this problem..."
+    assert message.thinking_blocks[0].signature is None
+
+
 def test_message_with_thinking_blocks():
     """Test Message with thinking blocks fields."""
     from openhands.sdk.llm.message import Message, TextContent, ThinkingBlock
@@ -175,7 +259,7 @@ def test_message_list_serializer_with_thinking_blocks():
         thinking_blocks=[thinking_block],
     )
 
-    serialized = message._list_serializer()
+    serialized = message._list_serializer(vision_enabled=False)
 
     # Thinking blocks should be in a separate field, not in content
     assert "thinking_blocks" in serialized
@@ -256,7 +340,7 @@ def test_multiple_thinking_blocks():
     assert message.thinking_blocks[1].signature is not None
 
     # Test serialization - thinking blocks should be in separate field
-    serialized = message._list_serializer()
+    serialized = message._list_serializer(vision_enabled=False)
 
     # Verify thinking_blocks field
     assert "thinking_blocks" in serialized
@@ -315,11 +399,10 @@ def test_thinking_blocks_in_message_dict():
         role="assistant",
         content=[TextContent(text="Here's my answer.")],
         thinking_blocks=[thinking_block],
-        function_calling_enabled=True,  # Force list serializer
     )
 
     # Test via _list_serializer
-    message_dict = message._list_serializer()
+    message_dict = message._list_serializer(vision_enabled=False)
 
     # Verify thinking_blocks is a top-level field in message_dict
     assert "thinking_blocks" in message_dict
@@ -349,11 +432,16 @@ def test_thinking_blocks_in_message_dict_via_to_chat_dict():
         role="assistant",
         content=[TextContent(text="Final result.")],
         thinking_blocks=[thinking_block],
-        function_calling_enabled=True,
     )
 
     # Test via to_chat_dict which calls _list_serializer
-    chat_dict = message.to_chat_dict()
+    chat_dict = message.to_chat_dict(
+        cache_enabled=False,
+        vision_enabled=False,
+        function_calling_enabled=True,
+        force_string_serializer=False,
+        send_reasoning_content=False,
+    )
 
     # Verify thinking_blocks field exists
     assert "thinking_blocks" in chat_dict
@@ -367,10 +455,9 @@ def test_no_thinking_blocks_field_when_empty():
     message = Message(
         role="assistant",
         content=[TextContent(text="Simple response.")],
-        function_calling_enabled=True,
     )
 
-    message_dict = message._list_serializer()
+    message_dict = message._list_serializer(vision_enabled=False)
 
     # When there are no thinking blocks, the field should not be present
     assert "thinking_blocks" not in message_dict
@@ -389,10 +476,9 @@ def test_thinking_blocks_only_for_assistant_role():
         role="user",
         content=[TextContent(text="User input.")],
         thinking_blocks=[thinking_block],
-        function_calling_enabled=True,
     )
 
-    user_dict = user_message._list_serializer()
+    user_dict = user_message._list_serializer(vision_enabled=False)
 
     # Thinking blocks should not be added for non-assistant roles
     assert "thinking_blocks" not in user_dict
@@ -402,10 +488,9 @@ def test_thinking_blocks_only_for_assistant_role():
         role="assistant",
         content=[TextContent(text="Assistant response.")],
         thinking_blocks=[thinking_block],
-        function_calling_enabled=True,
     )
 
-    assistant_dict = assistant_message._list_serializer()
+    assistant_dict = assistant_message._list_serializer(vision_enabled=False)
 
     # Thinking blocks should be added for assistant role
     assert "thinking_blocks" in assistant_dict
@@ -424,10 +509,9 @@ def test_redacted_thinking_block_in_message_dict():
         role="assistant",
         content=[TextContent(text="Response after redaction.")],
         thinking_blocks=[redacted_block],
-        function_calling_enabled=True,
     )
 
-    message_dict = message._list_serializer()
+    message_dict = message._list_serializer(vision_enabled=False)
 
     # Verify redacted thinking block is in message_dict
     assert "thinking_blocks" in message_dict
@@ -450,10 +534,9 @@ def test_mixed_thinking_and_redacted_blocks():
         role="assistant",
         content=[TextContent(text="Mixed blocks response.")],
         thinking_blocks=[thinking_block, redacted_block],
-        function_calling_enabled=True,
     )
 
-    message_dict = message._list_serializer()
+    message_dict = message._list_serializer(vision_enabled=False)
 
     # Verify both types are in message_dict
     assert "thinking_blocks" in message_dict

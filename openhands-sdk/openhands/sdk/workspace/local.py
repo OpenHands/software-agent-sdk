@@ -187,3 +187,19 @@ class LocalWorkspace(BaseWorkspace):
         """
         path = Path(self.working_dir) / path
         return get_git_diff(path)
+
+    def pause(self) -> None:
+        """Pause the workspace (no-op for local workspaces).
+
+        Local workspaces have nothing to pause since they operate directly
+        on the host filesystem.
+        """
+        logger.debug("pause() called on LocalWorkspace - nothing to do")
+
+    def resume(self) -> None:
+        """Resume the workspace (no-op for local workspaces).
+
+        Local workspaces have nothing to resume since they operate directly
+        on the host filesystem.
+        """
+        logger.debug("resume() called on LocalWorkspace - nothing to do")

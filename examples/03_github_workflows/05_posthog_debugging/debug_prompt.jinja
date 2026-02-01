@@ -1,0 +1,130 @@
+Your task is to debug an error from PostHog event tracking to find out why it is happening.
+
+## GitHub Issue for Tracking
+
+A GitHub issue has been created to track this investigation: {{ issue_url }}
+
+**IMPORTANT**: As you make progress in your investigation, post your findings as comments on this GitHub issue using curl commands:
+
+```bash
+curl -X POST \
+  'https://api.github.com/repos/{REPO}/issues/{NUMBER}/comments' \
+  -H 'Authorization: Bearer $GITHUB_TOKEN' \
+  -H 'Accept: application/vnd.github+json' \
+  -H 'Content-Type: application/json' \
+  -d '{"body": "Your finding here"}'
+```
+
+Post updates when you:
+- Complete analyzing the event data
+- Find relevant code in the repositories
+- Identify the root cause
+- Attempt a reproduction
+- Make any significant discovery
+
+## Event Data
+
+I have already fetched event data and saved them to: `{{ events_file }}`
+
+This JSON file contains:
+- `query`: The PostHog query used to fetch these events
+- `total_examples`: Number of events in the file
+- `timeline`: **CRITICAL** - Information about when this error first started occurring:
+  - `first_seen`: Timestamp of the first occurrence (in the last 30 days)
+  - `last_seen`: Timestamp of the most recent occurrence
+  - `total_count`: Total number of occurrences
+  - `daily_counts`: Array of {date, count} showing error frequency over time
+- `examples`: Array of events, where each has:
+  - `event_id`: Unique identifier for the event
+  - `event`: Event name (e.g., '$exception', 'error', custom event names)
+  - `distinct_id`: User or session identifier
+  - `properties`: Event properties including error details, stack traces, context
+  - `timestamp`: When the event occurred
+  - `person_id`: Associated person ID (if available)
+
+**First, read the GitHub issue** to see the event summary and timeline, then read `{{ events_file }}` to understand the error patterns.
+
+## Additional Context
+
+The original PostHog query was: `{{ query }}`
+
+If you need more details, you can use PostHog APIs via curl commands with $POSTHOG_API_KEY environment variable.
+
+To query events using HogQL:
+```bash
+curl -X POST '{{ query_url }}' \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer $POSTHOG_API_KEY' \
+  -d '{
+    "query": {
+      "kind": "HogQLQuery",
+      "query": "SELECT * FROM events WHERE event = '\''$exception'\'' ORDER BY timestamp DESC LIMIT 10"
+    },
+    "refresh": "blocking"
+  }'
+```
+
+To get a specific event by ID:
+```bash
+curl -X GET '{{ events_url }}{event_id}' \
+  -H 'Authorization: Bearer $POSTHOG_API_KEY'
+```
+
+PostHog HogQL query syntax supports:
+- Standard SQL SELECT, WHERE, ORDER BY, LIMIT clauses
+- Filter by event name: `WHERE event = '$exception'`
+- Filter by properties: `WHERE properties.$exception_type = 'ValueError'`
+- Filter by timestamp: `WHERE timestamp > now() - INTERVAL 1 DAY`
+- Use properties to access event properties as JSON
+
+The event type that I would like you to debug is characterized by this query:
+{{ query }}
+
+To clone the GitHub repositories, use git with authentication:
+```bash
+git clone https://$GITHUB_TOKEN@github.com/OWNER/REPO.git
+```
+
+The github repos that you should clone (using GITHUB_TOKEN) are the following:
+{{ repos_list }}
+
+## Debugging Steps
+
+Follow these steps systematically:
+
+1. **Read the event file** - Start by reading `{{ events_file }}` to understand the event patterns. Examine all examples to identify:
+   - Common error messages in properties
+   - Stack traces and their origins
+   - Event context and properties
+
+2. **⚠️ CRITICAL: Analyze the timeline** - This is the most important step for finding the root cause!
+   - Check the `timeline.first_seen` field to see when this error FIRST started occurring
+   - Look at `timeline.daily_counts` to see the pattern - did it spike suddenly or gradually increase?
+   - **If the error started recently (e.g., 1-7 days ago), there was likely a code change that caused it**
+   - Use `git log --since="YYYY-MM-DD"` to find commits made around the time the error first appeared
+   - Focus your investigation on code changes made in the release cycle BEFORE the first error occurrence
+
+3. **Clone repositories** - Clone the relevant repositories using:
+   ```bash
+   git clone https://$GITHUB_TOKEN@github.com/OWNER/REPO.git
+   ```
+
+4. **Correlate with code changes** - This is key to finding the root cause:
+   - Use `git log --oneline --since="DATE"` where DATE is 1-2 days before `first_seen`
+   - Look for commits that touch files mentioned in the stack trace
+   - Check for recent deployments or releases around that time
+   - Example: `git log --oneline --since="2025-12-15" -- path/to/file.ts`
+
+5. **Investigate the codebase** - Carefully read the code related to the error. Look at:
+   - Files mentioned in stack traces (often in event properties)
+   - Recent commits that modified those files (use git log and git blame)
+   - Related code paths
+
+6. **Develop hypotheses** - Think of 5 possible root causes and write sample code to test each hypothesis. Try to reproduce the error.
+
+7. **Create fix or summarize** - Based on your findings:
+   - If reproducible: Create a fix and optionally open a draft PR
+   - If not reproducible: Summarize your investigation, findings, and recommendations
+   - **Always include the timeline analysis** - when did the error start and what code changes correlate with it
+
+**Important**: Use the task_tracker tool to organize your work and keep track of your progress through these steps.

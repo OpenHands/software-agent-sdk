@@ -1,7 +1,12 @@
 from importlib.metadata import PackageNotFoundError, version
 
 from openhands.sdk.agent import Agent, AgentBase
-from openhands.sdk.context import AgentContext
+from openhands.sdk.context import (
+    AgentContext,
+    load_project_skills,
+    load_skills_from_dir,
+    load_user_skills,
+)
 from openhands.sdk.context.condenser import (
     LLMSummarizingCondenser,
 )
@@ -36,6 +41,7 @@ from openhands.sdk.mcp import (
     MCPToolObservation,
     create_mcp_tools,
 )
+from openhands.sdk.plugin import Plugin
 from openhands.sdk.tool import (
     Action,
     Observation,
@@ -93,11 +99,15 @@ __all__ = [
     "LLMSummarizingCondenser",
     "FileStore",
     "LocalFileStore",
+    "Plugin",
     "register_tool",
     "resolve_tool",
     "list_registered_tools",
     "Workspace",
     "LocalWorkspace",
     "RemoteWorkspace",
+    "load_project_skills",
+    "load_skills_from_dir",
+    "load_user_skills",
     "__version__",
 ]

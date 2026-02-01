@@ -1,13 +1,11 @@
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import ClassVar
 
 import pytest
 from litellm import BaseModel
 from pydantic import (
     ConfigDict,
-    Discriminator,
     Field,
-    Tag,
     TypeAdapter,
     computed_field,
     model_validator,
@@ -15,6 +13,7 @@ from pydantic import (
 
 from openhands.sdk.utils.models import (
     DiscriminatedUnionMixin,
+    OpenHandsModel,
 )
 
 
@@ -78,31 +77,76 @@ class AnimalPack(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
 
 
-def test_serializable_type_expected() -> None:
-    serializable_type = Animal.get_serializable_type()
+class Mythical(DiscriminatedUnionMixin, ABC):
+    """Mythical beasts have no implementations - they do not exist!"""
 
-    # Check that it's an Annotated type with a Union and Discriminator
-    assert hasattr(serializable_type, "__metadata__")
-    assert len(serializable_type.__metadata__) == 1
-    discriminator = serializable_type.__metadata__[0]
-    assert isinstance(discriminator, Discriminator)
+    @abstractmethod
+    def get_description(self) -> str:
+        """Get a discription of the mythical beast"""
 
-    # Check that the union contains the expected types
-    union_type = serializable_type.__args__[0]
-    union_args = union_type.__args__
 
-    # Extract the types from the annotated types
-    types = []
-    tags = []
-    for arg in union_args:
-        if hasattr(arg, "__metadata__") and len(arg.__metadata__) == 1:
-            tag = arg.__metadata__[0]
-            if isinstance(tag, Tag):
-                types.append(arg.__args__[0])
-                tags.append(tag.tag)
+class MythicalPack(OpenHandsModel):
+    mythical: Mythical
 
-    assert set(types) == {Cat, Dog, Wolf}
-    assert set(tags) == {"Cat", "Dog", "Wolf"}
+
+class SomeBase(DiscriminatedUnionMixin, ABC):
+    """Base class for duplicate test"""
+
+
+class SomeImpl(SomeBase):
+    """Implementation for duplicate test"""
+
+
+def test_json_schema_expected() -> None:
+    json_schema = Animal.model_json_schema()
+
+    # Verify the schema has the expected structure
+    assert "$defs" in json_schema
+    assert "oneOf" in json_schema
+    assert "discriminator" in json_schema
+
+    # Check discriminator structure
+    discriminator = json_schema["discriminator"]
+    assert discriminator["propertyName"] == "kind"
+    assert "mapping" in discriminator
+
+    # Check the oneOf variants
+    assert json_schema["oneOf"] == [
+        {"$ref": "#/$defs/Cat"},
+        {"$ref": "#/$defs/Dog"},
+        {"$ref": "#/$defs/Wolf"},
+    ]
+
+    # Check the $defs structure
+    assert json_schema["$defs"]["Cat"] == {
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "kind": {"const": "Cat", "title": "Kind", "type": "string"},
+        },
+        "required": ["name"],
+        "title": "Cat",
+        "type": "object",
+    }
+    assert json_schema["$defs"]["Dog"] == {
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "barking": {"title": "Barking", "type": "boolean"},
+            "kind": {"const": "Dog", "title": "Kind", "type": "string"},
+        },
+        "required": ["name", "barking"],
+        "title": "Dog",
+        "type": "object",
+    }
+    assert json_schema["$defs"]["Wolf"] == {
+        "additionalProperties": False,
+        "properties": {
+            "name": {"title": "Name", "type": "string"},
+            "kind": {"const": "Wolf", "title": "Kind", "type": "string"},
+        },
+        "required": ["name"],
+        "title": "Wolf",
+        "type": "object",
+    }
 
 
 def test_json_schema() -> None:
@@ -186,28 +230,21 @@ def test_model_containing_polymorphic_field():
 def test_duplicate_kind():
     # nAn error should be raised when a duplicate class name is detected
 
-    with pytest.raises(ValueError):
-
-        class Cat(Animal):
-            pass
-
-
-def test_enhanced_error_message_for_unknown_kind():
-    """Test that resolve_kind provides a detailed error message for unknown kinds."""
-    # Test with an unknown kind
     with pytest.raises(ValueError) as exc_info:
-        Animal.resolve_kind("UnknownAnimal")
+
+        class SomeImpl(SomeBase):
+            """Duplicate implementation name"""
+
+        SomeBase.model_json_schema()
 
     error_message = str(exc_info.value)
-
-    # Check that the error message contains all expected components
-    assert "Unexpected kind 'UnknownAnimal' for Animal" in error_message
-    assert "Expected one of:" in error_message
-    assert "Cat" in error_message
-    assert "Dog" in error_message
-    assert "Wolf" in error_message
-    assert "OpenHandsModel instead of BaseModel" in error_message
-    assert "invalid schema has not been cached" in error_message
+    expected = (
+        "Duplicate class definition for "
+        "tests.sdk.utils.test_discriminated_union.SomeBase: "
+        "tests.sdk.utils.test_discriminated_union.SomeImpl : "
+        "tests.sdk.utils.test_discriminated_union.SomeImpl"
+    )
+    assert expected in error_message
 
 
 def test_enhanced_error_message_with_validation():
@@ -221,9 +258,12 @@ def test_enhanced_error_message_with_validation():
     error_message = str(exc_info.value)
 
     # Check that the error message contains expected components
-    assert "Unexpected kind 'UnknownAnimal' for Animal" in error_message
-    assert "Expected one of:" in error_message
-    assert "Cat, Dog, Wolf" in error_message
+    expected = (
+        "Unknown kind 'UnknownAnimal' for "
+        "tests.sdk.utils.test_discriminated_union.Animal; "
+        "Expected one of: ['Cat', 'Dog', 'Wolf']"
+    )
+    assert expected in error_message
 
 
 def test_dynamic_field_error():
@@ -231,7 +271,56 @@ def test_dynamic_field_error():
         pass
 
     with pytest.raises(ValueError) as exc_info:
-        AnimalPack(members=[Tiger(name="Tony")])
+        AnimalPack.model_json_schema()
 
     error_message = str(exc_info.value)
-    assert "OpenHandsModel instead of BaseModel" in error_message
+    expected = (
+        "Local classes not supported! "
+        "tests.sdk.utils.test_discriminated_union.Tiger / "
+        "tests.sdk.utils.test_discriminated_union.Animal "
+        "(Since they may not exist at deserialization time)"
+    )
+    assert expected in error_message
+
+
+def test_enhanced_error_message_for_no_kinds():
+    with pytest.raises(ValueError) as exc_info:
+        Mythical.model_validate({"kind": "Unicorn"})
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    expected = (
+        "Unknown kind 'Unicorn' for tests.sdk.utils.test_discriminated_union.Mythical; "
+        "Expected one of: []"
+    )
+    assert expected in error_message
+
+
+def test_enhanced_error_message_for_nested_no_kinds():
+    with pytest.raises(Exception) as exc_info:
+        MythicalPack.model_validate({"mythical": {"kind": "Unicorn"}})
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    expected = (
+        "Unknown kind 'Unicorn' for tests.sdk.utils.test_discriminated_union.Mythical; "
+        "Expected one of: []"
+    )
+    assert expected in error_message
+
+
+def test_enhanced_error_message_for_nested_no_kinds_type_adapter():
+    type_adapter = TypeAdapter(MythicalPack)
+    with pytest.raises(Exception) as exc_info:
+        type_adapter.validate_python({"mythical": {"kind": "Unicorn"}})
+
+    error_message = str(exc_info.value)
+
+    # Check that the error message contains all expected components
+    expected = (
+        "Unknown kind 'Unicorn' for tests.sdk.utils.test_discriminated_union.Mythical; "
+        "Expected one of: []"
+    )
+    assert expected in error_message

@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,14 +166,30 @@ class ConversationService:
         if not self._conversation_webhook_subscribers:
             return
 
-        # Send notifications to all conversation webhook subscribers
-        await asyncio.gather(
-            *[
-                subscriber.post_conversation_info(conversation_info)
-                for subscriber in self._conversation_webhook_subscribers
-            ],
-            return_exceptions=True,  # Don't fail if one webhook fails
-        )
+        # Send notifications to all conversation webhook subscribers in the background
+        async def _notify_and_log_errors():
+            results = await asyncio.gather(
+                *[
+                    subscriber.post_conversation_info(conversation_info)
+                    for subscriber in self._conversation_webhook_subscribers
+                ],
+                return_exceptions=True,  # Don't fail if one webhook fails
+            )
+
+            # Log any exceptions that occurred
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    subscriber = self._conversation_webhook_subscribers[i]
+                    logger.error(
+                        (
+                            f"Failed to notify conversation webhook "
+                            f"{subscriber.spec.base_url}: {result}"
+                        ),
+                        exc_info=result,
+                    )
+
+        # Create task to run in background without awaiting
+        asyncio.create_task(_notify_and_log_errors())
 
     # Write Methods
 
@@ -192,7 +209,42 @@ class ConversationService:
             )
             return conversation_info, False
 
-        stored = StoredConversation(id=conversation_id, **request.model_dump())
+        # Dynamically register tools from client's registry
+        if request.tool_module_qualnames:
+            import importlib
+
+            for tool_name, module_qualname in request.tool_module_qualnames.items():
+                try:
+                    # Import the module to trigger tool auto-registration
+                    importlib.import_module(module_qualname)
+                    logger.debug(
+                        f"Tool '{tool_name}' registered via module '{module_qualname}'"
+                    )
+                except ImportError as e:
+                    logger.warning(
+                        f"Failed to import module '{module_qualname}' for tool "
+                        f"'{tool_name}': {e}. Tool will not be available."
+                    )
+                    # Continue even if some tools fail to register
+                    # The agent will fail gracefully if it tries to use unregistered
+                    # tools
+            if request.tool_module_qualnames:
+                logger.info(
+                    f"Dynamically registered {len(request.tool_module_qualnames)} "
+                    f"tools for conversation {conversation_id}: "
+                    f"{list(request.tool_module_qualnames.keys())}"
+                )
+
+        # Plugin loading is now handled lazily by LocalConversation.
+        # Just pass the plugin specs through to StoredConversation.
+        # LocalConversation will:
+        # 1. Fetch and load plugins on first run()/send_message()
+        # 2. Resolve refs to commit SHAs for deterministic resume
+        # 3. Merge plugin skills/MCP/hooks into the agent
+        stored = StoredConversation(
+            id=conversation_id,
+            **request.model_dump(),
+        )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message
         if initial_message:
@@ -239,6 +291,9 @@ class ConversationService:
                 state = await event_service.get_state()
                 conversation_info = _compose_conversation_info(
                     event_service.stored, state
+                )
+                conversation_info.execution_status = (
+                    ConversationExecutionStatus.DELETING
                 )
                 await self._notify_conversation_webhooks(conversation_info)
             except Exception as e:
@@ -332,6 +387,18 @@ class ConversationService:
         response = await event_service.ask_agent(question)
         return response
 
+    async def condense(self, conversation_id: UUID) -> bool:
+        """Force condensation of the conversation history."""
+        if self._event_services is None:
+            raise ValueError("inactive_service")
+        event_service = self._event_services.get(conversation_id)
+        if event_service is None:
+            return False
+
+        # Delegate to EventService to avoid accessing private conversation internals
+        await event_service.condense()
+        return True
+
     async def __aenter__(self):
         self.conversations_dir.mkdir(parents=True, exist_ok=True)
         self._event_services = {}
@@ -347,6 +414,34 @@ class ConversationService:
                         "cipher": self.cipher,
                     },
                 )
+                # Dynamically register tools when resuming persisted conversations
+                if stored.tool_module_qualnames:
+                    for (
+                        tool_name,
+                        module_qualname,
+                    ) in stored.tool_module_qualnames.items():
+                        try:
+                            # Import the module to trigger tool auto-registration
+                            importlib.import_module(module_qualname)
+                            logger.debug(
+                                f"Tool '{tool_name}' registered via module "
+                                f"'{module_qualname}' when resuming conversation "
+                                f"{stored.id}"
+                            )
+                        except ImportError as e:
+                            logger.warning(
+                                f"Failed to import module '{module_qualname}' for "
+                                f"tool '{tool_name}' when resuming conversation "
+                                f"{stored.id}: {e}. Tool will not be available."
+                            )
+                            # Continue even if some tools fail to register
+                    if stored.tool_module_qualnames:
+                        logger.info(
+                            f"Dynamically registered "
+                            f"{len(stored.tool_module_qualnames)} tools when "
+                            f"resuming conversation {stored.id}: "
+                            f"{list(stored.tool_module_qualnames.keys())}"
+                        )
                 await self._start_event_service(stored)
             except Exception:
                 logger.exception(
@@ -416,6 +511,9 @@ class ConversationService:
 
         try:
             await event_service.start()
+            # Save metadata immediately after successful start to ensure persistence
+            # even if the system is not shut down gracefully
+            await event_service.save_meta()
         except Exception:
             # Clean up the event service if startup fails
             await event_service.close()

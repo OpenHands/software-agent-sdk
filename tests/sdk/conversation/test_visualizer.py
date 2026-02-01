@@ -1,6 +1,8 @@
 """Tests for the conversation visualizer and event visualization."""
 
 import json
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Self
 
 from pydantic import Field
 from rich.text import Text
@@ -19,12 +21,30 @@ from openhands.sdk.event import (
     SystemPromptEvent,
     UserRejectObservation,
 )
+from openhands.sdk.event.base import Event
+from openhands.sdk.event.types import SourceType
 from openhands.sdk.llm import (
     Message,
     MessageToolCall,
     TextContent,
 )
-from openhands.sdk.tool import Action
+from openhands.sdk.tool import Action, Observation, ToolDefinition, ToolExecutor
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.conversation.impl.local_conversation import LocalConversation
+
+
+class _UnknownEventForVisualizerTest(Event):
+    """Unknown event type for testing fallback visualization.
+
+    This class is defined at module level (rather than inside a test function) to
+    ensure it's importable by Pydantic during serialization/deserialization.
+    Defining it inside a test function causes test pollution when running tests
+    in parallel with pytest-xdist.
+    """
+
+    source: SourceType = "agent"
 
 
 class VisualizerMockAction(Action):
@@ -48,6 +68,40 @@ class VisualizerCustomAction(Action):
         for i, task in enumerate(self.task_list):
             content.append(f"\n  {i + 1}. {task.get('title', 'Untitled')}")
         return content
+
+
+class VisualizerMockObservation(Observation):
+    """Mock observation for testing."""
+
+    pass
+
+
+class VisualizerMockExecutor(ToolExecutor):
+    """Mock executor for testing."""
+
+    def __call__(
+        self,
+        action: VisualizerMockAction,
+        conversation: "LocalConversation | None" = None,
+    ) -> VisualizerMockObservation:
+        return VisualizerMockObservation.from_text("test")
+
+
+class VisualizerMockTool(
+    ToolDefinition[VisualizerMockAction, VisualizerMockObservation]
+):
+    """Mock tool for testing."""
+
+    @classmethod
+    def create(cls, *args, **kwargs) -> Sequence[Self]:
+        return [
+            cls(
+                description="A test tool for demonstration",
+                action_type=VisualizerMockAction,
+                observation_type=VisualizerMockObservation,
+                executor=VisualizerMockExecutor(),
+            )
+        ]
 
 
 def create_tool_call(
@@ -98,18 +152,11 @@ def test_custom_action_visualize():
 
 def test_system_prompt_event_visualize():
     """Test SystemPromptEvent visualization."""
+    tool = VisualizerMockTool.create()[0]
+
     event = SystemPromptEvent(
         system_prompt=TextContent(text="You are a helpful assistant."),
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "test_tool",
-                    "description": "A test tool for demonstration",
-                    "parameters": {"type": "object", "properties": {}},
-                },
-            }
-        ],
+        tools=[tool],
     )
 
     result = event.visualize
@@ -119,7 +166,7 @@ def test_system_prompt_event_visualize():
     assert "System Prompt:" in text_content
     assert "You are a helpful assistant." in text_content
     assert "Tools Available: 1" in text_content
-    assert "test_tool" in text_content
+    assert "visualizer_mock" in text_content
 
 
 def test_action_event_visualize():
@@ -150,11 +197,6 @@ def test_action_event_visualize():
 
 def test_observation_event_visualize():
     """Test ObservationEvent visualization."""
-    from openhands.sdk.tool import Observation
-
-    class VisualizerMockObservation(Observation):
-        pass
-
     observation = VisualizerMockObservation(
         content=[TextContent(text="total 4\ndrwxr-xr-x 2 user user 4096 Jan 1 12:00 .")]
     )
@@ -429,18 +471,29 @@ def test_metrics_abbreviation_formatting():
 
 def test_event_base_fallback_visualize():
     """Test that Event provides fallback visualization."""
-    from openhands.sdk.event.base import Event
-    from openhands.sdk.event.types import SourceType
-
-    class UnknownEvent(Event):
-        source: SourceType = "agent"
-
-    event = UnknownEvent()
+    event = _UnknownEventForVisualizerTest()
     result = event.visualize
     assert isinstance(result, Text)
 
     text_content = result.plain
-    assert "Unknown event type: UnknownEvent" in text_content
+    assert "Unknown event type: _UnknownEventForVisualizerTest" in text_content
+
+
+def test_conversation_error_event_visualize():
+    """Test that ConversationErrorEvent provides a specific visualization."""
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+    event = ConversationErrorEvent(
+        source="environment",
+        code="TestError",
+        detail="Something went wrong",
+    )
+    text_content = event.visualize.plain
+
+    assert "Unknown event type:" not in text_content
+    assert "Conversation Error" in text_content
+    assert "TestError" in text_content
+    assert "Something went wrong" in text_content
 
 
 def test_visualizer_conversation_state_update_event_skipped():
@@ -451,3 +504,15 @@ def test_visualizer_conversation_state_update_event_skipped():
     block = visualizer._create_event_block(event)
     # Should return None to skip visualization
     assert block is None
+
+
+def test_default_visualizer_create_sub_visualizer_returns_none():
+    """Test that DefaultConversationVisualizer.create_sub_visualizer returns None.
+
+    This is the expected default behavior - base visualizers don't support
+    sub-agent visualization. Subclasses like DelegationVisualizer can override
+    this to provide sub-agent visualizers.
+    """
+    visualizer = DefaultConversationVisualizer()
+    result = visualizer.create_sub_visualizer("test_agent")
+    assert result is None

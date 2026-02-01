@@ -10,7 +10,33 @@ Please follow them while working.
 {% endfor %}
 </REPO_CONTEXT>
 {% endif %}
+{% if available_skills_prompt %}
+<SKILLS>
+The following skills are available and may be triggered by keywords or task types in your messages.
+When a skill is triggered, you will receive additional context and instructions.
+You can also directly look up a skill's full content by reading its location path, and use the skill's guidance proactively when relevant to your task.
+
+{{ available_skills_prompt }}
+</SKILLS>
+{% endif %}
 {% if system_message_suffix %}
 
 {{ system_message_suffix }}
+{% endif %}
+{% if secret_infos %}
+<CUSTOM_SECRETS>
+### Credential Access
+* Automatic secret injection: When you reference a registered secret key in your bash command, the secret value will be automatically exported as an environment variable before your command executes.
+* How to use secrets: Simply reference the secret key in your command (e.g., `curl -H "Authorization: Bearer $API_KEY" https://api.example.com`). The system will detect the key name in your command text and export it as environment variable before it executes your command.
+* Secret detection: The system performs case-insensitive matching to find secret keys in your command text. If a registered secret key appears anywhere in your command, its value will be made available as an environment variable.
+* Security: Secret values are automatically masked in command output to prevent accidental exposure. You will see `<secret-hidden>` instead of the actual secret value in the output.
+* Avoid exposing raw secrets: Never echo or print the full value of secrets (e.g., avoid `echo $SECRET`). The conversation history may be logged or shared, and exposing raw secret values could compromise security. Instead, use secrets directly in commands where they serve their intended purpose (e.g., in curl headers or git URLs).
+* Refreshing expired secrets: Some secrets (like GITHUB_TOKEN) may be updated periodically or expire over time. If a secret stops working (e.g., authentication failures), try using it again in a new command - the system should automatically use the refreshed value. For example, if GITHUB_TOKEN was used in a git remote URL and later expired, you can update the remote URL with the current token: `git remote set-url origin https://${GITHUB_TOKEN}@github.com/username/repo.git` to pick up the refreshed token value.
+* If it still fails, report it to the user.
+
+You have access to the following environment variables
+{% for secret_info in secret_infos %}
+* **${{ secret_info.name }}**{% if secret_info.description %} - {{ secret_info.description }}{% endif %}
+{% endfor %}
+</CUSTOM_SECRETS>
 {% endif %}

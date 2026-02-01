@@ -164,7 +164,7 @@ class TestPauseFunctionality:
         assert (
             self.conversation.state.execution_status == ConversationExecutionStatus.IDLE
         )
-        assert len(self.conversation.state.events) == 1  # System prompt event
+        # Note: With lazy init, system prompt event not added until first use
 
         # Test pause method
         self.conversation.pause()

@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, cast
+from typing import Any
 from urllib.request import urlopen
 
 from pydantic import Field, PrivateAttr, model_validator
@@ -14,15 +14,10 @@ from pydantic import Field, PrivateAttr, model_validator
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
 from openhands.sdk.utils.deprecation import warn_deprecated
-from openhands.sdk.workspace import PlatformType, RemoteWorkspace, TargetType
+from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
 logger = get_logger(__name__)
-
-_BASE_IMAGE_DEPRECATION_DETAILS = (
-    "DockerWorkspace(base_image=..., target=...) is deprecated. "
-    "Switch to DockerDevWorkspace for build-on-demand images."
-)
 
 
 def check_port_available(port: int) -> bool:
@@ -85,7 +80,7 @@ class DockerWorkspace(RemoteWorkspace):
 
     # Docker-specific configuration
     server_image: str | None = Field(
-        default=None,
+        default="ghcr.io/openhands/agent-server:latest-python",
         description="Pre-built agent server image to use.",
     )
     host_port: int | None = Field(
@@ -99,6 +94,10 @@ class DockerWorkspace(RemoteWorkspace):
     mount_dir: str | None = Field(
         default=None,
         description="Optional host directory to mount into the container.",
+    )
+    volumes: list[str] = Field(
+        default_factory=list,
+        description="Additional volume mounts for the Docker container.",
     )
     detach_logs: bool = Field(
         default=True, description="Whether to stream Docker logs in background."
@@ -114,75 +113,13 @@ class DockerWorkspace(RemoteWorkspace):
         default=False,
         description="Whether to enable GPU support with --gpus all.",
     )
-
-    @model_validator(mode="before")
-    @classmethod
-    def _coerce_deprecated_build_params(cls, data: Any):
-        if cls is not DockerWorkspace or not isinstance(data, dict):
-            return data
-
-        base_image = data.pop("base_image", None)
-        target = data.pop("target", None)
-
-        if base_image is None:
-            if target is not None:
-                warn_deprecated(
-                    "DockerWorkspace(target=...)",
-                    deprecated_in="1.3.0",
-                    removed_in="1.5.0",
-                    details=_BASE_IMAGE_DEPRECATION_DETAILS,
-                    stacklevel=3,
-                )
-            return data
-
-        if data.get("server_image"):
-            raise ValueError("Specify either base_image or server_image, not both.")
-
-        warn_deprecated(
-            "DockerWorkspace(base_image=...)",
-            deprecated_in="1.3.0",
-            removed_in="1.5.0",
-            details=_BASE_IMAGE_DEPRECATION_DETAILS,
-            stacklevel=3,
-        )
-
-        normalized_target: TargetType = cast(TargetType, target or "source")
-        platform_raw = data.get("platform")
-        platform_value = cast(
-            PlatformType, platform_raw if platform_raw else "linux/amd64"
-        )
-        built_image = cls._build_image_from_base(
-            base_image=str(base_image),
-            target=normalized_target,
-            platform=platform_value,
-        )
-        data["server_image"] = built_image
-        return data
-
-    @staticmethod
-    def _build_image_from_base(
-        *, base_image: str, target: TargetType, platform: PlatformType
-    ) -> str:
-        from openhands.agent_server.docker.build import BuildOptions, build
-
-        if "ghcr.io/openhands/agent-server" in base_image:
-            raise RuntimeError(
-                "base_image cannot be a pre-built agent-server image. "
-                "Use server_image=... instead."
-            )
-
-        build_opts = BuildOptions(
-            base_image=base_image,
-            target=target,
-            platforms=[platform],
-            push=False,
-        )
-        tags = build(opts=build_opts)
-        if not tags:
-            raise RuntimeError("Build failed, no image tags returned")
-        return tags[0]
+    cleanup_image: bool = Field(
+        default=False,
+        description="Whether to delete the Docker image when cleaning up workspace.",
+    )
 
     _container_id: str | None = PrivateAttr(default=None)
+    _image_name: str | None = PrivateAttr(default=None)
     _logs_thread: threading.Thread | None = PrivateAttr(default=None)
     _stop_logs: threading.Event = PrivateAttr(default_factory=threading.Event)
 
@@ -191,6 +128,18 @@ class DockerWorkspace(RemoteWorkspace):
         """Ensure server_image is set when using DockerWorkspace directly."""
         if self.__class__ is DockerWorkspace and self.server_image is None:
             raise ValueError("server_image must be provided")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mount_dir(self):
+        if self.mount_dir:
+            warn_deprecated(
+                "DockerWorkspace.mount_dir",
+                deprecated_in="1.10.0",
+                removed_in=None,
+                details="Use DockerWorkspace.volumes instead",
+            )
+            self.volumes.append(f"{self.mount_dir}:/workspace")
         return self
 
     def model_post_init(self, context: Any) -> None:
@@ -224,6 +173,9 @@ class DockerWorkspace(RemoteWorkspace):
             image: The Docker image tag to use.
             context: The Pydantic context from model_post_init.
         """
+        # Store the image name for cleanup
+        self._image_name = image
+
         # Determine port
         if self.host_port is None:
             self.host_port = find_available_tcp_port()
@@ -257,14 +209,9 @@ class DockerWorkspace(RemoteWorkspace):
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
-        if self.mount_dir:
-            mount_path = "/workspace"
-            flags += ["-v", f"{self.mount_dir}:{mount_path}"]
-            logger.info(
-                "Mounting host dir %s to container path %s",
-                self.mount_dir,
-                mount_path,
-            )
+        for volume in self.volumes:
+            flags += ["-v", volume]
+            logger.info(f"Adding volume mount: {volume}")
 
         ports = ["-p", f"{self.host_port}:8000"]
         if self.extra_ports:
@@ -302,7 +249,7 @@ class DockerWorkspace(RemoteWorkspace):
             raise RuntimeError(f"Failed to run docker container: {proc.stderr}")
 
         self._container_id = proc.stdout.strip()
-        logger.info("Started container: %s", self._container_id)
+        logger.info(f"Started container: {self._container_id}")
 
         # Optionally stream logs in background
         if self.detach_logs:
@@ -319,7 +266,7 @@ class DockerWorkspace(RemoteWorkspace):
 
         # Wait for container to be healthy
         self._wait_for_health()
-        logger.info("Docker workspace is ready at %s", self.host)
+        logger.info(f"Docker workspace is ready at {self.host}")
 
         # Now initialize the parent RemoteWorkspace with the container URL
         super().model_post_init(context)
@@ -406,6 +353,56 @@ class DockerWorkspace(RemoteWorkspace):
                 self._logs_thread.join(timeout=2)
 
             # Stop and remove the container
-            logger.info("Stopping container: %s", self._container_id)
+            logger.info(f"Stopping container: {self._container_id}")
             execute_command(["docker", "stop", self._container_id])
             self._container_id = None
+
+        # Optionally delete the Docker image
+        if self.cleanup_image and self._image_name:
+            logger.info(f"Deleting Docker image: {self._image_name}")
+            result = execute_command(["docker", "rmi", "-f", self._image_name])
+            if result.returncode == 0:
+                logger.info(f"Successfully deleted image: {self._image_name}")
+            else:
+                logger.warning(
+                    f"Failed to delete image {self._image_name}: {result.stderr}"
+                )
+            self._image_name = None
+
+    def pause(self) -> None:
+        """Pause the Docker container to conserve resources.
+
+        Uses `docker pause` to freeze all processes in the container without
+        stopping it. The container can be resumed later with `resume()`.
+
+        Raises:
+            RuntimeError: If the container is not running or pause fails.
+        """
+        if not self._container_id:
+            raise RuntimeError("Cannot pause: container is not running")
+
+        logger.info(f"Pausing container: {self._container_id}")
+        result = execute_command(["docker", "pause", self._container_id])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to pause container: {result.stderr}")
+        logger.info(f"Container paused: {self._container_id}")
+
+    def resume(self) -> None:
+        """Resume a paused Docker container.
+
+        Uses `docker unpause` to resume all processes in the container.
+
+        Raises:
+            RuntimeError: If the container is not running or resume fails.
+        """
+        if not self._container_id:
+            raise RuntimeError("Cannot resume: container is not running")
+
+        logger.info(f"Resuming container: {self._container_id}")
+        result = execute_command(["docker", "unpause", self._container_id])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to resume container: {result.stderr}")
+
+        # Wait for health after resuming (use same timeout as initial startup)
+        self._wait_for_health(timeout=120.0)
+        logger.info(f"Container resumed: {self._container_id}")

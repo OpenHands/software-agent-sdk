@@ -18,25 +18,35 @@ from openhands.sdk.conversation.types import (
     ConversationCallbackType,
     ConversationID,
     ConversationTokenCallbackType,
+    StuckDetectionThresholds,
 )
 from openhands.sdk.conversation.visualizer import (
     ConversationVisualizerBase,
     DefaultConversationVisualizer,
 )
 from openhands.sdk.event import (
+    CondensationRequest,
     MessageEvent,
     PauseEvent,
     UserRejectObservation,
 )
 from openhands.sdk.event.conversation_error import ConversationErrorEvent
+from openhands.sdk.hooks import HookConfig, HookEventProcessor, create_hook_callback
 from openhands.sdk.llm import LLM, Message, TextContent
 from openhands.sdk.llm.llm_registry import LLMRegistry
 from openhands.sdk.logger import get_logger
 from openhands.sdk.observability.laminar import observe
+from openhands.sdk.plugin import (
+    Plugin,
+    PluginSource,
+    ResolvedPluginSource,
+    fetch_plugin_with_resolution,
+)
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
 
@@ -54,29 +64,47 @@ class LocalConversation(BaseConversation):
     _stuck_detector: StuckDetector | None
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
+    _hook_processor: HookEventProcessor | None
+    # Plugin lazy loading state
+    _plugin_specs: list[PluginSource] | None
+    _resolved_plugins: list[ResolvedPluginSource] | None
+    _plugins_loaded: bool
+    _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
 
     def __init__(
         self,
         agent: AgentBase,
         workspace: str | Path | LocalWorkspace,
+        plugins: list[PluginSource] | None = None,
         persistence_dir: str | Path | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         token_callbacks: list[ConversationTokenCallbackType] | None = None,
+        hook_config: HookConfig | None = None,
         max_iteration_per_run: int = 500,
         stuck_detection: bool = True,
+        stuck_detection_thresholds: (
+            StuckDetectionThresholds | Mapping[str, int] | None
+        ) = None,
         visualizer: (
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
+        cipher: Cipher | None = None,
         **_: object,
     ):
         """Initialize the conversation.
 
         Args:
-            agent: The agent to use for the conversation
+            agent: The agent to use for the conversation.
             workspace: Working directory for agent operations and tool execution.
                 Can be a string path, Path object, or LocalWorkspace instance.
+            plugins: Optional list of plugins to load. Each plugin is specified
+                with a source (github:owner/repo, git URL, or local path),
+                optional ref (branch/tag/commit), and optional repo_path for
+                monorepos. Plugins are loaded in order with these merge
+                semantics: skills override by name (last wins), MCP config
+                override by key (last wins), hooks concatenate (all run).
             persistence_dir: Directory for persisting conversation state and events.
                 Can be a string path or Path object.
             conversation_id: Optional ID for the conversation. If provided, will
@@ -84,6 +112,8 @@ class LocalConversation(BaseConversation):
                       suffix their persistent filestore with this ID.
             callbacks: Optional list of callback functions to handle events
             token_callbacks: Optional list of callbacks invoked for streaming deltas
+            hook_config: Optional hook configuration to auto-wire session hooks.
+                If plugins are loaded, their hooks are combined with this config.
             max_iteration_per_run: Maximum number of iterations per run
             visualizer: Visualization configuration. Can be:
                        - ConversationVisualizerBase subclass: Class to instantiate
@@ -91,11 +121,28 @@ class LocalConversation(BaseConversation):
                        - ConversationVisualizerBase instance: Use custom visualizer
                        - None: No visualization
             stuck_detection: Whether to enable stuck detection
+            stuck_detection_thresholds: Optional configuration for stuck detection
+                      thresholds. Can be a StuckDetectionThresholds instance or
+                      a dict with keys: 'action_observation', 'action_error',
+                      'monologue', 'alternating_pattern'. Values are integers
+                      representing the number of repetitions before triggering.
+            cipher: Optional cipher for encrypting/decrypting secrets in persisted
+                   state. If provided, secrets are encrypted when saving and
+                   decrypted when loading. If not provided, secrets are redacted
+                   (lost) on serialization.
         """
         super().__init__()  # Initialize with span tracking
         # Mark cleanup as initiated as early as possible to avoid races or partially
         # initialized instances during interpreter shutdown.
         self._cleanup_initiated = False
+
+        # Store plugin specs for lazy loading (no IO in constructor)
+        # Plugins will be loaded on first run() or send_message() call
+        self._plugin_specs = plugins
+        self._resolved_plugins = None
+        self._plugins_loaded = False
+        self._pending_hook_config = hook_config  # Will be combined with plugin hooks
+        self._agent_ready = False  # Agent initialized lazily after plugins loaded
 
         self.agent = agent
         if isinstance(workspace, (str, Path)):
@@ -120,13 +167,15 @@ class LocalConversation(BaseConversation):
             else None,
             max_iterations=max_iteration_per_run,
             stuck_detection=stuck_detection,
+            cipher=cipher,
         )
 
         # Default callback: persist every event to state
         def _default_callback(e):
             self._state.events.append(e)
 
-        composed_list = (callbacks if callbacks else []) + [_default_callback]
+        callback_list = list(callbacks) if callbacks else []
+        composed_list = callback_list + [_default_callback]
         # Handle visualization configuration
         if isinstance(visualizer, ConversationVisualizerBase):
             # Use custom visualizer instance
@@ -148,7 +197,15 @@ class LocalConversation(BaseConversation):
             # No visualization (visualizer is None)
             self._visualizer = None
 
-        self._on_event = BaseConversation.compose_callbacks(composed_list)
+        # Compose the base callback chain (visualizer -> user callbacks -> default)
+        base_callback = BaseConversation.compose_callbacks(composed_list)
+        self._base_callback = base_callback  # Store for _ensure_plugins_loaded
+
+        # Defer all hook setup to _ensure_plugins_loaded() for consistency
+        # This runs on first run()/send_message() call and handles both
+        # explicit hooks and plugin hooks in one place
+        self._hook_processor = None
+        self._on_event = base_callback
         self._on_token = (
             BaseConversation.compose_callbacks(token_callbacks)
             if token_callbacks
@@ -158,16 +215,24 @@ class LocalConversation(BaseConversation):
         self.max_iteration_per_run = max_iteration_per_run
 
         # Initialize stuck detector
-        self._stuck_detector = StuckDetector(self._state) if stuck_detection else None
+        if stuck_detection:
+            # Convert dict to StuckDetectionThresholds if needed
+            if isinstance(stuck_detection_thresholds, Mapping):
+                threshold_config = StuckDetectionThresholds(
+                    **stuck_detection_thresholds
+                )
+            else:
+                threshold_config = stuck_detection_thresholds
+            self._stuck_detector = StuckDetector(
+                self._state,
+                thresholds=threshold_config,
+            )
+        else:
+            self._stuck_detector = None
 
-        with self._state:
-            self.agent.init_state(self._state, on_event=self._on_event)
-
-        # Register existing llms in agent
+        # Agent initialization is deferred to _ensure_agent_ready() for lazy loading
+        # This ensures plugins are loaded before agent initialization
         self.llm_registry = LLMRegistry()
-        self.llm_registry.subscribe(self._state.stats.register_llm)
-        for llm in list(self.agent.get_all_llms()):
-            self.llm_registry.add(llm)
 
         # Initialize secrets if provided
         if secrets:
@@ -203,6 +268,154 @@ class LocalConversation(BaseConversation):
         """Get the stuck detector instance if enabled."""
         return self._stuck_detector
 
+    @property
+    def resolved_plugins(self) -> list[ResolvedPluginSource] | None:
+        """Get the resolved plugin sources after plugins are loaded.
+
+        Returns None if plugins haven't been loaded yet, or if no plugins
+        were specified. Use this for persistence to ensure conversation
+        resume uses the exact same plugin versions.
+        """
+        return self._resolved_plugins
+
+    def _ensure_plugins_loaded(self) -> None:
+        """Lazy load plugins and set up hooks on first use.
+
+        This method is called automatically before run() and send_message().
+        It handles both plugin loading and hook initialization in one place
+        for consistency.
+
+        The method:
+        1. Fetches plugins from their sources (network IO for remote sources)
+        2. Resolves refs to commit SHAs for deterministic resume
+        3. Loads plugin contents (skills, MCP config, hooks)
+        4. Merges plugin contents into the agent
+        5. Sets up hook processor with combined hooks (explicit + plugin)
+        6. Runs session_start hooks
+        """
+        if self._plugins_loaded:
+            return
+
+        all_plugin_hooks: list[HookConfig] = []
+
+        # Load plugins if specified
+        if self._plugin_specs:
+            logger.info(f"Loading {len(self._plugin_specs)} plugin(s)...")
+            self._resolved_plugins = []
+
+            # Start with agent's existing context and MCP config
+            merged_context = self.agent.agent_context
+            merged_mcp = dict(self.agent.mcp_config) if self.agent.mcp_config else {}
+
+            for spec in self._plugin_specs:
+                # Fetch plugin and get resolved commit SHA
+                path, resolved_ref = fetch_plugin_with_resolution(
+                    source=spec.source,
+                    ref=spec.ref,
+                    repo_path=spec.repo_path,
+                )
+
+                # Store resolved ref for persistence
+                resolved = ResolvedPluginSource.from_plugin_source(spec, resolved_ref)
+                self._resolved_plugins.append(resolved)
+
+                # Load the plugin
+                plugin = Plugin.load(path)
+                logger.debug(
+                    f"Loaded plugin '{plugin.manifest.name}' from {spec.source}"
+                    + (f" @ {resolved_ref[:8]}" if resolved_ref else "")
+                )
+
+                # Merge plugin contents
+                merged_context = plugin.add_skills_to(merged_context)
+                merged_mcp = plugin.add_mcp_config_to(merged_mcp)
+
+                # Collect hooks
+                if plugin.hooks and not plugin.hooks.is_empty():
+                    all_plugin_hooks.append(plugin.hooks)
+
+            # Update agent with merged content
+            self.agent = self.agent.model_copy(
+                update={
+                    "agent_context": merged_context,
+                    "mcp_config": merged_mcp,
+                }
+            )
+
+            # Also update the agent in _state so API responses reflect loaded plugins
+            with self._state:
+                self._state.agent = self.agent
+
+            logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
+
+        # Combine explicit hook_config with plugin hooks
+        # Explicit hooks run first (before plugin hooks)
+        final_hook_config = self._pending_hook_config
+        if all_plugin_hooks:
+            plugin_hooks = HookConfig.merge(all_plugin_hooks)
+            if plugin_hooks is not None:
+                if final_hook_config is not None:
+                    final_hook_config = HookConfig.merge(
+                        [final_hook_config, plugin_hooks]
+                    )
+                else:
+                    final_hook_config = plugin_hooks
+
+        # Set up hook processor with the combined config
+        if final_hook_config is not None:
+            self._hook_processor, self._on_event = create_hook_callback(
+                hook_config=final_hook_config,
+                working_dir=str(self.workspace.working_dir),
+                session_id=str(self._state.id),
+                original_callback=self._base_callback,
+            )
+            self._hook_processor.set_conversation_state(self._state)
+            self._hook_processor.run_session_start()
+
+        self._plugins_loaded = True
+
+    def _ensure_agent_ready(self) -> None:
+        """Ensure agent is fully initialized with plugins loaded.
+
+        This method combines plugin loading and agent initialization to ensure
+        the agent is initialized exactly once with complete configuration.
+
+        Called lazily on first send_message() or run() to:
+        1. Load plugins (if specified)
+        2. Initialize agent with complete plugin config and hooks
+        3. Register LLMs in the registry
+
+        This preserves the design principle that constructors should not perform
+        I/O or error-prone operations, while eliminating double initialization.
+
+        Thread-safe: Uses state lock to prevent concurrent initialization.
+        """
+        # Fast path: if already initialized, skip lock acquisition entirely.
+        # This is crucial for concurrent send_message() calls during run(),
+        # which holds the state lock during agent.step(). Without this check,
+        # send_message() would block waiting for the lock even though no
+        # initialization is needed.
+        if self._agent_ready:
+            return
+
+        with self._state:
+            # Re-check after acquiring lock in case another thread initialized
+            if self._agent_ready:
+                return
+
+            # Load plugins first (merges skills, MCP config, hooks)
+            self._ensure_plugins_loaded()
+
+            # Initialize agent with complete configuration
+            self.agent.init_state(self._state, on_event=self._on_event)
+
+            # Register LLMs in the registry (still holding lock)
+            self.llm_registry.subscribe(self._state.stats.register_llm)
+            for llm in list(self.agent.get_all_llms()):
+                self.llm_registry.add(llm)
+
+            self._agent_ready = True
+
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
@@ -215,6 +428,9 @@ class LocalConversation(BaseConversation):
                    one agent delegates to another, the sender can be set to
                    identify which agent is sending the message.
         """
+        # Ensure agent is fully initialized (loads plugins and initializes agent)
+        self._ensure_agent_ready()
+
         # Convert string to Message if needed
         if isinstance(message, str):
             message = Message(role="user", content=[TextContent(text=message)])
@@ -273,6 +489,8 @@ class LocalConversation(BaseConversation):
 
         Can be paused between steps
         """
+        # Ensure agent is fully initialized (loads plugins and initializes agent)
+        self._ensure_agent_ready()
 
         with self._state:
             if self._state.execution_status in [
@@ -291,10 +509,37 @@ class LocalConversation(BaseConversation):
                     # Before value can be modified step can be taken
                     # Ensure step conditions are checked when lock is already acquired
                     if self._state.execution_status in [
-                        ConversationExecutionStatus.FINISHED,
                         ConversationExecutionStatus.PAUSED,
                         ConversationExecutionStatus.STUCK,
                     ]:
+                        break
+
+                    # Handle stop hooks on FINISHED
+                    if (
+                        self._state.execution_status
+                        == ConversationExecutionStatus.FINISHED
+                    ):
+                        if self._hook_processor is not None:
+                            should_stop, feedback = self._hook_processor.run_stop(
+                                reason="agent_finished"
+                            )
+                            if not should_stop:
+                                logger.info("Stop hook denied agent stopping")
+                                if feedback:
+                                    prefixed = f"[Stop hook feedback] {feedback}"
+                                    feedback_msg = MessageEvent(
+                                        source="user",
+                                        llm_message=Message(
+                                            role="user",
+                                            content=[TextContent(text=prefixed)],
+                                        ),
+                                    )
+                                    self._on_event(feedback_msg)
+                                self._state.execution_status = (
+                                    ConversationExecutionStatus.RUNNING
+                                )
+                                continue
+                        # No hooks or hooks allowed stopping
                         break
 
                     # Check for stuck patterns if enabled
@@ -333,8 +578,23 @@ class LocalConversation(BaseConversation):
                     if (
                         self.state.execution_status
                         == ConversationExecutionStatus.WAITING_FOR_CONFIRMATION
-                        or iteration >= self.max_iteration_per_run
                     ):
+                        break
+
+                    if iteration >= self.max_iteration_per_run:
+                        error_msg = (
+                            f"Agent reached maximum iterations limit "
+                            f"({self.max_iteration_per_run})."
+                        )
+                        logger.error(error_msg)
+                        self._state.execution_status = ConversationExecutionStatus.ERROR
+                        self._on_event(
+                            ConversationErrorEvent(
+                                source="environment",
+                                code="MaxIterationsReached",
+                                detail=error_msg,
+                            )
+                        )
                         break
         except Exception as e:
             self._state.execution_status = ConversationExecutionStatus.ERROR
@@ -348,10 +608,10 @@ class LocalConversation(BaseConversation):
                 )
             )
 
-            # Re-raise with conversation id for better UX; include original traceback
-            raise ConversationRunError(self._state.id, e) from e
-        finally:
-            self._end_observability_span()
+            # Re-raise with conversation id and persistence dir for better UX
+            raise ConversationRunError(
+                self._state.id, e, persistence_dir=self._state.persistence_dir
+            ) from e
 
     def set_confirmation_policy(self, policy: ConfirmationPolicyBase) -> None:
         """Set the confirmation policy and store it in conversation state."""
@@ -435,16 +695,25 @@ class LocalConversation(BaseConversation):
 
     def close(self) -> None:
         """Close the conversation and clean up all tool executors."""
-        if self._cleanup_initiated:
+        # Use getattr for safety - object may be partially constructed
+        if getattr(self, "_cleanup_initiated", False):
             return
         self._cleanup_initiated = True
         logger.debug("Closing conversation and cleaning up tool executors")
+        hook_processor = getattr(self, "_hook_processor", None)
+        if hook_processor is not None:
+            hook_processor.run_session_end()
         try:
             self._end_observability_span()
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        for tool in self.agent.tools_map.values():
+        try:
+            tools_map = self.agent.tools_map
+        except (AttributeError, RuntimeError):
+            # Agent not initialized or partially constructed
+            return
+        for tool in tools_map.values():
             try:
                 executable_tool = tool.as_executable()
                 executable_tool.executor.close()
@@ -469,6 +738,9 @@ class LocalConversation(BaseConversation):
         Returns:
             A string response from the agent
         """
+        # Ensure agent is initialized (needs tools_map)
+        self._ensure_agent_ready()
+
         # Import here to avoid circular imports
         from openhands.sdk.agent.utils import make_llm_completion, prepare_llm_messages
 
@@ -539,6 +811,55 @@ class LocalConversation(BaseConversation):
         return generate_conversation_title(
             events=self._state.events, llm=llm_to_use, max_length=max_length
         )
+
+    def condense(self) -> None:
+        """Synchronously force condense the conversation history.
+
+        If the agent is currently running, `condense()` will wait for the
+        ongoing step to finish before proceeding.
+
+        Raises ValueError if no compatible condenser exists.
+        """
+
+        # Check if condenser is configured and handles condensation requests
+        if (
+            self.agent.condenser is None
+            or not self.agent.condenser.handles_condensation_requests()
+        ):
+            condenser_info = (
+                "No condenser configured"
+                if self.agent.condenser is None
+                else (
+                    f"Condenser {type(self.agent.condenser).__name__} does not handle "
+                    "condensation requests"
+                )
+            )
+            raise ValueError(
+                f"Cannot condense conversation: {condenser_info}. "
+                "To enable manual condensation, configure an "
+                "LLMSummarizingCondenser:\n\n"
+                "from openhands.sdk.context.condenser import LLMSummarizingCondenser\n"
+                "agent = Agent(\n"
+                "    llm=your_llm,\n"
+                "    condenser=LLMSummarizingCondenser(\n"
+                "        llm=your_llm,\n"
+                "        max_size=120,\n"
+                "        keep_first=4\n"
+                "    )\n"
+                ")"
+            )
+
+        # Add a condensation request event
+        condensation_request = CondensationRequest()
+        self._on_event(condensation_request)
+
+        # Force the agent to take a single step to process the condensation request
+        # This will trigger the condenser if it handles condensation requests
+        with self._state:
+            # Take a single step to process the condensation request
+            self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
+
+        logger.info("Condensation request processed")
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""

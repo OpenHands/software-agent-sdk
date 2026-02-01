@@ -117,6 +117,7 @@ def prepare_llm_messages(
     events: Sequence[Event],
     condenser: None = None,
     additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
 ) -> list[Message]: ...
 
 
@@ -125,6 +126,7 @@ def prepare_llm_messages(
     events: Sequence[Event],
     condenser: CondenserBase,
     additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
 ) -> list[Message] | Condensation: ...
 
 
@@ -132,6 +134,7 @@ def prepare_llm_messages(
     events: Sequence[Event],
     condenser: CondenserBase | None = None,
     additional_messages: list[Message] | None = None,
+    llm: LLM | None = None,
 ) -> list[Message] | Condensation:
     """Prepare LLM messages from conversation context.
 
@@ -140,13 +143,15 @@ def prepare_llm_messages(
     It handles condensation internally and calls the callback when needed.
 
     Args:
-        state: The conversation state containing events
+        events: Sequence of events to prepare messages from
         condenser: Optional condenser for handling context window limits
         additional_messages: Optional additional messages to append
-        on_event: Optional callback for handling condensation events
+        llm: Optional LLM instance from the agent, passed to condenser for
+            token counting or other LLM features
 
     Returns:
-        List of messages ready for LLM completion
+        List of messages ready for LLM completion, or a Condensation event
+        if condensation is needed
 
     Raises:
         RuntimeError: If condensation is needed but no callback is provided
@@ -160,7 +165,7 @@ def prepare_llm_messages(
     # produce a list of events, exactly as expected, or a
     # new condensation that needs to be processed
     if condenser is not None:
-        condensation_result = condenser.condense(view)
+        condensation_result = condenser.condense(view, agent_llm=llm)
 
         match condensation_result:
             case View():
@@ -195,6 +200,18 @@ def make_llm_completion(
 
     Returns:
         LLMResponse from the LLM completion call
+
+    Note:
+        Always exposes a 'security_risk' parameter in tool schemas via
+        add_security_risk_prediction=True. This ensures the schema remains
+        consistent, even if the security analyzer is disabled. Validation of
+        this field happens dynamically at runtime depending on the analyzer
+        configured. This allows weaker models to omit risk field and bypass
+        validation requirements when analyzer is disabled. For detailed logic,
+        see `_extract_security_risk` method in agent.py.
+
+        Summary field is always added to tool schemas for transparency and
+        explainability of agent actions.
     """
     if llm.uses_responses_api():
         return llm.responses(

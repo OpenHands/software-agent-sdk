@@ -1,4 +1,9 @@
-from openhands.sdk.tool.builtins import BUILT_IN_TOOLS, FinishTool, ThinkTool
+from openhands.sdk.tool.builtins import (
+    BUILT_IN_TOOL_CLASSES,
+    BUILT_IN_TOOLS,
+    FinishTool,
+    ThinkTool,
+)
 from openhands.sdk.tool.registry import (
     list_registered_tools,
     register_tool,
@@ -28,6 +33,7 @@ __all__ = [
     "FinishTool",
     "ThinkTool",
     "BUILT_IN_TOOLS",
+    "BUILT_IN_TOOL_CLASSES",
     "register_tool",
     "resolve_tool",
     "list_registered_tools",

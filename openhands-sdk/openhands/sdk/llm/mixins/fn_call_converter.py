@@ -450,7 +450,8 @@ PLEASE follow the format strictly! PLEASE EMIT ONE AND ONLY ONE FUNCTION CALL PE
 """  # noqa: E501
 
 # Regex patterns for function call parsing
-FN_REGEX_PATTERN = r"<function=([^>]+)>\n(.*?)</function>"
+# Note: newline after function name is optional for compatibility with various models
+FN_REGEX_PATTERN = r"<function=([^>]+)>\n?(.*?)</function>"
 FN_PARAM_REGEX_PATTERN = r"<parameter=([^>]+)>(.*?)</parameter>"
 
 # Add new regex pattern for tool execution results
@@ -702,7 +703,7 @@ def convert_fncall_messages_to_non_fncall_messages(
     first_user_message_encountered = False
     for message in messages:
         role = message["role"]
-        content: Content = message["content"]
+        content: Content = message.get("content") or ""
 
         # 1. SYSTEM MESSAGES
         # append system prompt suffix to content
@@ -880,6 +881,9 @@ def _extract_and_validate_params(
     for param_match in param_matches:
         param_name = param_match.group(1)
         param_value = param_match.group(2)
+        # Normalize whitespace: some models add extra newlines around values
+        if isinstance(param_value, str):
+            param_value = param_value.strip()
 
         # Validate parameter is allowed
         if allowed_params and param_name not in allowed_params:
@@ -927,7 +931,11 @@ def _extract_and_validate_params(
         found_params.add(param_name)
 
     # Check all required parameters are present
-    missing_params = required_params - found_params
+    # Note: security_risk is excluded here because its validation happens later
+    # in Agent._extract_security_risk(), which has context about whether a security
+    # analyzer is configured. This allows weaker models to omit it when no analyzer
+    # is active, while still enforcing it for stronger models with LLMSecurityAnalyzer.
+    missing_params = required_params - found_params - {"security_risk"}
     if missing_params:
         raise FunctionCallValidationError(
             f"Missing required parameters for function '{fn_name}': {missing_params}"
@@ -935,12 +943,31 @@ def _extract_and_validate_params(
     return params
 
 
+def _preprocess_model_output(content: str) -> str:
+    """Clean up model-specific formatting before parsing function calls.
+
+    Removes wrapper tags that some models (like Nemotron) emit around function calls:
+    - </think> before the function call
+    - <tool_call>...</tool_call> around the function call
+
+    Only strips tags at boundaries, not inside parameter values.
+    """
+    # Strip </think> when it appears before <function= (Nemotron reasoning end)
+    content = re.sub(r"</think>\s*(?=<function=)", "", content)
+    # Strip <tool_call> when it appears right before <function=
+    content = re.sub(r"<tool_call>\s*(?=<function=)", "", content)
+    # Strip </tool_call> when it appears right after </function>
+    content = re.sub(r"(?<=</function>)\s*</tool_call>", "", content)
+    return content
+
+
 def _fix_stopword(content: str) -> str:
     """Fix the issue when some LLM would NOT return the stopword."""
+    content = _preprocess_model_output(content)
     if "<function=" in content and content.count("<function=") == 1:
         if content.endswith("</"):
             content = content.rstrip() + "function>"
-        else:
+        elif not content.rstrip().endswith("</function>"):
             content = content + "\n</function>"
     return content
 
@@ -981,8 +1008,8 @@ def convert_non_fncall_messages_to_fncall_messages(
 
     first_user_message_encountered = False
     for message in messages:
-        role, content = message["role"], message["content"]
-        content = content or ""  # handle cases where content is None
+        role = message["role"]
+        content = message.get("content") or ""
         # For system messages, remove the added suffix
         if role == "system":
             if isinstance(content, str):
@@ -1124,15 +1151,32 @@ def convert_non_fncall_messages_to_fncall_messages(
             if fn_match:
                 fn_name = fn_match.group(1)
                 fn_body = _normalize_parameter_tags(fn_match.group(2))
-                matching_tool: ChatCompletionToolParamFunctionChunk | None = next(
-                    (
-                        tool["function"]
-                        for tool in tools
-                        if tool["type"] == "function"
-                        and tool["function"]["name"] == fn_name
-                    ),
-                    None,
-                )
+
+                def _find_tool(
+                    name: str,
+                ) -> ChatCompletionToolParamFunctionChunk | None:
+                    return next(
+                        (
+                            tool["function"]
+                            for tool in tools
+                            if tool["type"] == "function"
+                            and tool["function"]["name"] == name
+                        ),
+                        None,
+                    )
+
+                matching_tool = _find_tool(fn_name)
+                # Try aliases if tool not found (some models use legacy names)
+                if not matching_tool:
+                    TOOL_NAME_ALIASES = {
+                        "str_replace_editor": "file_editor",
+                        "bash": "terminal",
+                        "execute_bash": "terminal",
+                        "str_replace": "file_editor",
+                    }
+                    if fn_name in TOOL_NAME_ALIASES:
+                        fn_name = TOOL_NAME_ALIASES[fn_name]
+                        matching_tool = _find_tool(fn_name)
                 # Validate function exists in tools
                 if not matching_tool:
                     available_tools = [
@@ -1203,7 +1247,8 @@ def convert_from_multiple_tool_calls_to_single_tool_call_messages(
     for message in messages:
         role: str
         content: Content
-        role, content = message["role"], message["content"]
+        role = message["role"]
+        content = message.get("content") or ""
         if role == "assistant":
             if message.get("tool_calls") and len(message["tool_calls"]) > 1:
                 # handle multiple tool calls by breaking them into multiple messages

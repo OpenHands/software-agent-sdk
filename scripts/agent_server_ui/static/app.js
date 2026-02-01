@@ -506,7 +506,7 @@ class OpenHandsWebChat {
         if (!this.currentConversationId) return;
         
         try {
-            await this.apiRequest(`/conversations/${this.currentConversationId}/resume`, {
+            await this.apiRequest(`/conversations/${this.currentConversationId}/run`, {
                 method: 'POST'
             });
             this.updateConversationStatus('RUNNING');

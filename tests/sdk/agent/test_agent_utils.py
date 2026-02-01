@@ -208,7 +208,7 @@ def test_prepare_llm_messages_with_condenser_returns_view(
     # Verify results
     assert result == condensed_messages
     mock_from_events.assert_called_once_with(sample_events)
-    mock_condenser.condense.assert_called_once_with(mock_view)
+    mock_condenser.condense.assert_called_once_with(mock_view, agent_llm=None)
     mock_events_to_messages.assert_called_once_with(condensed_events)
 
 
@@ -234,7 +234,7 @@ def test_prepare_llm_messages_with_condenser_returns_condensation(
     # Verify results
     assert result == condensation
     mock_from_events.assert_called_once_with(sample_events)
-    mock_condenser.condense.assert_called_once_with(mock_view)
+    mock_condenser.condense.assert_called_once_with(mock_view, agent_llm=None)
 
 
 @patch("openhands.sdk.agent.utils.View.from_events")

@@ -9,8 +9,8 @@ from pydantic import SecretStr
 from openhands.sdk.agent import Agent
 from openhands.sdk.conversation import Conversation
 from openhands.sdk.conversation.impl.local_conversation import LocalConversation
-from openhands.sdk.conversation.secret_source import LookupSecret, SecretSource
 from openhands.sdk.llm import LLM
+from openhands.sdk.secret import LookupSecret, SecretSource
 from openhands.sdk.tool import Tool, register_tool
 from openhands.tools.terminal import TerminalTool
 from openhands.tools.terminal.definition import TerminalAction
@@ -45,6 +45,8 @@ def conversation(agent: Agent, tmp_path) -> LocalConversation:
 
 @pytest.fixture
 def terminal_executor(conversation: LocalConversation) -> TerminalExecutor:
+    # Trigger lazy initialization before accessing tools_map
+    conversation._ensure_agent_ready()
     tools_map = conversation.agent.tools_map
     terminal_tool = tools_map["terminal"]
     return cast(TerminalExecutor, terminal_tool.executor)

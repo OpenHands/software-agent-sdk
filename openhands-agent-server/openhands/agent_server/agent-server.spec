@@ -86,6 +86,10 @@ a = Analysis(
     optimize=0,
 )
 
+# Remove problematic system libraries that should use host versions
+# This prevents bundling incompatible libgcc_s.so.1 that lacks GCC_14.0 symbols
+a.binaries = [x for x in a.binaries if not x[0].startswith('libgcc_s.so')]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

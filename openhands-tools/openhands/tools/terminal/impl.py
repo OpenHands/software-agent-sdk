@@ -199,27 +199,3 @@ class TerminalExecutor(ToolExecutor[TerminalAction, TerminalObservation]):
         """Close the terminal session and clean up resources."""
         if hasattr(self, "session"):
             self.session.close()
-
-
-# Deprecated aliases for backward compatibility
-class BashExecutor(TerminalExecutor):
-    """Deprecated: Use TerminalExecutor instead.
-
-    This class is deprecated and will be removed in version 1.5.0.
-    Please use TerminalExecutor instead.
-    """
-
-    def __init__(self, *args, **kwargs):
-        from openhands.sdk.utils.deprecation import warn_deprecated
-
-        warn_deprecated(
-            "BashExecutor",
-            deprecated_in="1.2.0",
-            removed_in="1.5.0",
-            details=(
-                "Use TerminalExecutor instead. BashExecutor is an "
-                "alias that will be removed in the future."
-            ),
-            stacklevel=3,
-        )
-        super().__init__(*args, **kwargs)

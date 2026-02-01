@@ -1,4 +1,3 @@
-from typing import cast
 from unittest.mock import create_autospec
 
 from openhands.sdk.context.view import View
@@ -311,7 +310,6 @@ def test_condensations_field_empty_when_no_condensations() -> None:
     view = View.from_events(events)
 
     assert view.condensations == []
-    assert view.most_recent_condensation is None
 
 
 def test_condensations_field_stores_all_condensations_in_order() -> None:
@@ -357,48 +355,6 @@ def test_condensations_field_stores_all_condensations_in_order() -> None:
     assert view.condensations[2] == condensation3
 
 
-def test_most_recent_condensation_property() -> None:
-    """Test that most_recent_condensation property returns the last condensation."""
-    message_events = [message_event(f"Event {i}") for i in range(3)]
-
-    # Test with no condensations
-    events_no_condensation: list[Event] = cast(list[Event], message_events.copy())
-    view_no_condensation = View.from_events(events_no_condensation)
-    assert view_no_condensation.most_recent_condensation is None
-
-    # Test with single condensation
-    condensation1 = Condensation(
-        forgotten_event_ids=[],
-        summary="First summary",
-        llm_response_id="condensation_response_1",
-    )
-    events_single: list[Event] = [*message_events, condensation1]
-    view_single = View.from_events(events_single)
-    assert view_single.most_recent_condensation == condensation1
-
-    # Test with multiple condensations
-    condensation2 = Condensation(
-        forgotten_event_ids=[],
-        summary="Second summary",
-        llm_response_id="condensation_response_2",
-    )
-    condensation3 = Condensation(
-        forgotten_event_ids=[],
-        summary="Third summary",
-        llm_response_id="condensation_response_3",
-    )
-    events_multiple: list[Event] = [
-        message_events[0],
-        condensation1,
-        message_events[1],
-        condensation2,
-        message_events[2],
-        condensation3,
-    ]
-    view_multiple = View.from_events(events_multiple)
-    assert view_multiple.most_recent_condensation == condensation3
-
-
 def test_condensations_field_with_mixed_events() -> None:
     """Test condensations field behavior with mixed event types including requests."""
     message_events = [message_event(f"Event {i}") for i in range(4)]
@@ -428,171 +384,6 @@ def test_condensations_field_with_mixed_events() -> None:
     assert len(view.condensations) == 2
     assert view.condensations[0] == condensation1
     assert view.condensations[1] == condensation2
-    assert view.most_recent_condensation == condensation2
-
-
-def test_summary_event_index_none_when_no_summary() -> None:
-    """Test that summary_event_index is None when there's no summary."""
-    events: list[Event] = [message_event(f"Event {i}") for i in range(3)]
-    view = View.from_events(events)
-
-    assert view.summary_event_index is None
-    assert view.summary_event is None
-
-
-def test_summary_event_index_none_when_condensation_has_no_summary() -> None:
-    """Test that summary_event_index is None when condensation exists but has no
-    summary.
-    """
-    message_events = [message_event(f"Event {i}") for i in range(3)]
-
-    # Condensation without summary
-    condensation = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        llm_response_id="condensation_response_1",
-    )
-
-    events: list[Event] = [
-        message_events[0],
-        message_events[1],
-        condensation,
-        message_events[2],
-    ]
-
-    view = View.from_events(events)
-
-    assert view.summary_event_index is None
-    assert view.summary_event is None
-    assert len(view.condensations) == 1
-
-
-def test_summary_event_index_and_event_with_summary() -> None:
-    """Test that summary_event_index and summary_event work correctly when summary
-    exists.
-    """
-    message_events = [message_event(f"Event {i}") for i in range(4)]
-
-    # Condensation with summary at offset 1
-    condensation = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        summary="This is a test summary",
-        summary_offset=1,
-        llm_response_id="condensation_response_1",
-    )
-
-    events: list[Event] = [
-        message_events[0],  # Will be forgotten
-        message_events[1],
-        condensation,
-        message_events[2],
-        message_events[3],
-    ]
-
-    view = View.from_events(events)
-
-    # Should have summary at index 1
-    assert view.summary_event_index == 1
-    assert view.summary_event is not None
-
-    # Check the summary event properties
-    summary_event = view.summary_event
-    assert summary_event.summary == "This is a test summary"
-
-    # Verify the view structure
-    assert len(view) == 4  # 3 kept events + 1 summary
-    assert view[1] == summary_event  # Summary at index 1
-
-
-def test_summary_event_with_multiple_condensations() -> None:
-    """Test that summary_event uses the most recent condensation's summary."""
-    message_events = [message_event(f"Event {i}") for i in range(5)]
-
-    # First condensation with summary
-    condensation1 = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        summary="First summary",
-        summary_offset=0,
-        llm_response_id="condensation_response_1",
-    )
-
-    # Second condensation with different summary (should override)
-    condensation2 = Condensation(
-        forgotten_event_ids=[message_events[1].id],
-        summary="Second summary",
-        summary_offset=1,
-        llm_response_id="condensation_response_2",
-    )
-
-    events: list[Event] = [
-        message_events[0],  # Will be forgotten by condensation1
-        message_events[1],  # Will be forgotten by condensation2
-        condensation1,
-        message_events[2],
-        condensation2,
-        message_events[3],
-        message_events[4],
-    ]
-
-    view = View.from_events(events)
-
-    # Should use the most recent condensation's summary
-    assert view.summary_event_index == 1
-    assert view.summary_event is not None
-    assert view.summary_event.summary == "Second summary"
-
-    # Should have both condensations
-    assert len(view.condensations) == 2
-
-
-def test_summary_event_with_condensation_without_offset() -> None:
-    """Test that summary is ignored if condensation has summary but no offset."""
-    message_events = [message_event(f"Event {i}") for i in range(3)]
-
-    # Condensation with summary but no offset
-    condensation = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        summary="This summary should be ignored",
-        llm_response_id="condensation_response_1",
-        # No summary_offset
-    )
-
-    events: list[Event] = [
-        message_events[0],
-        message_events[1],
-        condensation,
-        message_events[2],
-    ]
-
-    view = View.from_events(events)
-
-    assert view.summary_event_index is None
-    assert view.summary_event is None
-
-
-def test_summary_event_with_zero_offset() -> None:
-    """Test that summary_event works correctly with offset 0."""
-    message_events = [message_event(f"Event {i}") for i in range(3)]
-
-    condensation = Condensation(
-        forgotten_event_ids=[message_events[0].id],
-        summary="Summary at beginning",
-        summary_offset=0,
-        llm_response_id="condensation_response_1",
-    )
-
-    events: list[Event] = [
-        message_events[0],  # Will be forgotten
-        message_events[1],
-        condensation,
-        message_events[2],
-    ]
-
-    view = View.from_events(events)
-
-    assert view.summary_event_index == 0
-    assert view.summary_event is not None
-    assert view.summary_event.summary == "Summary at beginning"
-    assert view[0] == view.summary_event  # Summary is first event
 
 
 # Tests for unmatched tool call filtering functionality moved from CondenserBase
@@ -600,7 +391,7 @@ def test_summary_event_with_zero_offset() -> None:
 
 def test_filter_unmatched_tool_calls_empty_list() -> None:
     """Test filter_unmatched_tool_calls with empty event list."""
-    result = View.filter_unmatched_tool_calls([])
+    result = View._filter_unmatched_tool_calls([], [])
     assert result == []
 
 
@@ -608,10 +399,12 @@ def test_filter_unmatched_tool_calls_no_tool_events() -> None:
     """Test filter_unmatched_tool_calls with no tool events."""
     # Create mock non-tool events
     message_event_1 = create_autospec(MessageEvent, instance=True)
+    message_event_1.id = "msg_1"
     message_event_2 = create_autospec(MessageEvent, instance=True)
+    message_event_2.id = "msg_2"
 
     events = [message_event_1, message_event_2]
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # All non-tool events should be kept
     assert len(result) == 2
@@ -623,20 +416,27 @@ def test_filter_unmatched_tool_calls_matched_pairs() -> None:
     """Test filter_unmatched_tool_calls with matched tool call pairs."""
     # Create mock events
     message_event = create_autospec(MessageEvent, instance=True)
+    message_event.id = "msg_1"
 
     # Matched pair 1
     action_event_1 = create_autospec(ActionEvent, instance=True)
     action_event_1.tool_call_id = "call_1"
+    action_event_1.id = "action_1"
+    action_event_1.llm_response_id = "response_1"
 
     observation_event_1 = create_autospec(ObservationEvent, instance=True)
     observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
 
     # Matched pair 2
     action_event_2 = create_autospec(ActionEvent, instance=True)
     action_event_2.tool_call_id = "call_2"
+    action_event_2.id = "action_2"
+    action_event_2.llm_response_id = "response_2"
 
     observation_event_2 = create_autospec(ObservationEvent, instance=True)
     observation_event_2.tool_call_id = "call_2"
+    observation_event_2.id = "obs_2"
 
     events = [
         message_event,
@@ -646,7 +446,7 @@ def test_filter_unmatched_tool_calls_matched_pairs() -> None:
         observation_event_2,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # All events should be kept (all tool calls are matched)
     assert len(result) == 5
@@ -661,17 +461,23 @@ def test_filter_unmatched_tool_calls_unmatched_action() -> None:
     """Test filter_unmatched_tool_calls with unmatched ActionEvent."""
     # Create mock events
     message_event = create_autospec(MessageEvent, instance=True)
+    message_event.id = "msg_1"
 
     # Matched pair
     action_event_matched = create_autospec(ActionEvent, instance=True)
     action_event_matched.tool_call_id = "call_1"
+    action_event_matched.id = "action_1"
+    action_event_matched.llm_response_id = "response_1"
 
     observation_event_matched = create_autospec(ObservationEvent, instance=True)
     observation_event_matched.tool_call_id = "call_1"
+    observation_event_matched.id = "obs_1"
 
     # Unmatched ActionEvent
     action_event_unmatched = create_autospec(ActionEvent, instance=True)
     action_event_unmatched.tool_call_id = "call_2"
+    action_event_unmatched.id = "action_2"
+    action_event_unmatched.llm_response_id = "response_2"
 
     events = [
         message_event,
@@ -680,7 +486,7 @@ def test_filter_unmatched_tool_calls_unmatched_action() -> None:
         action_event_unmatched,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep: message_event, matched pair
     # Should filter out: unmatched ActionEvent
@@ -695,17 +501,22 @@ def test_filter_unmatched_tool_calls_unmatched_observation() -> None:
     """Test filter_unmatched_tool_calls with unmatched ObservationEvent."""
     # Create mock events
     message_event = create_autospec(MessageEvent, instance=True)
+    message_event.id = "msg_1"
 
     # Matched pair
     action_event_matched = create_autospec(ActionEvent, instance=True)
     action_event_matched.tool_call_id = "call_1"
+    action_event_matched.id = "action_1"
+    action_event_matched.llm_response_id = "response_1"
 
     observation_event_matched = create_autospec(ObservationEvent, instance=True)
     observation_event_matched.tool_call_id = "call_1"
+    observation_event_matched.id = "obs_1"
 
     # Unmatched ObservationEvent
     observation_event_unmatched = create_autospec(ObservationEvent, instance=True)
     observation_event_unmatched.tool_call_id = "call_2"
+    observation_event_unmatched.id = "obs_2"
 
     events = [
         message_event,
@@ -714,7 +525,7 @@ def test_filter_unmatched_tool_calls_unmatched_observation() -> None:
         observation_event_unmatched,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep: message_event, matched pair
     # Should filter out: unmatched ObservationEvent
@@ -729,29 +540,40 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
     """Test filter_unmatched_tool_calls with complex mixed scenario."""
     # Create mock events
     message_event_1 = create_autospec(MessageEvent, instance=True)
+    message_event_1.id = "msg_1"
     message_event_2 = create_autospec(MessageEvent, instance=True)
+    message_event_2.id = "msg_2"
 
     # Matched pair 1
     action_event_1 = create_autospec(ActionEvent, instance=True)
     action_event_1.tool_call_id = "call_1"
+    action_event_1.id = "action_1"
+    action_event_1.llm_response_id = "response_1"
 
     observation_event_1 = create_autospec(ObservationEvent, instance=True)
     observation_event_1.tool_call_id = "call_1"
+    observation_event_1.id = "obs_1"
 
     # Unmatched ActionEvent
     action_event_unmatched = create_autospec(ActionEvent, instance=True)
     action_event_unmatched.tool_call_id = "call_2"
+    action_event_unmatched.id = "action_unmatched"
+    action_event_unmatched.llm_response_id = "response_2"
 
     # Unmatched ObservationEvent
     observation_event_unmatched = create_autospec(ObservationEvent, instance=True)
     observation_event_unmatched.tool_call_id = "call_3"
+    observation_event_unmatched.id = "obs_unmatched"
 
     # Matched pair 2
     action_event_2 = create_autospec(ActionEvent, instance=True)
     action_event_2.tool_call_id = "call_4"
+    action_event_2.id = "action_2"
+    action_event_2.llm_response_id = "response_3"
 
     observation_event_2 = create_autospec(ObservationEvent, instance=True)
     observation_event_2.tool_call_id = "call_4"
+    observation_event_2.id = "obs_2"
 
     events = [
         message_event_1,
@@ -764,7 +586,7 @@ def test_filter_unmatched_tool_calls_mixed_scenario() -> None:
         observation_event_2,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep: message events and matched pairs
     # Should filter out: unmatched action and observation events
@@ -784,16 +606,22 @@ def test_filter_unmatched_tool_calls_none_tool_call_id() -> None:
     # Create mock events with None tool_call_id
     action_event_none = create_autospec(ActionEvent, instance=True)
     action_event_none.tool_call_id = None
+    action_event_none.id = "action_none"
+    action_event_none.llm_response_id = "response_1"
 
     observation_event_none = create_autospec(ObservationEvent, instance=True)
     observation_event_none.tool_call_id = None
+    observation_event_none.id = "obs_none"
 
     # Valid matched pair
     action_event_valid = create_autospec(ActionEvent, instance=True)
     action_event_valid.tool_call_id = "call_1"
+    action_event_valid.id = "action_valid"
+    action_event_valid.llm_response_id = "response_2"
 
     observation_event_valid = create_autospec(ObservationEvent, instance=True)
     observation_event_valid.tool_call_id = "call_1"
+    observation_event_valid.id = "obs_valid"
 
     events = [
         action_event_none,
@@ -802,7 +630,7 @@ def test_filter_unmatched_tool_calls_none_tool_call_id() -> None:
         observation_event_valid,
     ]
 
-    result = View.filter_unmatched_tool_calls(events)  # type: ignore
+    result = View._filter_unmatched_tool_calls(events, events)  # type: ignore
 
     # Should keep only the valid matched pair
     # Events with None tool_call_id should be filtered out

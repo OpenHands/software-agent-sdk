@@ -140,6 +140,15 @@ def consolidate_results(model_results: list[ModelTestResults]) -> ConsolidatedRe
     print(f"Overall success rate: {consolidated.overall_success_rate:.2%}")
     print(f"Total cost across all models: ${consolidated.total_cost_all_models:.4f}")
 
+    # Print per-model token usage summary
+    # Note: We don't aggregate tokens across models because different models
+    # use different tokenizers, making cross-model token sums meaningless.
+    for model_result in model_results:
+        if model_result.total_token_usage is not None:
+            token_usage = model_result.total_token_usage
+            total_tokens = token_usage.prompt_tokens + token_usage.completion_tokens
+            print(f"Token usage for {model_result.model_name}: {total_tokens:,}")
+
     return consolidated
 
 

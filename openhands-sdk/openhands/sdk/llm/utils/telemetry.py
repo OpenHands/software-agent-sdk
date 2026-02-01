@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import traceback
 import uuid
 import warnings
 from collections.abc import Callable
@@ -73,9 +74,9 @@ class Telemetry(BaseModel):
         """
         self._stats_update_callback = callback
 
-    def on_request(self, log_ctx: dict | None) -> None:
+    def on_request(self, telemetry_ctx: dict | None) -> None:
         self._req_start = time.time()
-        self._req_ctx = log_ctx or {}
+        self._req_ctx = telemetry_ctx or {}
 
     def on_response(
         self,
@@ -120,8 +121,47 @@ class Telemetry(BaseModel):
 
         return self.metrics.deep_copy()
 
-    def on_error(self, _err: Exception) -> None:
-        # Stub for error tracking / counters
+    def on_error(self, _err: BaseException) -> None:
+        # Best-effort logging for failed requests (so we can debug malformed
+        # request payloads, e.g. orphaned Responses reasoning items).
+        self._last_latency = time.time() - (self._req_start or time.time())
+
+        if not self.log_enabled:
+            return
+        if not self.log_dir and not self._log_completions_callback:
+            return
+
+        try:
+            filename = (
+                f"{self.model_name.replace('/', '__')}-"
+                f"{time.time():.3f}-"
+                f"{uuid.uuid4().hex[:4]}-error.json"
+            )
+
+            data = self._req_ctx.copy()
+            data["error"] = {
+                "type": type(_err).__name__,
+                "message": str(_err),
+                "repr": repr(_err),
+                "traceback": "".join(
+                    traceback.format_exception(type(_err), _err, _err.__traceback__)
+                ),
+            }
+            data["timestamp"] = time.time()
+            data["latency_sec"] = self._last_latency
+            data["cost"] = 0.0
+
+            log_data = json.dumps(data, default=_safe_json, ensure_ascii=False)
+
+            if self._log_completions_callback:
+                self._log_completions_callback(filename, log_data)
+            elif self.log_dir:
+                os.makedirs(self.log_dir, exist_ok=True)
+                fname = os.path.join(self.log_dir, filename)
+                with open(fname, "w", encoding="utf-8") as f:
+                    f.write(log_data)
+        except Exception as e:
+            warnings.warn(f"Telemetry error logging failed: {e}")
         return
 
     # ---------- Helpers ----------
@@ -335,7 +375,6 @@ class Telemetry(BaseModel):
                 os.makedirs(self.log_dir, exist_ok=True)
                 if not os.access(self.log_dir, os.W_OK):
                     raise PermissionError(f"log_dir is not writable: {self.log_dir}")
-
                 fname = os.path.join(self.log_dir, filename)
                 with open(fname, "w", encoding="utf-8") as f:
                     f.write(log_data)

@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo \"$(date -Iseconds) - PostToolUse hook executed for tool: $OPENHANDS_TOOL_NAME\" >> \"$OPENHANDS_PROJECT_DIR/.hook_log\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

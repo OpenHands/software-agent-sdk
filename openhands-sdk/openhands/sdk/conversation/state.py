@@ -5,7 +5,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Self
 
-from pydantic import AliasChoices, Field, PrivateAttr
+from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.conversation_stats import ConversationStats
@@ -23,6 +23,7 @@ from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
     NeverConfirm,
 )
+from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -42,6 +43,7 @@ class ConversationExecutionStatus(str, Enum):
     FINISHED = "finished"  # Conversation has completed the current task
     ERROR = "error"  # Conversation encountered an error (optional for future use)
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
+    DELETING = "deleting"  # Conversation is in the process of being deleted
 
 
 class ConversationState(OpenHandsModel):
@@ -59,7 +61,10 @@ class ConversationState(OpenHandsModel):
     )
     workspace: BaseWorkspace = Field(
         ...,
-        description="Working directory for agent operations and tool execution",
+        description=(
+            "Workspace used by the agent to execute commands and read/write files. "
+            "Not the process working directory."
+        ),
     )
     persistence_dir: str | None = Field(
         default="workspace/conversations",
@@ -93,6 +98,18 @@ class ConversationState(OpenHandsModel):
         description="List of activated knowledge skills name",
     )
 
+    # Hook-blocked actions: action_id -> blocking reason
+    blocked_actions: dict[str, str] = Field(
+        default_factory=dict,
+        description="Actions blocked by PreToolUse hooks, keyed by action ID",
+    )
+
+    # Hook-blocked messages: message_id -> blocking reason
+    blocked_messages: dict[str, str] = Field(
+        default_factory=dict,
+        description="Messages blocked by UserPromptSubmit hooks, keyed by message ID",
+    )
+
     # Conversation statistics for LLM usage tracking
     stats: ConversationStats = Field(
         default_factory=ConversationStats,
@@ -103,13 +120,12 @@ class ConversationState(OpenHandsModel):
     secret_registry: SecretRegistry = Field(
         default_factory=SecretRegistry,
         description="Registry for handling secrets and sensitive data",
-        validation_alias=AliasChoices("secret_registry", "secrets_manager"),
-        serialization_alias="secret_registry",
     )
 
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
+    _cipher: Cipher | None = PrivateAttr(default=None)  # cipher for secret encryption
     _autosave_enabled: bool = PrivateAttr(
         default=False
     )  # to avoid recursion during init
@@ -120,7 +136,14 @@ class ConversationState(OpenHandsModel):
         default_factory=FIFOLock
     )  # FIFO lock for thread safety
 
-    # ===== Public "events" facade (Sequence[Event]) =====
+    @model_validator(mode="before")
+    @classmethod
+    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
+        """Handle legacy 'secrets_manager' field name for backward compatibility."""
+        if isinstance(data, dict) and "secrets_manager" in data:
+            data["secret_registry"] = data.pop("secrets_manager")
+        return data
+
     @property
     def events(self) -> EventLog:
         return self._events
@@ -145,8 +168,20 @@ class ConversationState(OpenHandsModel):
     def _save_base_state(self, fs: FileStore) -> None:
         """
         Persist base state snapshot (no events; events are file-backed).
+
+        If a cipher is configured, secrets will be encrypted. Otherwise, they
+        will be redacted (serialized as '**********').
         """
-        payload = self.model_dump_json(exclude_none=True)
+        context = {"cipher": self._cipher} if self._cipher else None
+        # Warn if secrets exist but no cipher is configured
+        if not self._cipher and self.secret_registry.secret_sources:
+            logger.warning(
+                f"Saving conversation state without cipher - "
+                f"{len(self.secret_registry.secret_sources)} secret(s) will be "
+                "redacted and lost on restore. Consider providing a cipher to "
+                "preserve secrets."
+            )
+        payload = self.model_dump_json(exclude_none=True, context=context)
         fs.write(BASE_STATE, payload)
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
@@ -159,14 +194,46 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        cipher: Cipher | None = None,
     ) -> "ConversationState":
-        """
-        If base_state.json exists: resume (attach EventLog,
-            reconcile agent, enforce id).
-        Else: create fresh (agent required), persist base, and return.
+        """Create a new conversation state or resume from persistence.
+
+        This factory method handles both new conversation creation and resumption
+        from persisted state.
+
+        **New conversation:**
+        The provided Agent is used directly. Pydantic validation happens via the
+        cls() constructor.
+
+        **Restored conversation:**
+        The provided Agent is validated against the persisted agent using
+        agent.load(). Tools must match (they may have been used in conversation
+        history), but all other configuration can be freely changed: LLM,
+        agent_context, condenser, system prompts, etc.
+
+        Args:
+            id: Unique conversation identifier
+            agent: The Agent to use (tools must match persisted on restore)
+            workspace: Working directory for agent operations
+            persistence_dir: Directory for persisting state and events
+            max_iterations: Maximum iterations per run
+            stuck_detection: Whether to enable stuck detection
+            cipher: Optional cipher for encrypting/decrypting secrets in
+                    persisted state. If provided, secrets are encrypted when
+                    saving and decrypted when loading. If not provided, secrets
+                    are redacted (lost) on serialization.
+
+        Returns:
+            ConversationState ready for use
+
+        Raises:
+            ValueError: If conversation ID or tools mismatch on restore
+            ValidationError: If agent or other fields fail Pydantic validation
         """
         file_store = (
-            LocalFileStore(persistence_dir) if persistence_dir else InMemoryFileStore()
+            LocalFileStore(persistence_dir, cache_limit_size=max_iterations)
+            if persistence_dir
+            else InMemoryFileStore()
         )
 
         try:
@@ -176,25 +243,33 @@ class ConversationState(OpenHandsModel):
 
         # ---- Resume path ----
         if base_text:
-            state = cls.model_validate(json.loads(base_text))
+            # Use cipher context for decrypting secrets if provided
+            context = {"cipher": cipher} if cipher else None
+            state = cls.model_validate(json.loads(base_text), context=context)
 
-            # Enforce conversation id match
+            # Restore the conversation with the same id
             if state.id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
                     f"but persisted state has {state.id}"
                 )
 
-            # Reconcile agent config with deserialized one
-            resolved = agent.resolve_diff_from_deserialized(state.agent)
-
-            # Attach runtime handles and commit reconciled agent (may autosave)
+            # Attach event log early so we can read history for tool verification
             state._fs = file_store
             state._events = EventLog(file_store, dir_path=EVENTS_DIR)
-            state._autosave_enabled = True
-            state.agent = resolved
+            state._cipher = cipher
 
-            state.stats = ConversationStats()
+            # Verify compatibility (agent class + tools)
+            agent.verify(state.agent, events=state._events)
+
+            # Commit runtime-provided values (may autosave)
+            state._autosave_enabled = True
+            state.agent = agent
+            state.workspace = workspace
+            state.max_iterations = max_iterations
+
+            # Note: stats are already deserialized from base_state.json above.
+            # Do NOT reset stats here - this would lose accumulated metrics.
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"
@@ -217,10 +292,9 @@ class ConversationState(OpenHandsModel):
             max_iterations=max_iterations,
             stuck_detection=stuck_detection,
         )
-        # Record existing analyzer configuration in state
-        state.security_analyzer = state.security_analyzer
         state._fs = file_store
         state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+        state._cipher = cipher
         state.stats = ConversationStats()
 
         state._save_base_state(file_store)  # initial snapshot
@@ -274,6 +348,32 @@ class ConversationState(OpenHandsModel):
                     logger.exception(
                         f"State change callback failed for field {name}", exc_info=True
                     )
+
+    def block_action(self, action_id: str, reason: str) -> None:
+        """Persistently record a hook-blocked action."""
+        self.blocked_actions = {**self.blocked_actions, action_id: reason}
+
+    def pop_blocked_action(self, action_id: str) -> str | None:
+        """Remove and return a hook-blocked action reason, if present."""
+        if action_id not in self.blocked_actions:
+            return None
+        updated = dict(self.blocked_actions)
+        reason = updated.pop(action_id)
+        self.blocked_actions = updated
+        return reason
+
+    def block_message(self, message_id: str, reason: str) -> None:
+        """Persistently record a hook-blocked user message."""
+        self.blocked_messages = {**self.blocked_messages, message_id: reason}
+
+    def pop_blocked_message(self, message_id: str) -> str | None:
+        """Remove and return a hook-blocked message reason, if present."""
+        if message_id not in self.blocked_messages:
+            return None
+        updated = dict(self.blocked_messages)
+        reason = updated.pop(message_id)
+        self.blocked_messages = updated
+        return reason
 
     @staticmethod
     def get_unmatched_actions(events: Sequence[Event]) -> list[ActionEvent]:

@@ -9,7 +9,6 @@ from openhands.sdk.logger import get_logger
 from openhands.sdk.tool.tool import ToolExecutor
 from openhands.tools.delegate.definition import DelegateObservation
 from openhands.tools.delegate.registration import get_agent_factory
-from openhands.tools.delegate.visualizer import DelegationVisualizer
 
 
 if TYPE_CHECKING:
@@ -118,22 +117,24 @@ class DelegateExecutor(ToolExecutor):
             parent_visualizer = parent_conversation._visualizer
             workspace_path = parent_conversation.state.workspace.working_dir
 
+            # Disable streaming for sub-agents since they run in
+            # separate threads without token callbacks
+            sub_agent_llm = parent_llm.model_copy(update={"stream": False})
+
             resolved_agent_types = [
                 self._resolve_agent_type(action, i) for i in range(len(action.ids))
             ]
 
             for agent_id, agent_type in zip(action.ids, resolved_agent_types):
                 factory = get_agent_factory(agent_type)
-                worker_agent = factory.factory_func(parent_llm)
+                worker_agent = factory.factory_func(sub_agent_llm)
 
-                if isinstance(parent_visualizer, DelegationVisualizer):
-                    sub_visualizer = DelegationVisualizer(
-                        name=agent_id,
-                        highlight_regex=parent_visualizer._highlight_patterns,
-                        skip_user_messages=parent_visualizer._skip_user_messages,
-                    )
-                else:
-                    sub_visualizer = None
+                # Use parent visualizer's create_sub_visualizer method if available
+                # This allows custom visualizers (e.g., TUI-based) to create
+                # appropriate sub-visualizers for their environment
+                sub_visualizer = None
+                if parent_visualizer is not None:
+                    sub_visualizer = parent_visualizer.create_sub_visualizer(agent_id)
 
                 sub_conversation = LocalConversation(
                     agent=worker_agent,
@@ -207,13 +208,13 @@ class DelegateExecutor(ToolExecutor):
             results = {}
             errors = {}
 
-            # Get the parent agent's name from the visualizer
+            # Get the parent agent's name from the visualizer if available
             parent_conversation = self.parent_conversation
             parent_name = None
             if hasattr(parent_conversation, "_visualizer"):
                 visualizer = parent_conversation._visualizer
-                if isinstance(visualizer, DelegationVisualizer):
-                    parent_name = visualizer._name
+                if visualizer is not None:
+                    parent_name = getattr(visualizer, "_name", None)
 
             def run_task(
                 agent_id: str,

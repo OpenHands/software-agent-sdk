@@ -24,31 +24,100 @@ MODELS = {
             "temperature": 0.0,
         },
     },
-    "claude-haiku-4-5-20251001": {
-        "id": "claude-haiku-4-5-20251001",
-        "display_name": "Claude Haiku 4.5",
-        "llm_config": {
-            "model": "litellm_proxy/claude-haiku-4-5-20251001",
-            "temperature": 0.0,
-        },
-    },
-    "gpt-5-mini-2025-08-07": {
-        "id": "gpt-5-mini-2025-08-07",
-        "display_name": "GPT-5 Mini",
-        "llm_config": {
-            "model": "litellm_proxy/gpt-5-mini-2025-08-07",
-            "temperature": 1.0,
-        },
-    },
-    "deepseek-chat": {
-        "id": "deepseek-chat",
-        "display_name": "DeepSeek Chat",
-        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-chat"},
-    },
     "kimi-k2-thinking": {
         "id": "kimi-k2-thinking",
         "display_name": "Kimi K2 Thinking",
         "llm_config": {"model": "litellm_proxy/moonshot/kimi-k2-thinking"},
+    },
+    # https://www.kimi.com/blog/kimi-k2-5.html
+    "kimi-k2.5": {
+        "id": "kimi-k2.5",
+        "display_name": "Kimi K2.5",
+        "llm_config": {
+            "model": "litellm_proxy/moonshot/kimi-k2.5",
+            "temperature": 1.0,
+            "top_p": 0.95,
+        },
+    },
+    # https://www.alibabacloud.com/help/en/model-studio/deep-thinking
+    "qwen3-max-thinking": {
+        "id": "qwen3-max-thinking",
+        "display_name": "Qwen3 Max Thinking",
+        "llm_config": {
+            "model": "litellm_proxy/dashscope/qwen3-max-2026-01-23",
+            "litellm_extra_body": {"enable_thinking": True},
+        },
+    },
+    "claude-4.5-opus": {
+        "id": "claude-4.5-opus",
+        "display_name": "Claude 4.5 Opus",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-5-20251101",
+            "temperature": 0.0,
+        },
+    },
+    "gemini-3-pro": {
+        "id": "gemini-3-pro",
+        "display_name": "Gemini 3 Pro",
+        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-pro-preview"},
+    },
+    "gemini-3-flash": {
+        "id": "gemini-3-flash",
+        "display_name": "Gemini 3 Flash",
+        "llm_config": {"model": "litellm_proxy/gemini/gemini-3-flash-preview"},
+    },
+    "gpt-5.2": {
+        "id": "gpt-5.2",
+        "display_name": "GPT-5.2",
+        "llm_config": {"model": "litellm_proxy/openai/gpt-5.2-2025-12-11"},
+    },
+    "gpt-5.2-codex": {
+        "id": "gpt-5.2-codex",
+        "display_name": "GPT-5.2 Codex",
+        "llm_config": {"model": "litellm_proxy/gpt-5.2-codex"},
+    },
+    "gpt-5.2-high-reasoning": {
+        "id": "gpt-5.2-high-reasoning",
+        "display_name": "GPT-5.2 High Reasoning",
+        "llm_config": {
+            "model": "litellm_proxy/openai/gpt-5.2-2025-12-11",
+            "reasoning_effort": "high",
+        },
+    },
+    "minimax-m2": {
+        "id": "minimax-m2",
+        "display_name": "MiniMax M2",
+        "llm_config": {"model": "litellm_proxy/minimax/minimax-m2"},
+    },
+    "minimax-m2.1": {
+        "id": "minimax-m2.1",
+        "display_name": "MiniMax M2.1",
+        "llm_config": {"model": "litellm_proxy/minimax/MiniMax-M2.1"},
+    },
+    "deepseek-v3.2-reasoner": {
+        "id": "deepseek-v3.2-reasoner",
+        "display_name": "DeepSeek V3.2 Reasoner",
+        "llm_config": {"model": "litellm_proxy/deepseek/deepseek-reasoner"},
+    },
+    "qwen-3-coder": {
+        "id": "qwen-3-coder",
+        "display_name": "Qwen 3 Coder",
+        "llm_config": {
+            "model": "litellm_proxy/fireworks_ai/qwen3-coder-480b-a35b-instruct"
+        },
+    },
+    "nemotron-3-nano-30b": {
+        "id": "nemotron-3-nano-30b",
+        "display_name": "NVIDIA Nemotron 3 Nano 30B",
+        "llm_config": {
+            "model": "litellm_proxy/openai/NVIDIA-Nemotron-3-Nano-30B-A3B-FP8",
+            "temperature": 0.0,
+        },
+    },
+    "glm-4.7": {
+        "id": "glm-4.7",
+        "display_name": "GLM-4.7",
+        "llm_config": {"model": "litellm_proxy/openrouter/z-ai/glm-4.7"},
     },
 }
 

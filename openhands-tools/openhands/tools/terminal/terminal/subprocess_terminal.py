@@ -10,10 +10,10 @@ import signal
 import subprocess
 import threading
 import time
-import uuid
 from collections import deque
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import (
     CMD_OUTPUT_PS1_BEGIN,
     CMD_OUTPUT_PS1_END,
@@ -107,7 +107,7 @@ class SubprocessTerminal(TerminalInterface):
         logger.info(f"Using shell: {resolved_shell_path}")
 
         # Inherit environment variables from the parent process
-        env = os.environ.copy()
+        env = sanitized_env()
         env["PS1"] = self.PS1
         env["PS2"] = ""
         env["TERM"] = "xterm-256color"
@@ -151,26 +151,15 @@ class SubprocessTerminal(TerminalInterface):
         self.reader_thread.start()
         self._initialized: bool = True
 
-        # ===== Deterministic readiness (no blind sleeps) =====
-        # 1) Single atomic init line: clear PROMPT_COMMAND, set PS2/PS1, print sentinel
-        # Disable history expansion to avoid ! mangling
-        sentinel = f"__OH_READY_{uuid.uuid4().hex}__"
+        # Configure bash: disable history expansion, set up PS1/PS2 prompts
         init_cmd = (
-            "set +H; "
-            f"export PROMPT_COMMAND='export PS1=\"{self.PS1}\"'; "
-            f'export PS2=""; '
-            f'printf "{sentinel}"'
+            f'set +H; export PROMPT_COMMAND=\'export PS1="{self.PS1}"\'; export PS2=""'
         ).encode("utf-8", "ignore")
 
         self._write_pty(init_cmd + ENTER)
-        if not self._wait_for_output(sentinel, timeout=8.0):
-            raise RuntimeError("Shell did not become ready (sentinel not seen)")
+        time.sleep(1.0)  # Wait for command to take effect
 
         self.clear_screen()
-
-        # 3) Wait for prompt to actually be visible
-        if not self._wait_for_prompt(timeout=5.0):
-            raise RuntimeError("Prompt not visible after init")
 
         logger.debug("PTY terminal initialized with work dir: %s", self.work_dir)
 

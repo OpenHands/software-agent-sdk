@@ -466,3 +466,70 @@ def test_run_exits_immediately_when_stuck(mock_completion):
     assert conversation.state.execution_status == ConversationExecutionStatus.STUCK
     # LLM should not be called
     assert mock_completion.call_count == 0
+
+
+@patch("openhands.sdk.llm.llm.litellm_completion")
+def test_execution_status_error_on_max_iterations(mock_completion):
+    """Test that status is set to ERROR with clear message when max iterations hit."""
+    from openhands.sdk.event.conversation_error import ConversationErrorEvent
+
+    status_during_execution: list[ConversationExecutionStatus] = []
+    events_received: list = []
+
+    def _make_tool(conv_state=None, **params) -> Sequence[ToolDefinition]:
+        return StatusTransitionTestTool.create(
+            executor=StatusCheckingExecutor(status_during_execution)
+        )
+
+    register_tool("test_tool", _make_tool)
+
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm")
+    agent = Agent(llm=llm, tools=[Tool(name="test_tool")])
+    # Set max_iteration_per_run to 2 to quickly hit the limit
+    conversation = Conversation(
+        agent=agent,
+        max_iteration_per_run=2,
+        callbacks=[lambda e: events_received.append(e)],
+    )
+
+    # Mock LLM to always return tool calls (never finish)
+    tool_call = ChatCompletionMessageToolCall(
+        id="call_1",
+        type="function",
+        function=Function(
+            name="test_tool",
+            arguments='{"command": "test_command"}',
+        ),
+    )
+
+    mock_completion.return_value = ModelResponse(
+        id="response_action",
+        choices=[
+            Choices(
+                message=LiteLLMMessage(
+                    role="assistant",
+                    content="",
+                    tool_calls=[tool_call],
+                )
+            )
+        ],
+        created=0,
+        model="test-model",
+        object="chat.completion",
+    )
+
+    # Send message and run
+    conversation.send_message(
+        Message(role="user", content=[TextContent(text="Execute command")])
+    )
+    conversation.run()
+
+    # Status should be ERROR
+    assert conversation.state.execution_status == ConversationExecutionStatus.ERROR
+
+    # Should have emitted a ConversationErrorEvent with clear message
+    error_events = [e for e in events_received if isinstance(e, ConversationErrorEvent)]
+    assert len(error_events) == 1
+    assert error_events[0].code == "MaxIterationsReached"
+    assert "maximum iterations limit" in error_events[0].detail
+    assert "(2)" in error_events[0].detail  # max_iteration_per_run value

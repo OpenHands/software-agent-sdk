@@ -162,6 +162,11 @@ class BaseConversation(ABC):
         """Set the confirmation policy for the conversation."""
         ...
 
+    @abstractmethod
+    def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
+        """Set the security analyzer for the conversation."""
+        ...
+
     @property
     def confirmation_policy_active(self) -> bool:
         return not isinstance(self.state.confirmation_policy, NeverConfirm)
@@ -242,6 +247,23 @@ class BaseConversation(ABC):
 
         Returns:
             A string response from the agent
+        """
+        ...
+
+    @abstractmethod
+    def condense(self) -> None:
+        """Force condensation of the conversation history.
+
+        This method uses the existing condensation request pattern to trigger
+        condensation. It adds a CondensationRequest event to the conversation
+        and forces the agent to take a single step to process it.
+
+        The condensation will be applied immediately and will modify the conversation
+        state by adding a condensation event to the history.
+
+        Raises:
+            ValueError: If no condenser is configured or the condenser doesn't
+                       handle condensation requests.
         """
         ...
 

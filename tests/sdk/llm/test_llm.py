@@ -57,6 +57,45 @@ def test_base_url_for_openhands_provider(mock_get):
     mock_get.assert_called_once()
 
 
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_base_url_for_openhands_provider_with_explicit_none(mock_get):
+    """Test that openhands/ provider defaults base_url when explicitly set to None.
+
+    This simulates the CLI behavior where settings are saved to JSON with
+    base_url=null and then reloaded, ensuring the default proxy URL is used.
+    """
+    # Mock the model info fetch to avoid actual HTTP calls to production
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    llm = LLM(
+        model="openhands/claude-sonnet-4-20250514",
+        api_key=SecretStr("test-key"),
+        usage_id="test-openhands-llm",
+        base_url=None,  # Explicitly set to None (like CLI saves to JSON)
+    )
+    assert llm.base_url == "https://llm-proxy.app.all-hands.dev/"
+    # Note: mock_get may be cached from previous test due to @lru_cache
+    # The important assertion is that base_url is set correctly
+
+
+@patch("openhands.sdk.llm.utils.model_info.httpx.get")
+def test_base_url_for_openhands_provider_with_custom_url(mock_get):
+    """Test that openhands/ provider respects custom base_url when provided."""
+    # Mock the model info fetch to avoid actual HTTP calls
+    mock_get.return_value = Mock(json=lambda: {"data": []})
+
+    custom_url = "https://custom-proxy.example.com/"
+    llm = LLM(
+        model="openhands/claude-sonnet-4-20250514",
+        api_key=SecretStr("test-key"),
+        usage_id="test-openhands-llm",
+        base_url=custom_url,
+    )
+    assert llm.base_url == custom_url
+    # Should call with custom URL
+    mock_get.assert_called_once()
+
+
 def test_token_usage_add():
     """Test that TokenUsage instances can be added together."""
     # Create two TokenUsage instances
@@ -537,31 +576,31 @@ def test_llm_force_string_serializer_override():
         usage_id="test-force-true",
     )
     assert llm_force_true.force_string_serializer is True
-    # Even with vision or cache enabled, should force string serialization
+    # force_string_serializer=True should force string serialization
     messages = [
         Message(
             role="user",
             content=[TextContent(text="Test")],
-            cache_enabled=True,  # Would normally trigger list serialization
         )
     ]
     formatted = llm_force_true.format_messages_for_llm(messages)
     assert isinstance(formatted[0]["content"], str)
 
     # Explicitly set force_string_serializer=False for a model that normally needs it
+    # Use a model that supports caching to test list serialization
     llm_force_false = LLM(
-        model="deepseek-v3",
+        model="anthropic/claude-sonnet-4-20250514",  # Supports caching
         api_key=SecretStr("test_key"),
         force_string_serializer=False,
+        caching_prompt=True,  # Enable caching to trigger list serialization
         usage_id="test-force-false",
     )
     assert llm_force_false.force_string_serializer is False
-    # With cache enabled and force_string_serializer=False, should use list
+    # With caching enabled and force_string_serializer=False, should use list
     messages_cache = [
         Message(
             role="user",
             content=[TextContent(text="Test")],
-            cache_enabled=True,
         )
     ]
     formatted_cache = llm_force_false.format_messages_for_llm(messages_cache)
@@ -823,61 +862,45 @@ def test_telemetry_cost_calculation_header_exception():
             )
 
 
-def test_gpt5_enable_encrypted_reasoning_default():
+def test_enable_encrypted_reasoning_respects_flag_and_defaults_true():
     """
-    Test that enable_encrypted_reasoning is enabled for GPT-5 models in Responses API.
+    Encrypted reasoning should be included only when:
+    - The request is stateless (store=False), and
+    - LLM.enable_encrypted_reasoning is True (default).
+
+    No model-based auto behavior; strictly respect the flag.
     """
-    # Test with gpt-5 model - should auto-enable in _normalize_responses_kwargs
-    llm = LLM(
+    # Default behavior: flag is True
+    llm_default = LLM(
         model="openai/gpt-5-mini",
         api_key=SecretStr("test_key"),
-        usage_id="test-gpt5-llm",
+        usage_id="test-llm-default",
     )
-    # Field default is False, but _normalize_responses_kwargs will enable it
-    assert llm.enable_encrypted_reasoning is False
+    assert llm_default.enable_encrypted_reasoning is True
 
-    # Test that the normalization actually enables it
-    normalized = select_responses_options(llm, {}, include=None, store=None)
-    assert "include" in normalized
-    assert "reasoning.encrypted_content" in normalized["include"]
-
-    # Test with litellm_proxy/openai/gpt-5 model
-    llm_proxy = LLM(
-        model="litellm_proxy/openai/gpt-5-codex",
-        api_key=SecretStr("test_key"),
-        usage_id="test-gpt5-proxy-llm",
+    normalized_default = select_responses_options(
+        llm_default, {}, include=None, store=None
     )
-    normalized_proxy = select_responses_options(llm_proxy, {}, include=None, store=None)
-    assert "include" in normalized_proxy
-    assert "reasoning.encrypted_content" in normalized_proxy["include"]
+    assert "reasoning.encrypted_content" in normalized_default.get("include", [])
 
-    # Test that explicit True is respected
-    llm_explicit = LLM(
-        model="openai/gpt-5-mini",
-        api_key=SecretStr("test_key"),
-        enable_encrypted_reasoning=True,
-        usage_id="test-gpt5-explicit-llm",
-    )
-    assert llm_explicit.enable_encrypted_reasoning is True
-    normalized_explicit = select_responses_options(
-        llm_explicit, {}, include=None, store=None
-    )
-    assert "reasoning.encrypted_content" in normalized_explicit["include"]
-
-    # Encrypted reasoning is included when stateless (store=False)
-    llm_gpt4 = LLM(
+    # Explicit False disables encrypted reasoning even for GPT families
+    llm_disabled = LLM(
         model="gpt-4o",
         api_key=SecretStr("test_key"),
-        usage_id="test-gpt4-llm",
+        enable_encrypted_reasoning=False,
+        usage_id="test-llm-disabled",
     )
-    assert llm_gpt4.enable_encrypted_reasoning is False
-    normalized_gpt4 = select_responses_options(llm_gpt4, {}, include=None, store=None)
-    assert "reasoning.encrypted_content" in normalized_gpt4.get("include", [])
-    # But if store=True, it should not be included
-    normalized_gpt4_store = select_responses_options(
-        llm_gpt4, {}, include=None, store=True
+    assert llm_disabled.enable_encrypted_reasoning is False
+    normalized_disabled = select_responses_options(
+        llm_disabled, {}, include=None, store=None
     )
-    assert "reasoning.encrypted_content" not in normalized_gpt4_store.get("include", [])
+    assert "reasoning.encrypted_content" not in normalized_disabled.get("include", [])
+
+    # When store=True (stateful), do not include encrypted reasoning
+    normalized_stateful = select_responses_options(
+        llm_default, {}, include=None, store=True
+    )
+    assert "reasoning.encrypted_content" not in normalized_stateful.get("include", [])
 
 
 @patch("openhands.sdk.llm.llm.LLM._transport_call")

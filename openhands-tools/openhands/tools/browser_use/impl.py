@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 from openhands.sdk.logger import DEBUG, get_logger
 from openhands.sdk.tool import ToolExecutor
+from openhands.sdk.utils import sanitized_env
 from openhands.sdk.utils.async_executor import AsyncExecutor
 from openhands.tools.browser_use.definition import BrowserAction, BrowserObservation
 from openhands.tools.browser_use.server import CustomBrowserUseServer
@@ -27,38 +28,6 @@ else:
     logging.getLogger("browser_use").setLevel(logging.WARNING)
 
 logger = get_logger(__name__)
-
-
-def _check_chromium_available() -> str | None:
-    """Check if a Chromium/Chrome binary is available in PATH."""
-    for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
-        if path := shutil.which(binary):
-            return path
-
-    # Check Playwright-installed Chromium
-    playwright_cache_candidates = [
-        Path.home() / ".cache" / "ms-playwright",
-        Path.home() / "Library" / "Caches" / "ms-playwright",
-    ]
-    for playwright_cache in playwright_cache_candidates:
-        if playwright_cache.exists():
-            chromium_dirs = list(playwright_cache.glob("chromium-*"))
-            for chromium_dir in chromium_dirs:
-                # Check platform-specific paths
-                possible_paths = [
-                    chromium_dir / "chrome-linux" / "chrome",  # Linux
-                    chromium_dir
-                    / "chrome-mac"
-                    / "Chromium.app"
-                    / "Contents"
-                    / "MacOS"
-                    / "Chromium",  # macOS
-                    chromium_dir / "chrome-win" / "chrome.exe",  # Windows
-                ]
-                for p in possible_paths:
-                    if p.exists():
-                        return str(p)
-    return None
 
 
 def _install_chromium() -> bool:
@@ -75,6 +44,7 @@ def _install_chromium() -> bool:
             capture_output=True,
             text=True,
             timeout=300,  # 5 minutes timeout for installation
+            env=sanitized_env(),
         )
 
         if result.returncode == 0:
@@ -88,18 +58,9 @@ def _install_chromium() -> bool:
         return False
 
 
-def _ensure_chromium_available() -> str:
-    """Ensure Chromium is available for browser operations.
-
-    Raises:
-        Exception: If Chromium is not available
-    """
-    if path := _check_chromium_available():
-        logger.info(f"Chromium is available for browser operations at {path}")
-        return path
-
-    # Chromium not available - provide clear installation instructions
-    error_msg = (
+def _get_chromium_error_message() -> str:
+    """Get the error message for when Chromium is not available."""
+    return (
         "Chromium is required for browser operations but is not installed.\n\n"
         "To install Chromium, run one of the following commands:\n"
         "  1. Using uvx (recommended): uvx playwright install chromium "
@@ -111,7 +72,6 @@ def _ensure_chromium_available() -> str:
         "     - Windows: winget install Chromium.Chromium\n\n"
         "After installation, restart your application to use the browser tool."
     )
-    raise Exception(error_msg)
 
 
 class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
@@ -122,6 +82,72 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
     _initialized: bool
     _async_executor: AsyncExecutor
     _cleanup_initiated: bool
+
+    def check_chromium_available(self) -> str | None:
+        """Check if a Chromium/Chrome binary is available.
+
+        This method can be overridden by subclasses to provide
+        platform-specific detection logic.
+
+        Returns:
+            Path to Chromium binary if found, None otherwise
+        """
+        for binary in ("chromium", "chromium-browser", "google-chrome", "chrome"):
+            if path := shutil.which(binary):
+                return path
+
+        # Check standard installation paths
+        standard_paths = [
+            # Linux
+            "/usr/bin/google-chrome",
+            "/usr/bin/chromium",
+            "/usr/bin/chromium-browser",
+            # macOS
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+        ]
+        for install_path in standard_paths:
+            p = Path(install_path)
+            if p.exists():
+                return str(p)
+
+        # Check Playwright-installed Chromium
+        playwright_cache_candidates = [
+            Path.home() / ".cache" / "ms-playwright",  # Linux
+            Path.home() / "Library" / "Caches" / "ms-playwright",  # macOS
+        ]
+
+        for playwright_cache in playwright_cache_candidates:
+            if playwright_cache.exists():
+                chromium_dirs = list(playwright_cache.glob("chromium-*"))
+                for chromium_dir in chromium_dirs:
+                    # Check platform-specific paths
+                    possible_paths = [
+                        chromium_dir / "chrome-linux" / "chrome",  # Linux
+                        chromium_dir
+                        / "chrome-mac"
+                        / "Chromium.app"
+                        / "Contents"
+                        / "MacOS"
+                        / "Chromium",  # macOS
+                    ]
+                    for p in possible_paths:
+                        if p.exists():
+                            return str(p)
+        return None
+
+    def _ensure_chromium_available(self) -> str:
+        """Ensure Chromium is available for browser operations.
+
+        Raises:
+            Exception: If Chromium is not available
+        """
+        if path := self.check_chromium_available():
+            logger.info(f"Chromium is available for browser operations at {path}")
+            return path
+
+        # Chromium not available - provide clear installation instructions
+        raise Exception(_get_chromium_error_message())
 
     def __init__(
         self,
@@ -146,7 +172,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
 
         def init_logic():
             nonlocal headless
-            executable_path = _ensure_chromium_available()
+            executable_path = self._ensure_chromium_available()
             self._server = CustomBrowserUseServer(
                 session_timeout_minutes=session_timeout_minutes,
             )
@@ -190,11 +216,13 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserCloseTabAction,
             BrowserGetContentAction,
             BrowserGetStateAction,
+            BrowserGetStorageAction,
             BrowserGoBackAction,
             BrowserListTabsAction,
             BrowserNavigateAction,
             BrowserObservation,
             BrowserScrollAction,
+            BrowserSetStorageAction,
             BrowserSwitchTabAction,
             BrowserTypeAction,
         )
@@ -210,6 +238,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.type_text(action.index, action.text)
             elif isinstance(action, BrowserGetStateAction):
                 return await self.get_state(action.include_screenshot)
+            elif isinstance(action, BrowserGetStorageAction):
+                result = await self.get_storage()
+            elif isinstance(action, BrowserSetStorageAction):
+                result = await self.set_storage(action.storage_state)
             elif isinstance(action, BrowserGetContentAction):
                 result = await self.get_content(
                     action.extract_links, action.start_from_char
@@ -309,6 +341,16 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             is_error=False,
             full_output_save_dir=self.full_output_save_dir,
         )
+
+    async def get_storage(self) -> str:
+        """Get browser storage (cookies, local storage, session storage)."""
+        await self._ensure_initialized()
+        return await self._server._get_storage()
+
+    async def set_storage(self, storage_state: dict) -> str:
+        """Set browser storage (cookies, local storage, session storage)."""
+        await self._ensure_initialized()
+        return await self._server._set_storage(storage_state)
 
     # Tab Management
     async def list_tabs(self) -> str:

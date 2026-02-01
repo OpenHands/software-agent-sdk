@@ -1,21 +1,27 @@
+import asyncio
 from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
 
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
+    ConfirmationResponseRequest,
     EventPage,
     EventSortOrder,
     StoredConversation,
 )
+from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import LLM, Agent, Conversation, Message
+from openhands.sdk.conversation.fifo_lock import FIFOLock
 from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.event import Event
+from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
@@ -680,7 +686,7 @@ class TestEventServiceSendMessage:
 
     @pytest.mark.asyncio
     async def test_send_message_with_run_true_agent_idle(self, event_service):
-        """Test send_message with run=True and agent idle."""
+        """Test send_message with run=True and agent idle triggers run."""
         # Mock conversation and its methods
         conversation = MagicMock()
         state = MagicMock()
@@ -694,21 +700,60 @@ class TestEventServiceSendMessage:
         event_service._conversation = conversation
         message = Message(role="user", content=[])
 
-        # Mock the event loop and executor
-        with patch("asyncio.get_running_loop") as mock_get_loop:
-            mock_loop = MagicMock()
-            mock_get_loop.return_value = mock_loop
-            mock_loop.run_in_executor.return_value = self._mock_executor()
+        # Call send_message with run=True
+        await event_service.send_message(message, run=True)
 
+        # Verify send_message was called
+        conversation.send_message.assert_called_once_with(message)
+
+        # Wait for the background task to call run with a timeout
+        async def wait_for_run_called():
+            while not conversation.run.called:
+                await asyncio.sleep(0.001)
+
+        await asyncio.wait_for(wait_for_run_called(), timeout=1.0)
+
+        # Verify run was called since agent was idle
+        conversation.run.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_send_message_with_run_true_logs_exception(self, event_service):
+        """Test that exceptions from conversation.run() are caught and logged."""
+        # Mock conversation and its methods
+        conversation = MagicMock()
+        state = MagicMock()
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation.state = state
+        conversation.send_message = MagicMock()
+        conversation.run = MagicMock(side_effect=RuntimeError("Test error"))
+
+        event_service._conversation = conversation
+        message = Message(role="user", content=[])
+
+        # Patch the logger to verify exception logging
+        with patch("openhands.agent_server.event_service.logger") as mock_logger:
             # Call send_message with run=True
             await event_service.send_message(message, run=True)
 
-            # Verify send_message was called via executor
-            mock_loop.run_in_executor.assert_any_call(
-                None, conversation.send_message, message
+            # Wait for the background task to complete with a timeout
+            async def wait_for_exception_logged():
+                while not mock_logger.exception.called:
+                    await asyncio.sleep(0.001)
+
+            await asyncio.wait_for(wait_for_exception_logged(), timeout=1.0)
+
+            # Verify the exception was logged via logger.exception()
+            mock_logger.exception.assert_called_once_with(
+                "Error during conversation run from send_message"
             )
-            # Verify run was called via executor since agent is idle
-            mock_loop.run_in_executor.assert_any_call(None, conversation.run)
+
+        # Verify send_message was still called
+        conversation.send_message.assert_called_once_with(message)
+
+        # Verify run was called (and raised the exception)
+        conversation.run.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_send_message_with_different_message_types(self, event_service):
@@ -746,6 +791,68 @@ class TestEventServiceSendMessage:
             await event_service.send_message(system_message, run=False)
             mock_loop.run_in_executor.assert_any_call(
                 None, conversation.send_message, system_message
+            )
+
+
+class TestEventServiceRespondToConfirmation:
+    """Test cases for confirmation responses and rejection handling."""
+
+    @pytest.mark.asyncio
+    async def test_respond_to_confirmation_accept_calls_run(self, event_service):
+        """Accepting confirmation should trigger run and not rejection."""
+        event_service._conversation = MagicMock()
+        event_service.run = AsyncMock()
+        event_service.reject_pending_actions = AsyncMock()
+
+        request = ConfirmationResponseRequest(accept=True, reason="ignored")
+
+        await event_service.respond_to_confirmation(request)
+
+        event_service.run.assert_awaited_once_with()
+        event_service.reject_pending_actions.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_respond_to_confirmation_rejects_actions(self, event_service):
+        """Rejecting confirmation should call reject_pending_actions with reason."""
+        event_service._conversation = MagicMock()
+        event_service.run = AsyncMock()
+        event_service.reject_pending_actions = AsyncMock()
+
+        reason = "User rejected actions"
+        request = ConfirmationResponseRequest(accept=False, reason=reason)
+
+        await event_service.respond_to_confirmation(request)
+
+        event_service.reject_pending_actions.assert_awaited_once_with(reason)
+        event_service.run.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_reject_pending_actions_inactive_service(self, event_service):
+        """Rejecting pending actions should fail when service is inactive."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.reject_pending_actions("any reason")
+
+    @pytest.mark.asyncio
+    async def test_reject_pending_actions_invokes_conversation(self, event_service):
+        """Rejecting pending actions should delegate to conversation via executor."""
+        conversation = MagicMock()
+        conversation.reject_pending_actions = MagicMock()
+        event_service._conversation = conversation
+
+        async def _mock_executor(*_args, **_kwargs):
+            return None
+
+        with patch("asyncio.get_running_loop") as mock_get_loop:
+            mock_loop = MagicMock()
+            mock_get_loop.return_value = mock_loop
+            mock_loop.run_in_executor.return_value = _mock_executor()
+
+            await event_service.reject_pending_actions("custom reason")
+
+            mock_loop.run_in_executor.assert_called_once_with(
+                None, conversation.reject_pending_actions, "custom reason"
             )
 
 
@@ -942,3 +1049,503 @@ class TestEventServiceBodyFiltering:
         # Test counting by non-matching text
         result = await event_service.count_events(body="nonexistent")
         assert result == 0
+
+
+class TestEventServiceRun:
+    """Test cases for EventService.run method."""
+
+    @pytest.mark.asyncio
+    async def test_run_inactive_service(self, event_service):
+        """Test that run raises ValueError when conversation is not active."""
+        event_service._conversation = None
+
+        with pytest.raises(ValueError, match="inactive_service"):
+            await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_by_status(self, event_service):
+        """Test that run raises ValueError when conversation is already running."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.RUNNING
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        with pytest.raises(ValueError, match="conversation_already_running"):
+            await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_already_running_by_task(self, event_service):
+        """Test that run raises ValueError when there's an active run task."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+
+        event_service._conversation = conversation
+
+        # Create a mock task that is not done
+        mock_task = MagicMock()
+        mock_task.done.return_value = False
+        event_service._run_task = mock_task
+
+        with pytest.raises(ValueError, match="conversation_already_running"):
+            await event_service.run()
+
+    @pytest.mark.asyncio
+    async def test_run_starts_background_task(self, event_service):
+        """Test that run starts a background task and returns immediately."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock()
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        # Call run - should return immediately
+        await event_service.run()
+
+        # Verify a task was created
+        assert event_service._run_task is not None
+
+        # Wait for the background task to complete
+        await event_service._run_task
+
+        # Verify conversation.run was called
+        conversation.run.assert_called_once()
+
+        # Verify state update was published after run completed
+        event_service._publish_state_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_run_publishes_state_update_on_completion(self, event_service):
+        """Test that run publishes state update after completion."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock()
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.run()
+        await event_service._run_task  # Wait for completion
+
+        # State update should be published after run completes
+        event_service._publish_state_update.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_run_publishes_state_update_on_error(self, event_service):
+        """Test that run publishes state update even if run raises an error."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.__enter__ = MagicMock(return_value=state)
+        state.__exit__ = MagicMock(return_value=None)
+        conversation._state = state
+        conversation.run = MagicMock(side_effect=RuntimeError("Test error"))
+
+        event_service._conversation = conversation
+        event_service._publish_state_update = AsyncMock()
+
+        await event_service.run()
+
+        # Wait for the background task to complete (it will raise but be caught)
+        try:
+            await event_service._run_task
+        except RuntimeError:
+            pass  # Expected
+
+        # State update should still be published (in finally block)
+        event_service._publish_state_update.assert_called()
+
+
+class TestEventServiceStartWithRunningStatus:
+    """Test cases for EventService.start handling of RUNNING execution status."""
+
+    @pytest.mark.asyncio
+    async def test_start_sets_error_status_when_running_from_disk(
+        self, event_service, tmp_path
+    ):
+        """Test that start() sets ERROR status and adds AgentErrorEvent.
+
+        When a conversation is loaded from disk with RUNNING status, it indicates
+        the process crashed or was terminated unexpectedly. The EventService should:
+        1. Set execution_status to ERROR
+        2. Add an AgentErrorEvent for the first unmatched action to inform the agent
+        """
+        from openhands.sdk.event import AgentErrorEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.llm import MessageToolCall, TextContent
+        from openhands.tools.terminal import TerminalAction
+
+        # Setup paths
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Update workspace to use a valid temp directory
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            # Create an unmatched action event (action without observation)
+            unmatched_action = ActionEvent(
+                source="agent",
+                thought=[TextContent(text="I need to run ls command")],
+                action=TerminalAction(command="ls"),
+                tool_name="terminal",
+                tool_call_id="call_1",
+                tool_call=MessageToolCall(
+                    id="call_1",
+                    name="terminal",
+                    arguments='{"command": "ls"}',
+                    origin="completion",
+                ),
+                llm_response_id="response_1",
+            )
+
+            # Set up mock state with RUNNING status and the unmatched action
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = [unmatched_action]
+            mock_state.stats = MagicMock()
+
+            # Setup mock agent
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Call start
+            await event_service.start()
+
+            # Verify execution_status was changed to ERROR
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+
+            # Verify AgentErrorEvent was added via _on_event
+            mock_conv._on_event.assert_called()
+            call_args = mock_conv._on_event.call_args_list
+
+            # Find the AgentErrorEvent call
+            error_event_calls = [
+                call for call in call_args if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 1
+
+            error_event = error_event_calls[0][0][0]
+            assert error_event.tool_name == "terminal"
+            assert error_event.tool_call_id == "call_1"
+            assert "restart occurred" in error_event.error
+            assert "fatal memory error" in error_event.error
+
+    @pytest.mark.asyncio
+    async def test_start_does_not_add_error_event_when_no_unmatched_actions(
+        self, event_service, tmp_path
+    ):
+        """Test that start() doesn't add AgentErrorEvent without unmatched actions.
+
+        Even if execution_status is RUNNING, if there are no unmatched actions,
+        no AgentErrorEvent should be added.
+        """
+        from openhands.sdk.event import AgentErrorEvent
+
+        # Setup paths
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Update workspace to use a valid temp directory
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            # Set up mock state with RUNNING status but no events (no unmatched actions)
+            mock_state.execution_status = ConversationExecutionStatus.RUNNING
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+
+            # Setup mock agent
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Call start
+            await event_service.start()
+
+            # Verify execution_status was changed to ERROR
+            assert mock_state.execution_status == ConversationExecutionStatus.ERROR
+
+            # Verify _on_event was NOT called with AgentErrorEvent
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 0
+
+    @pytest.mark.asyncio
+    async def test_start_does_nothing_when_status_not_running(
+        self, event_service, tmp_path
+    ):
+        """Test that start() doesn't modify execution_status when it's not RUNNING."""
+        from openhands.sdk.event import AgentErrorEvent
+
+        # Setup paths
+        event_service.conversations_dir = tmp_path
+        conv_dir = tmp_path / event_service.stored.id.hex
+        conv_dir.mkdir(parents=True, exist_ok=True)
+
+        # Update workspace to use a valid temp directory
+        event_service.stored.workspace = LocalWorkspace(working_dir=str(tmp_path))
+
+        with patch(
+            "openhands.agent_server.event_service.LocalConversation"
+        ) as MockConversation:
+            mock_conv = MagicMock()
+            mock_state = MagicMock()
+            mock_agent = MagicMock()
+
+            # Set up mock state with IDLE status
+            mock_state.execution_status = ConversationExecutionStatus.IDLE
+            mock_state.events = []
+            mock_state.stats = MagicMock()
+
+            # Setup mock agent
+            mock_agent.get_all_llms.return_value = []
+
+            mock_conv._state = mock_state
+            mock_conv.state = mock_state
+            mock_conv.agent = mock_agent
+            mock_conv._on_event = MagicMock()
+            MockConversation.return_value = mock_conv
+
+            # Call start
+            await event_service.start()
+
+            # Verify execution_status remains IDLE
+            assert mock_state.execution_status == ConversationExecutionStatus.IDLE
+
+            # Verify _on_event was NOT called with AgentErrorEvent
+            error_event_calls = [
+                call
+                for call in mock_conv._on_event.call_args_list
+                if isinstance(call[0][0], AgentErrorEvent)
+            ]
+            assert len(error_event_calls) == 0
+
+
+class TestEventServiceConcurrentSubscriptions:
+    """Test cases for concurrent subscription handling without deadlocks.
+
+    These tests verify that the fix for moving async operations outside the
+    FIFOLock context prevents deadlocks when multiple subscribers are active
+    or when subscribers are slow.
+    """
+
+    @pytest.fixture
+    def mock_conversation_with_real_lock(self):
+        """Create a mock conversation with a real FIFOLock for testing concurrency."""
+        conversation = MagicMock(spec=Conversation)
+        state = MagicMock(spec=ConversationState)
+
+        # Use a real FIFOLock to test actual locking behavior
+        real_lock = FIFOLock()
+        state._lock = real_lock
+        state.__enter__ = lambda self: (real_lock.acquire(), self)[1]
+        state.__exit__ = lambda self, *args: real_lock.release()
+
+        # Set up minimal state attributes needed for ConversationStateUpdateEvent
+        state.events = []
+        state.execution_status = ConversationExecutionStatus.IDLE
+        state.model_dump = MagicMock(
+            return_value={
+                "execution_status": "idle",
+                "events": [],
+            }
+        )
+
+        conversation._state = state
+        return conversation
+
+    @pytest.mark.asyncio
+    async def test_concurrent_subscriptions_no_deadlock(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test that multiple concurrent subscriptions don't cause deadlocks.
+
+        This test creates multiple subscribers that are subscribed concurrently
+        and verifies that all subscriptions complete without hanging.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        received_events: list[list[Event]] = [[] for _ in range(3)]
+
+        class TestSubscriber(Subscriber[Event]):
+            def __init__(self, index: int):
+                self.index = index
+
+            async def __call__(self, event: Event):
+                received_events[self.index].append(event)
+
+        # Subscribe multiple subscribers concurrently
+        subscribers = [TestSubscriber(i) for i in range(3)]
+
+        # Use asyncio.wait_for to detect deadlocks with a timeout
+        async def subscribe_all():
+            tasks = [event_service.subscribe_to_events(sub) for sub in subscribers]
+            return await asyncio.gather(*tasks)
+
+        # This should complete within 2 seconds if there's no deadlock
+        subscriber_ids = await asyncio.wait_for(subscribe_all(), timeout=2.0)
+
+        # Verify all subscriptions succeeded
+        assert len(subscriber_ids) == 3
+        for sub_id in subscriber_ids:
+            assert sub_id is not None
+
+        # Verify all subscribers received the initial state event
+        for i, events in enumerate(received_events):
+            assert len(events) == 1, f"Subscriber {i} should have received 1 event"
+            assert isinstance(events[0], ConversationStateUpdateEvent)
+
+    @pytest.mark.asyncio
+    async def test_slow_subscriber_does_not_block_lock(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test that a slow subscriber doesn't hold the lock during I/O.
+
+        This test verifies that the lock is released before the async send
+        operation, allowing other operations to proceed even if a subscriber
+        is slow.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        state = mock_conversation_with_real_lock._state
+        lock_held_during_sleep = False
+
+        class SlowSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                nonlocal lock_held_during_sleep
+                # Check if lock is held during the async operation
+                # If the fix is correct, the lock should NOT be held here
+                lock_held_during_sleep = state._lock.locked()
+                await asyncio.sleep(0.1)  # Simulate slow I/O
+
+        slow_subscriber = SlowSubscriber()
+
+        # Subscribe with the slow subscriber
+        await asyncio.wait_for(
+            event_service.subscribe_to_events(slow_subscriber),
+            timeout=2.0,
+        )
+
+        # The lock should NOT be held during the async sleep
+        # (it's released before the await subscriber() call)
+        assert not lock_held_during_sleep, (
+            "Lock should not be held during async subscriber call"
+        )
+
+    @pytest.mark.asyncio
+    async def test_subscription_during_state_update(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test that subscriptions and state updates can interleave without deadlock.
+
+        This test simulates a scenario where a subscription happens while
+        a state update is being published, verifying no deadlock occurs.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        events_received: list[Event] = []
+
+        class CollectorSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                events_received.append(event)
+                # Simulate some async work
+                await asyncio.sleep(0.01)
+
+        # First, subscribe a collector
+        collector = CollectorSubscriber()
+        await event_service.subscribe_to_events(collector)
+
+        # Now trigger a state update while potentially another subscription happens
+        async def subscribe_new():
+            new_subscriber = CollectorSubscriber()
+            return await event_service.subscribe_to_events(new_subscriber)
+
+        async def publish_update():
+            await event_service._publish_state_update()
+
+        # Run both concurrently - this should not deadlock
+        results = await asyncio.wait_for(
+            asyncio.gather(subscribe_new(), publish_update(), return_exceptions=True),
+            timeout=2.0,
+        )
+
+        # Verify no exceptions occurred
+        for result in results:
+            if isinstance(result, Exception):
+                pytest.fail(f"Unexpected exception: {result}")
+
+    @pytest.mark.asyncio
+    async def test_multiple_state_updates_with_slow_subscribers(
+        self, event_service, mock_conversation_with_real_lock
+    ):
+        """Test multiple rapid state updates with slow subscribers don't deadlock.
+
+        This test verifies that even with slow subscribers, multiple state
+        updates can be processed without the lock causing contention issues.
+        """
+        event_service._conversation = mock_conversation_with_real_lock
+        events_received: list[Event] = []
+
+        class SlowCollectorSubscriber(Subscriber[Event]):
+            async def __call__(self, event: Event):
+                events_received.append(event)
+                await asyncio.sleep(0.05)  # Simulate slow processing
+
+        # Subscribe a slow collector
+        slow_collector = SlowCollectorSubscriber()
+        await event_service.subscribe_to_events(slow_collector)
+
+        # Clear the initial state event
+        events_received.clear()
+
+        # Trigger multiple state updates rapidly
+        async def rapid_updates():
+            for _ in range(5):
+                await event_service._publish_state_update()
+
+        # This should complete without deadlock
+        await asyncio.wait_for(rapid_updates(), timeout=5.0)
+
+        # Verify all updates were received
+        assert len(events_received) == 5, (
+            f"Expected 5 events, got {len(events_received)}"
+        )

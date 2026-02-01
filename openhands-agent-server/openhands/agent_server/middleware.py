@@ -1,3 +1,4 @@
+import os
 from urllib.parse import urlparse
 
 from fastapi.middleware.cors import CORSMiddleware
@@ -5,8 +6,10 @@ from starlette.types import ASGIApp
 
 
 class LocalhostCORSMiddleware(CORSMiddleware):
-    """Custom CORS middleware that allows any request from localhost/127.0.0.1 domains,
-    while using standard CORS rules for other origins.
+    """Custom CORS middleware that allows any request from localhost/127.0.0.1 domains.
+
+    Also allows the DOCKER_HOST_ADDR IP, while using standard CORS rules for
+    other origins.
     """
 
     def __init__(self, app: ASGIApp, allow_origins: list[str]) -> None:
@@ -25,6 +28,11 @@ class LocalhostCORSMiddleware(CORSMiddleware):
 
             # Allow any localhost/127.0.0.1 origin regardless of port
             if hostname in ["localhost", "127.0.0.1"]:
+                return True
+
+            # Also allow DOCKER_HOST_ADDR if set (for remote browser access)
+            docker_host_addr = os.environ.get("DOCKER_HOST_ADDR")
+            if docker_host_addr and hostname == docker_host_addr:
                 return True
 
         # For missing origin or other origins, use the parent class's logic
