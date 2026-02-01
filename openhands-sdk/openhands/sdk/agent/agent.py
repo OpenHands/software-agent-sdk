@@ -273,6 +273,11 @@ class Agent(AgentBase):
                 logger.info(f"User message blocked by hook: {reason}")
                 state.execution_status = ConversationExecutionStatus.FINISHED
                 return
+        elif state.blocked_messages:
+            logger.debug(
+                "Blocked messages exist but last_user_message_id is None; "
+                "skipping hook check for legacy conversation state."
+            )
 
         # Prepare LLM messages using the utility function
         _messages_or_condensation = prepare_llm_messages(

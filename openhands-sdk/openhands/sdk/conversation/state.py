@@ -114,7 +114,12 @@ class ConversationState(OpenHandsModel):
     # Track the most recent user MessageEvent ID to avoid event log scans.
     last_user_message_id: EventID | None = Field(
         default=None,
-        description="Most recent user MessageEvent id (for hook block checks)",
+        description=(
+            "Most recent user MessageEvent id for hook block checks. "
+            "Updated when user messages are emitted so Agent.step can pop "
+            "blocked_messages without scanning the event log. If None, "
+            "hook-blocked checks are skipped (legacy conversations)."
+        ),
     )
 
     # Conversation statistics for LLM usage tracking
