@@ -139,7 +139,6 @@ def _display_consent_and_confirm(verbose: bool = False) -> bool:
 
 
 # OAuth configuration for OpenAI Codex
-# OAuth configuration for OpenAI Codex
 # This is a public client ID for OpenAI's OAuth flow (safe to commit)
 CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 ISSUER = "https://auth.openai.com"
