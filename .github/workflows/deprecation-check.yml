@@ -18,6 +18,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   enable-cache: true
+                  python-version: '3.13'
 
             - name: Verify deprecation removals
               run: uv run --with packaging python .github/scripts/check_deprecations.py

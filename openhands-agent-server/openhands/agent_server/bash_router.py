@@ -36,6 +36,14 @@ async def search_bash_events(
     command_id__eq: UUID | None = None,
     timestamp__gte: datetime | None = None,
     timestamp__lt: datetime | None = None,
+    order__gt: Annotated[
+        int | None,
+        Query(
+            title="Filter to events with order greater than this value",
+            description="Only returns BashOutput events with order > this value. "
+            "Useful for polling to fetch only new events since the last poll.",
+        ),
+    ] = None,
     sort_order: BashEventSortOrder = BashEventSortOrder.TIMESTAMP,
     page_id: Annotated[
         str | None,
@@ -55,6 +63,7 @@ async def search_bash_events(
         command_id__eq=command_id__eq,
         timestamp__gte=timestamp__gte,
         timestamp__lt=timestamp__lt,
+        order__gt=order__gt,
         sort_order=sort_order,
         page_id=page_id,
         limit=limit,
