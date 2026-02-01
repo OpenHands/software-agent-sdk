@@ -16,6 +16,7 @@ logger = get_logger(__name__)
 
 def check_browser():
     """Check if browser functionality can render about:blank."""
+    executor = None
     try:
         # Register tools to ensure browser tools are available
         from openhands.tools.preset.default import register_default_tools
@@ -27,18 +28,15 @@ def check_browser():
         from openhands.tools.browser_use.impl import BrowserToolExecutor
 
         # Create executor
-        executor = BrowserToolExecutor(headless=True, session_timeout_minutes=1)
+        executor = BrowserToolExecutor(headless=True, session_timeout_minutes=2)
 
         # Try to navigate to about:blank
         action = BrowserNavigateAction(url="about:blank")
         result = executor(action)
 
-        # Clean up
-        executor.close()
-
         # Check if the operation was successful
         if result.is_error:
-            print(f"Browser check failed: {result.content}")
+            print(f"Browser check failed: {str(result.content)}")
             return False
 
         print("Browser check passed: Successfully rendered about:blank")
@@ -47,6 +45,10 @@ def check_browser():
     except Exception as e:
         print(f"Browser check failed: {e}")
         return False
+    finally:
+        # Ensure cleanup happens even if an error occurs
+        if executor is not None:
+            executor.close()
 
 
 class LoggingServer(uvicorn.Server):
