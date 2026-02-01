@@ -27,7 +27,10 @@ from openhands.sdk.utils.pydantic_secrets import serialize_secret, validate_secr
 
 
 if TYPE_CHECKING:  # type hints only, avoid runtime import cycle
+    from openhands.sdk.llm.auth import SupportedVendor
     from openhands.sdk.tool.tool import ToolDefinition
+
+from openhands.sdk.llm.auth.openai import transform_for_subscription
 
 
 with warnings.catch_warnings():
@@ -50,8 +53,20 @@ from litellm.exceptions import (
     Timeout as LiteLLMTimeout,
 )
 from litellm.responses.main import responses as litellm_responses
-from litellm.types.llms.openai import ResponsesAPIResponse
-from litellm.types.utils import ModelResponse
+from litellm.responses.streaming_iterator import SyncResponsesAPIStreamingIterator
+from litellm.types.llms.openai import (
+    OutputTextDeltaEvent,
+    ReasoningSummaryTextDeltaEvent,
+    RefusalDeltaEvent,
+    ResponseCompletedEvent,
+    ResponsesAPIResponse,
+)
+from litellm.types.utils import (
+    Delta,
+    ModelResponse,
+    ModelResponseStream,
+    StreamingChoices,
+)
 from litellm.utils import (
     create_pretrained_tokenizer,
     supports_vision,
@@ -335,6 +350,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     _model_info: Any = PrivateAttr(default=None)
     _tokenizer: Any = PrivateAttr(default=None)
     _telemetry: Telemetry | None = PrivateAttr(default=None)
+    _is_subscription: bool = PrivateAttr(default=False)
 
     model_config: ClassVar[ConfigDict] = ConfigDict(
         extra="ignore", arbitrary_types_allowed=True
@@ -499,6 +515,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         )
         return self._telemetry
 
+    @property
+    def is_subscription(self) -> bool:
+        """Check if this LLM uses subscription-based authentication.
+
+        Returns True when the LLM was created via `LLM.subscription_login()`,
+        which uses the ChatGPT subscription Codex backend rather than the
+        standard OpenAI API.
+
+        Returns:
+            bool: True if using subscription-based transport, False otherwise.
+        """
+        return self._is_subscription
+
     def restore_metrics(self, metrics: Metrics) -> None:
         # Only used by ConversationStats to seed metrics
         self._metrics = metrics
@@ -662,7 +691,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             raise
 
     # =========================================================================
-    # Responses API (non-stream, v1)
+    # Responses API (v1)
     # =========================================================================
     def responses(
         self,
@@ -686,16 +715,19 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             store: Whether to store the conversation
             _return_metrics: Whether to return usage metrics
             add_security_risk_prediction: Add security_risk field to tool schemas
-            on_token: Optional callback for streaming tokens (not yet supported)
+            on_token: Optional callback for streaming deltas
             **kwargs: Additional arguments passed to the API
 
         Note:
             Summary field is always added to tool schemas for transparency and
             explainability of agent actions.
         """
-        # Streaming not yet supported
-        if kwargs.get("stream", False) or self.stream or on_token is not None:
-            raise ValueError("Streaming is not supported for Responses API yet")
+        user_enable_streaming = bool(kwargs.get("stream", False)) or self.stream
+        if user_enable_streaming:
+            if on_token is None and not self.is_subscription:
+                # We allow on_token to be None for subscription mode
+                raise ValueError("Streaming requires an on_token callback")
+            kwargs["stream"] = True
 
         # Build instructions + input list using dedicated Responses formatter
         instructions, input_items = self.format_messages_for_responses(messages)
@@ -771,12 +803,67 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                         seed=self.seed,
                         **final_kwargs,
                     )
-                    assert isinstance(ret, ResponsesAPIResponse), (
+                    if isinstance(ret, ResponsesAPIResponse):
+                        if user_enable_streaming:
+                            logger.warning(
+                                "Responses streaming was requested, but the provider "
+                                "returned a non-streaming response; no on_token deltas "
+                                "will be emitted."
+                            )
+                        self._telemetry.on_response(ret)
+                        return ret
+
+                    # When stream=True, LiteLLM returns a streaming iterator rather than
+                    # a single ResponsesAPIResponse. Drain the iterator and use the
+                    # completed response.
+                    if final_kwargs.get("stream", False):
+                        if not isinstance(ret, SyncResponsesAPIStreamingIterator):
+                            raise AssertionError(
+                                f"Expected Responses stream iterator, got {type(ret)}"
+                            )
+
+                        stream_callback = on_token if user_enable_streaming else None
+                        for event in ret:
+                            if stream_callback is None:
+                                continue
+                            if isinstance(
+                                event,
+                                (
+                                    OutputTextDeltaEvent,
+                                    RefusalDeltaEvent,
+                                    ReasoningSummaryTextDeltaEvent,
+                                ),
+                            ):
+                                delta = event.delta
+                                if delta:
+                                    stream_callback(
+                                        ModelResponseStream(
+                                            choices=[
+                                                StreamingChoices(
+                                                    delta=Delta(content=delta)
+                                                )
+                                            ]
+                                        )
+                                    )
+
+                        completed_event = ret.completed_response
+                        if completed_event is None:
+                            raise LLMNoResponseError(
+                                "Responses stream finished without a completed response"
+                            )
+                        if not isinstance(completed_event, ResponseCompletedEvent):
+                            raise LLMNoResponseError(
+                                f"Unexpected completed event: {type(completed_event)}"
+                            )
+
+                        completed_resp = completed_event.response
+
+                        self._telemetry.on_response(completed_resp)
+                        return completed_resp
+
+                    raise AssertionError(
                         f"Expected ResponsesAPIResponse, got {type(ret)}"
                     )
-                    # telemetry (latency, cost). Token usage mapping we handle after.
-                    self._telemetry.on_response(ret)
-                    return ret
 
         try:
             resp: ResponsesAPIResponse = _one_attempt()
@@ -1046,8 +1133,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
         - Skips prompt caching flags and string serializer concerns
         - Uses Message.to_responses_value to get either instructions (system)
-         or input items (others)
+          or input items (others)
         - Concatenates system instructions into a single instructions string
+        - For subscription mode, system prompts are prepended to user content
         """
         msgs = copy.deepcopy(messages)
 
@@ -1057,18 +1145,26 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         # Assign system instructions as a string, collect input items
         instructions: str | None = None
         input_items: list[dict[str, Any]] = []
+        system_chunks: list[str] = []
+
         for m in msgs:
             val = m.to_responses_value(vision_enabled=vision_active)
             if isinstance(val, str):
                 s = val.strip()
-                if not s:
-                    continue
-                instructions = (
-                    s if instructions is None else f"{instructions}\n\n---\n\n{s}"
-                )
-            else:
-                if val:
-                    input_items.extend(val)
+                if s:
+                    if self.is_subscription:
+                        system_chunks.append(s)
+                    else:
+                        instructions = (
+                            s
+                            if instructions is None
+                            else f"{instructions}\n\n---\n\n{s}"
+                        )
+            elif val:
+                input_items.extend(val)
+
+        if self.is_subscription:
+            return transform_for_subscription(system_chunks, input_items)
         return instructions, input_items
 
     def get_token_count(self, messages: list[Message]) -> int:
@@ -1159,3 +1255,62 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             if v is not None:
                 data[field_name] = v
         return cls(**data)
+
+    @classmethod
+    def subscription_login(
+        cls,
+        vendor: SupportedVendor,
+        model: str,
+        force_login: bool = False,
+        open_browser: bool = True,
+        **llm_kwargs,
+    ) -> LLM:
+        """Authenticate with a subscription service and return an LLM instance.
+
+        This method provides subscription-based access to LLM models that are
+        available through chat subscriptions (e.g., ChatGPT Plus/Pro) rather
+        than API credits. It handles credential caching, token refresh, and
+        the OAuth login flow.
+
+        Currently supported vendors:
+        - "openai": ChatGPT Plus/Pro subscription for Codex models
+
+        Supported OpenAI models:
+        - gpt-5.1-codex-max
+        - gpt-5.1-codex-mini
+        - gpt-5.2
+        - gpt-5.2-codex
+
+        Args:
+            vendor: The vendor/provider. Currently only "openai" is supported.
+            model: The model to use. Must be supported by the vendor's
+                subscription service.
+            force_login: If True, always perform a fresh login even if valid
+                credentials exist.
+            open_browser: Whether to automatically open the browser for the
+                OAuth login flow.
+            **llm_kwargs: Additional arguments to pass to the LLM constructor.
+
+        Returns:
+            An LLM instance configured for subscription-based access.
+
+        Raises:
+            ValueError: If the vendor or model is not supported.
+            RuntimeError: If authentication fails.
+
+        Example:
+            >>> from openhands.sdk import LLM
+            >>> # First time: opens browser for OAuth login
+            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+            >>> # Subsequent calls: reuses cached credentials
+            >>> llm = LLM.subscription_login(vendor="openai", model="gpt-5.2-codex")
+        """
+        from openhands.sdk.llm.auth.openai import subscription_login
+
+        return subscription_login(
+            vendor=vendor,
+            model=model,
+            force_login=force_login,
+            open_browser=open_browser,
+            **llm_kwargs,
+        )
