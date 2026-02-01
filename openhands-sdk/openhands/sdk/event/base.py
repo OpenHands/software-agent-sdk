@@ -1,5 +1,6 @@
 import uuid
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 from datetime import datetime
 from typing import TYPE_CHECKING, ClassVar
 
@@ -88,8 +89,10 @@ class LLMConvertibleEvent(Event, ABC):
             return base_str
 
     @staticmethod
-    def events_to_messages(events: list["LLMConvertibleEvent"]) -> list[Message]:
-        """Convert event stream to LLM message stream, handling multi-action batches"""
+    def events_to_messages(
+        events: Sequence["LLMConvertibleEvent"],
+    ) -> list[Message]:
+        """Convert event stream to LLM message stream, handling multi-action batches."""
         # TODO: We should add extensive tests for this
         from openhands.sdk.event.llm_convertible import ActionEvent
 

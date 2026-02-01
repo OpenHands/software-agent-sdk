@@ -67,7 +67,10 @@ class StuckDetector:
         If a user message exists within this window, only events after it are checked.
         Otherwise, all events in the window are analyzed.
         """
-        events = list(self.state.events[-MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION:])
+        start_index = max(
+            len(self.state.events) - MAX_EVENTS_TO_SCAN_FOR_STUCK_DETECTION, 0
+        )
+        events = list(self.state.events.iter_events(start=start_index))
 
         # Only look at history after the last user message
         last_user_msg_index = next(

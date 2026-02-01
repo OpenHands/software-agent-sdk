@@ -34,7 +34,7 @@ def get_total_token_count(
         >>> token_count = get_total_token_count(events, llm)
         >>> print(f"Total tokens: {token_count}")
     """
-    messages = LLMConvertibleEvent.events_to_messages(list(events))
+    messages = LLMConvertibleEvent.events_to_messages(events)
     return llm.get_token_count(messages)
 
 

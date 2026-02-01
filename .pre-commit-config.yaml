@@ -38,6 +38,15 @@ repos:
             types: [python]
             pass_filenames: true
             always_run: false
+          - id: check-eventlog-materialization
+            name: Avoid EventLog list materialization
+            entry: uv
+            args: [run, python, scripts/check_eventlog_materialization.py]
+            language: system
+            types: [python]
+            pass_filenames: true
+            always_run: false
+
           - id: check-import-rules
             name: Check import dependency rules
             entry: uv

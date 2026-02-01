@@ -652,8 +652,19 @@ def test_events_not_lost_during_client_disconnection(
     # The WebSocket client may have started closing, but the server may still
     # be trying to send events.
 
-    # Get events received via WebSocket (cached in RemoteEventsList)
-    ws_events = list(conv.state.events)
+    # Collect event details received via WebSocket (cached in RemoteEventsList)
+    ws_action_events: list[ActionEvent] = []
+    ws_observation_events: list[ObservationEvent] = []
+    ws_event_summary: list[str] = []
+
+    for event in conv.state.events:
+        ws_event_summary.append(
+            f"{type(event).__name__}({getattr(event, 'tool_name', 'N/A')})"
+        )
+        if isinstance(event, ActionEvent) and event.tool_name == "finish":
+            ws_action_events.append(event)
+        if isinstance(event, ObservationEvent) and event.tool_name == "finish":
+            ws_observation_events.append(event)
 
     # Fetch events directly from REST API to get the authoritative list
     # This bypasses the WebSocket and shows what's actually persisted on server
@@ -667,18 +678,10 @@ def test_events_not_lost_during_client_disconnection(
         rest_events = [Event.model_validate(item) for item in rest_data["items"]]
 
     # Count ActionEvents in each source
-    ws_action_events = [
-        e for e in ws_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
-    ]
     rest_action_events = [
         e for e in rest_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
     ]
 
-    ws_observation_events = [
-        e
-        for e in ws_events
-        if isinstance(e, ObservationEvent) and e.tool_name == "finish"
-    ]
     rest_observation_events = [
         e
         for e in rest_events
@@ -686,9 +689,6 @@ def test_events_not_lost_during_client_disconnection(
     ]
 
     # Log what we found for debugging
-    ws_event_summary = [
-        f"{type(e).__name__}({getattr(e, 'tool_name', 'N/A')})" for e in ws_events
-    ]
     rest_event_summary = [
         f"{type(e).__name__}({getattr(e, 'tool_name', 'N/A')})" for e in rest_events
     ]
@@ -823,7 +823,11 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     conv.send_message("Complete the task")
     conv.run()
 
-    ws_events = list(conv.state.events)
+    ws_action = [
+        e
+        for e in conv.state.events
+        if isinstance(e, ActionEvent) and e.tool_name == "finish"
+    ]
 
     with httpx.Client(base_url=server_env["host"]) as client:
         response = client.get(
@@ -834,9 +838,6 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
         rest_data = response.json()
         rest_events = [Event.model_validate(item) for item in rest_data["items"]]
 
-    ws_action = [
-        e for e in ws_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
-    ]
     rest_action = [
         e for e in rest_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
     ]
@@ -853,10 +854,9 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
     if len(ws_action) == 0:
         # Reconcile after completion should fetch the missing event.
         conv.state.events.reconcile()
-        ws_events_after = list(conv.state.events)
         ws_action_after = [
             e
-            for e in ws_events_after
+            for e in conv.state.events
             if isinstance(e, ActionEvent) and e.tool_name == "finish"
         ]
         assert len(ws_action_after) >= 1

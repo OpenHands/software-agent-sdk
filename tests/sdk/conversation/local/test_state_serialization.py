@@ -346,7 +346,8 @@ def test_conversation_state_corrupted_event_handling():
         # Accessing events triggers validation - corrupted JSON will fail
         with pytest.raises((ValidationError, json.JSONDecodeError)):
             # Iterate through all events to trigger loading
-            list(conversation._state.events)
+            for _ in conversation._state.events:
+                pass
 
 
 def test_conversation_state_empty_filestore():

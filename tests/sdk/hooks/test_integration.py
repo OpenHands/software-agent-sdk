@@ -521,8 +521,9 @@ class TestLocalConversationHookCallbackWiring:
         conversation.send_message("Hello")
 
         # Verify the MODIFIED event (with extended_content) was persisted
-        events = list(conversation.state.events)
-        message_events = [e for e in events if isinstance(e, MessageEvent)]
+        message_events = [
+            e for e in conversation.state.events if isinstance(e, MessageEvent)
+        ]
 
         assert len(message_events) == 1
         assert len(message_events[0].extended_content) > 0

@@ -1,4 +1,5 @@
 import json
+from itertools import chain
 
 from pydantic import ValidationError, model_validator
 
@@ -218,10 +219,11 @@ class Agent(AgentBase):
             return None
 
         try:
-            # Build event history including the current event
-            events = list(conversation.state.events) + [event]
+            # Build event history including the current event without materializing
+            # the full event log in memory.
+            events_iter = chain(conversation.state.events, (event,))
             llm_convertible_events = [
-                e for e in events if isinstance(e, LLMConvertibleEvent)
+                e for e in events_iter if isinstance(e, LLMConvertibleEvent)
             ]
 
             # Evaluate without git_patch for now
@@ -267,7 +269,7 @@ class Agent(AgentBase):
 
         # Check if the last user message was blocked by a UserPromptSubmit hook
         # If so, skip processing and mark conversation as finished
-        for event in reversed(list(state.events)):
+        for event in reversed(state.events):
             if isinstance(event, MessageEvent) and event.source == "user":
                 reason = state.pop_blocked_message(event.id)
                 if reason is not None:

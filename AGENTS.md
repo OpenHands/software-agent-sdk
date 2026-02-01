@@ -229,6 +229,8 @@ git push -u origin <feature-name>
 <REPO_CONFIG_NOTES>
 - Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
 - Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
+- Pre-commit hook `check_eventlog_materialization.py` flags list(...) on EventLog/`events` usage; prefer iterating or `iter_events()` for streaming.
+
 - Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
 </REPO_CONFIG_NOTES>
 </REPO>

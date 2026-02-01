@@ -6,6 +6,7 @@ by analyzing collected events from conversations.
 """
 
 import fnmatch
+from collections.abc import Sequence
 
 from openhands.sdk.event.base import Event
 from openhands.sdk.event.llm_convertible.observation import (
@@ -181,7 +182,9 @@ def _matches_pattern(path: str, pattern: str) -> bool:
     return fnmatch.fnmatch(path, pattern) or pattern in path
 
 
-def verify_all_actions_have_summary(collected_events: list[Event]) -> tuple[bool, str]:
+def verify_all_actions_have_summary(
+    collected_events: Sequence[Event],
+) -> tuple[bool, str]:
     """
     Verify that all ActionEvents have a non-empty summary field.
 
@@ -189,7 +192,7 @@ def verify_all_actions_have_summary(collected_events: list[Event]) -> tuple[bool
     either by the LLM or with a default value.
 
     Args:
-        collected_events: List of events collected from conversation
+        collected_events: Events collected from conversation
 
     Returns:
         Tuple of (success, reason) where success is True if all actions have

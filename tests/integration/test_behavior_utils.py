@@ -32,7 +32,7 @@ def test_verify_all_actions_have_summary_all_present():
         _create_action_event("terminal", "running tests"),
         _create_action_event("file_editor", "editing config file"),
     ]
-    success, reason = verify_all_actions_have_summary(list(events))
+    success, reason = verify_all_actions_have_summary(events)
     assert success is True
     assert "All 2 actions have summaries" in reason
 
@@ -43,7 +43,7 @@ def test_verify_all_actions_have_summary_missing():
         _create_action_event("terminal", "running tests"),
         _create_action_event("file_editor", None),
     ]
-    success, reason = verify_all_actions_have_summary(list(events))
+    success, reason = verify_all_actions_have_summary(events)
     assert success is False
     assert "file_editor" in reason
 
@@ -53,7 +53,7 @@ def test_verify_all_actions_have_summary_empty_string():
     events: Sequence[Event] = [
         _create_action_event("terminal", ""),
     ]
-    success, reason = verify_all_actions_have_summary(list(events))
+    success, reason = verify_all_actions_have_summary(events)
     assert success is False
     assert "terminal" in reason
 
@@ -63,7 +63,7 @@ def test_verify_all_actions_have_summary_whitespace_only():
     events: Sequence[Event] = [
         _create_action_event("terminal", "   "),
     ]
-    success, reason = verify_all_actions_have_summary(list(events))
+    success, reason = verify_all_actions_have_summary(events)
     assert success is False
     assert "terminal" in reason
 

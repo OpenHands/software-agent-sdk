@@ -46,7 +46,7 @@ class GitHubPRBrowsingTest(BaseIntegrationTest):
                 success=False,
                 reason=(
                     "No final answer found from agent. "
-                    f"Events: {len(list(self.conversation.state.events))}, "
+                    f"Events: {len(self.conversation.state.events)}, "
                     f"LLM messages: {len(self.llm_messages)}"
                 ),
             )
