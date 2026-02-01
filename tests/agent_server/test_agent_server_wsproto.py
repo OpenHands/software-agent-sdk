@@ -21,7 +21,7 @@ def find_free_port():
 
 
 def run_agent_server(port, api_key):
-    os.environ["OH_SESSION_API_KEYS"] = f'["{api_key}"]'
+    os.environ["OH_SESSION_API_KEYS_0"] = api_key
     sys.argv = ["agent-server", "--port", str(port)]
     from openhands.agent_server.__main__ import main
 

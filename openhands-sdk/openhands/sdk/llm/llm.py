@@ -4,7 +4,7 @@ import copy
 import json
 import os
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -15,6 +15,7 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    ValidationInfo,
     field_serializer,
     field_validator,
     model_validator,
@@ -84,7 +85,6 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 logger = get_logger(__name__)
 
 __all__ = ["LLM"]
-
 
 # Exceptions we retry on
 LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
@@ -295,6 +295,15 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "coding agents."
         ),
     )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional profile id (filename under the profiles directory). "
+            "When set, ConversationState persistence may store a profile "
+            "reference (kind=profile_ref) instead of embedding full LLM config, "
+            "avoiding credential persistence."
+        ),
+    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -340,6 +349,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         extra="ignore", arbitrary_types_allowed=True
     )
 
+    def to_profile_ref(self) -> dict[str, str]:
+        """Return a persisted profile reference payload.
+
+        This is an explicit opt-in persistence format used by ConversationState to
+        avoid persisting full LLM configuration (and secrets) into serialized state.
+        """
+
+        if not self.profile_id:
+            raise ValueError("Cannot build profile ref payload without profile_id")
+        return {"kind": "profile_ref", "profile_id": self.profile_id}
+
     # =========================================================================
     # Validators
     # =========================================================================
@@ -370,10 +390,34 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
 
     @model_validator(mode="before")
     @classmethod
-    def _coerce_inputs(cls, data):
-        if not isinstance(data, dict):
+    def _coerce_inputs(cls, data: Any, info: ValidationInfo):
+        if not isinstance(data, Mapping):
             return data
         d = dict(data)
+
+        if d.get("kind") == "profile_ref":
+            profile_id = d.get("profile_id")
+            if not profile_id:
+                raise ValueError("profile_id must be specified in LLM profile refs")
+
+            if info.context is None or "llm_registry" not in info.context:
+                raise ValueError(
+                    "LLM registry required in context to load profile references."
+                )
+
+            registry = info.context["llm_registry"]
+            llm = registry.load_profile(profile_id)
+            expanded = llm.model_dump(exclude_none=True)
+            expanded["profile_id"] = profile_id
+            d = {**expanded, **d}
+            d.pop("kind", None)
+
+        profile_id = d.get("profile_id")
+        if profile_id and "model" not in d:
+            raise ValueError(
+                "Invalid LLM payload: profile_id without model. "
+                "Use kind=profile_ref for persisted profile references."
+            )
 
         model_val = d.get("model")
         if not model_val:
