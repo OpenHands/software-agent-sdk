@@ -98,7 +98,7 @@ def test_ps1_metadata_parsing_string_real_example():
   "username": "runner",
   "hostname": "fv-az1055-610",
   "working_dir": "/home/runner/work/OpenHands/OpenHands",
-  "py_interpreter_path": "/home/runner/.cache/pypoetry/virtualenvs/openhands-ai-ULPBlkAi-py3.12/bin/python"
+  "py_interpreter_path": "/home/runner/.cache/pypoetry/virtualenvs/openhands-ai-ULPBlkAi-py3.13/bin/python"
 }
 ###PS1END###
 """  # noqa: E501
@@ -111,7 +111,7 @@ def test_ps1_metadata_parsing_string_real_example():
     assert metadata.working_dir == "/home/runner/work/OpenHands/OpenHands"
     assert (
         metadata.py_interpreter_path == "/home/runner/.cache/pypoetry/virtualenvs/"
-        "openhands-ai-ULPBlkAi-py3.12/bin/python"
+        "openhands-ai-ULPBlkAi-py3.13/bin/python"
     )
 
 

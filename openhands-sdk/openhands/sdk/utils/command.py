@@ -1,12 +1,39 @@
+import os
 import shlex
 import subprocess
 import sys
 import threading
+from collections.abc import Mapping
 
 from openhands.sdk.logger import get_logger
 
 
 logger = get_logger(__name__)
+
+
+def sanitized_env(
+    env: Mapping[str, str] | None = None,
+) -> dict[str, str]:
+    """Return a copy of *env* with sanitized values.
+
+    PyInstaller-based binaries rewrite ``LD_LIBRARY_PATH`` so their vendored
+    libraries win. This function restores the original value so that subprocess
+    will not use them.
+    """
+
+    base_env: dict[str, str]
+    if env is None:
+        base_env = dict(os.environ)
+    else:
+        base_env = dict(env)
+
+    if "LD_LIBRARY_PATH_ORIG" in base_env:
+        origin = base_env["LD_LIBRARY_PATH_ORIG"]
+        if origin:
+            base_env["LD_LIBRARY_PATH"] = origin
+        else:
+            base_env.pop("LD_LIBRARY_PATH", None)
+    return base_env
 
 
 def execute_command(
@@ -29,7 +56,7 @@ def execute_command(
     proc = subprocess.Popen(
         cmd_to_run,
         cwd=cwd,
-        env=env,
+        env=sanitized_env(env),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,

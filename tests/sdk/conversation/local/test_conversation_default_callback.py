@@ -48,6 +48,9 @@ def test_default_callback_appends_on_init():
         agent=agent, callbacks=[lambda e: events_seen.append(e.id)]
     )
 
+    # Agent initialization is lazy - trigger it to generate SystemPromptEvent
+    conversation._ensure_agent_ready()
+
     assert len(conversation.state.events) == 1
     assert isinstance(conversation.state.events[0], SystemPromptEvent)
     assert conversation.state.events[0].id in events_seen

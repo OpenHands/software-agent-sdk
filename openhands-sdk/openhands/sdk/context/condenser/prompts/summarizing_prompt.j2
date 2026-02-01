@@ -1,5 +1,5 @@
 You are maintaining a context-aware state summary for an interactive agent.
-You will be given a list of events corresponding to actions taken by the agent, and the most recent previous summary if one exists.
+You will be given a list of events corresponding to actions taken by the agent, which will include previous summaries.
 If the events being summarized contain ANY task-tracking, you MUST include a TASK_TRACKING section to maintain continuity.
 When referencing tasks make sure to preserve exact task IDs and statuses.
 
@@ -45,10 +45,6 @@ USER_CONTEXT: Write 20 haikus based on coin flip results
 COMPLETED: 15 haikus written for results [T,H,T,H,T,H,T,T,H,T,H,T,H,T,H]
 PENDING: 5 more haikus needed
 CURRENT_STATE: Last flip: Heads, Haiku count: 15/20
-
-<PREVIOUS SUMMARY>
-{{ previous_summary }}
-</PREVIOUS SUMMARY>
 
 {% for event in events %}
 <EVENT>

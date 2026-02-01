@@ -266,7 +266,16 @@ class ConversationService:
                     f"{list(request.tool_module_qualnames.keys())}"
                 )
 
-        stored = StoredConversation(id=conversation_id, **request.model_dump())
+        # Plugin loading is now handled lazily by LocalConversation.
+        # Just pass the plugin specs through to StoredConversation.
+        # LocalConversation will:
+        # 1. Fetch and load plugins on first run()/send_message()
+        # 2. Resolve refs to commit SHAs for deterministic resume
+        # 3. Merge plugin skills/MCP/hooks into the agent
+        stored = StoredConversation(
+            id=conversation_id,
+            **request.model_dump(),
+        )
         event_service = await self._start_event_service(stored)
 
         # Start observability span on server side for remote conversations

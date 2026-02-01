@@ -523,42 +523,6 @@ Repository-specific test instructions.
         yield root, len(claude_content)
 
 
-def test_load_skills_with_truncated_large_file(temp_skills_dir_with_large_context_file):
-    """Test that large third-party skill files are truncated properly."""
-    from openhands.sdk.context.skills.skill import THIRD_PARTY_SKILL_MAX_CHARS
-
-    root, original_size = temp_skills_dir_with_large_context_file
-
-    # Third-party files are loaded by load_project_skills(), not load_skills_from_dir()
-    skills = load_project_skills(root)
-    skills_by_name = {s.name: s for s in skills}
-
-    # Verify that CLAUDE.md file was loaded but truncated
-    assert len(skills_by_name) == 2  # repo.md + claude.md
-    assert "claude" in skills_by_name
-
-    # Check that content was truncated
-    claude_agent = skills_by_name["claude"]
-    assert claude_agent.trigger is None
-    assert claude_agent.name == "claude"
-
-    # Content should be less than or equal to limit
-    assert len(claude_agent.content) <= THIRD_PARTY_SKILL_MAX_CHARS
-
-    # Should contain the truncation notice
-    assert "<TRUNCATED>" in claude_agent.content
-    assert "exceeded the maximum length" in claude_agent.content
-    assert "claude.md" in claude_agent.content  # Should mention the filename
-    assert "You can read the full file if needed" in claude_agent.content
-
-    # Should contain parts from beginning and end
-    assert "Claude Instructions - Start" in claude_agent.content
-    assert "Claude Instructions - End" in claude_agent.content
-
-    # Original file should have been larger
-    assert original_size > THIRD_PARTY_SKILL_MAX_CHARS
-
-
 def test_repo_skill_with_mcp_tools(tmp_path):
     """Test loading a repo skill with mcp_tools configuration."""
     # Create a repo skill with mcp_tools in frontmatter

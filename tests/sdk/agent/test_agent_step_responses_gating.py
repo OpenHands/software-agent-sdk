@@ -63,6 +63,9 @@ def test_agent_step_routes_to_responses_or_completion(force_responses, expected)
     agent = Agent(llm=llm, tools=[])
     convo = Conversation(agent=agent)
 
+    # Trigger lazy agent initialization before calling step()
+    convo._ensure_agent_ready()
+
     events: list[MessageEvent] = []
 
     def on_event(e):
@@ -120,6 +123,9 @@ def test_agent_step_model_features_gate_to_responses_or_completion(model, expect
     llm = ModelGateLLM(model=model)
     agent = Agent(llm=llm, tools=[])
     convo = Conversation(agent=agent)
+
+    # Trigger lazy agent initialization before calling step()
+    convo._ensure_agent_ready()
 
     events: list[MessageEvent] = []
 
