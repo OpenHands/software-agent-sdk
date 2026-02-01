@@ -1,8 +1,8 @@
 import argparse
-import sys
 import atexit
 import faulthandler
 import signal
+import sys
 from types import FrameType
 
 import uvicorn
@@ -13,6 +13,7 @@ from openhands.sdk.logger import DEBUG, get_logger
 
 
 logger = get_logger(__name__)
+
 
 def check_browser():
     """Check if browser functionality can render about:blank."""
