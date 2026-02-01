@@ -59,10 +59,12 @@ jobs:
                    - Read the issue description and comments
                    - Check if it is a bug report, feature request, or question and add the appropriate label
                    - If it is a bug report and it does not have a priority label
-                     * Find an appropriate maintainer based on the issue topic and recent activity
-                     * Tag them with: "[Automatic Post]: This issue has been waiting for triage. @{maintainer}, could you please take a look and add the
-                appropriate priority label when you have
-                a chance?"
+                     * Read the MAINTAINERS file in the repository root to get the list of maintainers
+                     * Extract all usernames from lines starting with "- @" and join them with spaces, each prefixed with @
+                       (e.g., if the file contains "- @user1" and "- @user2", format as "@user1 @user2")
+                     * Tag ALL maintainers with: "[Automatic Post]: This issue has been waiting for triage. <maintainers>, could you
+                please take a look and add the appropriate priority label when you have a chance?"
+                       (Replace <maintainers> with the formatted list from the previous step)
 
                 # Need Reviewer Action
 
