@@ -98,16 +98,9 @@ def test_update_secrets_request_invalid_dict():
             }
         )
 
-    # Verify the error is about a missing required field
-    # When 'kind' is missing, Pydantic tries to validate against SecretSource types
-    # and will fail on missing required fields
-    # (e.g., 'url' for LookupSecret or 'value' for StaticSecret)
+    # Verify the error is about the missing 'kind' field
     error_details = str(exc_info.value)
-    assert (
-        "url" in error_details.lower()
-        or "value" in error_details.lower()
-        or "kind" in error_details.lower()
-    )
+    assert "kind" in error_details.lower()
 
 
 def test_update_secrets_request_empty_secrets():
