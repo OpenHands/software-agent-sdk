@@ -50,7 +50,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
         if client is None:
             # Configure reasonable timeouts for HTTP requests
             # - connect: 10 seconds to establish connection
-            # - read: 600 seconds to read response (for LLM operations)
+            # - read: 600 seconds (10 minutes) to read response (for LLM operations)
             # - write: 10 seconds to send request
             # - pool: 10 seconds to get connection from pool
             timeout = httpx.Timeout(
@@ -60,7 +60,7 @@ class RemoteWorkspace(RemoteWorkspaceMixin, BaseWorkspace):
                 base_url=self.host,
                 timeout=timeout,
                 headers=self._headers,
-                limits=httpx.Limits(max_connections=None),
+                limits=httpx.Limits(max_connections=self.max_connections),
             )
             self._client = client
         return client

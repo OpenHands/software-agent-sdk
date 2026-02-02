@@ -58,7 +58,7 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
-    stop_agent_on_close: bool = False
+    delete_on_close: bool = False
 
     def __init__(
         self,
@@ -78,7 +78,7 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
-        stop_agent_on_close: bool = False,
+        delete_on_close: bool = False,
         **_: object,
     ):
         """Initialize the conversation.
@@ -224,7 +224,7 @@ class LocalConversation(BaseConversation):
 
         atexit.register(self.close)
         self._start_observability_span(str(desired_id))
-        self.stop_agent_on_close = stop_agent_on_close
+        self.delete_on_close = delete_on_close
 
     @property
     def id(self) -> ConversationID:
@@ -538,7 +538,7 @@ class LocalConversation(BaseConversation):
         except AttributeError:
             # Object may be partially constructed; span fields may be missing.
             pass
-        if self.stop_agent_on_close:
+        if self.delete_on_close:
             try:
                 tools_map = self.agent.tools_map
             except (AttributeError, RuntimeError):
