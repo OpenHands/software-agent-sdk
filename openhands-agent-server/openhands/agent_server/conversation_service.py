@@ -242,13 +242,13 @@ class ConversationService:
         # 2. Resolve refs to commit SHAs for deterministic resume
         # 3. Merge plugin skills/MCP/hooks into the agent
         #
-        # Use mode='json' to properly serialize SecretStr objects in secret headers.
-        # Without mode='json', SecretStr objects remain as-is, causing validation
-        # errors when LookupSecret.headers expects dict[str, str] but receives
-        # dict[str, SecretStr].
+        # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers)
+        # serialize to plain strings. Pass expose_secrets=True so StaticSecret values
+        # are preserved through the round-trip; the dict is only used in-process to
+        # construct StoredConversation, not sent over the network.
         stored = StoredConversation(
             id=conversation_id,
-            **request.model_dump(mode="json"),
+            **request.model_dump(mode="json", context={"expose_secrets": True}),
         )
         event_service = await self._start_event_service(stored)
         initial_message = request.initial_message

@@ -524,9 +524,10 @@ class TestConversationServiceStartConversation:
                     confirmation_policy=request.confirmation_policy,
                 )
                 mock_event_service.get_state.return_value = mock_state
+                # Same dump as start_conversation so mock stored matches real code.
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
