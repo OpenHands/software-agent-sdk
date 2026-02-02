@@ -5,7 +5,7 @@ to access OpenAI's Codex models without consuming API credits.
 
 The subscription_login() method handles:
 - OAuth PKCE authentication flow
-- Credential caching (~/.local/share/openhands/auth/)
+- Credential caching (~/.openhands/auth/)
 - Automatic token refresh
 
 Supported models:

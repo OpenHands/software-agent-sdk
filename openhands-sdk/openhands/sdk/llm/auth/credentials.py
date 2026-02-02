@@ -11,18 +11,18 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from openhands.sdk.logger import get_logger
+
+
+logger = get_logger(__name__)
+
 
 def get_credentials_dir() -> Path:
     """Get the directory for storing credentials.
 
     Uses XDG_DATA_HOME if set, otherwise defaults to ~/.local/share/openhands.
     """
-    xdg_data_home = os.environ.get("XDG_DATA_HOME")
-    if xdg_data_home:
-        base_dir = Path(xdg_data_home)
-    else:
-        base_dir = Path.home() / ".local" / "share"
-    return base_dir / "openhands" / "auth"
+    return Path.home() / ".openhands" / "auth"
 
 
 class OAuthCredentials(BaseModel):
@@ -54,6 +54,7 @@ class CredentialStore:
                            Defaults to ~/.local/share/openhands/auth/
         """
         self._credentials_dir = credentials_dir or get_credentials_dir()
+        logger.info(f"Using credentials directory: {self._credentials_dir}")
 
     @property
     def credentials_dir(self) -> Path:
