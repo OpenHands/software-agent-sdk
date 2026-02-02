@@ -509,3 +509,141 @@ class TestMultipleWorkingDirs:
 
             # Should still load hooks from the existing directory
             assert config.has_hooks_for_event(HookEventType.STOP)
+
+
+class TestRelativePathWarning:
+    """Tests for relative path warnings in hooks.json."""
+
+    def test_relative_path_warning_logged(self, caplog):
+        """Test that relative paths in hooks.json trigger a warning."""
+        import logging
+
+        data = {
+            "PreToolUse": [
+                {"hooks": [{"command": "./scripts/hook.sh"}]},
+                {"hooks": [{"command": "../other/hook.sh"}]},
+            ]
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            hooks_file = os.path.join(openhands_dir, "hooks.json")
+            with open(hooks_file, "w") as f:
+                json.dump(data, f)
+
+            with caplog.at_level(logging.WARNING):
+                HookConfig.load(working_dir=tmpdir)
+
+            # Should have warnings for both relative paths
+            assert "./scripts/hook.sh" in caplog.text
+            assert "../other/hook.sh" in caplog.text
+            assert "relative path" in caplog.text.lower()
+
+    def test_absolute_path_no_warning(self, caplog):
+        """Test that absolute paths in hooks.json don't trigger warnings."""
+        import logging
+
+        data = {"PreToolUse": [{"hooks": [{"command": "/usr/local/bin/hook.sh"}]}]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            hooks_file = os.path.join(openhands_dir, "hooks.json")
+            with open(hooks_file, "w") as f:
+                json.dump(data, f)
+
+            with caplog.at_level(logging.WARNING):
+                HookConfig.load(working_dir=tmpdir)
+
+            # Should not have any relative path warnings
+            assert "relative path" not in caplog.text.lower()
+
+    def test_simple_command_no_warning(self, caplog):
+        """Test that simple commands (no path) don't trigger warnings."""
+        import logging
+
+        data = {"PreToolUse": [{"hooks": [{"command": "echo hello"}]}]}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            hooks_file = os.path.join(openhands_dir, "hooks.json")
+            with open(hooks_file, "w") as f:
+                json.dump(data, f)
+
+            with caplog.at_level(logging.WARNING):
+                HookConfig.load(working_dir=tmpdir)
+
+            # Should not have any relative path warnings
+            assert "relative path" not in caplog.text.lower()
+
+
+class TestHomeDirDeduplication:
+    """Tests for preventing duplicate loading of ~/.openhands/hooks.json."""
+
+    def test_home_dir_not_loaded_twice_with_multiple_working_dirs(
+        self, tmp_path, monkeypatch
+    ):
+        """Test ~/.openhands/hooks.json is only loaded once with multiple dirs."""
+        # Create a fake home directory with hooks.json
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        fake_openhands = fake_home / ".openhands"
+        fake_openhands.mkdir()
+        hooks_file = fake_openhands / "hooks.json"
+        hooks_file.write_text(
+            json.dumps({"PreToolUse": [{"hooks": [{"command": "home-hook.sh"}]}]})
+        )
+
+        # Monkeypatch Path.home() to return our fake home
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+
+        # Create two working directories without hooks
+        work_dir1 = tmp_path / "work1"
+        work_dir1.mkdir()
+        work_dir2 = tmp_path / "work2"
+        work_dir2.mkdir()
+
+        # Load from both working directories
+        config = HookConfig.load(working_dir=[str(work_dir1), str(work_dir2)])
+
+        # Should have exactly one hook from home directory (not duplicated)
+        hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
+        assert len(hooks) == 1
+        assert hooks[0].command == "home-hook.sh"
+
+    def test_home_dir_merged_with_working_dir_hooks(self, tmp_path, monkeypatch):
+        """Test that home dir hooks are merged with working dir hooks."""
+        # Create a fake home directory with hooks.json
+        fake_home = tmp_path / "fake_home"
+        fake_home.mkdir()
+        fake_openhands = fake_home / ".openhands"
+        fake_openhands.mkdir()
+        home_hooks_file = fake_openhands / "hooks.json"
+        home_hooks_file.write_text(
+            json.dumps({"PreToolUse": [{"hooks": [{"command": "home-hook.sh"}]}]})
+        )
+
+        # Monkeypatch Path.home() to return our fake home
+        monkeypatch.setattr("pathlib.Path.home", lambda: fake_home)
+
+        # Create a working directory with its own hooks
+        work_dir = tmp_path / "work"
+        work_dir.mkdir()
+        work_openhands = work_dir / ".openhands"
+        work_openhands.mkdir()
+        work_hooks_file = work_openhands / "hooks.json"
+        work_hooks_file.write_text(
+            json.dumps({"PreToolUse": [{"hooks": [{"command": "work-hook.sh"}]}]})
+        )
+
+        # Load from working directory
+        config = HookConfig.load(working_dir=str(work_dir))
+
+        # Should have both hooks merged
+        hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
+        assert len(hooks) == 2
+        commands = [h.command for h in hooks]
+        assert "work-hook.sh" in commands
+        assert "home-hook.sh" in commands
