@@ -49,13 +49,16 @@ class ConversationExecutionStatus(str, Enum):
         """Check if this status represents a terminal state.
 
         Terminal states indicate the run has completed and the agent is no longer
-        actively processing. These are: IDLE, FINISHED, ERROR, STUCK.
+        actively processing. These are: FINISHED, ERROR, STUCK.
+
+        Note: IDLE is NOT a terminal state - it's the initial state of a conversation
+        before any run has started. Including IDLE would cause false positives when
+        the WebSocket delivers the initial state update during connection.
 
         Returns:
             True if this is a terminal status, False otherwise.
         """
         return self in (
-            ConversationExecutionStatus.IDLE,
             ConversationExecutionStatus.FINISHED,
             ConversationExecutionStatus.ERROR,
             ConversationExecutionStatus.STUCK,

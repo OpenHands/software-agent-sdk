@@ -877,6 +877,12 @@ class RemoteConversation(BaseConversation):
         Raises:
             ConversationRunError: If the run fails or times out.
         """
+        # Clear the run complete event before triggering the run.
+        # This ensures we don't see stale events from previous runs or from
+        # the initial WebSocket connection (which may have delivered a state
+        # update before this run started).
+        self._run_complete_event.clear()
+
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
         try:
@@ -929,23 +935,6 @@ class RemoteConversation(BaseConversation):
         consecutive_terminal_polls = 0
         # Return after this many consecutive terminal polls (fallback for WS issues)
         TERMINAL_POLL_THRESHOLD = 3
-
-        # If the event is already set, check if we can return immediately.
-        # This handles the case where terminal status arrived before this method
-        # was called (e.g., very fast run completion).
-        if self._run_complete_event.is_set():
-            try:
-                status = self._poll_status_once()
-                if status:
-                    status_enum = ConversationExecutionStatus(status)
-                    if status_enum.is_terminal():
-                        logger.info("Run already completed (status: %s)", status)
-                        self._run_complete_event.clear()
-                        return
-            except Exception:
-                pass  # Fall through to normal wait loop
-            # Status is not terminal, so the event was from a previous run
-            self._run_complete_event.clear()
 
         while True:
             elapsed = time.monotonic() - start_time
