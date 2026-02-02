@@ -9,7 +9,7 @@ body:
           value: |
               ## Thank you for suggesting a feature! 💡
 
-              **Please provide detailed information.** Vague or low-effort requests may be closed. Well-documented feature requests with strong community support are more likely to be added to the roadmap.
+              We encourage you to open the discussion on the feature you need. You are always welcome to implement it, if you wish.
 
     - type: checkboxes
       attributes:
