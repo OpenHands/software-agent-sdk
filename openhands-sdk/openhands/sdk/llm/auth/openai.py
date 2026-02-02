@@ -47,26 +47,10 @@ logger = get_logger(__name__)
 # Consent banner constants
 # =========================================================================
 
-# Minimal banner shown every time login starts
 CONSENT_BANNER = """\
 Signing in with ChatGPT uses your ChatGPT account. By continuing, you confirm \
 you are a ChatGPT End User and are subject to OpenAI's Terms of Use.
 https://openai.com/policies/terms-of-use/
-"""
-
-# Verbose disclaimer shown on first login or with --verbose/--help
-CONSENT_DISCLAIMER = """\
-Important info about Sign in with ChatGPT:
-
-• Data rights & privacy: Content sent through this Sign in with ChatGPT flow \
-("Sign in with ChatGPT Content") is handled by OpenAI as an independent \
-controller and is not subject to our DPA or our app's training/personalization \
-settings. If you copy content to ChatGPT/Codex through this flow, it remains \
-in your ChatGPT account under OpenAI's Terms of Use.
-• Prohibited data: Do not use this flow to process Protected Health Information \
-(PHI) or personal data of children under 13 (or the applicable age of digital \
-consent).
-Continue only if you understand and agree.
 """
 
 CONSENT_MARKER_FILENAME = ".chatgpt_consent_acknowledged"
@@ -89,11 +73,8 @@ def _mark_consent_acknowledged() -> None:
     marker_path.touch()
 
 
-def _display_consent_and_confirm(verbose: bool = False) -> bool:
-    """Display consent banners and get user confirmation.
-
-    Args:
-        verbose: If True, always show the full disclaimer.
+def _display_consent_and_confirm() -> bool:
+    """Display consent banner and get user confirmation.
 
     Returns:
         True if user confirms, False otherwise.
@@ -101,17 +82,12 @@ def _display_consent_and_confirm(verbose: bool = False) -> bool:
     Raises:
         RuntimeError: If running in non-interactive mode without prior consent.
     """
-    # Always show the minimal banner
+    is_first_time = not _has_acknowledged_consent()
+
+    # Always show the consent banner
     print("\n" + "=" * 70)
     print(CONSENT_BANNER)
-    print("=" * 70)
-
-    # Show verbose disclaimer on first time or if verbose flag is set
-    is_first_time = not _has_acknowledged_consent()
-    if is_first_time or verbose:
-        print()
-        print(CONSENT_DISCLAIMER)
-        print()
+    print("=" * 70 + "\n")
 
     # Check if we're in an interactive terminal
     if not sys.stdin.isatty():
@@ -639,7 +615,6 @@ async def subscription_login_async(
     model: str = "gpt-5.2-codex",
     force_login: bool = False,
     open_browser: bool = True,
-    verbose: bool = False,
     skip_consent: bool = False,
     **llm_kwargs: Any,
 ) -> LLM:
@@ -653,7 +628,6 @@ async def subscription_login_async(
         model: The model to use.
         force_login: If True, always perform a fresh login.
         open_browser: Whether to automatically open the browser for login.
-        verbose: If True, always show the full consent disclaimer.
         skip_consent: If True, skip the consent prompt (for programmatic use
             where consent has been obtained through other means).
         **llm_kwargs: Additional arguments to pass to LLM constructor.
@@ -686,7 +660,7 @@ async def subscription_login_async(
 
     # Display consent banner and get confirmation before login
     if not skip_consent:
-        if not _display_consent_and_confirm(verbose=verbose):
+        if not _display_consent_and_confirm():
             raise RuntimeError("User declined to continue with ChatGPT sign-in")
 
     # Perform login
@@ -699,7 +673,6 @@ def subscription_login(
     model: str = "gpt-5.2-codex",
     force_login: bool = False,
     open_browser: bool = True,
-    verbose: bool = False,
     skip_consent: bool = False,
     **llm_kwargs: Any,
 ) -> LLM:
@@ -713,7 +686,6 @@ def subscription_login(
             model=model,
             force_login=force_login,
             open_browser=open_browser,
-            verbose=verbose,
             skip_consent=skip_consent,
             **llm_kwargs,
         )
