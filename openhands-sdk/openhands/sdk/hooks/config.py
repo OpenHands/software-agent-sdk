@@ -7,15 +7,12 @@ import logging
 import re
 from enum import Enum
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
 from openhands.sdk.hooks.types import HookEventType
 
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

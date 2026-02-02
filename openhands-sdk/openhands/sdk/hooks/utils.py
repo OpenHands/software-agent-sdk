@@ -30,14 +30,6 @@ HOOK_SCRIPT_MAPPING: dict[str, HookEventType] = {
 DEFAULT_HOOK_SCRIPT_TIMEOUT = 600
 
 
-def _pascal_to_snake(name: str) -> str:
-    """Convert PascalCase to snake_case."""
-    import re
-
-    result = re.sub(r"(?<!^)(?=[A-Z])", "_", name).lower()
-    return result
-
-
 def discover_hook_scripts(openhands_dir: Path) -> dict[HookEventType, list[Path]]:
     """Discover hook scripts in the .openhands directory.
 
@@ -101,6 +93,7 @@ def load_project_hooks(work_dir: str | Path) -> HookConfig:
         HookDefinition,
         HookMatcher,
         HookType,
+        _pascal_to_snake,
     )
 
     if isinstance(work_dir, str):
@@ -123,8 +116,11 @@ def load_project_hooks(work_dir: str | Path) -> HookConfig:
         for script_path in script_paths:
             # Use relative path from work_dir for the command
             relative_path = script_path.relative_to(work_dir)
-            # Use || true to prevent hook failures from blocking the event
-            command = f"bash {relative_path} || true"
+            # Log failures to stderr but don't block the event
+            command = (
+                f'bash {relative_path} || {{ echo "Hook script {relative_path} '
+                f'failed with exit code $?" >&2; true; }}'
+            )
 
             matchers.append(
                 HookMatcher(

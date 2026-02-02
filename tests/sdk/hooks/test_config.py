@@ -246,7 +246,9 @@ class TestHookConfig:
             assert config.has_hooks_for_event(HookEventType.STOP)
             hooks = config.get_hooks_for_event(HookEventType.STOP, None)
             assert len(hooks) == 1
-            assert hooks[0].command == "bash .openhands/stop.sh || true"
+            # Command logs failures to stderr before returning true
+            assert hooks[0].command.startswith("bash .openhands/stop.sh || {")
+            assert "failed with exit code" in hooks[0].command
 
     def test_load_discovers_scripts_in_hooks_subdir(self):
         """Test that load() discovers scripts in .openhands/hooks/ subdirectory."""
@@ -262,7 +264,11 @@ class TestHookConfig:
             assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
             hooks = config.get_hooks_for_event(HookEventType.PRE_TOOL_USE, "AnyTool")
             assert len(hooks) == 1
-            assert hooks[0].command == "bash .openhands/hooks/pre_tool_use.sh || true"
+            # Command logs failures to stderr before returning true
+            assert hooks[0].command.startswith(
+                "bash .openhands/hooks/pre_tool_use.sh || {"
+            )
+            assert "failed with exit code" in hooks[0].command
 
     def test_load_merges_json_and_scripts(self):
         """Test that load() merges hooks.json with discovered scripts."""
@@ -295,7 +301,9 @@ class TestHookConfig:
 
             stop_hooks = config.get_hooks_for_event(HookEventType.STOP, None)
             assert len(stop_hooks) == 1
-            assert stop_hooks[0].command == "bash .openhands/stop.sh || true"
+            # Command logs failures to stderr before returning true
+            assert stop_hooks[0].command.startswith("bash .openhands/stop.sh || {")
+            assert "failed with exit code" in stop_hooks[0].command
 
 
 class TestLoadProjectHooks:
