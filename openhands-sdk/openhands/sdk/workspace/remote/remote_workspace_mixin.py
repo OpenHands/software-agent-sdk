@@ -25,6 +25,15 @@ class RemoteWorkspaceMixin(BaseModel):
     working_dir: str = Field(
         description="The working directory for agent operations and tool execution."
     )
+    read_timeout: float = Field(
+        default=600.0,
+        description="Timeout in seconds for reading operations of httpx.Client.",
+    )
+    max_connections: int | None = Field(
+        default=None,
+        description="Maximum number of connections for httpx.Client. "
+        "None means no limit, useful for running many conversations in parallel.",
+    )
 
     def model_post_init(self, context: Any) -> None:
         # Set up remote host
