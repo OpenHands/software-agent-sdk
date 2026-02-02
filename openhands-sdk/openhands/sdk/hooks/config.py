@@ -218,8 +218,8 @@ class HookConfig(BaseModel):
     ) -> "HookConfig":
         """Load config from path or search .openhands/hooks.json locations.
 
-        Also discovers hook scripts in the .openhands directory (e.g., stop.sh,
-        agent_finish.sh) and merges them with the JSON config.
+        Also discovers hook scripts in the .openhands directory (e.g., stop.sh)
+        and merges them with the JSON config.
 
         Args:
             path: Explicit path to hooks.json file. If provided, working_dir is ignored

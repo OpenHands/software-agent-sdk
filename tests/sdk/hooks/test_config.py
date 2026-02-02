@@ -232,23 +232,6 @@ class TestHookConfig:
                 {"PreToolExecute": [{"hooks": [{"command": "test.sh"}]}]}
             )
 
-    def test_load_discovers_agent_finish_script(self):
-        """Test that load() discovers .openhands/agent_finish.sh (legacy naming)."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            openhands_dir = os.path.join(tmpdir, ".openhands")
-            os.makedirs(openhands_dir)
-            finish_script = os.path.join(openhands_dir, "agent_finish.sh")
-            with open(finish_script, "w") as f:
-                f.write("#!/bin/bash\necho done\n")
-
-            config = HookConfig.load(working_dir=tmpdir)
-
-            assert config.has_hooks_for_event(HookEventType.STOP)
-            hooks = config.get_hooks_for_event(HookEventType.STOP, None)
-            assert len(hooks) == 1
-            assert hooks[0].command == "bash .openhands/agent_finish.sh || true"
-            assert hooks[0].timeout == 600
-
     def test_load_discovers_stop_script(self):
         """Test that load() discovers .openhands/stop.sh (standard naming)."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -381,21 +364,6 @@ class TestDiscoverHookScripts:
 
         result = discover_hook_scripts(Path("/nonexistent/path"))
         assert result == {}
-
-    def test_discover_hook_scripts_finds_legacy_agent_finish(self):
-        """Test discover_hook_scripts finds agent_finish.sh and maps to STOP."""
-        from pathlib import Path
-
-        with tempfile.TemporaryDirectory() as tmpdir:
-            openhands_dir = Path(tmpdir) / ".openhands"
-            openhands_dir.mkdir()
-            (openhands_dir / "agent_finish.sh").write_text("#!/bin/bash\necho done\n")
-
-            result = discover_hook_scripts(openhands_dir)
-
-            assert HookEventType.STOP in result
-            assert len(result[HookEventType.STOP]) == 1
-            assert result[HookEventType.STOP][0].name == "agent_finish.sh"
 
     def test_discover_hook_scripts_finds_scripts_in_hooks_subdir(self):
         """Test discover_hook_scripts searches .openhands/hooks/ subdirectory."""

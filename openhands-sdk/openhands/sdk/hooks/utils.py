@@ -16,17 +16,14 @@ logger = logging.getLogger(__name__)
 
 
 # Mapping of script filenames to hook event types.
-# Scripts can be named either by event type (e.g., stop.sh) or by legacy names.
+# Scripts are named by event type (e.g., stop.sh).
 HOOK_SCRIPT_MAPPING: dict[str, HookEventType] = {
-    # Standard event-based naming (snake_case)
     "stop.sh": HookEventType.STOP,
     "pre_tool_use.sh": HookEventType.PRE_TOOL_USE,
     "post_tool_use.sh": HookEventType.POST_TOOL_USE,
     "user_prompt_submit.sh": HookEventType.USER_PROMPT_SUBMIT,
     "session_start.sh": HookEventType.SESSION_START,
     "session_end.sh": HookEventType.SESSION_END,
-    # Legacy naming for backward compatibility
-    "agent_finish.sh": HookEventType.STOP,
 }
 
 # Default timeout for hook scripts (10 minutes)
@@ -90,7 +87,6 @@ def load_project_hooks(work_dir: str | Path) -> HookConfig:
     Supported script locations:
     - {work_dir}/.openhands/{event_type}.sh (e.g., stop.sh, pre_tool_use.sh)
     - {work_dir}/.openhands/hooks/{event_type}.sh
-    - {work_dir}/.openhands/agent_finish.sh (legacy, maps to STOP event)
 
     Args:
         work_dir: Path to the project/working directory.
