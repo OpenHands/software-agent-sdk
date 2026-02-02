@@ -908,8 +908,10 @@ class RemoteConversation(BaseConversation):
         returning, avoiding the race condition where polling sees "finished"
         status before WebSocket delivers the final events.
 
-        As a fallback, it also polls the server periodically in case the
-        WebSocket event is missed or delayed.
+        As a fallback, it also polls the server periodically. If the WebSocket
+        is delayed or disconnected, we return after multiple consecutive polls
+        show a terminal status, and reconcile events to catch any that were
+        missed via WebSocket.
 
         Args:
             poll_interval: Time in seconds between status polls (fallback).
@@ -921,9 +923,26 @@ class RemoteConversation(BaseConversation):
                 responses are retried until timeout.
         """
         start_time = time.monotonic()
+        consecutive_terminal_polls = 0
+        # Return after this many consecutive terminal polls (fallback for WS issues)
+        TERMINAL_POLL_THRESHOLD = 3
 
-        # Clear the event in case it was set from a previous run
-        self._run_complete_event.clear()
+        # If the event is already set, check if we can return immediately.
+        # This handles the case where terminal status arrived before this method
+        # was called (e.g., very fast run completion).
+        if self._run_complete_event.is_set():
+            try:
+                status = self._poll_status_once()
+                if status:
+                    status_enum = ConversationExecutionStatus(status)
+                    if status_enum.is_terminal():
+                        logger.info("Run already completed (status: %s)", status)
+                        self._run_complete_event.clear()
+                        return
+            except Exception:
+                pass  # Fall through to normal wait loop
+            # Status is not terminal, so the event was from a previous run
+            self._run_complete_event.clear()
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -950,24 +969,40 @@ class RemoteConversation(BaseConversation):
                 self._run_complete_event.clear()
                 return
 
-            # Poll the server for status as a health check.
-            # This catches ERROR/STUCK states that need immediate attention.
-            #
-            # IMPORTANT: We intentionally do NOT return here even if polling
-            # detects a terminal status (IDLE/FINISHED). Returning early would
-            # cause event loss because the WebSocket may not have delivered all
-            # events yet. Instead, we continue looping until the WebSocket
-            # delivers the terminal status event, which guarantees all events
-            # have been received through the same channel.
+            # Poll the server for status as a health check and fallback.
+            # This catches ERROR/STUCK states that need immediate attention,
+            # and provides a fallback if WebSocket is delayed/disconnected.
             try:
                 status = self._poll_status_once()
             except Exception as exc:
                 self._handle_poll_exception(exc)
+                consecutive_terminal_polls = 0  # Reset on error
             else:
-                # Raises ConversationRunError for ERROR/STUCK states.
-                # Returns True for terminal states (IDLE/FINISHED), but we
-                # ignore the return value and continue waiting for WebSocket.
+                # Raises ConversationRunError for ERROR/STUCK states
                 self._handle_conversation_status(status)
+
+                # Track consecutive terminal polls as a fallback for WS issues.
+                # If WebSocket is delayed/disconnected, we return after multiple
+                # consecutive polls confirm the terminal status.
+                if status and ConversationExecutionStatus(status).is_terminal():
+                    consecutive_terminal_polls += 1
+                    if consecutive_terminal_polls >= TERMINAL_POLL_THRESHOLD:
+                        logger.info(
+                            "Run completed via REST fallback after %d consecutive "
+                            "terminal polls (status: %s, elapsed: %.1fs). "
+                            "Reconciling events...",
+                            consecutive_terminal_polls,
+                            status,
+                            elapsed,
+                        )
+                        # Reconcile events to catch any that were missed via WS.
+                        # This is only called in the fallback path, so it doesn't
+                        # add overhead in the common case where WS works.
+                        self._state.events.reconcile()
+                        self._run_complete_event.clear()
+                        return
+                else:
+                    consecutive_terminal_polls = 0
 
     def _poll_status_once(self) -> str | None:
         """Fetch the current execution status from the remote conversation."""
