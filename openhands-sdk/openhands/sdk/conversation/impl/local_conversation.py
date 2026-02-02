@@ -58,7 +58,7 @@ class LocalConversation(BaseConversation):
     llm_registry: LLMRegistry
     _cleanup_initiated: bool
     _hook_processor: HookEventProcessor | None
-    delete_on_close: bool = False
+    delete_on_close: bool = True
 
     def __init__(
         self,
@@ -78,7 +78,7 @@ class LocalConversation(BaseConversation):
             type[ConversationVisualizerBase] | ConversationVisualizerBase | None
         ) = DefaultConversationVisualizer,
         secrets: Mapping[str, SecretValue] | None = None,
-        delete_on_close: bool = False,
+        delete_on_close: bool = True,
         **_: object,
     ):
         """Initialize the conversation.
