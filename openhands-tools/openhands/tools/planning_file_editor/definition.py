@@ -20,7 +20,8 @@ from openhands.tools.file_editor.definition import (
 )
 
 
-# Hardcoded plan filename
+# Default config directory and plan filename
+DEFAULT_CONFIG_DIR = ".openhands"
 PLAN_FILENAME = "PLAN.md"
 
 
@@ -62,11 +63,14 @@ class PlanningFileEditorTool(
     def create(
         cls,
         conv_state: "ConversationState",
+        plan_path: str | None = None,
     ) -> Sequence["PlanningFileEditorTool"]:
         """Initialize PlanningFileEditorTool.
 
         Args:
             conv_state: Conversation state to get working directory from.
+            plan_path: Optional absolute path to PLAN.md file. If not provided,
+                defaults to {working_dir}/.openhands/PLAN.md.
         """
         # Import here to avoid circular imports
         from openhands.tools.planning_file_editor.impl import (
@@ -74,8 +78,11 @@ class PlanningFileEditorTool(
         )
 
         working_dir = conv_state.workspace.working_dir
-        workspace_root = Path(working_dir).resolve()
-        plan_path = str(workspace_root / PLAN_FILENAME)
+
+        # Use provided plan_path or fall back to .openhands/PLAN.md at workspace root
+        if plan_path is None:
+            workspace_root = Path(working_dir).resolve()
+            plan_path = str(workspace_root / DEFAULT_CONFIG_DIR / PLAN_FILENAME)
 
         # Initialize PLAN.md with headers if it doesn't exist
         plan_file = Path(plan_path)
@@ -83,6 +90,8 @@ class PlanningFileEditorTool(
             # Import here to avoid circular imports
             from openhands.tools.preset.planning import get_plan_headers
 
+            # Ensure parent directory exists
+            plan_file.parent.mkdir(parents=True, exist_ok=True)
             plan_file.write_text(get_plan_headers())
 
         # Create executor with restricted edit access to PLAN.md only
