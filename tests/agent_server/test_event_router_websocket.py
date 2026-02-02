@@ -1,5 +1,6 @@
 """Tests for websocket functionality in event_router.py"""
 
+from datetime import UTC
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -343,7 +344,9 @@ class TestResendAllFunctionality:
             )
 
         # search_events should be called to get all events
-        mock_event_service.search_events.assert_called_once_with(page_id=None)
+        mock_event_service.search_events.assert_called_once_with(
+            page_id=None, timestamp__gte=None
+        )
 
         # All events should be sent through websocket
         assert mock_websocket.send_json.call_count == 2
@@ -444,3 +447,142 @@ class TestResendAllFunctionality:
         # WebSocket should still be subscribed and unsubscribed normally
         mock_event_service.subscribe_to_events.assert_called_once()
         mock_event_service.unsubscribe_from_events.assert_called_once()
+
+
+class TestAfterTimestampFiltering:
+    """Test cases for after_timestamp parameter functionality."""
+
+    @pytest.mark.asyncio
+    async def test_after_timestamp_passed_to_search_events(
+        self, mock_websocket, mock_event_service, sample_conversation_id
+    ):
+        """Test that after_timestamp is passed to search_events when provided."""
+        from datetime import datetime
+        from typing import cast
+
+        from openhands.agent_server.models import EventPage
+        from openhands.sdk.event import Event
+
+        mock_events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+            ),
+        ]
+        mock_event_page = EventPage(
+            items=cast(list[Event], mock_events), next_page_id=None
+        )
+        mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
+        mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+        test_timestamp = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
+
+        with (
+            patch(
+                "openhands.agent_server.sockets.conversation_service"
+            ) as mock_conv_service,
+            patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        ):
+            mock_config.return_value.session_api_keys = None
+            mock_conv_service.get_event_service = AsyncMock(
+                return_value=mock_event_service
+            )
+
+            from openhands.agent_server.sockets import events_socket
+
+            await events_socket(
+                sample_conversation_id,
+                mock_websocket,
+                session_api_key=None,
+                resend_all=True,
+                after_timestamp=test_timestamp,
+            )
+
+        # search_events should be called with timestamp__gte parameter
+        mock_event_service.search_events.assert_called_once_with(
+            page_id=None, timestamp__gte=test_timestamp
+        )
+
+    @pytest.mark.asyncio
+    async def test_after_timestamp_without_resend_all_no_effect(
+        self, mock_websocket, mock_event_service, sample_conversation_id
+    ):
+        """Test that after_timestamp has no effect when resend_all is False."""
+        from datetime import datetime
+
+        mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+        test_timestamp = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
+
+        with (
+            patch(
+                "openhands.agent_server.sockets.conversation_service"
+            ) as mock_conv_service,
+            patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        ):
+            mock_config.return_value.session_api_keys = None
+            mock_conv_service.get_event_service = AsyncMock(
+                return_value=mock_event_service
+            )
+
+            from openhands.agent_server.sockets import events_socket
+
+            await events_socket(
+                sample_conversation_id,
+                mock_websocket,
+                session_api_key=None,
+                resend_all=False,
+                after_timestamp=test_timestamp,
+            )
+
+        # search_events should not be called when resend_all is False
+        mock_event_service.search_events.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_resend_all_without_after_timestamp(
+        self, mock_websocket, mock_event_service, sample_conversation_id
+    ):
+        """Test that resend_all without after_timestamp passes None."""
+        from typing import cast
+
+        from openhands.agent_server.models import EventPage
+        from openhands.sdk.event import Event
+
+        mock_events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+            ),
+        ]
+        mock_event_page = EventPage(
+            items=cast(list[Event], mock_events), next_page_id=None
+        )
+        mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
+        mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+        with (
+            patch(
+                "openhands.agent_server.sockets.conversation_service"
+            ) as mock_conv_service,
+            patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        ):
+            mock_config.return_value.session_api_keys = None
+            mock_conv_service.get_event_service = AsyncMock(
+                return_value=mock_event_service
+            )
+
+            from openhands.agent_server.sockets import events_socket
+
+            await events_socket(
+                sample_conversation_id,
+                mock_websocket,
+                session_api_key=None,
+                resend_all=True,
+                after_timestamp=None,
+            )
+
+        # search_events should be called with timestamp__gte=None
+        mock_event_service.search_events.assert_called_once_with(
+            page_id=None, timestamp__gte=None
+        )

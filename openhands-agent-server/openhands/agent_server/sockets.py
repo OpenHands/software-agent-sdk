@@ -9,6 +9,7 @@ clients (e.g. Python/Node), we also support authenticating via headers.
 
 import logging
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Annotated
 from uuid import UUID
 
@@ -92,8 +93,20 @@ async def events_socket(
     websocket: WebSocket,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
     resend_all: Annotated[bool, Query()] = False,
+    after_timestamp: Annotated[datetime | None, Query()] = None,
 ):
-    """WebSocket endpoint for conversation events."""
+    """WebSocket endpoint for conversation events.
+
+    Args:
+        conversation_id: The conversation ID to subscribe to.
+        websocket: The WebSocket connection.
+        session_api_key: Optional API key for authentication.
+        resend_all: If True, resend all existing events when connecting.
+        after_timestamp: If provided with resend_all=True, only resend events
+            with timestamps >= this value. Enables efficient bi-directional
+            loading where REST fetches historical events and WebSocket handles
+            events after a specific point in time.
+    """
     if not await _accept_authenticated_websocket(websocket, session_api_key):
         return
 
@@ -109,10 +122,17 @@ async def events_socket(
     )
 
     try:
-        # Resend all existing events if requested
+        # Resend existing events if requested
         if resend_all:
-            logger.info(f"Resending events: {conversation_id}")
-            async for event in page_iterator(event_service.search_events):
+            if after_timestamp:
+                logger.info(
+                    f"Resending events after {after_timestamp}: {conversation_id}"
+                )
+            else:
+                logger.info(f"Resending all events: {conversation_id}")
+            async for event in page_iterator(
+                event_service.search_events, timestamp__gte=after_timestamp
+            ):
                 await _send_event(event, websocket)
 
         # Listen for messages over the socket
