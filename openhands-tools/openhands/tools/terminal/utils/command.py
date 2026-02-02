@@ -141,7 +141,7 @@ def escape_bash_special_chars(command: str) -> str:
         remaining = command[last_pos:]
         parts.append(remaining)
         return "".join(parts)
-    except (ParsingError, NotImplementedError, TypeError):
+    except (ParsingError, NotImplementedError, TypeError, AttributeError):
         logger.debug(
             f"Failed to parse bash commands for special characters escape\n[input]: "
             f"{command}\n[warning]: {traceback.format_exc()}\nThe original command "
