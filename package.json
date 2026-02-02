@@ -37,7 +37,7 @@
     "ws": "^8.19.0"
   },
   "devDependencies": {
-    "@babel/preset-env": "^7.28.6",
+    "@babel/preset-env": "^7.29.0",
     "@eslint/js": "^9.39.2",
     "@types/jest": "^30.0.0",
     "@types/node": "^25.2.0",
