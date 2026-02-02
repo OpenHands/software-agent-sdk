@@ -22,9 +22,13 @@ on:
                     - multiswebench
                     - swebenchmultimodal
             sdk_ref:
-                description: SDK commit/ref to evaluate
+                description: SDK commit/ref to evaluate (must be a semantic version like v1.0.0 unless 'Allow unreleased branches' is checked)
                 required: true
-                default: main
+            allow_unreleased_branches:
+                description: Allow unreleased branches (bypasses semantic version requirement)
+                required: false
+                default: false
+                type: boolean
             eval_limit:
                 description: Number of instances to run
                 required: false
@@ -112,6 +116,19 @@ jobs:
               with:
                   ref: ${{ github.event_name == 'pull_request_target' && github.event.pull_request.base.ref || github.ref }}
                   fetch-depth: 0
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.13'
+
+            - name: Validate SDK reference (semantic version check)
+              if: github.event_name == 'workflow_dispatch'
+              env:
+                  SDK_REF: ${{ github.event.inputs.sdk_ref }}
+                  ALLOW_UNRELEASED_BRANCHES: ${{ github.event.inputs.allow_unreleased_branches }}
+              run: |
+                  python3 .github/run-eval/validate_sdk_ref.py
 
             - name: Load model IDs from Python script
               id: load-models
