@@ -34,8 +34,11 @@ logger = logging.getLogger(__name__)
 def _compose_conversation_info(
     stored: StoredConversation, state: ConversationState
 ) -> ConversationInfo:
+    # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
+    # agent.agent_context.secrets) serialize to strings. Without it, validation
+    # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
     return ConversationInfo(
-        **state.model_dump(),
+        **state.model_dump(mode="json"),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
