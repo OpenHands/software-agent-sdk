@@ -77,8 +77,8 @@ class LLMRegistry:
 
     @property
     @deprecated(
-        deprecated_in="1.6.0",
-        removed_in="1.7.0",
+        deprecated_in="1.10.0",
+        removed_in="1.20.0",
         details="The method is deprecated and will be removed in next versions",
     )
     def usage_to_llm(self) -> dict[str, LLM]:
