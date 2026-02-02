@@ -118,7 +118,7 @@ body:
       id: model-name
       attributes:
           label: Model Name (if applicable)
-          description: If using an LLM-based agent, which model are you using?
+          description: Which model(s) are you using?
           placeholder: ex. gpt-4o, claude-3-5-sonnet-20241022, openrouter/deepseek-r1, etc.
       validations:
           required: false
