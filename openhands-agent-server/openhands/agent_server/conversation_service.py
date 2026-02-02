@@ -3,6 +3,7 @@ import importlib
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -25,7 +26,17 @@ from openhands.sdk.conversation.state import (
     ConversationExecutionStatus,
     ConversationState,
 )
+from openhands.sdk.observability.laminar import should_enable_observability
 from openhands.sdk.utils.cipher import Cipher
+
+
+if TYPE_CHECKING:
+    from lmnr import Laminar
+
+try:
+    from lmnr import Laminar
+except ImportError:
+    Laminar = None  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -58,6 +69,30 @@ class ConversationService:
     _conversation_webhook_subscribers: list["ConversationWebhookSubscriber"] = field(
         default_factory=list, init=False
     )
+    # Track observability spans per conversation to avoid global stack corruption
+    _conversation_spans: dict[UUID, Any] = field(default_factory=dict, init=False)
+
+    def _start_conversation_span(self, conversation_id: UUID) -> None:
+        """Start an observability span for a conversation."""
+        if should_enable_observability() and Laminar is not None:
+            span = Laminar.start_active_span("conversation")
+            Laminar.set_trace_session_id(str(conversation_id))
+            self._conversation_spans[conversation_id] = span
+
+    def _end_conversation_span(self, conversation_id: UUID) -> None:
+        """End the observability span for a conversation."""
+        span = self._conversation_spans.pop(conversation_id, None)
+        if span is not None:
+            try:
+                if span.is_recording():
+                    span.end()
+            except Exception as e:
+                logger.debug(f"Failed to end observability span: {e}")
+
+    def _end_all_conversation_spans(self) -> None:
+        """End all remaining conversation spans (for cleanup on shutdown)."""
+        for conversation_id in list(self._conversation_spans.keys()):
+            self._end_conversation_span(conversation_id)
 
     async def get_conversation(self, conversation_id: UUID) -> ConversationInfo | None:
         if self._event_services is None:
@@ -246,6 +281,10 @@ class ConversationService:
             **request.model_dump(),
         )
         event_service = await self._start_event_service(stored)
+
+        # Start observability span on server side for remote conversations
+        self._start_conversation_span(conversation_id)
+
         initial_message = request.initial_message
         if initial_message:
             message = Message(
@@ -267,6 +306,8 @@ class ConversationService:
         event_service = self._event_services.get(conversation_id)
         if event_service:
             await event_service.pause()
+            # End observability span when conversation is paused
+            self._end_conversation_span(conversation_id)
             # Notify conversation webhooks about the paused conversation
             state = await event_service.get_state()
             conversation_info = _compose_conversation_info(event_service.stored, state)
@@ -278,6 +319,8 @@ class ConversationService:
             raise ValueError("inactive_service")
         event_service = self._event_services.get(conversation_id)
         if event_service:
+            # Start new observability span when conversation resumes
+            self._start_conversation_span(conversation_id)
             await event_service.start()
         return bool(event_service)
 
@@ -309,6 +352,9 @@ class ConversationService:
                     f"Failed to close event service for conversation "
                     f"{conversation_id}: {e}"
                 )
+
+            # End observability span for this conversation
+            self._end_conversation_span(conversation_id)
 
             # Safely remove only the conversation directory (workspace is preserved).
             # This operation may fail due to permission issues, but we don't want that
@@ -464,6 +510,10 @@ class ConversationService:
         if event_services is None:
             return
         self._event_services = None
+
+        # End all remaining observability spans on shutdown
+        self._end_all_conversation_spans()
+
         # This stops conversations and saves meta
         await asyncio.gather(
             *[
