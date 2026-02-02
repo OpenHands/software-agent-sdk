@@ -134,6 +134,7 @@ EXPECTED_MODELS = [
     "minimax-m2.1",
     "deepseek-v3.2-reasoner",
     "qwen-3-coder",
+    "glm-4.7",
 ]
 
 

@@ -504,5 +504,5 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
             RuntimeError: If the agent has not been initialized.
         """
         if not self._initialized:
-            raise RuntimeError("Agent not initialized; call initialize() before use")
+            raise RuntimeError("Agent not initialized; call _initialize() before use")
         return self._tools
