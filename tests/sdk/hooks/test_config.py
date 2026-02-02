@@ -412,3 +412,132 @@ class TestDiscoverHookScripts:
             assert HookEventType.PRE_TOOL_USE in result
             assert len(result[HookEventType.PRE_TOOL_USE]) == 1
             assert result[HookEventType.PRE_TOOL_USE][0].name == "pre_tool_use.sh"
+
+
+class TestMultipleWorkingDirs:
+    """Tests for loading hooks from multiple working directories."""
+
+    def test_load_with_list_of_working_dirs(self):
+        """Test that load() accepts a list of working directories."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir1,
+            tempfile.TemporaryDirectory() as tmpdir2,
+        ):
+            # Create hooks in first directory
+            openhands_dir1 = os.path.join(tmpdir1, ".openhands")
+            os.makedirs(openhands_dir1)
+            with open(os.path.join(openhands_dir1, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop1\n")
+
+            # Create hooks in second directory
+            openhands_dir2 = os.path.join(tmpdir2, ".openhands")
+            os.makedirs(openhands_dir2)
+            with open(os.path.join(openhands_dir2, "pre_tool_use.sh"), "w") as f:
+                f.write("#!/bin/bash\necho pre\n")
+
+            # Load from both directories
+            config = HookConfig.load(working_dir=[tmpdir1, tmpdir2])
+
+            # Should have hooks from both directories
+            assert config.has_hooks_for_event(HookEventType.STOP)
+            assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+
+            stop_hooks = config.get_hooks_for_event(HookEventType.STOP, None)
+            assert len(stop_hooks) == 1
+            assert "stop.sh" in stop_hooks[0].command
+
+            pre_hooks = config.get_hooks_for_event(
+                HookEventType.PRE_TOOL_USE, "AnyTool"
+            )
+            assert len(pre_hooks) == 1
+            assert "pre_tool_use.sh" in pre_hooks[0].command
+
+    def test_load_merges_hooks_from_multiple_dirs(self):
+        """Test that hooks from multiple directories are merged."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir1,
+            tempfile.TemporaryDirectory() as tmpdir2,
+        ):
+            # Create stop hook in first directory
+            openhands_dir1 = os.path.join(tmpdir1, ".openhands")
+            os.makedirs(openhands_dir1)
+            with open(os.path.join(openhands_dir1, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop1\n")
+
+            # Create another stop hook in second directory
+            openhands_dir2 = os.path.join(tmpdir2, ".openhands")
+            os.makedirs(openhands_dir2)
+            with open(os.path.join(openhands_dir2, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop2\n")
+
+            # Load from both directories
+            config = HookConfig.load(working_dir=[tmpdir1, tmpdir2])
+
+            # Should have both stop hooks merged
+            stop_hooks = config.get_hooks_for_event(HookEventType.STOP, None)
+            assert len(stop_hooks) == 2
+
+    def test_load_with_json_and_scripts_from_multiple_dirs(self):
+        """Test loading JSON config and scripts from multiple directories."""
+        with (
+            tempfile.TemporaryDirectory() as tmpdir1,
+            tempfile.TemporaryDirectory() as tmpdir2,
+        ):
+            # Create hooks.json in first directory
+            openhands_dir1 = os.path.join(tmpdir1, ".openhands")
+            os.makedirs(openhands_dir1)
+            hooks_json = os.path.join(openhands_dir1, "hooks.json")
+            data = {"PreToolUse": [{"hooks": [{"command": "json-hook.sh"}]}]}
+            with open(hooks_json, "w") as f:
+                json.dump(data, f)
+
+            # Create script in second directory
+            openhands_dir2 = os.path.join(tmpdir2, ".openhands")
+            os.makedirs(openhands_dir2)
+            with open(os.path.join(openhands_dir2, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop\n")
+
+            # Load from both directories
+            config = HookConfig.load(working_dir=[tmpdir1, tmpdir2])
+
+            # Should have hooks from both sources
+            assert config.has_hooks_for_event(HookEventType.PRE_TOOL_USE)
+            assert config.has_hooks_for_event(HookEventType.STOP)
+
+            pre_hooks = config.get_hooks_for_event(
+                HookEventType.PRE_TOOL_USE, "AnyTool"
+            )
+            assert len(pre_hooks) == 1
+            assert pre_hooks[0].command == "json-hook.sh"
+
+    def test_load_with_empty_list_returns_empty_config(self):
+        """Test that load() with empty list returns empty config."""
+        config = HookConfig.load(working_dir=[])
+        assert config.is_empty()
+
+    def test_load_with_single_item_list(self):
+        """Test that load() works with a single-item list."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            with open(os.path.join(openhands_dir, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop\n")
+
+            # Load with single-item list
+            config = HookConfig.load(working_dir=[tmpdir])
+
+            assert config.has_hooks_for_event(HookEventType.STOP)
+
+    def test_load_with_nonexistent_dirs_in_list(self):
+        """Test that load() handles nonexistent directories in the list gracefully."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            openhands_dir = os.path.join(tmpdir, ".openhands")
+            os.makedirs(openhands_dir)
+            with open(os.path.join(openhands_dir, "stop.sh"), "w") as f:
+                f.write("#!/bin/bash\necho stop\n")
+
+            # Load with mix of existing and nonexistent directories
+            config = HookConfig.load(working_dir=["/nonexistent/path", tmpdir])
+
+            # Should still load hooks from the existing directory
+            assert config.has_hooks_for_event(HookEventType.STOP)

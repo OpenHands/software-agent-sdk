@@ -212,7 +212,9 @@ class HookConfig(BaseModel):
 
     @classmethod
     def load(
-        cls, path: str | Path | None = None, working_dir: str | Path | None = None
+        cls,
+        path: str | Path | None = None,
+        working_dir: str | Path | list[str | Path] | None = None,
     ) -> "HookConfig":
         """Load config from path or search .openhands/hooks.json locations.
 
@@ -222,48 +224,61 @@ class HookConfig(BaseModel):
         Args:
             path: Explicit path to hooks.json file. If provided, working_dir is ignored
                 for JSON loading but still used for script discovery.
-            working_dir: Project directory for discovering .openhands/hooks.json
-                and hook scripts. Falls back to cwd if not provided.
+            working_dir: Project directory (or list of directories) for discovering
+                .openhands/hooks.json and hook scripts. When a list is provided,
+                hooks from all directories are merged. Falls back to cwd if not
+                provided.
         """
         # Import here to avoid circular dependency
         from openhands.sdk.hooks.utils import load_project_hooks
 
-        base_dir = Path(working_dir) if working_dir else Path.cwd()
+        # Normalize working_dir to a list of paths
+        if working_dir is None:
+            working_dirs = [Path.cwd()]
+        elif isinstance(working_dir, list):
+            working_dirs = [Path(d) for d in working_dir]
+        else:
+            working_dirs = [Path(working_dir)]
 
-        # Load JSON config
-        json_config: HookConfig | None = None
-        config_path = path
+        configs_to_merge: list[HookConfig] = []
 
-        if config_path is None:
-            # Search for hooks.json in standard locations
-            search_paths = [
-                base_dir / ".openhands" / "hooks.json",
-                Path.home() / ".openhands" / "hooks.json",
-            ]
-            for search_path in search_paths:
-                if search_path.exists():
-                    config_path = search_path
-                    break
+        for base_dir in working_dirs:
+            # Load JSON config for this directory
+            json_config: HookConfig | None = None
+            config_path = path
 
-        if config_path is not None:
-            config_path = Path(config_path)
-            if config_path.exists():
-                try:
-                    with open(config_path) as f:
-                        data = json.load(f)
-                    json_config = cls.model_validate(data)
-                except (json.JSONDecodeError, OSError) as e:
-                    logger.warning(f"Failed to load hooks from {config_path}: {e}")
+            if config_path is None:
+                # Search for hooks.json in standard locations
+                search_paths = [
+                    base_dir / ".openhands" / "hooks.json",
+                    Path.home() / ".openhands" / "hooks.json",
+                ]
+                for search_path in search_paths:
+                    if search_path.exists():
+                        config_path = search_path
+                        break
 
-        # Load hook scripts from .openhands directory
-        script_config = load_project_hooks(base_dir)
+            if config_path is not None:
+                config_path = Path(config_path)
+                if config_path.exists():
+                    try:
+                        with open(config_path) as f:
+                            data = json.load(f)
+                        json_config = cls.model_validate(data)
+                    except (json.JSONDecodeError, OSError) as e:
+                        logger.warning(f"Failed to load hooks from {config_path}: {e}")
 
-        # Merge configs: JSON config takes precedence, script hooks are appended
-        configs_to_merge = []
-        if json_config is not None and not json_config.is_empty():
-            configs_to_merge.append(json_config)
-        if not script_config.is_empty():
-            configs_to_merge.append(script_config)
+            # Load hook scripts from .openhands directory
+            script_config = load_project_hooks(base_dir)
+
+            # Add configs to merge list
+            if json_config is not None and not json_config.is_empty():
+                configs_to_merge.append(json_config)
+            if not script_config.is_empty():
+                configs_to_merge.append(script_config)
+
+            # Reset path for next iteration (only use explicit path for first dir)
+            path = None
 
         if not configs_to_merge:
             return cls()
