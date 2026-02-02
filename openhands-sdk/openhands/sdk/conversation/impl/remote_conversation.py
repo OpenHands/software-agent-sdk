@@ -745,7 +745,11 @@ class RemoteConversation(BaseConversation):
             secret_values: dict[str, SecretValue] = {k: v for k, v in secrets.items()}
             self.update_secrets(secret_values)
 
-        self._start_observability_span(str(self._id))
+        # Note: Observability span is NOT started here for RemoteConversation.
+        # For remote conversations, the span is started on the server side
+        # (in EventService.start()) to ensure proper session_id tracking in
+        # Laminar/OTEL tracing.
+
         if hook_config is not None:
             unsupported = (
                 HookEventType.PRE_TOOL_USE,
@@ -1119,6 +1123,11 @@ class RemoteConversation(BaseConversation):
         Note: We don't close self._client here because it's shared with the workspace.
         The workspace owns the client and will close it during its own cleanup.
         Closing it here would prevent the workspace from making cleanup API calls.
+
+        Note: Observability span is NOT ended here for RemoteConversation.
+        For remote conversations, the span is managed on the server side
+        (in EventService) to ensure proper session_id tracking in
+        Laminar/OTEL tracing.
         """
         if self._cleanup_initiated:
             return
@@ -1132,8 +1141,6 @@ class RemoteConversation(BaseConversation):
                 self._ws_client = None
         except Exception:
             pass
-
-        self._end_observability_span()
 
     def __del__(self) -> None:
         try:
