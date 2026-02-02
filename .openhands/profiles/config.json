@@ -12,6 +12,12 @@
       "file": "gpt4.json",
       "description": "gpt_agent",
       "usage_id": "gpt_agent"
+    },
+    {
+      "name": "gemini-flash",
+      "file": "gemini-flash.json",
+      "description": "new_task_agent",
+      "usage_id": "new_task_agent"
     }
   ]
 }

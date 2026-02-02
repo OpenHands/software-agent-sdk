@@ -6,6 +6,7 @@
   "retry_multiplier": 8.0,
   "retry_min_wait": 8,
   "retry_max_wait": 64,
+  "timeout": 300,
   "max_message_chars": 30000,
   "temperature": 0.0,
   "top_p": 1.0,
@@ -24,11 +25,5 @@
   "prompt_cache_retention": "24h",
   "extended_thinking_budget": 200000,
   "usage_id": "claude_agent",
-  "litellm_extra_body": {},
-  "OVERRIDE_ON_SERIALIZE": [
-    "api_key",
-    "aws_access_key_id",
-    "aws_secret_access_key",
-    "litellm_extra_body"
-  ]
+  "litellm_extra_body": {}
 }

@@ -152,7 +152,7 @@ class ProfileManager:
         logger.info(f"[Profile Manager] Saved profile `{name}` at {profile_filepath}")
 
     def _write_config(self) -> None:
-        """The method update/rewrite the config."""
+        """The method update the config by re-writing it."""
         self.config_path.write_text(json.dumps(self.config.model_dump(), indent=2))
 
     def delete_profile(self, name: str) -> None:
@@ -176,8 +176,7 @@ class ProfileManager:
 
         # remove file from system
         profile_path = (self.base_dir / name).with_suffix(".json")
-        if profile_path.exists():
-            profile_path.unlink()
+        profile_path.unlink(missing_ok=True)
 
         # remove from config
         self.config.profiles = [p for p in self.config.profiles if p.name != name]
