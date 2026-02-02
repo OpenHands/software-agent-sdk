@@ -7,7 +7,9 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationPage,

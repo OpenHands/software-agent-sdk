@@ -1,4 +1,5 @@
 import asyncio
+import bisect
 import json
 import os
 import threading
@@ -15,7 +16,10 @@ from openhands.sdk.agent.base import AgentBase
 from openhands.sdk.conversation.base import BaseConversation, ConversationStateProtocol
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.events_list_base import EventsListBase
-from openhands.sdk.conversation.exceptions import ConversationRunError
+from openhands.sdk.conversation.exceptions import (
+    ConversationRunError,
+    WebSocketConnectionError,
+)
 from openhands.sdk.conversation.secret_registry import SecretValue
 from openhands.sdk.conversation.state import ConversationExecutionStatus
 from openhands.sdk.conversation.types import (
@@ -94,6 +98,7 @@ class WebSocketCallbackClient:
     api_key: str | None
     _thread: threading.Thread | None
     _stop: threading.Event
+    _ready: threading.Event
 
     def __init__(
         self,
@@ -108,6 +113,7 @@ class WebSocketCallbackClient:
         self.api_key = api_key
         self._thread = None
         self._stop = threading.Event()
+        self._ready = threading.Event()
 
     def start(self) -> None:
         if self._thread:
@@ -122,6 +128,38 @@ class WebSocketCallbackClient:
         self._stop.set()
         self._thread.join(timeout=5)
         self._thread = None
+
+    def wait_until_ready(self, timeout: float | None = None) -> bool:
+        """Wait for WebSocket subscription to complete.
+
+        The server sends a ConversationStateUpdateEvent immediately after
+        subscription completes. This method blocks until that event is received,
+        the client is stopped, or the timeout expires.
+
+        Args:
+            timeout: Maximum time to wait in seconds. None means wait forever.
+
+        Returns:
+            True if the WebSocket is ready, False if stopped or timeout expired.
+        """
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            # Calculate remaining timeout
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                wait_timeout = min(0.05, remaining)
+            else:
+                wait_timeout = 0.05
+
+            # Wait efficiently using Event.wait() instead of sleep
+            if self._ready.wait(timeout=wait_timeout):
+                return True
+
+            # Check if stopped
+            if self._stop.is_set():
+                return False
 
     def _run(self) -> None:
         try:
@@ -153,6 +191,15 @@ class WebSocketCallbackClient:
                             break
                         try:
                             event = Event.model_validate(json.loads(message))
+
+                            # Set ready on first ConversationStateUpdateEvent
+                            # The server sends this immediately after subscription
+                            if (
+                                isinstance(event, ConversationStateUpdateEvent)
+                                and not self._ready.is_set()
+                            ):
+                                self._ready.set()
+
                             self.callback(event)
                         except Exception:
                             logger.exception(
@@ -218,14 +265,83 @@ class RemoteEventsList(EventsListBase):
         self._cached_event_ids.update(e.id for e in events)
         logger.debug(f"Full sync completed, {len(events)} events cached")
 
+    def reconcile(self) -> int:
+        """Reconcile local cache with server by fetching and merging events.
+
+        This method fetches all events from the server and merges them with
+        the local cache, deduplicating by event ID. This ensures no events
+        are missed due to race conditions between REST sync and WebSocket
+        subscription.
+
+        Returns:
+            Number of new events added during reconciliation.
+        """
+        logger.debug(
+            f"Performing reconciliation sync for conversation {self._conversation_id}"
+        )
+
+        events = []
+        page_id = None
+
+        while True:
+            params = {"limit": 100}
+            if page_id:
+                params["page_id"] = page_id
+
+            try:
+                resp = _send_request(
+                    self._client,
+                    "GET",
+                    f"/api/conversations/{self._conversation_id}/events/search",
+                    params=params,
+                )
+                data = resp.json()
+            except Exception as e:
+                logger.warning(f"Failed to fetch events during reconciliation: {e}")
+                break  # Return partial results rather than failing completely
+
+            events.extend([Event.model_validate(item) for item in data["items"]])
+
+            if not data.get("next_page_id"):
+                break
+            page_id = data["next_page_id"]
+
+        # Merge events into cache, acquiring lock once for all events
+        added_count = 0
+        with self._lock:
+            for event in events:
+                if event.id not in self._cached_event_ids:
+                    self._add_event_unsafe(event)
+                    added_count += 1
+
+        logger.debug(
+            f"Reconciliation completed, {added_count} new events added "
+            f"(total: {len(self._cached_events)})"
+        )
+        return added_count
+
+    def _add_event_unsafe(self, event: Event) -> None:
+        """Add event to cache without acquiring lock (caller must hold lock)."""
+        # Use bisect with key function for O(log N) insertion
+        # This ensures events are always ordered correctly even if
+        # WebSocket delivers them out of order
+        insert_pos = bisect.bisect_right(
+            self._cached_events, event.timestamp, key=lambda e: e.timestamp
+        )
+        self._cached_events.insert(insert_pos, event)
+        self._cached_event_ids.add(event.id)
+        logger.debug(f"Added event {event.id} to local cache at position {insert_pos}")
+
     def add_event(self, event: Event) -> None:
-        """Add a new event to the local cache (called by WebSocket callback)."""
+        """Add a new event to the local cache (called by WebSocket callback).
+
+        Events are inserted in sorted order by timestamp to maintain correct
+        temporal ordering regardless of WebSocket delivery order.
+        """
         with self._lock:
             # Check if event already exists to avoid duplicates
             if event.id not in self._cached_event_ids:
-                self._cached_events.append(event)
-                self._cached_event_ids.add(event.id)
-                logger.debug(f"Added event {event.id} to local cache")
+                self._add_event_unsafe(event)
 
     def append(self, event: Event) -> None:
         """Add a new event to the list (for compatibility with EventLog interface)."""
@@ -445,6 +561,7 @@ class RemoteConversation(BaseConversation):
         self,
         agent: AgentBase,
         workspace: RemoteWorkspace,
+        plugins: list | None = None,
         conversation_id: ConversationID | None = None,
         callbacks: list[ConversationCallbackType] | None = None,
         max_iteration_per_run: int = 500,
@@ -465,6 +582,8 @@ class RemoteConversation(BaseConversation):
         Args:
             agent: Agent configuration (will be sent to the server)
             workspace: The working directory for agent operations and tool execution.
+            plugins: Optional list of plugins to load on the server. Each plugin
+                    is a PluginSource specifying source, ref, and repo_path.
             conversation_id: Optional existing conversation id to attach to
             callbacks: Optional callbacks to receive events (not yet streamed)
             max_iteration_per_run: Max iterations configured on server
@@ -526,6 +645,8 @@ class RemoteConversation(BaseConversation):
                 ).model_dump(),
                 # Include tool module qualnames for dynamic registration on server
                 "tool_module_qualnames": tool_qualnames,
+                # Include plugins to load on server
+                "plugins": [p.model_dump() for p in plugins] if plugins else None,
             }
             if stuck_detection_thresholds is not None:
                 # Convert to StuckDetectionThresholds if dict, then serialize
@@ -598,6 +719,27 @@ class RemoteConversation(BaseConversation):
             api_key=self.workspace.api_key,
         )
         self._ws_client.start()
+
+        # Wait for WebSocket subscription to complete before allowing operations.
+        # This ensures events emitted during send_message() are not missed.
+        # The server sends a ConversationStateUpdateEvent after subscription.
+        ws_timeout = 30.0
+        if not self._ws_client.wait_until_ready(timeout=ws_timeout):
+            try:
+                self._ws_client.stop()
+            except Exception:
+                pass
+            finally:
+                self._ws_client = None
+            raise WebSocketConnectionError(
+                conversation_id=self._id,
+                timeout=ws_timeout,
+            )
+
+        # Reconcile events after WebSocket is ready to catch any events that
+        # were emitted between the initial REST sync and WebSocket subscription.
+        # This is the "reconciliation" part of the subscription handshake.
+        self._state.events.reconcile()
 
         # Initialize secrets if provided
         if secrets:

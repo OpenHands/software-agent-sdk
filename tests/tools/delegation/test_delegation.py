@@ -166,3 +166,44 @@ def test_delegation_manager_init():
 
     # Test that sub-agents dict is empty initially
     assert len(manager._sub_agents) == 0
+
+
+def test_spawn_disables_streaming_for_sub_agents():
+    """Test that spawned sub-agents have streaming disabled.
+
+    This prevents the 'Streaming requires an on_token callback' error
+    when the parent conversation has streaming enabled but sub-agents
+    don't have token callbacks.
+    """
+    # Create parent LLM with streaming enabled
+    parent_llm = LLM(
+        model="openai/gpt-4o",
+        api_key=SecretStr("test-key"),
+        base_url="https://api.openai.com/v1",
+        stream=True,  # Parent has streaming enabled
+    )
+
+    parent_conversation = MagicMock()
+    parent_conversation.id = uuid.uuid4()
+    parent_conversation.agent.llm = parent_llm
+    parent_conversation.agent.cli_mode = True
+    parent_conversation.state.workspace.working_dir = "/tmp"
+    parent_conversation._visualizer = None
+
+    executor = DelegateExecutor()
+
+    # Spawn an agent
+    spawn_action = DelegateAction(command="spawn", ids=["test_agent"])
+    observation = executor(spawn_action, parent_conversation)
+
+    # Verify spawn succeeded
+    assert "Successfully spawned" in observation.text
+    assert "test_agent" in executor._sub_agents
+
+    # Verify the sub-agent's LLM has streaming disabled
+    sub_conversation = executor._sub_agents["test_agent"]
+    sub_llm = sub_conversation.agent.llm
+    assert sub_llm.stream is False, "Sub-agent LLM should have streaming disabled"
+
+    # Verify parent LLM still has streaming enabled (wasn't mutated)
+    assert parent_llm.stream is True, "Parent LLM should still have streaming enabled"

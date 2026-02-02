@@ -64,6 +64,11 @@ class APIRemoteWorkspace(RemoteWorkspace):
     init_timeout: float = Field(
         default=300.0, description="Runtime init timeout (seconds)"
     )
+    startup_wait_timeout: float = Field(
+        default=300.0,
+        description="Max seconds to wait for runtime to become ready",
+        gt=0,
+    )
     api_timeout: float = Field(
         default=60.0, description="API request timeout (seconds)"
     )
@@ -275,14 +280,20 @@ class APIRemoteWorkspace(RemoteWorkspace):
         if not self._runtime_id or not self._runtime_url:
             raise ValueError(f"Invalid runtime response: {data}")
 
-    @tenacity.retry(
-        stop=tenacity.stop_after_delay(300),
-        wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
-        retry=tenacity.retry_if_exception_type(RuntimeError),
-        reraise=True,
-    )
     def _wait_until_runtime_alive(self) -> None:
         """Wait until the runtime becomes alive and responsive."""
+        retryer = tenacity.Retrying(
+            stop=tenacity.stop_after_delay(self.startup_wait_timeout),
+            wait=tenacity.wait_exponential(multiplier=1, min=2, max=10),
+            retry=tenacity.retry_if_exception_type(RuntimeError),
+            reraise=True,
+        )
+        for attempt in retryer:
+            with attempt:
+                self._wait_until_runtime_alive_once()
+
+    def _wait_until_runtime_alive_once(self) -> None:
+        """Single attempt to check runtime readiness."""
         logger.info("Waiting for runtime to become alive...")
 
         resp = self._send_api_request(

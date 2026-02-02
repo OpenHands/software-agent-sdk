@@ -154,10 +154,11 @@ def test_condense_returns_condensation_when_needed(mock_llm: LLM) -> None:
 
     assert isinstance(result, Condensation)
     assert result.summary == "Summary of forgotten events"
-    # summary_offset should be the smallest manipulation index > keep_first
+    # summary_offset should be the smallest manipulation index >= keep_first
     # Since all events are MessageEvents, manipulation indices are [0,1,2,3,4,...]
-    # The smallest index > keep_first (3) is 4
-    assert result.summary_offset == keep_first + 1
+    # The smallest index >= keep_first (3) is 3
+    # This means we keep events [0:3] = indices 0,1,2 = 3 events
+    assert result.summary_offset == keep_first
     assert len(result.forgotten_event_ids) > 0
 
     # LLM should be called once
@@ -365,10 +366,10 @@ def test_condense_with_request_and_events_reasons(mock_llm: LLM) -> None:
     # naive_start = keep_first = 2
     # naive_end = 25 - 7 = 18
     # manipulation_indices = [0, 1, 2, 3, ..., 25]
-    # forgetting_start = smallest index > keep_first = 3
+    # forgetting_start = smallest index >= keep_first = 2
     # forgetting_end = smallest index >= naive_end = 18
-    # Forgotten: events[3:18] = 15 events
-    expected_forgotten_count = 15
+    # Forgotten: events[2:18] = 16 events
+    expected_forgotten_count = 16
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
@@ -549,10 +550,10 @@ def test_most_aggressive_condensation_chosen(mock_llm: LLM) -> None:
     # naive_start = keep_first = 2
     # naive_end = 40 - 12 = 28
     # manipulation_indices = [0, 1, 2, 3, ..., 40]
-    # forgetting_start = smallest index > keep_first = 3
+    # forgetting_start = smallest index >= keep_first = 2
     # forgetting_end = smallest index >= naive_end = 28
-    # Forgotten events: events[3:28] = 25 events
-    expected_forgotten_count = 25
+    # Forgotten events: events[2:28] = 26 events
+    expected_forgotten_count = 26
     assert len(result.forgotten_event_ids) == expected_forgotten_count
 
 
@@ -567,7 +568,6 @@ def test_generate_condensation_raises_on_zero_events(mock_llm: LLM) -> None:
 
     with pytest.raises(AssertionError, match="No events to condense"):
         condenser._generate_condensation(
-            summary_event_content="",
             forgotten_events=[],
             summary_offset=0,
         )
@@ -666,6 +666,7 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
     view = View.from_events(events)
 
     # Mock to return HARD requirement but no events to condense
+    # Also mock hard_context_reset to return None so the exception gets re-raised
     with (
         patch.object(
             LLMSummarizingCondenser,
@@ -673,6 +674,7 @@ def test_condense_with_hard_requirement_and_no_condensation_available(
             return_value={Reason.REQUEST},
         ),
         patch.object(condenser, "_get_forgotten_events", return_value=([], 0)),
+        patch.object(LLMSummarizingCondenser, "hard_context_reset", return_value=None),
     ):
         with pytest.raises(NoCondensationAvailableException):
             condenser.condense(view)

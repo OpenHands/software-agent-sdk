@@ -13,6 +13,7 @@ from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils.command import execute_command
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.workspace import PlatformType, RemoteWorkspace
 
 
@@ -79,7 +80,7 @@ class DockerWorkspace(RemoteWorkspace):
 
     # Docker-specific configuration
     server_image: str | None = Field(
-        default=None,
+        default="ghcr.io/openhands/agent-server:latest-python",
         description="Pre-built agent server image to use.",
     )
     host_port: int | None = Field(
@@ -93,6 +94,10 @@ class DockerWorkspace(RemoteWorkspace):
     mount_dir: str | None = Field(
         default=None,
         description="Optional host directory to mount into the container.",
+    )
+    volumes: list[str] = Field(
+        default_factory=list,
+        description="Additional volume mounts for the Docker container.",
     )
     detach_logs: bool = Field(
         default=True, description="Whether to stream Docker logs in background."
@@ -123,6 +128,18 @@ class DockerWorkspace(RemoteWorkspace):
         """Ensure server_image is set when using DockerWorkspace directly."""
         if self.__class__ is DockerWorkspace and self.server_image is None:
             raise ValueError("server_image must be provided")
+        return self
+
+    @model_validator(mode="after")
+    def _validate_mount_dir(self):
+        if self.mount_dir:
+            warn_deprecated(
+                "DockerWorkspace.mount_dir",
+                deprecated_in="1.10.0",
+                removed_in=None,
+                details="Use DockerWorkspace.volumes instead",
+            )
+            self.volumes.append(f"{self.mount_dir}:/workspace")
         return self
 
     def model_post_init(self, context: Any) -> None:
@@ -192,12 +209,9 @@ class DockerWorkspace(RemoteWorkspace):
             if key in os.environ:
                 flags += ["-e", f"{key}={os.environ[key]}"]
 
-        if self.mount_dir:
-            mount_path = "/workspace"
-            flags += ["-v", f"{self.mount_dir}:{mount_path}"]
-            logger.info(
-                f"Mounting host dir {self.mount_dir} to container path {mount_path}"
-            )
+        for volume in self.volumes:
+            flags += ["-v", volume]
+            logger.info(f"Adding volume mount: {volume}")
 
         ports = ["-p", f"{self.host_port}:8000"]
         if self.extra_ports:

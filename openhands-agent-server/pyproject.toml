@@ -1,6 +1,6 @@
 [project]
 name = "openhands-agent-server"
-version = "1.8.1"
+version = "1.10.0"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 
 requires-python = ">=3.12"
@@ -16,6 +16,12 @@ dependencies = [
   "websockets>=12",
   "wsproto>=1.2.0",
 ]
+
+[project.urls]
+Source = "https://github.com/OpenHands/software-agent-sdk"
+Homepage = "https://github.com/OpenHands/software-agent-sdk"
+Documentation = "https://docs.openhands.dev/sdk"
+"Bug Tracker" = "https://github.com/OpenHands/software-agent-sdk/issues"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]

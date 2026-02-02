@@ -63,6 +63,9 @@ REASONING_EFFORT_MODELS: list[str] = [
     "o4-mini-2025-04-16",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
+    # Gemini 3 family
+    "gemini-3-flash-preview",
+    "gemini-3-pro-preview",
     # OpenAI GPT-5 family (includes mini variants)
     "gpt-5",
     # Anthropic Opus 4.5
@@ -152,6 +155,7 @@ FORCE_STRING_SERIALIZER_MODELS: list[str] = [
 # in the message input
 SEND_REASONING_CONTENT_MODELS: list[str] = [
     "kimi-k2-thinking",
+    "kimi-k2.5",
     "openrouter/minimax-m2",  # MiniMax-M2 via OpenRouter (interleaved thinking)
     "deepseek/deepseek-reasoner",
 ]
@@ -178,6 +182,7 @@ def get_features(model: str) -> ModelFeatures:
 # Each entry: (pattern, default_temperature)
 DEFAULT_TEMPERATURE_MODELS: list[tuple[str, float]] = [
     ("kimi-k2-thinking", 1.0),
+    ("kimi-k2.5", 1.0),
 ]
 
 

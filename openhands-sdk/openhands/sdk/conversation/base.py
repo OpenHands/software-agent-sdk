@@ -162,6 +162,11 @@ class BaseConversation(ABC):
         """Set the confirmation policy for the conversation."""
         ...
 
+    @abstractmethod
+    def set_security_analyzer(self, analyzer: SecurityAnalyzerBase | None) -> None:
+        """Set the security analyzer for the conversation."""
+        ...
+
     @property
     def confirmation_policy_active(self) -> bool:
         return not isinstance(self.state.confirmation_policy, NeverConfirm)

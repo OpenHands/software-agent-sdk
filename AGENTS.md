@@ -118,6 +118,45 @@ When reviewing code, provide constructive feedback:
 
 </DEV_SETUP>
 
+<PR_ARTIFACTS>
+# PR-Specific Documents
+
+When working on a PR that requires design documents, scripts meant for development-only, or other temporary artifacts that should NOT be merged to main, store them in a `.pr/` directory at the repository root.
+
+## Usage
+
+```bash
+# Create the directory if it doesn't exist
+mkdir -p .pr
+
+# Add your PR-specific documents
+.pr/
+├── design.md       # Design decisions and architecture notes
+├── analysis.md     # Investigation or debugging notes
+└── notes.md        # Any other PR-specific content
+```
+
+## How It Works
+
+1. **Notification**: When `.pr/` exists, a single comment is posted to the PR conversation alerting reviewers
+2. **Auto-cleanup**: When the PR is approved, the `.pr/` directory is automatically removed via commit
+3. **Fork PRs**: Auto-cleanup cannot push to forks, so manual removal is required before merging
+
+## Important Notes
+
+- Do NOT put anything in `.pr/` that needs to be preserved
+- The `.pr/` check passes (green ✅) during development - it only posts a notification, not a blocking error
+- For fork PRs: You must manually remove `.pr/` before the PR can be merged
+
+## When to Use
+
+- Complex refactoring that benefits from written design rationale
+- Debugging sessions where you want to document your investigation
+- Feature implementations that need temporary planning docs
+- Temporary script that are intended to show reviewers that the feature works
+- Any analysis that helps reviewers understand the PR but isn't needed long-term
+</PR_ARTIFACTS>
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
@@ -171,3 +210,25 @@ Co-authored-by: openhands <openhands@all-hands.dev>"
 git push -u origin <feature-name>
 ```
 </DOCUMENTATION_WORKFLOW>
+
+<REPO>
+<PROJECT_STRUCTURE>
+- `openhands-sdk/` core SDK; `openhands-tools/` built-in tools; `openhands-workspace/` workspace management; `openhands-agent-server/` server runtime; `examples/` runnable patterns; `tests/` split by domain (`tests/sdk`, `tests/tools`, `tests/agent_server`, etc.).
+- Python namespace is `openhands.*` across packages; keep new modules within the matching package and mirror test paths under `tests/`.
+</PROJECT_STRUCTURE>
+
+<QUICK_COMMANDS>
+- Set up the dev environment: `make build` (runs `uv sync --dev` and installs pre-commit; requires uv >= 0.8.13)
+- Lint/format: `make lint`, `make format`
+- Run tests: `uv run pytest`
+- Build agent-server: `make build-server` (output: `dist/agent-server/`)
+- Clean caches: `make clean`
+- Run an example: `uv run python examples/01_standalone_sdk/main.py`
+</QUICK_COMMANDS>
+
+<REPO_CONFIG_NOTES>
+- Ruff: `line-length = 88`, `target-version = "py312"` (see `pyproject.toml`).
+- Ruff ignores `ARG` (unused arguments) under `tests/**/*.py` to allow pytest fixtures.
+- Repository guidance lives in `AGENTS.md` (loaded as a third-party skill file).
+</REPO_CONFIG_NOTES>
+</REPO>

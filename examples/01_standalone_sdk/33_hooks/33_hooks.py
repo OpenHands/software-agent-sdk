@@ -19,7 +19,7 @@ from pathlib import Path
 from pydantic import SecretStr
 
 from openhands.sdk import LLM, Conversation
-from openhands.sdk.hooks import HookConfig
+from openhands.sdk.hooks import HookConfig, HookDefinition, HookMatcher
 from openhands.tools.preset.default import get_default_agent
 
 
@@ -48,59 +48,64 @@ with tempfile.TemporaryDirectory() as tmpdir:
     log_file = workspace / "tool_usage.log"
     summary_file = workspace / "summary.txt"
 
-    # Configure ALL hook types in one config
-    hook_config = HookConfig.from_dict(
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "matcher": "terminal",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": str(SCRIPT_DIR / "block_dangerous.sh"),
-                                "timeout": 10,
-                            }
-                        ],
-                    }
+    # Configure hooks using the typed approach (recommended)
+    # This provides better type safety and IDE support
+    hook_config = HookConfig(
+        pre_tool_use=[
+            HookMatcher(
+                matcher="terminal",
+                hooks=[
+                    HookDefinition(
+                        command=str(SCRIPT_DIR / "block_dangerous.sh"),
+                        timeout=10,
+                    )
                 ],
-                "PostToolUse": [
-                    {
-                        "matcher": "*",
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": f"LOG_FILE={log_file} "
-                                f"{SCRIPT_DIR / 'log_tools.sh'}",
-                                "timeout": 5,
-                            }
-                        ],
-                    }
+            )
+        ],
+        post_tool_use=[
+            HookMatcher(
+                matcher="*",
+                hooks=[
+                    HookDefinition(
+                        command=(f"LOG_FILE={log_file} {SCRIPT_DIR / 'log_tools.sh'}"),
+                        timeout=5,
+                    )
                 ],
-                "UserPromptSubmit": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": str(SCRIPT_DIR / "inject_git_context.sh"),
-                            }
-                        ],
-                    }
+            )
+        ],
+        user_prompt_submit=[
+            HookMatcher(
+                hooks=[
+                    HookDefinition(
+                        command=str(SCRIPT_DIR / "inject_git_context.sh"),
+                    )
                 ],
-                "Stop": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": f"SUMMARY_FILE={summary_file} "
-                                f"{SCRIPT_DIR / 'require_summary.sh'}",
-                            }
-                        ],
-                    }
+            )
+        ],
+        stop=[
+            HookMatcher(
+                hooks=[
+                    HookDefinition(
+                        command=(
+                            f"SUMMARY_FILE={summary_file} "
+                            f"{SCRIPT_DIR / 'require_summary.sh'}"
+                        ),
+                    )
                 ],
-            }
-        }
+            )
+        ],
     )
+
+    # Alternative: You can also use .from_dict() for loading from JSON config files
+    # Example with a single hook matcher:
+    # hook_config = HookConfig.from_dict({
+    #     "hooks": {
+    #         "PreToolUse": [{
+    #             "matcher": "terminal",
+    #             "hooks": [{"command": "path/to/script.sh", "timeout": 10}]
+    #         }]
+    #     }
+    # })
 
     agent = get_default_agent(llm=llm)
     conversation = Conversation(
