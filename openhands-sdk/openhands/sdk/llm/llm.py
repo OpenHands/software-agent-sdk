@@ -320,6 +320,14 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "configuration."
         ),
     )
+    profile_ref: bool = Field(
+        default=False,
+        exclude=True,
+        repr=False,
+        description=(
+            "Internal flag indicating this LLM was loaded from a profile reference."
+        ),
+    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -427,6 +435,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         expanded["profile_id"] = profile_id
         merged = {**expanded, **data}
         merged.pop("kind", None)
+        merged["profile_ref"] = True
         return merged
 
     @model_validator(mode="before")
