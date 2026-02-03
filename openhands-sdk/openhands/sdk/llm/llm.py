@@ -404,6 +404,30 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return v
 
+    @classmethod
+    def _expand_profile_reference(
+        cls, data: dict[str, Any], info: ValidationInfo
+    ) -> dict[str, Any]:
+        if data.get("kind") != "profile_ref":
+            return data
+
+        profile_id = data.get("profile_id")
+        if not profile_id:
+            raise ValueError("profile_id must be specified in LLM profile refs")
+
+        if info.context is None or "llm_registry" not in info.context:
+            raise ValueError(
+                "LLM registry required in context to load profile references."
+            )
+
+        registry = info.context["llm_registry"]
+        llm = registry.load_profile(profile_id)
+        expanded = llm.model_dump(exclude_none=True)
+        expanded["profile_id"] = profile_id
+        merged = {**expanded, **data}
+        merged.pop("kind", None)
+        return merged
+
     @model_validator(mode="before")
     @classmethod
     def _coerce_inputs(cls, data: Any, info: ValidationInfo):
@@ -411,22 +435,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return data
         d = dict(data)
 
-        if d.get("kind") == "profile_ref":
-            profile_id = d.get("profile_id")
-            if not profile_id:
-                raise ValueError("profile_id must be specified in LLM profile refs")
-
-            if info.context is None or "llm_registry" not in info.context:
-                raise ValueError(
-                    "LLM registry required in context to load profile references."
-                )
-
-            registry = info.context["llm_registry"]
-            llm = registry.load_profile(profile_id)
-            expanded = llm.model_dump(exclude_none=True)
-            expanded["profile_id"] = profile_id
-            d = {**expanded, **d}
-            d.pop("kind", None)
+        d = cls._expand_profile_reference(d, info)
 
         profile_id = d.get("profile_id")
         if profile_id and "model" not in d:
