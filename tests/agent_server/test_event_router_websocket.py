@@ -509,7 +509,7 @@ class TestAfterTimestampFiltering:
     async def test_after_timestamp_timezone_aware_is_normalized(
         self, mock_websocket, mock_event_service, sample_conversation_id
     ):
-        """Test that timezone-aware timestamps are normalized to server timezone."""
+        """Test that timezone-aware timestamps are normalized to naive server time."""
         from datetime import datetime
         from typing import cast
 
@@ -554,14 +554,16 @@ class TestAfterTimestampFiltering:
             )
 
         # search_events should be called with the normalized timestamp
-        # (converted to server local timezone, which is still tz-aware)
+        # (converted to server local timezone AND made naive for comparison)
         mock_event_service.search_events.assert_called_once()
         call_args = mock_event_service.search_events.call_args
         passed_timestamp = call_args.kwargs["timestamp__gte"]
-        # The timestamp should have been converted to local timezone
+        # The timestamp should be naive (no tzinfo)
         assert passed_timestamp is not None
-        # It should represent the same instant in time
-        assert passed_timestamp == test_timestamp.astimezone(None)
+        assert passed_timestamp.tzinfo is None
+        # It should represent the same instant in time (converted to local)
+        expected = test_timestamp.astimezone(None).replace(tzinfo=None)
+        assert passed_timestamp == expected
 
     @pytest.mark.asyncio
     async def test_after_timestamp_without_resend_all_no_effect(
