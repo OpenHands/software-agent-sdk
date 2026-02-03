@@ -79,6 +79,11 @@ class _LLMProfileStore:
         if not include_secrets:
             for secret_field in _SECRET_FIELDS:
                 data.pop(secret_field, None)
+            logger.debug(
+                "Saved profile '%s' without secrets. Provide credentials via "
+                "environment variables or the API.",
+                safe_id,
+            )
 
         with path.open("w", encoding="utf-8") as handle:
             json.dump(data, handle, indent=2, ensure_ascii=False)
