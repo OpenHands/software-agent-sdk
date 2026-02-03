@@ -1,10 +1,10 @@
-"""Regression test to ensure the static system message remains constant across conversations.
+"""Regression test: static system message must be constant across conversations.
 
-This test prevents accidental introduction of dynamic content into the static system
-prompt, which would break cross-conversation prompt caching on Anthropic models.
+This test prevents accidental introduction of dynamic content into the static
+system prompt, which would break cross-conversation prompt caching.
 
-For prompt caching to work across conversations, the system message must be identical
-for all conversations regardless of per-conversation context (hosts, repos, users, etc.).
+For prompt caching to work across conversations, the system message must be
+identical for all conversations regardless of per-conversation context.
 """
 
 import pytest
@@ -41,7 +41,7 @@ def test_static_system_message_is_constant_across_different_contexts():
             ],
         ),
         AgentContext(
-            system_message_suffix="Different hosts:\n- host1.example.com\n- host2.example.com",
+            system_message_suffix="Hosts:\n- host1.example.com\n- host2.example.com",
         ),
         AgentContext(
             system_message_suffix="Working directory: /some/path\nDate: 2024-01-15",

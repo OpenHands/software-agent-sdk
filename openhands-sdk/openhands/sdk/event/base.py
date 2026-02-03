@@ -92,8 +92,8 @@ class LLMConvertibleEvent(Event, ABC):
         """Convert event stream to LLM message stream, handling multi-action batches.
 
         This method handles special cases:
-        - ActionEvents from the same LLM response are combined into a single message
-        - SystemPromptEvents may produce multiple messages (static prompt + dynamic context)
+        - ActionEvents from the same LLM response are combined into one message
+        - SystemPromptEvents may produce multiple messages (static + dynamic)
           to enable cross-conversation prompt caching
         """
         # TODO: We should add extensive tests for this
