@@ -456,7 +456,7 @@ class TestAfterTimestampFiltering:
     async def test_after_timestamp_passed_to_search_events(
         self, mock_websocket, mock_event_service, sample_conversation_id
     ):
-        """Test that after_timestamp is passed to search_events when provided."""
+        """Test that after_timestamp is normalized and passed to search_events."""
         from datetime import datetime
         from typing import cast
 
@@ -476,6 +476,60 @@ class TestAfterTimestampFiltering:
         mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
         mock_websocket.receive_json.side_effect = WebSocketDisconnect()
 
+        # Use a naive timestamp (as would typically come from REST API response)
+        test_timestamp = datetime(2024, 1, 15, 10, 30, 0)
+
+        with (
+            patch(
+                "openhands.agent_server.sockets.conversation_service"
+            ) as mock_conv_service,
+            patch("openhands.agent_server.sockets.get_default_config") as mock_config,
+        ):
+            mock_config.return_value.session_api_keys = None
+            mock_conv_service.get_event_service = AsyncMock(
+                return_value=mock_event_service
+            )
+
+            from openhands.agent_server.sockets import events_socket
+
+            await events_socket(
+                sample_conversation_id,
+                mock_websocket,
+                session_api_key=None,
+                resend_all=True,
+                after_timestamp=test_timestamp,
+            )
+
+        # search_events should be called with the (unchanged) naive timestamp
+        mock_event_service.search_events.assert_called_once_with(
+            page_id=None, timestamp__gte=test_timestamp
+        )
+
+    @pytest.mark.asyncio
+    async def test_after_timestamp_timezone_aware_is_normalized(
+        self, mock_websocket, mock_event_service, sample_conversation_id
+    ):
+        """Test that timezone-aware timestamps are normalized to server timezone."""
+        from datetime import datetime
+        from typing import cast
+
+        from openhands.agent_server.models import EventPage
+        from openhands.sdk.event import Event
+
+        mock_events = [
+            MessageEvent(
+                id="event1",
+                source="user",
+                llm_message=Message(role="user", content=[TextContent(text="Hello")]),
+            ),
+        ]
+        mock_event_page = EventPage(
+            items=cast(list[Event], mock_events), next_page_id=None
+        )
+        mock_event_service.search_events = AsyncMock(return_value=mock_event_page)
+        mock_websocket.receive_json.side_effect = WebSocketDisconnect()
+
+        # Use a timezone-aware timestamp (UTC)
         test_timestamp = datetime(2024, 1, 15, 10, 30, 0, tzinfo=UTC)
 
         with (
@@ -499,10 +553,15 @@ class TestAfterTimestampFiltering:
                 after_timestamp=test_timestamp,
             )
 
-        # search_events should be called with timestamp__gte parameter
-        mock_event_service.search_events.assert_called_once_with(
-            page_id=None, timestamp__gte=test_timestamp
-        )
+        # search_events should be called with the normalized timestamp
+        # (converted to server local timezone, which is still tz-aware)
+        mock_event_service.search_events.assert_called_once()
+        call_args = mock_event_service.search_events.call_args
+        passed_timestamp = call_args.kwargs["timestamp__gte"]
+        # The timestamp should have been converted to local timezone
+        assert passed_timestamp is not None
+        # It should represent the same instant in time
+        assert passed_timestamp == test_timestamp.astimezone(None)
 
     @pytest.mark.asyncio
     async def test_after_timestamp_without_resend_all_no_effect(
