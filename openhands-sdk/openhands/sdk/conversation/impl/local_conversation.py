@@ -134,6 +134,9 @@ class LocalConversation(BaseConversation):
                    (lost) on serialization.
         """
         # Initialize the registry early so profile references resolve during resume.
+        # The registry must exist before ConversationState.create() attempts to load
+        # persisted state that may contain profile_ref payloads.
+        self.llm_registry = LLMRegistry()
         self.llm_registry = LLMRegistry()
 
         super().__init__()  # Initialize with span tracking
