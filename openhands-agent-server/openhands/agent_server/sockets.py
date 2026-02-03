@@ -24,6 +24,7 @@ from openhands.agent_server.config import get_default_config
 from openhands.agent_server.conversation_service import (
     get_default_conversation_service,
 )
+from openhands.agent_server.event_router import normalize_datetime_to_server_timezone
 from openhands.agent_server.models import BashEventBase, ExecuteBashRequest
 from openhands.agent_server.pub_sub import Subscriber
 from openhands.sdk import Event, Message
@@ -52,9 +53,10 @@ async def events_socket(
         session_api_key: Optional API key for authentication.
         resend_all: If True, resend all existing events when connecting.
         after_timestamp: If provided with resend_all=True, only resend events
-            with timestamps >= this value. Enables efficient bi-directional
-            loading where REST fetches historical events and WebSocket handles
-            events after a specific point in time.
+            with timestamps >= this value. Timestamps are interpreted in server
+            local time. Timezone-aware datetimes are converted to server timezone.
+            Enables efficient bi-directional loading where REST fetches historical
+            events and WebSocket handles events after a specific point in time.
     """
     # Perform authentication check before accepting the WebSocket connection
     config = get_default_config()
@@ -75,17 +77,25 @@ async def events_socket(
         _WebSocketSubscriber(websocket)
     )
 
+    # Normalize timezone-aware datetimes to server timezone
+    normalized_after_timestamp = (
+        normalize_datetime_to_server_timezone(after_timestamp)
+        if after_timestamp
+        else None
+    )
+
     try:
         # Resend existing events if requested
         if resend_all:
-            if after_timestamp:
+            if normalized_after_timestamp:
                 logger.info(
-                    f"Resending events after {after_timestamp}: {conversation_id}"
+                    f"Resending events after {normalized_after_timestamp}: "
+                    f"{conversation_id}"
                 )
             else:
                 logger.info(f"Resending all events: {conversation_id}")
             async for event in page_iterator(
-                event_service.search_events, timestamp__gte=after_timestamp
+                event_service.search_events, timestamp__gte=normalized_after_timestamp
             ):
                 await _send_event(event, websocket)
 

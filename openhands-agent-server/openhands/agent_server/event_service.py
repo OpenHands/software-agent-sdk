@@ -107,10 +107,6 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        # Convert datetime to ISO string for comparison (ISO strings are comparable)
-        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
-        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
-
         # Collect all events
         all_events = []
         with self._conversation._state as state:
@@ -132,14 +128,15 @@ class EventService:
                     if not self._event_matches_body(event, body):
                         continue
 
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
+                # Apply timestamp filters using proper datetime comparison.
+                # Event timestamps are naive (server local time), so filter
+                # datetimes should also be naive or normalized to server timezone.
+                if timestamp__gte is not None or timestamp__lt is not None:
+                    event_dt = datetime.fromisoformat(event.timestamp)
+                    if timestamp__gte is not None and event_dt < timestamp__gte:
+                        continue
+                    if timestamp__lt is not None and event_dt >= timestamp__lt:
+                        continue
 
                 all_events.append(event)
 
@@ -211,10 +208,6 @@ class EventService:
         if not self._conversation:
             raise ValueError("inactive_service")
 
-        # Convert datetime to ISO string for comparison (ISO strings are comparable)
-        timestamp_gte_str = timestamp__gte.isoformat() if timestamp__gte else None
-        timestamp_lt_str = timestamp__lt.isoformat() if timestamp__lt else None
-
         count = 0
         with self._conversation._state as state:
             for event in state.events:
@@ -235,14 +228,15 @@ class EventService:
                     if not self._event_matches_body(event, body):
                         continue
 
-                # Apply timestamp filters if provided (ISO string comparison)
-                if (
-                    timestamp_gte_str is not None
-                    and event.timestamp < timestamp_gte_str
-                ):
-                    continue
-                if timestamp_lt_str is not None and event.timestamp >= timestamp_lt_str:
-                    continue
+                # Apply timestamp filters using proper datetime comparison.
+                # Event timestamps are naive (server local time), so filter
+                # datetimes should also be naive or normalized to server timezone.
+                if timestamp__gte is not None or timestamp__lt is not None:
+                    event_dt = datetime.fromisoformat(event.timestamp)
+                    if timestamp__gte is not None and event_dt < timestamp__gte:
+                        continue
+                    if timestamp__lt is not None and event_dt >= timestamp__lt:
+                        continue
 
                 count += 1
 
