@@ -4,6 +4,7 @@ import tempfile
 from pathlib import Path
 from uuid import uuid4
 
+import pytest
 from pydantic import SecretStr
 
 from openhands.sdk.agent import Agent
@@ -75,3 +76,39 @@ def test_create_with_plan_path_creates_parent_directory():
         # Assert
         assert Path(custom_path).parent.exists()
         assert Path(custom_path).exists()
+
+
+def test_create_without_plan_path_uses_legacy_location_if_exists():
+    """When legacy PLAN.md exists at workspace root, it is used for backward compatibility."""  # noqa: E501
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        conv_state = _create_conv_state(temp_dir)
+        legacy_path = Path(temp_dir).resolve() / "PLAN.md"
+        new_path = Path(temp_dir).resolve() / ".openhands" / "PLAN.md"
+
+        # Create a legacy PLAN.md at workspace root
+        legacy_path.write_text("# Legacy Plan Content")
+
+        # Act
+        tools = PlanningFileEditorTool.create(conv_state)
+        tool = tools[0]
+
+        # Assert - tool uses legacy path
+        assert str(legacy_path) in tool.description
+        assert legacy_path.exists()
+        # New location should not be created
+        assert not new_path.exists()
+
+
+def test_create_with_relative_path_raises_value_error():
+    """When plan_path is relative, ValueError is raised."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        # Arrange
+        conv_state = _create_conv_state(temp_dir)
+        relative_path = "relative/path/PLAN.md"
+
+        # Act & Assert
+        with pytest.raises(
+            ValueError, match="plan_path must be an absolute path, got: relative"
+        ):
+            PlanningFileEditorTool.create(conv_state, plan_path=relative_path)
