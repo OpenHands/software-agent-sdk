@@ -21,8 +21,8 @@ on:
                 default: all
             model_ids:
                 description: >-
-                    Comma-separated model IDs to test. Available: sonnet, gpt51_codex,
-                    deepseek, kimi_k2, gemini_3_pro, devstral, glm_4_7. Defaults to all models.
+                    Comma-separated model IDs to test (from resolve_model_config.py).
+                    Example: claude-sonnet-4-5-20250929,glm-4.7. Defaults to a standard set.
                 required: false
                 default: ''
                 type: string
@@ -36,51 +36,81 @@ on:
 
 env:
     N_PROCESSES: 4 # Global configuration for number of parallel processes for evaluation
-    # Model configurations - used for dynamic matrix generation
-    ALL_MODELS: >-
-        [
-          {"id": "sonnet", "name": "Claude Sonnet 4.5", "run-suffix": "sonnet_run", "model": "litellm_proxy/claude-sonnet-4-5-20250929"},
-          {"id": "gpt51_codex", "name": "GPT-5.1 Codex Max", "run-suffix": "gpt51_codex_run", "model": "litellm_proxy/gpt-5.1-codex-max", "temperature":
-        1.0, "reasoning_summary": "detailed"},
-          {"id": "deepseek", "name": "Deepseek Chat", "run-suffix": "deepseek_run", "model": "litellm_proxy/deepseek/deepseek-chat"},
-          {"id": "kimi_k2", "name": "Kimi K2 Thinking", "run-suffix": "kimi_k2_run", "model": "litellm_proxy/moonshot/kimi-k2-thinking"},
-          {"id": "gemini_3_pro", "name": "Gemini 3 Pro", "run-suffix": "gemini_3_pro_run", "model": "litellm_proxy/vertex_ai/gemini-3-pro-preview"},
-          {"id": "devstral", "name": "Devstral 2512", "run-suffix": "devstral_2512_run", "model": "litellm_proxy/mistral/devstral-2512"},
-          {"id": "glm_4_7", "name": "GLM-4.7", "run-suffix": "glm_4_7_run", "model": "litellm_proxy/openrouter/z-ai/glm-4.7"}
-        ]
+    # Default models for scheduled/label-triggered runs (subset of models from resolve_model_config.py)
+    DEFAULT_MODEL_IDS: claude-sonnet-4-5-20250929,deepseek-v3.2-reasoner,kimi-k2-thinking,gemini-3-pro
 
 jobs:
     setup-matrix:
         runs-on: ubuntu-latest
         outputs:
-            matrix: ${{ steps.set-matrix.outputs.matrix }}
+            matrix: ${{ steps.resolve-models.outputs.matrix }}
             issue_number: ${{ steps.resolve-issue.outputs.issue_number }}
         steps:
-            - name: Filter models based on input
-              id: set-matrix
+            - name: Checkout repository
+              uses: actions/checkout@v5
+              with:
+                  repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+                  ref: ${{ github.event.pull_request.head.sha || github.ref }}
+                  persist-credentials: false
+
+            - name: Set up Python
+              uses: actions/setup-python@v5
+              with:
+                  python-version: '3.13'
+
+            - name: Resolve model configurations
+              id: resolve-models
               env:
-                  ALL_MODELS: ${{ env.ALL_MODELS }}
                   MODEL_IDS_INPUT: ${{ github.event.inputs.model_ids || '' }}
+                  DEFAULT_MODEL_IDS: ${{ env.DEFAULT_MODEL_IDS }}
               run: |
-                  # If no model_ids specified, use all models
+                  # Use input model_ids if provided, otherwise use defaults
                   if [ -z "$MODEL_IDS_INPUT" ]; then
-                    echo "No model_ids specified, using all models"
-                    MATRIX=$(echo "$ALL_MODELS" | jq -c '.')
+                    MODEL_IDS="$DEFAULT_MODEL_IDS"
+                    echo "No model_ids specified, using defaults: $MODEL_IDS"
                   else
-                    echo "Filtering models to: $MODEL_IDS_INPUT"
-                    # Convert comma-separated input to array and filter
-                    MATRIX=$(echo "$ALL_MODELS" | jq -c --arg ids "$MODEL_IDS_INPUT" '
-                      ($ids | split(",") | map(gsub("^\\s+|\\s+$"; ""))) as $selected |
-                      map(select(.id as $id | $selected | index($id)))
-                    ')
-                    if [ "$MATRIX" = "[]" ]; then
-                      echo "Error: No matching models found for: $MODEL_IDS_INPUT" >&2
-                      echo "Available model IDs: $(echo "$ALL_MODELS" | jq -r '.[].id' | paste -sd, -)" >&2
-                      exit 1
-                    fi
+                    MODEL_IDS="$MODEL_IDS_INPUT"
+                    echo "Using specified model_ids: $MODEL_IDS"
                   fi
+
+                  # Resolve model configs using resolve_model_config.py
+                  # Transform output to matrix format for integration tests
+                  MATRIX=$(python3 << EOF
+                  import json
+                  import sys
+                  sys.path.insert(0, '.github/run-eval')
+                  from resolve_model_config import MODELS
+
+                  model_ids = "$MODEL_IDS".split(",")
+                  model_ids = [m.strip() for m in model_ids if m.strip()]
+
+                  matrix = []
+                  for model_id in model_ids:
+                      if model_id not in MODELS:
+                          available = ", ".join(sorted(MODELS.keys()))
+                          print(f"Error: Model ID '{model_id}' not found. Available: {available}", file=sys.stderr)
+                          sys.exit(1)
+                      model = MODELS[model_id]
+                      # Create run-suffix from model id (replace special chars with underscore)
+                      run_suffix = model_id.replace("-", "_").replace(".", "_") + "_run"
+                      matrix.append({
+                          "id": model_id,
+                          "name": model["display_name"],
+                          "run-suffix": run_suffix,
+                          "llm-config": model["llm_config"]
+                      })
+
+                  print(json.dumps(matrix))
+                  EOF
+                  )
+
+                  if [ $? -ne 0 ]; then
+                    echo "Failed to resolve model configurations" >&2
+                    exit 1
+                  fi
+
                   echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
-                  echo "Selected models: $(echo "$MATRIX" | jq -r '.[].name' | paste -sd, -)"
+                  echo "Resolved models: $(echo "$MATRIX" | jq -r '.[].name' | paste -sd', ' -)"
 
             - name: Resolve issue number
               id: resolve-issue
@@ -114,6 +144,9 @@ jobs:
             pull-requests: write
             issues: write
         steps:
+            - name: Checkout repository
+              uses: actions/checkout@v5
+
             - name: Comment on PR (integration tests via label)
               if: github.event_name == 'pull_request_target' && github.event.label.name == 'integration-test'
               uses: KeisukeYamashita/create-comment@v1
@@ -236,24 +269,9 @@ jobs:
                   fi
                   echo "TEST_TYPE_ARGS=$TEST_TYPE_ARGS" >> "$GITHUB_ENV"
 
-            - name: Build LLM config from matrix
-              id: llm-config
-              env:
-                  JOB_CONFIG: ${{ toJson(matrix.job-config) }}
-              run: |
-                  # Build LLM config JSON from matrix job-config
-                  # Required field: model
-                  # Optional fields: temperature, reasoning_summary
-                  LLM_CONFIG=$(echo "$JOB_CONFIG" | jq -c '{
-                    model: .model
-                  } + (if .temperature then {temperature: .temperature} else {} end)
-                    + (if .reasoning_summary then {reasoning_summary: .reasoning_summary} else {} end)')
-                  echo "llm_config=$LLM_CONFIG" >> "$GITHUB_OUTPUT"
-                  echo "Built LLM config: $LLM_CONFIG"
-
             - name: Run integration test evaluation for ${{ matrix.job-config.name }}
               env:
-                  LLM_CONFIG: ${{ steps.llm-config.outputs.llm_config }}
+                  LLM_CONFIG: ${{ toJson(matrix.job-config['llm-config']) }}
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
               run: |
