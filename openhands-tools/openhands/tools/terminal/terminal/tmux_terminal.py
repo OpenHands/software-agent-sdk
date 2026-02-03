@@ -19,6 +19,9 @@ logger = get_logger(__name__)
 # Global lock to serialize tmux session creations
 # This prevents race conditions in libtmux when many agents start simultaneously
 _TMUX_SESSION_LOCK = threading.Lock()
+_LOCK_COUNTER = 0  # Debug counter to track lock acquisitions
+
+logger.info(f"tmux_terminal module loaded, lock id={id(_TMUX_SESSION_LOCK)}")
 
 
 class TmuxTerminal(TerminalInterface):
@@ -60,7 +63,13 @@ class TmuxTerminal(TerminalInterface):
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
 
         # Serialize tmux session creation to prevent race conditions
+        global _LOCK_COUNTER
+        thread_id = threading.current_thread().ident
+        logger.info(f"[{session_name[:20]}] Thread {thread_id} waiting for lock (counter={_LOCK_COUNTER})")
         with _TMUX_SESSION_LOCK:
+            _LOCK_COUNTER += 1
+            my_counter = _LOCK_COUNTER
+            logger.info(f"[{session_name[:20]}] Thread {thread_id} ACQUIRED lock #{my_counter}")
             # Retry session creation to handle race conditions in libtmux
             # where the session is created but can't be found immediately
             max_retries = 3
@@ -68,6 +77,7 @@ class TmuxTerminal(TerminalInterface):
             last_error = None
             for attempt in range(max_retries):
                 try:
+                    logger.info(f"[{session_name[:20]}] Attempt {attempt + 1}/{max_retries} - calling new_session")
                     self.session = self.server.new_session(
                         session_name=session_name,
                         start_directory=self.work_dir,
@@ -75,20 +85,23 @@ class TmuxTerminal(TerminalInterface):
                         x=1000,
                         y=1000,
                     )
+                    logger.info(f"[{session_name[:20]}] SUCCESS! Session created: {self.session.name}")
                     break
                 except TmuxObjectDoesNotExist as e:
                     last_error = e
+                    logger.warning(
+                        f"[{session_name[:20]}] Attempt {attempt + 1}/{max_retries} FAILED: {e}"
+                    )
                     if attempt < max_retries - 1:
-                        logger.warning(
-                            f"Tmux session creation failed (attempt {attempt + 1}/"
-                            f"{max_retries}), retrying in {retry_delay}s: {e}"
-                        )
+                        logger.info(f"[{session_name[:20]}] Sleeping {retry_delay}s before retry...")
                         time.sleep(retry_delay)
                         retry_delay *= 2  # Exponential backoff
             else:
+                logger.error(f"[{session_name[:20]}] All {max_retries} attempts FAILED")
                 raise RuntimeError(
                     f"Failed to create tmux session after {max_retries} attempts"
                 ) from last_error
+            logger.info(f"[{session_name[:20]}] Thread {thread_id} RELEASING lock #{my_counter}")
         for k, v in env.items():
             self.session.set_environment(k, v)
 
