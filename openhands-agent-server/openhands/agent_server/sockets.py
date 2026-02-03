@@ -43,7 +43,16 @@ async def events_socket(
     websocket: WebSocket,
     session_api_key: Annotated[str | None, Query(alias="session_api_key")] = None,
     resend_all: Annotated[bool, Query()] = False,
-    after_timestamp: Annotated[datetime | None, Query()] = None,
+    after_timestamp: Annotated[
+        datetime | None,
+        Query(
+            description=(
+                "Filter events to timestamps >= this value when resend_all=True. "
+                "Accepts ISO 8601 format. Timezone-aware datetimes are converted "
+                "to server local time; naive datetimes assumed in server timezone."
+            )
+        ),
+    ] = None,
 ):
     """WebSocket endpoint for conversation events.
 
@@ -83,6 +92,13 @@ async def events_socket(
         if after_timestamp
         else None
     )
+
+    # Warn if after_timestamp is provided without resend_all
+    if after_timestamp and not resend_all:
+        logger.warning(
+            f"after_timestamp provided without resend_all=True, "
+            f"will be ignored: {conversation_id}"
+        )
 
     try:
         # Resend existing events if requested

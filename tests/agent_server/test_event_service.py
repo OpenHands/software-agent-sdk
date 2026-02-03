@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from openhands.agent_server.event_service import EventService
+from openhands.agent_server.event_service import EventService, _make_timestamp_filter
 from openhands.agent_server.models import (
     ConfirmationResponseRequest,
     EventPage,
@@ -25,6 +25,72 @@ from openhands.sdk.event.conversation_state import ConversationStateUpdateEvent
 from openhands.sdk.event.llm_convertible import MessageEvent
 from openhands.sdk.security.confirmation_policy import NeverConfirm
 from openhands.sdk.workspace import LocalWorkspace
+
+
+class TestMakeTimestampFilter:
+    """Unit tests for _make_timestamp_filter helper function."""
+
+    def test_no_filters_returns_none(self):
+        """When no filters provided, should return None."""
+        result = _make_timestamp_filter(None, None)
+        assert result is None
+
+    def test_gte_filter_only(self):
+        """Test filtering with only timestamp__gte."""
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)
+        filter_fn = _make_timestamp_filter(filter_time, None)
+
+        assert filter_fn is not None
+        # Event at 11:00 should be excluded
+        assert filter_fn("2025-01-01T11:00:00.000000") is False
+        # Event at exactly 12:00 should be included
+        assert filter_fn("2025-01-01T12:00:00.000000") is True
+        # Event at 13:00 should be included
+        assert filter_fn("2025-01-01T13:00:00.000000") is True
+
+    def test_lt_filter_only(self):
+        """Test filtering with only timestamp__lt."""
+        filter_time = datetime(2025, 1, 1, 12, 0, 0)
+        filter_fn = _make_timestamp_filter(None, filter_time)
+
+        assert filter_fn is not None
+        # Event at 11:00 should be included
+        assert filter_fn("2025-01-01T11:00:00.000000") is True
+        # Event at exactly 12:00 should be excluded
+        assert filter_fn("2025-01-01T12:00:00.000000") is False
+        # Event at 13:00 should be excluded
+        assert filter_fn("2025-01-01T13:00:00.000000") is False
+
+    def test_range_filter(self):
+        """Test filtering with both gte and lt (range filter)."""
+        gte_time = datetime(2025, 1, 1, 11, 0, 0)
+        lt_time = datetime(2025, 1, 1, 13, 0, 0)
+        filter_fn = _make_timestamp_filter(gte_time, lt_time)
+
+        assert filter_fn is not None
+        # Event at 10:00 should be excluded (before range)
+        assert filter_fn("2025-01-01T10:00:00.000000") is False
+        # Event at 11:00 should be included (start of range, inclusive)
+        assert filter_fn("2025-01-01T11:00:00.000000") is True
+        # Event at 12:00 should be included (middle of range)
+        assert filter_fn("2025-01-01T12:00:00.000000") is True
+        # Event at 13:00 should be excluded (end of range, exclusive)
+        assert filter_fn("2025-01-01T13:00:00.000000") is False
+        # Event at 14:00 should be excluded (after range)
+        assert filter_fn("2025-01-01T14:00:00.000000") is False
+
+    def test_microseconds_handled_correctly(self):
+        """Test that microseconds are handled in string comparison."""
+        filter_time = datetime(2025, 1, 1, 12, 0, 0, 500000)  # 12:00:00.500000
+        filter_fn = _make_timestamp_filter(filter_time, None)
+
+        assert filter_fn is not None
+        # Event at 12:00:00.400000 should be excluded
+        assert filter_fn("2025-01-01T12:00:00.400000") is False
+        # Event at 12:00:00.500000 should be included (exact match)
+        assert filter_fn("2025-01-01T12:00:00.500000") is True
+        # Event at 12:00:00.600000 should be included
+        assert filter_fn("2025-01-01T12:00:00.600000") is True
 
 
 @pytest.fixture
