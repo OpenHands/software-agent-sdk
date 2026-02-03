@@ -140,4 +140,6 @@ class TestAgentImmutability:
         assert modified_agent is not original_agent
 
         # Verify that system messages are different due to different configs
-        assert original_agent.static_system_message != modified_agent.static_system_message
+        assert (
+            original_agent.static_system_message != modified_agent.static_system_message
+        )

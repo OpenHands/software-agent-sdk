@@ -195,7 +195,9 @@ class Agent(AgentBase):
             # OpenAI format with security_risk parameter during LLM completion.
             # See make_llm_completion() in agent/utils.py for details.
             tools=list(self.tools_map.values()),
-            dynamic_context=TextContent(text=dynamic_context) if dynamic_context else None,
+            dynamic_context=TextContent(text=dynamic_context)
+            if dynamic_context
+            else None,
         )
         on_event(event)
 

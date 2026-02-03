@@ -96,9 +96,7 @@ class SystemPromptEvent(LLMConvertibleEvent):
         """
         messages = [Message(role="system", content=[self.system_prompt])]
         if self.dynamic_context:
-            messages.append(
-                Message(role="user", content=[self.dynamic_context])
-            )
+            messages.append(Message(role="user", content=[self.dynamic_context]))
         return messages
 
     def __str__(self) -> str:
@@ -112,7 +110,9 @@ class SystemPromptEvent(LLMConvertibleEvent):
         tool_count = len(self.tools)
         context_info = ""
         if self.dynamic_context:
-            context_info = f"\n  Dynamic Context: {len(self.dynamic_context.text)} chars"
+            context_info = (
+                f"\n  Dynamic Context: {len(self.dynamic_context.text)} chars"
+            )
         return (
             f"{base_str}\n  System: {prompt_preview}\n  "
             f"Tools: {tool_count} available{context_info}"
