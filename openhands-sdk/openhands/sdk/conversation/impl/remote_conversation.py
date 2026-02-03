@@ -238,9 +238,10 @@ class RemoteEventsList(EventsListBase):
 
     def _fetch_events_pages(
         self, page_id: str | None = None, *, ignore_errors: bool = False
-    ) -> list[Event]:
+    ) -> tuple[list[Event], bool]:
         events: list[Event] = []
         next_page_id = page_id
+        had_errors = False
 
         while True:
             params: dict[str, str | int] = {"limit": 100}
@@ -263,6 +264,7 @@ class RemoteEventsList(EventsListBase):
                         next_page_id,
                         exc_info=True,
                     )
+                    had_errors = True
                     break
                 raise
 
@@ -272,17 +274,21 @@ class RemoteEventsList(EventsListBase):
                 break
             next_page_id = data["next_page_id"]
 
-        return events
+        return events, had_errors
 
     def _do_full_sync(self) -> None:
         """Perform a full sync with the remote API."""
         logger.debug(f"Performing full sync for conversation {self._conversation_id}")
 
-        events = self._fetch_events_pages()
+        events, had_errors = self._fetch_events_pages()
 
         self._cached_events = events
         self._cached_event_ids.update(e.id for e in events)
-        logger.debug(f"Full sync completed, {len(events)} events cached")
+        logger.debug(
+            "Full sync completed, %d events cached (had_errors=%s)",
+            len(events),
+            had_errors,
+        )
 
     def reconcile(self, page_id: str | None = None) -> int:
         """Reconcile local cache with server by fetching and merging events.
@@ -294,6 +300,9 @@ class RemoteEventsList(EventsListBase):
 
         Args:
             page_id: Optional pagination cursor to fetch events after a known ID.
+                If the server uses inclusive pagination, the event matching
+                page_id is filtered out. Exclusive pagination simply results in
+                no match for that ID.
 
         Returns:
             Number of new events added during reconciliation.
@@ -304,7 +313,9 @@ class RemoteEventsList(EventsListBase):
             page_id,
         )
 
-        events = self._fetch_events_pages(page_id=page_id, ignore_errors=True)
+        events, had_errors = self._fetch_events_pages(
+            page_id=page_id, ignore_errors=True
+        )
 
         if page_id:
             # The API may return the page_id event again depending on whether
@@ -321,8 +332,10 @@ class RemoteEventsList(EventsListBase):
                     added_count += 1
 
         logger.debug(
-            f"Reconciliation completed, {added_count} new events added "
-            f"(total: {len(self._cached_events)})"
+            "Reconciliation completed, %d new events added (total: %d, had_errors=%s)",
+            added_count,
+            len(self._cached_events),
+            had_errors,
         )
         return added_count
 
@@ -560,6 +573,10 @@ class RemoteConversation(BaseConversation):
     _state: "RemoteState"
     _visualizer: ConversationVisualizerBase | None
     _ws_client: "WebSocketCallbackClient | None"
+
+    RECONCILE_SETTLE_INTERVAL = 0.2
+    RECONCILE_MAX_CYCLES = 5
+
     agent: AgentBase
     _callbacks: list[ConversationCallbackType]
     max_iteration_per_run: int
@@ -901,8 +918,8 @@ class RemoteConversation(BaseConversation):
     def _finalize_events_after_run(
         self,
         timeout: float,
-        settle_interval: float = 0.2,
-        max_cycles: int = 5,
+        settle_interval: float = RECONCILE_SETTLE_INTERVAL,
+        max_cycles: int = RECONCILE_MAX_CYCLES,
     ) -> None:
         """Ensure REST-backed events are fully synced after run completion."""
         if timeout <= 0:
@@ -916,6 +933,8 @@ class RemoteConversation(BaseConversation):
             return
 
         cycles = 0
+        deadline_reached = False
+        cycles_exhausted = False
         while time.monotonic() < deadline and cycles < max_cycles:
             time.sleep(settle_interval)
             added = self._state.events.reconcile(page_id=last_event_id)
@@ -924,13 +943,15 @@ class RemoteConversation(BaseConversation):
             last_event_id = self._state.events.get_last_event_id() or last_event_id
             cycles += 1
 
-        if time.monotonic() >= deadline:
+        deadline_reached = time.monotonic() >= deadline
+        cycles_exhausted = cycles >= max_cycles
+        if deadline_reached:
             logger.warning(
                 "Event reconciliation reached deadline (timeout=%.1fs); "
                 "results may be incomplete",
                 timeout,
             )
-        elif cycles >= max_cycles:
+        if cycles_exhausted:
             logger.warning(
                 "Event reconciliation hit max cycles (%d); results may be incomplete",
                 max_cycles,
