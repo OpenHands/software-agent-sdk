@@ -89,9 +89,15 @@ class LLMConvertibleEvent(Event, ABC):
 
     @staticmethod
     def events_to_messages(events: list["LLMConvertibleEvent"]) -> list[Message]:
-        """Convert event stream to LLM message stream, handling multi-action batches"""
+        """Convert event stream to LLM message stream, handling multi-action batches.
+
+        This method handles special cases:
+        - ActionEvents from the same LLM response are combined into a single message
+        - SystemPromptEvents may produce multiple messages (static prompt + dynamic context)
+          to enable cross-conversation prompt caching
+        """
         # TODO: We should add extensive tests for this
-        from openhands.sdk.event.llm_convertible import ActionEvent
+        from openhands.sdk.event.llm_convertible import ActionEvent, SystemPromptEvent
 
         messages = []
         i = 0
@@ -118,6 +124,13 @@ class LLMConvertibleEvent(Event, ABC):
                 # Create combined message for the response
                 messages.append(_combine_action_events(batch_events))
                 i = j
+            elif isinstance(event, SystemPromptEvent):
+                # SystemPromptEvent may produce multiple messages:
+                # 1. System message with static prompt (cacheable)
+                # 2. User message with dynamic context (if present)
+                # This enables cross-conversation prompt caching.
+                messages.extend(event.to_llm_messages())
+                i += 1
             else:
                 # Regular event - direct conversion
                 messages.append(event.to_llm_message())

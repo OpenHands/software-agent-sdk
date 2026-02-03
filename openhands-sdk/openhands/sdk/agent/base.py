@@ -205,8 +205,16 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         return self.__class__.__name__
 
     @property
-    def system_message(self) -> str:
-        """Compute system message on-demand to maintain statelessness."""
+    def static_system_message(self) -> str:
+        """Compute the static portion of the system message.
+
+        This returns only the base system prompt template without any dynamic
+        per-conversation context. This static portion can be cached and reused
+        across conversations for better prompt caching efficiency.
+
+        Returns:
+            The rendered system prompt template without dynamic context.
+        """
         template_kwargs = dict(self.system_prompt_kwargs)
         # Add security_policy_filename to template kwargs
         template_kwargs["security_policy_filename"] = self.security_policy_filename
@@ -222,18 +230,49 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
                 template_kwargs["model_family"] = spec.family
             if "model_variant" not in template_kwargs and spec.variant:
                 template_kwargs["model_variant"] = spec.variant
-        system_message = render_template(
+        return render_template(
             prompt_dir=self.prompt_dir,
             template_name=self.system_prompt_filename,
             **template_kwargs,
         )
-        if self.agent_context:
-            _system_message_suffix = self.agent_context.get_system_message_suffix(
-                llm_model=self.llm.model,
-                llm_model_canonical=self.llm.model_canonical_name,
-            )
-            if _system_message_suffix:
-                system_message += "\n\n" + _system_message_suffix
+
+    @property
+    def dynamic_context(self) -> str | None:
+        """Get the dynamic per-conversation context.
+
+        This returns the context that varies between conversations, such as:
+        - Repository information and skills
+        - Runtime information (hosts, working directory)
+        - User-specific secrets and settings
+        - Conversation instructions
+
+        This content should NOT be included in the cached system prompt to enable
+        cross-conversation cache sharing. Instead, it should be provided as a
+        separate user message at the start of the conversation.
+
+        Returns:
+            The dynamic context string, or None if no context is configured.
+        """
+        if not self.agent_context:
+            return None
+        return self.agent_context.get_system_message_suffix(
+            llm_model=self.llm.model,
+            llm_model_canonical=self.llm.model_canonical_name,
+        )
+
+    @property
+    def system_message(self) -> str:
+        """Compute system message on-demand to maintain statelessness.
+
+        Note: This property combines static and dynamic content for backward
+        compatibility. For optimal prompt caching across conversations, use
+        `static_system_message` for the system prompt and `dynamic_context`
+        as a separate user message.
+        """
+        system_message = self.static_system_message
+        dynamic = self.dynamic_context
+        if dynamic:
+            system_message += "\n\n" + dynamic
         return system_message
 
     def init_state(
