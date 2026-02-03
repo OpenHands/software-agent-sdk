@@ -2,6 +2,7 @@ import argparse
 import atexit
 import faulthandler
 import signal
+import sys
 from types import FrameType
 
 import uvicorn
@@ -12,6 +13,43 @@ from openhands.sdk.logger import DEBUG, get_logger
 
 
 logger = get_logger(__name__)
+
+
+def check_browser():
+    """Check if browser functionality can render about:blank."""
+    executor = None
+    try:
+        # Register tools to ensure browser tools are available
+        from openhands.tools.preset.default import register_default_tools
+
+        register_default_tools(enable_browser=True)
+
+        # Import browser components
+        from openhands.tools.browser_use.definition import BrowserNavigateAction
+        from openhands.tools.browser_use.impl import BrowserToolExecutor
+
+        # Create executor
+        executor = BrowserToolExecutor(headless=True, session_timeout_minutes=2)
+
+        # Try to navigate to about:blank
+        action = BrowserNavigateAction(url="about:blank")
+        result = executor(action)
+
+        # Check if the operation was successful
+        if result.is_error:
+            print(f"Browser check failed: {str(result.content)}")
+            return False
+
+        print("Browser check passed: Successfully rendered about:blank")
+        return True
+
+    except Exception as e:
+        print(f"Browser check failed: {e}")
+        return False
+    finally:
+        # Ensure cleanup happens even if an error occurs
+        if executor is not None:
+            executor.close()
 
 
 class LoggingServer(uvicorn.Server):
@@ -67,8 +105,20 @@ def main() -> None:
         action="store_true",
         help="Enable auto-reload (disabled by default)",
     )
+    parser.add_argument(
+        "--check-browser",
+        action="store_true",
+        help="Check if browser functionality works and exit",
+    )
 
     args = parser.parse_args()
+
+    # Handle browser check
+    if args.check_browser:
+        if check_browser():
+            sys.exit(0)
+        else:
+            sys.exit(1)
 
     print(f"🙌 Starting OpenHands Agent Server on {args.host}:{args.port}")
     print(f"📖 API docs will be available at http://{args.host}:{args.port}/docs")
