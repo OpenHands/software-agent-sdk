@@ -14,7 +14,6 @@ from openhands.sdk import LLM, Agent, Conversation
 from openhands.sdk.tool import Tool
 from openhands.tools.preset.default import get_default_tools
 from openhands.tools.tom_consult import (
-    SleeptimeComputeAction,
     SleeptimeComputeTool,
     TomConsultTool,
 )
@@ -68,17 +67,6 @@ conversation = Conversation(
     agent=agent, workspace=cwd, persistence_dir=CONVERSATIONS_DIR
 )
 
-# Optionally run sleeptime compute to index existing conversations
-# This builds user preferences and patterns from conversation history
-sleeptime_compute_tool = conversation.agent.tools_map.get("sleeptime_compute")
-if sleeptime_compute_tool and sleeptime_compute_tool.executor:
-    print("\nRunning sleeptime compute to index conversations...")
-    sleeptime_result = sleeptime_compute_tool.executor(
-        SleeptimeComputeAction(), conversation
-    )
-    print(f"Result: {sleeptime_result.message}")
-    print(f"Sessions processed: {sleeptime_result.sessions_processed}")
-
 # Send a potentially vague message where Tom consultation might help
 conversation.send_message(
     "I need to debug some code but I'm not sure where to start. "
@@ -89,19 +77,6 @@ conversation.run()
 print("\n" + "=" * 80)
 print("Tom agent consultation example completed!")
 print("=" * 80)
-
-# Report cost
-cost = llm.metrics.accumulated_cost
-print(f"EXAMPLE_COST: {cost}")
-
-
-# Optional: Index this conversation for Tom's user modeling
-# This builds user preferences and patterns from conversation history
-# Uncomment the lines below to index the conversation:
-#
-# conversation.send_message("Please index this conversation using sleeptime_compute")
-# conversation.run()
-# print("\nConversation indexed for user modeling!")
 
 # Report cost
 cost = llm.metrics.accumulated_cost
