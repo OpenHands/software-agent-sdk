@@ -18,6 +18,7 @@ from pydantic import (
     ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -540,6 +541,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
+
+    @model_serializer(mode="wrap")
+    def _serialize_profile_reference(self, handler, info):
+        data = handler(self)
+        if info.context and info.context.get("persist_profile_ref") and self.profile_id:
+            return self.to_profile_ref()
+        return data
 
     # =========================================================================
     # Public API

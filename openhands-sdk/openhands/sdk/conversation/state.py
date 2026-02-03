@@ -190,11 +190,8 @@ class ConversationState(OpenHandsModel):
         payload = self.model_dump(
             mode="json",
             exclude_none=True,
-            context=context,
+            context={**(context or {}), "persist_profile_ref": True},
         )
-        llm_payload = payload.get("agent", {}).get("llm")
-        if isinstance(llm_payload, dict) and llm_payload.get("profile_id"):
-            payload["agent"]["llm"] = self.agent.llm.to_profile_ref()
 
         fs.write(BASE_STATE, json.dumps(payload))
 
@@ -310,12 +307,8 @@ class ConversationState(OpenHandsModel):
             agent_payload = agent.model_dump(
                 mode="json",
                 exclude_none=True,
-                context={"expose_secrets": True},
+                context={"expose_secrets": True, "persist_profile_ref": True},
             )
-            llm_payload = agent_payload.get("llm")
-            if isinstance(llm_payload, dict) and llm_payload.get("profile_id"):
-                llm = agent.llm
-                agent_payload["llm"] = llm.to_profile_ref()
 
             base_payload["agent"] = agent_payload
             base_payload["workspace"] = workspace.model_dump(mode="json")
