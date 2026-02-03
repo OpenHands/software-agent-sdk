@@ -315,16 +315,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         default=None,
         description=(
             "Optional profile identifier for persistence. When set, this LLM will be "
-            "serialized as a profile reference ({kind: profile_ref, profile_id: <name>}) "
-            "instead of embedding full configuration."
-        ),
-    )
-        default=None,
-        description=(
-            "Optional profile id (filename under the profiles directory). "
-            "When set, ConversationState persistence may store a profile "
-            "reference (kind=profile_ref) instead of embedding full LLM config, "
-            "avoiding credential persistence."
+            "serialized as a profile reference "
+            "({kind: profile_ref, profile_id: <name>}) instead of embedding full "
+            "configuration."
         ),
     )
     usage_id: str = Field(

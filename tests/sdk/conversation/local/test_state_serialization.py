@@ -264,6 +264,38 @@ def test_conversation_state_persists_profile_reference_by_default(
     assert conversation.state.agent.llm.profile_id == "profile-inline"
 
 
+def test_conversation_state_missing_profile_reference_raises(tmp_path, monkeypatch):
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
+    registry = LLMRegistry()
+    llm = LLM(model="litellm_proxy/openai/gpt-5-mini", usage_id="agent")
+    registry.save_profile("profile-orphan", llm)
+    agent = Agent(llm=registry.load_profile("profile-orphan"), tools=[])
+
+    conv_id = uuid.UUID("12345678-1234-5678-9abc-1234567890ab")
+    persistence_root = tmp_path / "conv"
+    persistence_dir = LocalConversation.get_persistence_dir(persistence_root, conv_id)
+
+    ConversationState.create(
+        workspace=LocalWorkspace(working_dir="/tmp"),
+        persistence_dir=persistence_dir,
+        agent=agent,
+        id=conv_id,
+        llm_registry=registry,
+    )
+
+    (registry.get_profile_path("profile-orphan")).unlink()
+
+    with pytest.raises(FileNotFoundError):
+        Conversation(
+            agent=agent,
+            persistence_dir=persistence_root,
+            workspace=LocalWorkspace(working_dir="/tmp"),
+            conversation_id=conv_id,
+        )
+
+
 def test_conversation_state_incremental_save():
     """Test that ConversationState saves events incrementally."""
     with tempfile.TemporaryDirectory() as temp_dir:
