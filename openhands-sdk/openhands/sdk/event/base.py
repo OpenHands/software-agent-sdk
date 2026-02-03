@@ -93,20 +93,26 @@ class LLMConvertibleEvent(Event, ABC):
 
         This method handles special cases:
         - ActionEvents from the same LLM response are combined into one message
-        - SystemPromptEvents may produce multiple messages (static + dynamic)
-          to enable cross-conversation prompt caching
+        - SystemPromptEvents with dynamic_context: the dynamic context is merged
+          into the first subsequent user message to avoid consecutive user messages
+          while enabling cross-conversation prompt caching
         """
         # TODO: We should add extensive tests for this
-        from openhands.sdk.event.llm_convertible import ActionEvent, SystemPromptEvent
+        from openhands.sdk.event.llm_convertible import (
+            ActionEvent,
+            MessageEvent,
+            SystemPromptEvent,
+        )
 
-        messages = []
+        messages: list[Message] = []
+        pending_dynamic_context: TextContent | None = None
         i = 0
 
         while i < len(events):
             event = events[i]
 
             if isinstance(event, ActionEvent):
-                # Collect all ActionEvents from same LLM respone
+                # Collect all ActionEvents from same LLM response
                 # This happens when function calling happens
                 batch_events: list[ActionEvent] = [event]
                 response_id = event.llm_response_id
@@ -125,16 +131,36 @@ class LLMConvertibleEvent(Event, ABC):
                 messages.append(_combine_action_events(batch_events))
                 i = j
             elif isinstance(event, SystemPromptEvent):
-                # SystemPromptEvent may produce multiple messages:
-                # 1. System message with static prompt (cacheable)
-                # 2. User message with dynamic context (if present)
-                # This enables cross-conversation prompt caching.
-                messages.extend(event.to_llm_messages())
+                # Add only the system message (static prompt, cacheable)
+                messages.append(event.to_llm_message())
+                # Store dynamic context to merge with next user message
+                if event.dynamic_context:
+                    pending_dynamic_context = event.dynamic_context
+                i += 1
+            elif isinstance(event, MessageEvent) and event.source == "user":
+                # User message - merge with pending dynamic context if present
+                user_msg = event.to_llm_message()
+                if pending_dynamic_context:
+                    # Prepend dynamic context to user message content
+                    user_msg = Message(
+                        role="user",
+                        content=[pending_dynamic_context] + list(user_msg.content),
+                        tool_calls=user_msg.tool_calls,
+                        tool_call_id=user_msg.tool_call_id,
+                        name=user_msg.name,
+                    )
+                    pending_dynamic_context = None
+                messages.append(user_msg)
                 i += 1
             else:
                 # Regular event - direct conversion
                 messages.append(event.to_llm_message())
                 i += 1
+
+        # If there's pending dynamic context but no user message followed,
+        # add it as a separate user message (edge case)
+        if pending_dynamic_context:
+            messages.append(Message(role="user", content=[pending_dynamic_context]))
 
         return messages
 
