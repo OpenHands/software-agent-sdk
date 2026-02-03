@@ -126,16 +126,29 @@ def server_env(
         raise RuntimeError("Server failed to start within timeout")
 
     try:
-        yield {"host": f"http://127.0.0.1:{port}"}
+        yield {"host": f"http://127.0.0.1:{port}", "port": port}
     finally:
         # uvicorn.Server lacks a robust shutdown API here; rely on daemon thread exit.
         server.should_exit = True
-        thread.join(timeout=2)
+        thread.join(timeout=5)
+
+        # Wait for the port to be released before cleanup
+        import socket
+
+        for _ in range(20):  # Wait up to 2 seconds for port to be released
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    s.bind(("127.0.0.1", port))
+                    break  # Port is free
+            except OSError:
+                time.sleep(0.1)
 
         # Clean up any leftover directories created during the test
+        # Use ignore_errors=True to handle race conditions where the server
+        # may still be writing files during cleanup
         cwd_conversations = Path("workspace/conversations")
         if cwd_conversations.exists():
-            shutil.rmtree(cwd_conversations)
+            shutil.rmtree(cwd_conversations, ignore_errors=True)
 
 
 @pytest.fixture
@@ -657,31 +670,46 @@ def test_events_not_lost_during_client_disconnection(
 
     # Fetch events directly from REST API to get the authoritative list
     # This bypasses the WebSocket and shows what's actually persisted on server
-    with httpx.Client(base_url=server_env["host"]) as client:
-        response = client.get(
-            f"/api/conversations/{conv._id}/events/search",
-            params={"limit": 100},
-        )
-        response.raise_for_status()
-        rest_data = response.json()
-        rest_events = [Event.model_validate(item) for item in rest_data["items"]]
+    # Use retry loop to handle eventual consistency - events may not be
+    # persisted immediately
+    rest_events = []
+    rest_action_events = []
+    rest_observation_events = []
+    max_retries = 10
+    for attempt in range(max_retries):
+        with httpx.Client(base_url=server_env["host"]) as client:
+            response = client.get(
+                f"/api/conversations/{conv._id}/events/search",
+                params={"limit": 100},
+            )
+            response.raise_for_status()
+            rest_data = response.json()
+            rest_events = [Event.model_validate(item) for item in rest_data["items"]]
+
+        rest_action_events = [
+            e
+            for e in rest_events
+            if isinstance(e, ActionEvent) and e.tool_name == "finish"
+        ]
+        rest_observation_events = [
+            e
+            for e in rest_events
+            if isinstance(e, ObservationEvent) and e.tool_name == "finish"
+        ]
+
+        # If we found the expected events, break out of retry loop
+        if rest_action_events and rest_observation_events:
+            break
+        time.sleep(0.2)
 
     # Count ActionEvents in each source
     ws_action_events = [
         e for e in ws_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
     ]
-    rest_action_events = [
-        e for e in rest_events if isinstance(e, ActionEvent) and e.tool_name == "finish"
-    ]
 
     ws_observation_events = [
         e
         for e in ws_events
-        if isinstance(e, ObservationEvent) and e.tool_name == "finish"
-    ]
-    rest_observation_events = [
-        e
-        for e in rest_events
         if isinstance(e, ObservationEvent) and e.tool_name == "finish"
     ]
 
