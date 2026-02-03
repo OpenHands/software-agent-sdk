@@ -72,9 +72,11 @@ class TmuxTerminal(TerminalInterface):
         thread_id = threading.current_thread().ident
         pid = os.getpid()
         short_name = session_name[:20]
-        
-        logger.info(f"[{short_name}] PID {pid} Thread {thread_id} waiting for locks (counter={_LOCK_COUNTER})")
-        
+
+        logger.info(
+            f"[{short_name}] PID {pid} Thread {thread_id} waiting for locks (counter={_LOCK_COUNTER})"
+        )
+
         # Acquire thread lock first (fast path for same-process threads)
         with _TMUX_THREAD_LOCK:
             # Then acquire file lock (for cross-process synchronization)
@@ -83,15 +85,19 @@ class TmuxTerminal(TerminalInterface):
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 _LOCK_COUNTER += 1
                 my_counter = _LOCK_COUNTER
-                logger.info(f"[{short_name}] PID {pid} Thread {thread_id} ACQUIRED both locks #{my_counter}")
-                
+                logger.info(
+                    f"[{short_name}] PID {pid} Thread {thread_id} ACQUIRED both locks #{my_counter}"
+                )
+
                 # Retry session creation to handle race conditions in libtmux
                 max_retries = 3
                 retry_delay = 0.5
                 last_error = None
                 for attempt in range(max_retries):
                     try:
-                        logger.info(f"[{short_name}] Attempt {attempt + 1}/{max_retries} - calling new_session")
+                        logger.info(
+                            f"[{short_name}] Attempt {attempt + 1}/{max_retries} - calling new_session"
+                        )
                         self.session = self.server.new_session(
                             session_name=session_name,
                             start_directory=self.work_dir,
@@ -99,7 +105,9 @@ class TmuxTerminal(TerminalInterface):
                             x=1000,
                             y=1000,
                         )
-                        logger.info(f"[{short_name}] SUCCESS! Session created: {self.session.name}")
+                        logger.info(
+                            f"[{short_name}] SUCCESS! Session created: {self.session.name}"
+                        )
                         break
                     except TmuxObjectDoesNotExist as e:
                         last_error = e
@@ -107,7 +115,9 @@ class TmuxTerminal(TerminalInterface):
                             f"[{short_name}] Attempt {attempt + 1}/{max_retries} FAILED: {e}"
                         )
                         if attempt < max_retries - 1:
-                            logger.info(f"[{short_name}] Sleeping {retry_delay}s before retry...")
+                            logger.info(
+                                f"[{short_name}] Sleeping {retry_delay}s before retry..."
+                            )
                             time.sleep(retry_delay)
                             retry_delay *= 2  # Exponential backoff
                 else:
@@ -115,8 +125,10 @@ class TmuxTerminal(TerminalInterface):
                     raise RuntimeError(
                         f"Failed to create tmux session after {max_retries} attempts"
                     ) from last_error
-                    
-                logger.info(f"[{short_name}] PID {pid} Thread {thread_id} RELEASING locks #{my_counter}")
+
+                logger.info(
+                    f"[{short_name}] PID {pid} Thread {thread_id} RELEASING locks #{my_counter}"
+                )
             finally:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
                 os.close(lock_fd)
