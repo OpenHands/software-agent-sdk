@@ -24,9 +24,9 @@ from openhands.tools.file_editor.definition import (
 logger = get_logger(__name__)
 
 # Default config directory and plan filename
-# PLAN.md is now stored in .openhands/ to keep workspace root clean
-# and align with other OpenHands configuration files
-DEFAULT_CONFIG_DIR = ".openhands"
+# PLAN.md is now stored in .agents_tmp/ to keep workspace root clean
+# and separate agent temporary files from user content
+DEFAULT_CONFIG_DIR = ".agents_tmp"
 PLAN_FILENAME = "PLAN.md"
 
 
@@ -75,7 +75,7 @@ class PlanningFileEditorTool(
         Args:
             conv_state: Conversation state to get working directory from.
             plan_path: Optional absolute path to PLAN.md file. If not provided,
-                defaults to {working_dir}/.openhands/PLAN.md.
+                defaults to {working_dir}/.agents_tmp/PLAN.md.
 
         Raises:
             ValueError: If plan_path is provided but is not an absolute path.
@@ -91,7 +91,7 @@ class PlanningFileEditorTool(
         if plan_path is not None and not Path(plan_path).is_absolute():
             raise ValueError(f"plan_path must be an absolute path, got: {plan_path}")
 
-        # Use provided plan_path or fall back to .openhands/PLAN.md at workspace root
+        # Use provided plan_path or fall back to .agents_tmp/PLAN.md at workspace root
         if plan_path is None:
             workspace_root = Path(working_dir).resolve()
 

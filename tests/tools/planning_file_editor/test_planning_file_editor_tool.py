@@ -26,13 +26,13 @@ def _create_conv_state(working_dir: str) -> ConversationState:
     )
 
 
-def test_create_without_plan_path_uses_openhands_directory():
-    """When plan_path is not provided, PLAN.md is created in .openhands at workspace
+def test_create_without_plan_path_uses_agents_tmp_directory():
+    """When plan_path is not provided, PLAN.md is created in .agents_tmp at workspace
     root."""
     with tempfile.TemporaryDirectory() as temp_dir:
         # Arrange
         conv_state = _create_conv_state(temp_dir)
-        expected_path = Path(temp_dir).resolve() / ".openhands" / "PLAN.md"
+        expected_path = Path(temp_dir).resolve() / ".agents_tmp" / "PLAN.md"
 
         # Act
         tools = PlanningFileEditorTool.create(conv_state)
@@ -51,7 +51,7 @@ def test_create_with_plan_path_uses_given_path():
     with tempfile.TemporaryDirectory() as temp_dir:
         # Arrange
         conv_state = _create_conv_state(temp_dir)
-        custom_path = str(Path(temp_dir) / ".openhands" / "PLAN.md")
+        custom_path = str(Path(temp_dir) / ".agents_tmp" / "PLAN.md")
 
         # Act
         tools = PlanningFileEditorTool.create(conv_state, plan_path=custom_path)
@@ -84,7 +84,7 @@ def test_create_without_plan_path_uses_legacy_location_if_exists():
         # Arrange
         conv_state = _create_conv_state(temp_dir)
         legacy_path = Path(temp_dir).resolve() / "PLAN.md"
-        new_path = Path(temp_dir).resolve() / ".openhands" / "PLAN.md"
+        new_path = Path(temp_dir).resolve() / ".agents_tmp" / "PLAN.md"
 
         # Create a legacy PLAN.md at workspace root
         legacy_path.write_text("# Legacy Plan Content")
