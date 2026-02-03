@@ -2,7 +2,7 @@
 
 Run with::
 
-    uv run python examples/01_standalone_sdk/35_llm_profiles.py
+    uv run python examples/01_standalone_sdk/36_llm_profiles.py
 
 Profiles are stored under ``$LLM_PROFILES_DIR/<name>.json`` when the env var is
 set, otherwise ``~/.openhands/llm-profiles/<name>.json``.
