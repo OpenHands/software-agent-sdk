@@ -559,6 +559,7 @@ class RemoteConversation(BaseConversation):
     _run_counter: int  # Monotonic counter to correlate terminal status with current run
     _terminal_status: str | None  # Terminal status value from WebSocket
     _terminal_status_run_counter: int  # Run counter when terminal status was received
+    _terminal_status_lock: threading.Lock  # Protects _terminal_status* and _run_counter
     delete_on_close: bool = False
 
     def __init__(
@@ -617,6 +618,7 @@ class RemoteConversation(BaseConversation):
         self._run_counter = 0
         self._terminal_status = None
         self._terminal_status_run_counter = 0
+        self._terminal_status_lock = threading.Lock()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -724,12 +726,13 @@ class RemoteConversation(BaseConversation):
                     try:
                         status = ConversationExecutionStatus(event.value)
                         if status.is_terminal():
-                            # Store the terminal status and run counter when
-                            # received. This allows _wait_for_run_completion to:
+                            # Store the terminal status and run counter atomically.
+                            # This allows _wait_for_run_completion to:
                             # 1. Check if status is for current run (not stale)
                             # 2. Call _handle_conversation_status for ERROR/STUCK
-                            self._terminal_status = event.value
-                            self._terminal_status_run_counter = self._run_counter
+                            with self._terminal_status_lock:
+                                self._terminal_status = event.value
+                                self._terminal_status_run_counter = self._run_counter
                             self._run_complete_event.set()
                     except ValueError:
                         pass  # Unknown status value, ignore
@@ -893,9 +896,10 @@ class RemoteConversation(BaseConversation):
         # The run counter is used to correlate terminal status events with the
         # current run, preventing stale events from previous runs from causing
         # early returns.
-        self._run_counter += 1
+        with self._terminal_status_lock:
+            self._run_counter += 1
+            self._terminal_status = None
         self._run_complete_event.clear()
-        self._terminal_status = None
 
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -947,10 +951,16 @@ class RemoteConversation(BaseConversation):
         """
         start_time = time.monotonic()
         consecutive_terminal_polls = 0
-        # Return after this many consecutive terminal polls (fallback for WS issues)
+        # Return after this many consecutive terminal polls (fallback for WS issues).
+        # We use 3 polls to balance latency vs reliability:
+        # - 1 poll could be a transient state during shutdown
+        # - 2 polls might still catch a race condition
+        # - 3 polls (with default 1s interval = 3s total) provides high confidence
+        #   that the run is truly complete while keeping fallback latency reasonable
         TERMINAL_POLL_THRESHOLD = 3
         # Capture the run counter at the start to detect stale events
-        expected_run_counter = self._run_counter
+        with self._terminal_status_lock:
+            expected_run_counter = self._run_counter
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -969,12 +979,25 @@ class RemoteConversation(BaseConversation):
             if self._run_complete_event.wait(timeout=poll_interval):
                 # Check if this terminal status is for the current run
                 # (not a stale event from a previous run)
-                if self._terminal_status_run_counter == expected_run_counter:
-                    # Get the terminal status and clear state
-                    ws_status = self._terminal_status
-                    self._run_complete_event.clear()
-                    self._terminal_status = None
+                with self._terminal_status_lock:
+                    if self._terminal_status_run_counter == expected_run_counter:
+                        # Get the terminal status and clear state atomically
+                        ws_status = self._terminal_status
+                        self._terminal_status = None
+                    else:
+                        # Stale event from a previous run - clear and continue waiting
+                        logger.debug(
+                            "Ignoring stale terminal status event "
+                            "(expected run %d, got run %d)",
+                            expected_run_counter,
+                            self._terminal_status_run_counter,
+                        )
+                        ws_status = None
+                        self._terminal_status = None
 
+                self._run_complete_event.clear()
+
+                if ws_status is not None:
                     # Handle ERROR/STUCK states - raises ConversationRunError
                     self._handle_conversation_status(ws_status)
 
@@ -986,15 +1009,6 @@ class RemoteConversation(BaseConversation):
                     )
                     return
                 else:
-                    # Stale event from a previous run - clear and continue waiting
-                    logger.debug(
-                        "Ignoring stale terminal status event "
-                        "(expected run %d, got run %d)",
-                        expected_run_counter,
-                        self._terminal_status_run_counter,
-                    )
-                    self._run_complete_event.clear()
-                    self._terminal_status = None
                     continue
 
             # Poll the server for status as a health check and fallback.
@@ -1028,7 +1042,8 @@ class RemoteConversation(BaseConversation):
                         # add overhead in the common case where WS works.
                         self._state.events.reconcile()
                         self._run_complete_event.clear()
-                        self._terminal_status = None
+                        with self._terminal_status_lock:
+                            self._terminal_status = None
                         return
                 else:
                     consecutive_terminal_polls = 0
