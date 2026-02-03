@@ -18,12 +18,10 @@ from openhands.tools.terminal.terminal import TerminalInterface
 
 logger = get_logger(__name__)
 
-# File-based lock for tmux session creation
-# Uses fcntl.flock() which works across multiple processes (e.g., uvicorn workers)
-# Also keeps a threading lock for safety within the same process
+# Lock for serializing tmux session creation to prevent race conditions in libtmux
+# Uses both file lock (cross-process) and thread lock (same-process)
 _TMUX_LOCK_FILE = "/tmp/openhands-tmux-session.lock"
 _TMUX_THREAD_LOCK = threading.Lock()
-_LOCK_COUNTER = 0
 
 
 class TmuxTerminal(TerminalInterface):
@@ -64,22 +62,11 @@ class TmuxTerminal(TerminalInterface):
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
 
-        # Serialize tmux session creation using both file lock (cross-process)
-        # and thread lock (within process) to handle all concurrency cases
-        global _LOCK_COUNTER
-
-        logger.debug(f"Waiting for tmux session lock: {session_name}")
-
-        # Acquire thread lock first (fast path for same-process threads)
+        # Serialize tmux session creation to prevent libtmux race conditions
         with _TMUX_THREAD_LOCK:
-            # Then acquire file lock (for cross-process synchronization)
             lock_fd = os.open(_TMUX_LOCK_FILE, os.O_CREAT | os.O_RDWR)
             try:
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
-                _LOCK_COUNTER += 1
-                logger.debug(f"Acquired tmux lock #{_LOCK_COUNTER}")
-
-                # Retry session creation to handle race conditions in libtmux
                 max_retries = 3
                 retry_delay = 0.5
                 last_error = None
@@ -92,17 +79,16 @@ class TmuxTerminal(TerminalInterface):
                             x=1000,
                             y=1000,
                         )
-                        logger.debug(f"Created tmux session: {self.session.name}")
                         break
                     except TmuxObjectDoesNotExist as e:
                         last_error = e
-                        logger.warning(
-                            f"Tmux session creation failed (attempt "
-                            f"{attempt + 1}/{max_retries}): {e}"
-                        )
                         if attempt < max_retries - 1:
+                            logger.warning(
+                                f"Tmux session creation failed (attempt {attempt + 1}/"
+                                f"{max_retries}), retrying in {retry_delay}s: {e}"
+                            )
                             time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
+                            retry_delay *= 2
                 else:
                     raise RuntimeError(
                         f"Failed to create tmux session after {max_retries} attempts"
