@@ -64,8 +64,9 @@ class TmuxTerminal(TerminalInterface):
 
         # Serialize tmux session creation to prevent libtmux race conditions
         with _TMUX_THREAD_LOCK:
-            lock_fd = os.open(_TMUX_LOCK_FILE, os.O_CREAT | os.O_RDWR)
+            lock_fd = None
             try:
+                lock_fd = os.open(_TMUX_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o666)
                 fcntl.flock(lock_fd, fcntl.LOCK_EX)
                 max_retries = 3
                 retry_delay = 0.5
@@ -94,8 +95,9 @@ class TmuxTerminal(TerminalInterface):
                         f"Failed to create tmux session after {max_retries} attempts"
                     ) from last_error
             finally:
-                fcntl.flock(lock_fd, fcntl.LOCK_UN)
-                os.close(lock_fd)
+                if lock_fd is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                    os.close(lock_fd)
         for k, v in env.items():
             self.session.set_environment(k, v)
 
