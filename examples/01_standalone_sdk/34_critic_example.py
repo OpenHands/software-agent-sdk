@@ -97,43 +97,161 @@ class CriticResultCollector:
         self.latest_result = None
 
 
-def get_initial_task_prompt() -> str:
-    """Generate a complex, multi-step task prompt.
+# Complex multi-step task prompt for iterative refinement demonstration.
+# This task is designed to be challenging enough that the agent may not complete
+# it perfectly on the first try, demonstrating the value of the critic in guiding
+# improvements.
+INITIAL_TASK_PROMPT = """\
+Please help me create a complete full-stack task management application with user
+authentication. This is a complex project that requires careful attention to detail.
 
-    This task is designed to be challenging enough that the agent may
-    not complete it perfectly on the first try, demonstrating the
-    value of the critic in guiding improvements.
-    """
-    return (
-        "Please help me create a complete Python project structure "
-        "with the following:\n\n"
-        "1. Create a directory called 'calculator_app'\n\n"
-        "2. Inside calculator_app, create these files:\n"
-        "   - __init__.py (empty)\n"
-        "   - calculator.py - A Calculator class with add, subtract, "
-        "multiply, divide methods\n"
-        "   - utils.py - Helper functions for input validation\n"
-        "   - main.py - CLI entry point that takes two numbers and an operation\n\n"
-        "3. Create a tests/ directory with:\n"
-        "   - __init__.py (empty)\n"
-        "   - test_calculator.py - Unit tests for the Calculator class "
-        "(at least 4 tests)\n\n"
-        "4. Create a README.md with:\n"
-        "   - Project title and description\n"
-        "   - Installation instructions\n"
-        "   - Usage examples\n"
-        "   - Test running instructions\n\n"
-        "5. Run the tests to verify everything works correctly\n\n"
-        "Please complete ALL of these steps. After you're done, verify each "
-        "file exists and the tests pass."
-    )
+## Project Structure
+
+Create a directory called 'taskmanager' with the following structure:
+
+### 1. Backend (Flask API) - taskmanager/backend/
+
+Create these files:
+- `app.py` - Main Flask application with the following endpoints:
+  - POST /api/auth/register - Register new user (username, password)
+  - POST /api/auth/login - Login and return JWT token
+  - GET /api/tasks - Get all tasks for authenticated user
+  - POST /api/tasks - Create a new task (title, description, due_date)
+  - PUT /api/tasks/<id> - Update a task
+  - DELETE /api/tasks/<id> - Delete a task
+
+- `models.py` - SQLAlchemy models:
+  - User model (id, username, password_hash, created_at)
+  - Task model (id, title, description, due_date, completed, user_id, created_at)
+
+- `auth.py` - Authentication utilities:
+  - Password hashing with werkzeug.security
+  - JWT token generation and validation
+  - Login required decorator
+
+- `config.py` - Configuration (database URI, secret key, etc.)
+
+- `requirements.txt` - Dependencies (flask, flask-sqlalchemy, pyjwt, werkzeug)
+
+### 2. Frontend (HTML/CSS/JS) - taskmanager/frontend/
+
+Create these files:
+- `index.html` - Main page with:
+  - Login/Register forms (toggle between them)
+  - Task list display (hidden until logged in)
+  - Add task form
+  - Each task shows title, description, due date, complete checkbox, delete button
+
+- `styles.css` - Styling:
+  - Clean, modern design
+  - Responsive layout
+  - Form styling
+  - Task card styling with status indicators
+
+- `app.js` - Frontend logic:
+  - API calls to backend
+  - JWT token storage in localStorage
+  - Dynamic DOM updates
+  - Form validation
+  - Error handling and user feedback
+
+### 3. Tests - taskmanager/tests/
+
+Create these files:
+- `__init__.py` (empty)
+- `test_auth.py` - Authentication tests (at least 4 tests):
+  - Test user registration
+  - Test duplicate username rejection
+  - Test login with valid credentials
+  - Test login with invalid credentials
+
+- `test_tasks.py` - Task API tests (at least 4 tests):
+  - Test create task (authenticated)
+  - Test get tasks (authenticated)
+  - Test update task
+  - Test delete task
+
+- `conftest.py` - Pytest fixtures for test database and test client
+
+### 4. Documentation
+
+- `README.md` with:
+  - Project title and description
+  - Features list
+  - Installation instructions (pip install -r requirements.txt)
+  - How to run the backend (python backend/app.py)
+  - How to run tests (pytest)
+  - API documentation with example curl commands
+
+- `taskmanager/__init__.py` (empty, makes it a package)
+
+## Requirements
+
+1. The backend must use SQLite database (stored as taskmanager.db)
+2. Passwords must be hashed (never stored in plain text)
+3. JWT tokens must expire after 24 hours
+4. All task endpoints must require authentication
+5. Tests must pass when run with pytest
+
+## Verification Steps
+
+After creating all files:
+1. List all created files to verify the structure
+2. Install dependencies: pip install -r taskmanager/backend/requirements.txt
+3. Run the tests: cd taskmanager && python -m pytest tests/ -v
+4. Verify all tests pass
+
+Please complete ALL of these steps. The task is only complete when:
+- All files exist with proper implementation
+- All tests pass
+- The application structure is correct
+"""
+
+
+# Follow-up prompt template for iterative refinement.
+# Uses the critic's evaluation to craft specific guidance for improvement.
+FOLLOWUP_PROMPT_TEMPLATE = """\
+The task appears incomplete (iteration {iteration}, \
+success likelihood: {score_percent:.1f}%).
+{issues_text}
+
+Please review what you've done so far and complete any remaining steps:
+
+## Checklist - Backend (taskmanager/backend/)
+- [ ] app.py - Flask app with all 6 API endpoints (register, login, CRUD tasks)
+- [ ] models.py - User and Task SQLAlchemy models
+- [ ] auth.py - Password hashing, JWT generation/validation, login_required decorator
+- [ ] config.py - Configuration settings
+- [ ] requirements.txt - All dependencies listed
+
+## Checklist - Frontend (taskmanager/frontend/)
+- [ ] index.html - Login/Register forms, task list, add task form
+- [ ] styles.css - Modern, responsive styling
+- [ ] app.js - API calls, JWT storage, DOM updates, form validation
+
+## Checklist - Tests (taskmanager/tests/)
+- [ ] __init__.py
+- [ ] conftest.py - Pytest fixtures
+- [ ] test_auth.py - At least 4 authentication tests
+- [ ] test_tasks.py - At least 4 task API tests
+
+## Checklist - Documentation
+- [ ] README.md - Full documentation with API examples
+- [ ] taskmanager/__init__.py
+
+## Verification
+1. List all files in taskmanager/ to see what exists
+2. If any files are missing, create them
+3. Install dependencies and run tests: cd taskmanager && python -m pytest tests/ -v
+4. Fix any failing tests
+
+List what files exist and what's missing, then complete the remaining tasks.
+Use the finish tool only when ALL files exist and ALL tests pass.
+"""
 
 
 def get_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
-    """Generate a follow-up prompt based on critic feedback.
-
-    Uses the critic's evaluation to craft specific guidance for improvement.
-    """
+    """Generate a follow-up prompt based on critic feedback."""
     score_percent = critic_result.score * 100
 
     # Extract potential issues from critic metadata if available
@@ -150,19 +268,10 @@ def get_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
     if issues:
         issues_text = f"\nPotential issues identified: {', '.join(issues)}"
 
-    return (
-        f"The task appears incomplete (iteration {iteration}, "
-        f"success likelihood: {score_percent:.1f}%).\n"
-        f"{issues_text}\n\n"
-        "Please review what you've done so far and complete any remaining steps:\n\n"
-        "1. Check if ALL files were created in calculator_app/:\n"
-        "   - __init__.py, calculator.py, utils.py, main.py\n\n"
-        "2. Check if tests/ directory exists with:\n"
-        "   - __init__.py, test_calculator.py\n\n"
-        "3. Check if README.md exists with all required sections\n\n"
-        "4. Make sure the tests actually pass when run\n\n"
-        "List what files exist and what's missing, then complete the remaining tasks.\n"
-        "Use the finish tool only when everything is truly complete."
+    return FOLLOWUP_PROMPT_TEMPLATE.format(
+        iteration=iteration,
+        score_percent=score_percent,
+        issues_text=issues_text,
     )
 
 
@@ -214,7 +323,7 @@ print(f"Max iterations: {MAX_ITERATIONS}")
 
 # Initial task
 print("\n--- Iteration 1: Initial Task ---")
-conversation.send_message(get_initial_task_prompt())
+conversation.send_message(INITIAL_TASK_PROMPT)
 conversation.run()
 
 iteration = 1
@@ -269,6 +378,3 @@ for path in sorted(workspace.rglob("*")):
 # Report cost
 cost = llm.metrics.accumulated_cost
 print(f"\nEXAMPLE_COST: {cost:.4f}")
-
-# Cleanup workspace
-os.rmdir(workspace)
