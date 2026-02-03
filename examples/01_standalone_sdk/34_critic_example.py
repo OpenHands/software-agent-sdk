@@ -32,7 +32,9 @@ from openhands.tools.terminal import TerminalTool
 
 
 # Configuration
-SUCCESS_THRESHOLD = float(os.getenv("CRITIC_SUCCESS_THRESHOLD", "0.6"))
+# Higher threshold (70%) makes it more likely the agent needs multiple iterations
+# to demonstrate the value of the critic model for iterative refinement
+SUCCESS_THRESHOLD = float(os.getenv("CRITIC_SUCCESS_THRESHOLD", "0.70"))
 MAX_ITERATIONS = int(os.getenv("MAX_ITERATIONS", "3"))
 
 
@@ -103,7 +105,8 @@ class CriticResultCollector:
 # improvements.
 INITIAL_TASK_PROMPT = """\
 Please help me create a complete full-stack task management application with user
-authentication. This is a complex project that requires careful attention to detail.
+authentication, task categories, and priority levels. This is a complex project
+that requires careful attention to detail.
 
 ## Project Structure
 
@@ -113,21 +116,27 @@ Create a directory called 'taskmanager' with the following structure:
 
 Create these files:
 - `app.py` - Main Flask application with the following endpoints:
-  - POST /api/auth/register - Register new user (username, password)
+  - POST /api/auth/register - Register new user (username, email, password)
   - POST /api/auth/login - Login and return JWT token
-  - GET /api/tasks - Get all tasks for authenticated user
-  - POST /api/tasks - Create a new task (title, description, due_date)
+  - GET /api/auth/me - Get current user profile (authenticated)
+  - GET /api/tasks - Get all tasks for authenticated user (with filtering)
+  - POST /api/tasks - Create a new task
   - PUT /api/tasks/<id> - Update a task
   - DELETE /api/tasks/<id> - Delete a task
+  - GET /api/categories - Get all categories for user
+  - POST /api/categories - Create a new category
 
 - `models.py` - SQLAlchemy models:
-  - User model (id, username, password_hash, created_at)
-  - Task model (id, title, description, due_date, completed, user_id, created_at)
+  - User model (id, username, email, password_hash, created_at)
+  - Task model (id, title, description, due_date, priority, completed, \
+category_id, user_id, created_at, updated_at)
+  - Category model (id, name, color, user_id)
 
 - `auth.py` - Authentication utilities:
   - Password hashing with werkzeug.security
   - JWT token generation and validation
   - Login required decorator
+  - Email validation
 
 - `config.py` - Configuration (database URI, secret key, etc.)
 
@@ -138,38 +147,50 @@ Create these files:
 Create these files:
 - `index.html` - Main page with:
   - Login/Register forms (toggle between them)
-  - Task list display (hidden until logged in)
-  - Add task form
-  - Each task shows title, description, due date, complete checkbox, delete button
+  - Task list display with filtering by category and priority
+  - Add task form with category and priority selection
+  - Category management section
+  - Each task shows title, description, due date, priority badge, category, \
+complete checkbox, delete button
 
 - `styles.css` - Styling:
-  - Clean, modern design
-  - Responsive layout
-  - Form styling
-  - Task card styling with status indicators
+  - Clean, modern design with CSS variables for theming
+  - Responsive layout (mobile-first)
+  - Form styling with validation states
+  - Task card styling with priority color indicators
+  - Category badges with custom colors
 
 - `app.js` - Frontend logic:
-  - API calls to backend
-  - JWT token storage in localStorage
-  - Dynamic DOM updates
-  - Form validation
-  - Error handling and user feedback
+  - API calls to backend with proper error handling
+  - JWT token storage in localStorage with expiration check
+  - Dynamic DOM updates without page reload
+  - Form validation (client-side)
+  - Filter tasks by category and priority
+  - Sort tasks by due date or priority
 
 ### 3. Tests - taskmanager/tests/
 
 Create these files:
 - `__init__.py` (empty)
-- `test_auth.py` - Authentication tests (at least 4 tests):
-  - Test user registration
+- `test_auth.py` - Authentication tests (at least 5 tests):
+  - Test user registration with valid data
   - Test duplicate username rejection
+  - Test duplicate email rejection
   - Test login with valid credentials
   - Test login with invalid credentials
 
-- `test_tasks.py` - Task API tests (at least 4 tests):
-  - Test create task (authenticated)
-  - Test get tasks (authenticated)
-  - Test update task
+- `test_tasks.py` - Task API tests (at least 6 tests):
+  - Test create task with all fields
+  - Test create task with category
+  - Test get tasks with filtering
+  - Test update task priority
   - Test delete task
+  - Test task isolation between users
+
+- `test_categories.py` - Category API tests (at least 3 tests):
+  - Test create category
+  - Test get categories
+  - Test category isolation between users
 
 - `conftest.py` - Pytest fixtures for test database and test client
 
@@ -177,11 +198,11 @@ Create these files:
 
 - `README.md` with:
   - Project title and description
-  - Features list
-  - Installation instructions (pip install -r requirements.txt)
-  - How to run the backend (python backend/app.py)
-  - How to run tests (pytest)
-  - API documentation with example curl commands
+  - Features list (authentication, tasks, categories, priorities)
+  - Installation instructions
+  - How to run the backend
+  - How to run tests
+  - API documentation with example curl commands for ALL endpoints
 
 - `taskmanager/__init__.py` (empty, makes it a package)
 
@@ -190,8 +211,10 @@ Create these files:
 1. The backend must use SQLite database (stored as taskmanager.db)
 2. Passwords must be hashed (never stored in plain text)
 3. JWT tokens must expire after 24 hours
-4. All task endpoints must require authentication
-5. Tests must pass when run with pytest
+4. All task and category endpoints must require authentication
+5. Tasks must have priority levels: low, medium, high
+6. Categories must have customizable colors
+7. Tests must pass when run with pytest
 
 ## Verification Steps
 
@@ -199,12 +222,13 @@ After creating all files:
 1. List all created files to verify the structure
 2. Install dependencies: pip install -r taskmanager/backend/requirements.txt
 3. Run the tests: cd taskmanager && python -m pytest tests/ -v
-4. Verify all tests pass
+4. Verify ALL tests pass (should be at least 14 tests total)
 
 Please complete ALL of these steps. The task is only complete when:
 - All files exist with proper implementation
-- All tests pass
+- All 14+ tests pass
 - The application structure is correct
+- Categories and priorities are fully implemented
 """
 
 
@@ -218,35 +242,46 @@ success likelihood: {score_percent:.1f}%).
 Please review what you've done so far and complete any remaining steps:
 
 ## Checklist - Backend (taskmanager/backend/)
-- [ ] app.py - Flask app with all 6 API endpoints (register, login, CRUD tasks)
-- [ ] models.py - User and Task SQLAlchemy models
-- [ ] auth.py - Password hashing, JWT generation/validation, login_required decorator
+- [ ] app.py - Flask app with ALL 9 endpoints:
+  - POST /api/auth/register, POST /api/auth/login, GET /api/auth/me
+  - GET/POST /api/tasks, PUT/DELETE /api/tasks/<id>
+  - GET/POST /api/categories
+- [ ] models.py - User, Task (with priority), and Category models
+- [ ] auth.py - Password hashing, JWT, login_required, email validation
 - [ ] config.py - Configuration settings
 - [ ] requirements.txt - All dependencies listed
 
 ## Checklist - Frontend (taskmanager/frontend/)
-- [ ] index.html - Login/Register forms, task list, add task form
-- [ ] styles.css - Modern, responsive styling
-- [ ] app.js - API calls, JWT storage, DOM updates, form validation
+- [ ] index.html - Login/Register, task list with filters, category management
+- [ ] styles.css - Modern styling with priority colors and category badges
+- [ ] app.js - API calls, JWT storage, filtering, sorting
 
 ## Checklist - Tests (taskmanager/tests/)
 - [ ] __init__.py
 - [ ] conftest.py - Pytest fixtures
-- [ ] test_auth.py - At least 4 authentication tests
-- [ ] test_tasks.py - At least 4 task API tests
+- [ ] test_auth.py - At least 5 authentication tests (including email validation)
+- [ ] test_tasks.py - At least 6 task API tests (including priority and category)
+- [ ] test_categories.py - At least 3 category API tests
 
 ## Checklist - Documentation
-- [ ] README.md - Full documentation with API examples
+- [ ] README.md - Full documentation with API examples for ALL endpoints
 - [ ] taskmanager/__init__.py
+
+## Critical Requirements Often Missed
+- [ ] Category model with color field
+- [ ] Task priority field (low, medium, high)
+- [ ] test_categories.py file (separate from test_tasks.py)
+- [ ] GET /api/auth/me endpoint
+- [ ] At least 14 total tests
 
 ## Verification
 1. List all files in taskmanager/ to see what exists
 2. If any files are missing, create them
-3. Install dependencies and run tests: cd taskmanager && python -m pytest tests/ -v
-4. Fix any failing tests
+3. Run tests: cd taskmanager && python -m pytest tests/ -v
+4. Verify at least 14 tests pass
 
 List what files exist and what's missing, then complete the remaining tasks.
-Use the finish tool only when ALL files exist and ALL tests pass.
+Use the finish tool only when ALL files exist and ALL 14+ tests pass.
 """
 
 
