@@ -18,7 +18,7 @@ from openhands.sdk.llm import Message, TextContent
 
 
 def test_dynamic_context_followed_by_user_message_no_consecutive_users():
-    """Test that dynamic_context + user message doesn't create consecutive user messages.
+    """Test dynamic_context + user message doesn't create consecutive users.
 
     This is a regression test for the prompt caching fix where:
     1. SystemPromptEvent emits [system_msg, user_msg] when dynamic_context is present
@@ -33,7 +33,9 @@ def test_dynamic_context_followed_by_user_message_no_consecutive_users():
         source="agent",
         system_prompt=TextContent(text="You are a helpful assistant."),
         tools=[],
-        dynamic_context=TextContent(text="Working directory: /workspace\nDate: 2024-01-15"),
+        dynamic_context=TextContent(
+            text="Working directory: /workspace\nDate: 2024-01-15"
+        ),
     )
 
     # Create user message (what the user types in the UI)
@@ -59,7 +61,8 @@ def test_dynamic_context_followed_by_user_message_no_consecutive_users():
             pytest.fail(
                 f"Found consecutive user messages at positions {i} and {i + 1}. "
                 f"Full role sequence: {roles}. "
-                "This will cause issues with LLMs that expect alternating user/assistant messages."
+                "This will cause issues with LLMs that expect "
+                "alternating user/assistant messages."
             )
 
     # Verify we have the expected structure:
@@ -67,10 +70,8 @@ def test_dynamic_context_followed_by_user_message_no_consecutive_users():
     # - User message(s) should eventually contain "Hi"
     assert messages[0].role == "system"
     assert any(
-        m.role == "user" and any(
-            isinstance(c, TextContent) and "Hi" in c.text
-            for c in m.content
-        )
+        m.role == "user"
+        and any(isinstance(c, TextContent) and "Hi" in c.text for c in m.content)
         for m in messages
     ), "User's 'Hi' message should be present in the message sequence"
 
@@ -115,7 +116,9 @@ def test_dynamic_context_message_content_preserved():
     Even after fixing the consecutive user message issue, we need to ensure
     the dynamic context information is still available to the LLM.
     """
-    dynamic_content = "Working directory: /workspace\nDate: 2024-01-15\nUser: test@example.com"
+    dynamic_content = (
+        "Working directory: /workspace\nDate: 2024-01-15\nUser: test@example.com"
+    )
 
     system_event = SystemPromptEvent(
         source="agent",
