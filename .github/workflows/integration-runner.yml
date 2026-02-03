@@ -22,7 +22,7 @@ on:
             model_ids:
                 description: >-
                     Comma-separated model IDs to test. Available: sonnet, gpt51_codex,
-                    deepseek, kimi_k2, gemini_3_pro, devstral. Defaults to all models.
+                    deepseek, kimi_k2, gemini_3_pro, devstral, glm_4_7. Defaults to all models.
                 required: false
                 default: ''
                 type: string
@@ -45,7 +45,8 @@ env:
           {"id": "deepseek", "name": "Deepseek Chat", "run-suffix": "deepseek_run", "model": "litellm_proxy/deepseek/deepseek-chat"},
           {"id": "kimi_k2", "name": "Kimi K2 Thinking", "run-suffix": "kimi_k2_run", "model": "litellm_proxy/moonshot/kimi-k2-thinking"},
           {"id": "gemini_3_pro", "name": "Gemini 3 Pro", "run-suffix": "gemini_3_pro_run", "model": "litellm_proxy/vertex_ai/gemini-3-pro-preview"},
-          {"id": "devstral", "name": "Devstral 2512", "run-suffix": "devstral_2512_run", "model": "litellm_proxy/mistral/devstral-2512"}
+          {"id": "devstral", "name": "Devstral 2512", "run-suffix": "devstral_2512_run", "model": "litellm_proxy/mistral/devstral-2512"},
+          {"id": "glm_4_7", "name": "GLM-4.7", "run-suffix": "glm_4_7_run", "model": "litellm_proxy/openrouter/z-ai/glm-4.7"}
         ]
 
 jobs:
