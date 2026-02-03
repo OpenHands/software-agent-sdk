@@ -30,6 +30,7 @@ from openhands.sdk.tool import (
     ToolDefinition,
     resolve_tool,
 )
+from openhands.sdk.utils.deprecation import deprecated
 from openhands.sdk.utils.models import DiscriminatedUnionMixin
 
 
@@ -261,13 +262,22 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         )
 
     @property
+    @deprecated(
+        deprecated_in="1.11.0",
+        removed_in="1.13.0",
+        details=(
+            "Use static_system_message for the cacheable system prompt and "
+            "dynamic_context for per-conversation content. This separation enables "
+            "cross-conversation prompt caching."
+        ),
+    )
     def system_message(self) -> str:
         """Compute system message on-demand to maintain statelessness.
 
-        Note: This property combines static and dynamic content for backward
-        compatibility. For optimal prompt caching across conversations, use
-        `static_system_message` for the system prompt and `dynamic_context`
-        as a separate user message.
+        .. deprecated:: 1.11.0
+            Use :attr:`static_system_message` for the cacheable system prompt and
+            :attr:`dynamic_context` for per-conversation content. This separation
+            enables cross-conversation prompt caching. Will be removed in 1.13.0.
         """
         system_message = self.static_system_message
         dynamic = self.dynamic_context
