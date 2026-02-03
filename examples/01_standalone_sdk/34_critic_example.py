@@ -168,7 +168,7 @@ def get_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
 
 llm_api_key = get_required_env("LLM_API_KEY")
 llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929"),
+    model=os.getenv("LLM_MODEL", "anthropic/claude-haiku-4-5"),
     api_key=llm_api_key,
     base_url=os.getenv("LLM_BASE_URL", None),
 )
@@ -259,8 +259,6 @@ if collector.latest_result:
 else:
     print("Final critic score: N/A (no critic results)")
 
-print(f"\nWorkspace: {workspace}")
-
 # List created files
 print("\nCreated files:")
 for path in sorted(workspace.rglob("*")):
@@ -271,3 +269,6 @@ for path in sorted(workspace.rglob("*")):
 # Report cost
 cost = llm.metrics.accumulated_cost
 print(f"\nEXAMPLE_COST: {cost:.4f}")
+
+# Cleanup workspace
+os.rmdir(workspace)
