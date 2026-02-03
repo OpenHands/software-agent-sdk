@@ -22,25 +22,22 @@ EXAMPLES_ROOT = REPO_ROOT / "examples"
 # Maximum time (seconds) allowed for a single example script to run
 EXAMPLE_TIMEOUT_SECONDS = 600  # 10 minutes
 
-# NOTE: Temporarily focusing only on Docker/Apptainer examples to debug CI failures.
-# See issue #1886 for context.
 _TARGET_DIRECTORIES = (
-    # EXAMPLES_ROOT / "01_standalone_sdk",
+    EXAMPLES_ROOT / "01_standalone_sdk",
     EXAMPLES_ROOT / "02_remote_agent_server",
     # These examples live under subdirectories (each with a single `main.py`).
-    # EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
-    # EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
+    EXAMPLES_ROOT / "05_skills_and_plugins" / "02_loading_plugins",
 )
 
 # LLM-specific examples that require model overrides
 _LLM_SPECIFIC_EXAMPLES: dict[str, dict[str, str]] = {
-    # Temporarily disabled while debugging Docker/Apptainer tests
-    # "examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py": {
-    #     "LLM_MODEL": "openhands/gpt-5.1",
-    # },
-    # "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
-    #     "LLM_MODEL": "openhands/gemini-3-pro-preview",
-    # },
+    "examples/04_llm_specific_tools/01_gpt5_apply_patch_preset.py": {
+        "LLM_MODEL": "openhands/gpt-5.1",
+    },
+    "examples/04_llm_specific_tools/02_gemini_file_tools.py": {
+        "LLM_MODEL": "openhands/gemini-3-pro-preview",
+    },
 }
 
 # Examples that require interactive input or additional infrastructure.
@@ -53,12 +50,14 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
     "examples/01_standalone_sdk/35_subscription_login.py",
-    # NOTE: Temporarily excluding non-Docker/Apptainer examples to debug CI failures.
-    # See issue #1886 for context.
-    "examples/02_remote_agent_server/01_convo_with_local_agent_server.py",
+    # Docker/Apptainer sandboxed server examples are excluded due to tmux initialization
+    # issues inside containers. The TmuxTerminal fails with "Could not find object"
+    # when trying to create a new tmux session. See issue #1886 for details.
+    "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py",
+    "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py",
     "examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py",
     "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
-    "examples/02_remote_agent_server/07_convo_with_cloud_workspace.py",
+    "examples/02_remote_agent_server/08_convo_with_apptainer_sandboxed_server.py",
 }
 
 

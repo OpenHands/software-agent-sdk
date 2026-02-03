@@ -142,12 +142,10 @@ jobs:
                   fi
 
                   EXIT_CODE=0
-                  # Run Docker/Apptainer tests sequentially to avoid port conflicts
-                  # These tests use fixed ports (8010, 8011) and cannot run in parallel
                   uv run pytest tests/examples/test_examples.py \
                       --run-examples \
                       --examples-results-dir "$RESULTS_DIR" \
-                      -n 1 || EXIT_CODE=$?
+                      -n 4 || EXIT_CODE=$?
 
                   TIMESTAMP="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
                   WORKFLOW_URL="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
