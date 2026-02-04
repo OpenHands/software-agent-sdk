@@ -124,6 +124,11 @@ MODELS = {
         "display_name": "Qwen3 Coder Next",
         "llm_config": {"model": "litellm_proxy/openrouter/qwen/qwen3-coder-next"},
     },
+    "qwen3-coder-30b-a3b-instruct": {
+        "id": "qwen3-coder-30b-a3b-instruct",
+        "display_name": "Qwen3 Coder 30B A3B Instruct",
+        "llm_config": {"model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct"},
+    },
 }
 
 
