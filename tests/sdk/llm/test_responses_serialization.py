@@ -149,6 +149,28 @@ def test_tool_to_responses_emits_function_call_output_with_fc_prefix():
     assert all(item["call_id"].startswith("fc_") for item in out)
 
 
+def test_tool_to_responses_truncates_output_over_limit():
+    from unittest.mock import patch
+
+    from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
+
+    long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
+    m = Message(
+        role="tool",
+        tool_call_id="abc",
+        name="foo",
+        content=[TextContent(text=long_text)],
+    )
+
+    with patch("openhands.sdk.llm.message.logger") as mock_logger:
+        out = m.to_responses_dict(vision_enabled=False)
+
+        mock_logger.warning.assert_called_once()
+        assert out[0]["type"] == "function_call_output"
+        assert len(out[0]["output"]) == DEFAULT_TEXT_CONTENT_LIMIT
+        assert "<response clipped>" in out[0]["output"]
+
+
 def test_assistant_includes_reasoning_passthrough():
     ri = ReasoningItemModel(
         id="rid1",
