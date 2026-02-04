@@ -10,7 +10,10 @@ from openhands.tools.terminal.terminal.terminal_session import (
     TerminalCommandStatus,
     TerminalSession,
 )
-from openhands.tools.terminal.terminal.tmux_terminal import TmuxTerminal
+from openhands.tools.terminal.terminal.tmux_terminal import (
+    TerminalInitializationError,
+    TmuxTerminal,
+)
 
 
 __all__ = [
@@ -20,5 +23,6 @@ __all__ = [
     "SubprocessTerminal",
     "TerminalSession",
     "TerminalCommandStatus",
+    "TerminalInitializationError",
     "create_terminal_session",
 ]
