@@ -139,7 +139,7 @@ jobs:
               run: |
                   set -euo pipefail
 
-                  REPO="All-Hands-AI/openhands-cli"
+                  REPO="OpenHands/openhands-cli"
                   BRANCH="bump-sdk-$VERSION"
 
                   echo "🔄 Creating PR for $REPO..."
