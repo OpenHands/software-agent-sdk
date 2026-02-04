@@ -70,64 +70,63 @@ def load_profile(registry: LLMRegistry, name: str) -> LLM:
     return llm
 
 
-if __name__ == "__main__":  # pragma: no cover
-    registry = LLMRegistry()
-    ensure_profile_exists(registry, PROFILE_NAME)
+registry = LLMRegistry()
+ensure_profile_exists(registry, PROFILE_NAME)
 
-    llm = load_profile(registry, PROFILE_NAME)
+llm = load_profile(registry, PROFILE_NAME)
 
-    tools = [Tool(name=TerminalTool.name)]
-    agent = Agent(llm=llm, tools=tools)
+tools = [Tool(name=TerminalTool.name)]
+agent = Agent(llm=llm, tools=tools)
 
-    workspace_dir = Path(os.getcwd())
-    summary_path = workspace_dir / "summary_readme.md"
-    if summary_path.exists():
-        summary_path.unlink()
+workspace_dir = Path(os.getcwd())
+summary_path = workspace_dir / "summary_readme.md"
+if summary_path.exists():
+    summary_path.unlink()
 
-    persistence_root = workspace_dir / ".conversations_llm_profiles"
-    conversation = Conversation(
-        agent=agent,
-        workspace=str(workspace_dir),
-        persistence_dir=str(persistence_root),
-        visualizer=None,
+persistence_root = workspace_dir / ".conversations_llm_profiles"
+conversation = Conversation(
+    agent=agent,
+    workspace=str(workspace_dir),
+    persistence_dir=str(persistence_root),
+    visualizer=None,
+)
+
+conversation.send_message(
+    "Read README.md in this workspace, create a concise summary in "
+    "summary_readme.md (overwrite it if it exists), and respond with "
+    "SUMMARY_READY when the file is written."
+)
+conversation.run()
+
+if summary_path.exists():
+    print(f"summary_readme.md written to {summary_path}")
+else:
+    print("summary_readme.md not found after first run")
+
+conversation.send_message(
+    "Thanks! Delete summary_readme.md from the workspace and respond with "
+    "SUMMARY_REMOVED once it is gone."
+)
+conversation.run()
+
+if summary_path.exists():
+    print("summary_readme.md still present after deletion request")
+else:
+    print("summary_readme.md removed")
+
+persistence_dir = conversation.state.persistence_dir
+if persistence_dir is None:
+    raise RuntimeError("Conversation did not persist base state to disk")
+
+base_state_path = Path(persistence_dir) / "base_state.json"
+state_payload = json.loads(base_state_path.read_text())
+llm_entry = state_payload.get("agent", {}).get("llm", {})
+profile_in_state = llm_entry.get("profile_id")
+kind_in_state = llm_entry.get("kind")
+print(f"Profile recorded in base_state.json: {kind_in_state} / {profile_in_state}")
+if kind_in_state != "profile_ref" or profile_in_state != PROFILE_NAME:
+    print(
+        "Warning: base_state.json did not persist the expected profile_ref payload."
+        " This likely means your runtime LLM did not have profile_id set,"
+        " or persistence was configured differently."
     )
-
-    conversation.send_message(
-        "Read README.md in this workspace, create a concise summary in "
-        "summary_readme.md (overwrite it if it exists), and respond with "
-        "SUMMARY_READY when the file is written."
-    )
-    conversation.run()
-
-    if summary_path.exists():
-        print(f"summary_readme.md written to {summary_path}")
-    else:
-        print("summary_readme.md not found after first run")
-
-    conversation.send_message(
-        "Thanks! Delete summary_readme.md from the workspace and respond with "
-        "SUMMARY_REMOVED once it is gone."
-    )
-    conversation.run()
-
-    if summary_path.exists():
-        print("summary_readme.md still present after deletion request")
-    else:
-        print("summary_readme.md removed")
-
-    persistence_dir = conversation.state.persistence_dir
-    if persistence_dir is None:
-        raise RuntimeError("Conversation did not persist base state to disk")
-
-    base_state_path = Path(persistence_dir) / "base_state.json"
-    state_payload = json.loads(base_state_path.read_text())
-    llm_entry = state_payload.get("agent", {}).get("llm", {})
-    profile_in_state = llm_entry.get("profile_id")
-    kind_in_state = llm_entry.get("kind")
-    print(f"Profile recorded in base_state.json: {kind_in_state} / {profile_in_state}")
-    if kind_in_state != "profile_ref" or profile_in_state != PROFILE_NAME:
-        print(
-            "Warning: base_state.json did not persist the expected profile_ref payload."
-            " This likely means your runtime LLM did not have profile_id set,"
-            " or persistence was configured differently."
-        )
