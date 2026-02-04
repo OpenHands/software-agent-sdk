@@ -1,12 +1,13 @@
 """Tmux-based terminal backend implementation."""
 
-import os
 import time
 import uuid
 
 import libtmux
+from libtmux.exc import TmuxObjectDoesNotExist
 
 from openhands.sdk.logger import get_logger
+from openhands.sdk.utils import sanitized_env
 from openhands.tools.terminal.constants import HISTORY_LIMIT
 from openhands.tools.terminal.metadata import CmdOutputMetadata
 from openhands.tools.terminal.terminal import TerminalInterface
@@ -41,7 +42,8 @@ class TmuxTerminal(TerminalInterface):
         if self._initialized:
             return
 
-        self.server = libtmux.Server()
+        env = sanitized_env()
+        self.server = libtmux.Server(environment=env)
         _shell_command = "/bin/bash"
         if self.username in ["root", "openhands"]:
             # This starts a non-login (new) shell for the given user
@@ -51,14 +53,36 @@ class TmuxTerminal(TerminalInterface):
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
-        self.session = self.server.new_session(
-            session_name=session_name,
-            start_directory=self.work_dir,
-            kill_session=True,
-            x=1000,
-            y=1000,
-        )
-        for k, v in os.environ.items():
+
+        # Retry session creation to handle race conditions in libtmux
+        # where the session is created but can't be found immediately
+        max_retries = 3
+        retry_delay = 0.5
+        last_error = None
+        for attempt in range(max_retries):
+            try:
+                self.session = self.server.new_session(
+                    session_name=session_name,
+                    start_directory=self.work_dir,
+                    kill_session=True,
+                    x=1000,
+                    y=1000,
+                )
+                break
+            except TmuxObjectDoesNotExist as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(
+                        f"Tmux session creation failed (attempt {attempt + 1}/"
+                        f"{max_retries}), retrying in {retry_delay}s: {e}"
+                    )
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+        else:
+            raise RuntimeError(
+                f"Failed to create tmux session after {max_retries} attempts"
+            ) from last_error
+        for k, v in env.items():
             self.session.set_environment(k, v)
 
         # Set history limit to a large number to avoid losing history

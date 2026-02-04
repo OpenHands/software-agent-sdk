@@ -7,7 +7,9 @@ from uuid import uuid4
 import pytest
 from pydantic import SecretStr
 
-from openhands.agent_server.conversation_service import ConversationService
+from openhands.agent_server.conversation_service import (
+    ConversationService,
+)
 from openhands.agent_server.event_service import EventService
 from openhands.agent_server.models import (
     ConversationPage,
@@ -524,7 +526,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )
@@ -586,7 +588,7 @@ class TestConversationServiceStartConversation:
                 mock_event_service.get_state.return_value = mock_state
                 mock_event_service.stored = StoredConversation(
                     id=mock_state.id,
-                    **request.model_dump(),
+                    **request.model_dump(mode="json", context={"expose_secrets": True}),
                     created_at=datetime.now(UTC),
                     updated_at=datetime.now(UTC),
                 )

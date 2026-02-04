@@ -52,27 +52,30 @@ class MCPToolExecutor(ToolExecutor):
 
     @observe(name="MCPToolExecutor.call_tool", span_type="TOOL")
     async def call_tool(self, action: MCPToolAction) -> MCPToolObservation:
-        async with self.client:
-            assert self.client.is_connected(), "MCP client is not connected."
-            try:
-                logger.debug(
-                    f"Calling MCP tool {self.tool_name} "
-                    f"with args: {action.model_dump()}"
-                )
-                result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
-                    name=self.tool_name, arguments=action.to_mcp_arguments()
-                )
-                return MCPToolObservation.from_call_tool_result(
-                    tool_name=self.tool_name, result=result
-                )
-            except Exception as e:
-                error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
-                logger.error(error_msg, exc_info=True)
-                return MCPToolObservation.from_text(
-                    text=error_msg,
-                    is_error=True,
-                    tool_name=self.tool_name,
-                )
+        """Execute the MCP tool call using the already-connected client."""
+        if not self.client.is_connected():
+            raise RuntimeError(
+                f"MCP client not connected for tool '{self.tool_name}'. "
+                "The connection may have been closed or failed to establish."
+            )
+        try:
+            logger.debug(
+                f"Calling MCP tool {self.tool_name} with args: {action.model_dump()}"
+            )
+            result: mcp.types.CallToolResult = await self.client.call_tool_mcp(
+                name=self.tool_name, arguments=action.to_mcp_arguments()
+            )
+            return MCPToolObservation.from_call_tool_result(
+                tool_name=self.tool_name, result=result
+            )
+        except Exception as e:
+            error_msg = f"Error calling MCP tool {self.tool_name}: {str(e)}"
+            logger.error(error_msg, exc_info=True)
+            return MCPToolObservation.from_text(
+                text=error_msg,
+                is_error=True,
+                tool_name=self.tool_name,
+            )
 
     def __call__(
         self,

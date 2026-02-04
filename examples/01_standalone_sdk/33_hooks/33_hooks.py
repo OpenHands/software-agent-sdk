@@ -48,7 +48,8 @@ with tempfile.TemporaryDirectory() as tmpdir:
     log_file = workspace / "tool_usage.log"
     summary_file = workspace / "summary.txt"
 
-    # Configure ALL hook types using typed fields (recommended approach)
+    # Configure hooks using the typed approach (recommended)
+    # This provides better type safety and IDE support
     hook_config = HookConfig(
         pre_tool_use=[
             HookMatcher(
@@ -94,6 +95,17 @@ with tempfile.TemporaryDirectory() as tmpdir:
             )
         ],
     )
+
+    # Alternative: You can also use .from_dict() for loading from JSON config files
+    # Example with a single hook matcher:
+    # hook_config = HookConfig.from_dict({
+    #     "hooks": {
+    #         "PreToolUse": [{
+    #             "matcher": "terminal",
+    #             "hooks": [{"command": "path/to/script.sh", "timeout": 10}]
+    #         }]
+    #     }
+    # })
 
     agent = get_default_agent(llm=llm)
     conversation = Conversation(

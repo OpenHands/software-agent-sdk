@@ -131,8 +131,11 @@ EXPECTED_MODELS = [
     "gpt-5.2-high-reasoning",
     "kimi-k2-thinking",
     "minimax-m2",
+    "minimax-m2.1",
     "deepseek-v3.2-reasoner",
     "qwen-3-coder",
+    "glm-4.7",
+    "qwen3-coder-next",
 ]
 
 

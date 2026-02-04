@@ -21,6 +21,7 @@ from openhands.agent_server.models import (
     BashOutput,
     ExecuteBashRequest,
 )
+from openhands.agent_server.server_details_router import update_last_execution_time
 
 
 bash_router = APIRouter(prefix="/bash", tags=["Bash"])
@@ -35,6 +36,14 @@ async def search_bash_events(
     command_id__eq: UUID | None = None,
     timestamp__gte: datetime | None = None,
     timestamp__lt: datetime | None = None,
+    order__gt: Annotated[
+        int | None,
+        Query(
+            title="Filter to events with order greater than this value",
+            description="Only returns BashOutput events with order > this value. "
+            "Useful for polling to fetch only new events since the last poll.",
+        ),
+    ] = None,
     sort_order: BashEventSortOrder = BashEventSortOrder.TIMESTAMP,
     page_id: Annotated[
         str | None,
@@ -54,6 +63,7 @@ async def search_bash_events(
         command_id__eq=command_id__eq,
         timestamp__gte=timestamp__gte,
         timestamp__lt=timestamp__lt,
+        order__gt=order__gt,
         sort_order=sort_order,
         page_id=page_id,
         limit=limit,
@@ -84,6 +94,7 @@ async def batch_get_bash_events(
 @bash_router.post("/start_bash_command")
 async def start_bash_command(request: ExecuteBashRequest) -> BashCommand:
     """Execute a bash command in the background"""
+    update_last_execution_time()
     command, _ = await bash_event_service.start_bash_command(request)
     return command
 
@@ -91,6 +102,7 @@ async def start_bash_command(request: ExecuteBashRequest) -> BashCommand:
 @bash_router.post("/execute_bash_command")
 async def execute_bash_command(request: ExecuteBashRequest) -> BashOutput:
     """Execute a bash command and wait for a result"""
+    update_last_execution_time()
     command, task = await bash_event_service.start_bash_command(request)
     await task
     page = await bash_event_service.search_bash_events(command_id__eq=command.id)
