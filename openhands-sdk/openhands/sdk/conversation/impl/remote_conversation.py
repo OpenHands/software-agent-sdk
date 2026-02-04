@@ -6,6 +6,7 @@ import threading
 import time
 import uuid
 from collections.abc import Mapping
+from queue import Empty, Queue
 from typing import SupportsIndex, overload
 from urllib.parse import urlparse
 
@@ -555,11 +556,7 @@ class RemoteConversation(BaseConversation):
     _client: httpx.Client
     _hook_processor: HookEventProcessor | None
     _cleanup_initiated: bool
-    _run_complete_event: threading.Event  # Signaled when run completes via WebSocket
-    _run_counter: int  # Monotonic counter to correlate terminal status with current run
-    _terminal_status: str | None  # Terminal status value from WebSocket
-    _terminal_status_run_counter: int  # Run counter when terminal status was received
-    _terminal_status_lock: threading.Lock  # Protects _terminal_status* and _run_counter
+    _terminal_status_queue: Queue[str]  # Thread-safe queue for terminal status from WS
     delete_on_close: bool = False
 
     def __init__(
@@ -614,11 +611,7 @@ class RemoteConversation(BaseConversation):
         self._client = workspace.client
         self._hook_processor = None
         self._cleanup_initiated = False
-        self._run_complete_event = threading.Event()
-        self._run_counter = 0
-        self._terminal_status = None
-        self._terminal_status_run_counter = 0
-        self._terminal_status_lock = threading.Lock()
+        self._terminal_status_queue: Queue[str] = Queue()
 
         should_create = conversation_id is None
         if conversation_id is not None:
@@ -726,14 +719,7 @@ class RemoteConversation(BaseConversation):
                     try:
                         status = ConversationExecutionStatus(event.value)
                         if status.is_terminal():
-                            # Store the terminal status and run counter atomically.
-                            # This allows _wait_for_run_completion to:
-                            # 1. Check if status is for current run (not stale)
-                            # 2. Call _handle_conversation_status for ERROR/STUCK
-                            with self._terminal_status_lock:
-                                self._terminal_status = event.value
-                                self._terminal_status_run_counter = self._run_counter
-                            self._run_complete_event.set()
+                            self._terminal_status_queue.put(event.value)
                     except ValueError:
                         pass  # Unknown status value, ignore
 
@@ -892,14 +878,13 @@ class RemoteConversation(BaseConversation):
         Raises:
             ConversationRunError: If the run fails or times out.
         """
-        # Increment run counter and clear state before triggering the run.
-        # The run counter is used to correlate terminal status events with the
-        # current run, preventing stale events from previous runs from causing
-        # early returns.
-        with self._terminal_status_lock:
-            self._run_counter += 1
-            self._terminal_status = None
-        self._run_complete_event.clear()
+        # Drain any stale terminal status events from previous runs.
+        # This prevents stale events from causing early returns.
+        while True:
+            try:
+                self._terminal_status_queue.get_nowait()
+            except Empty:
+                break
 
         # Trigger a run on the server using the dedicated run endpoint.
         # Let the server tell us if it's already running (409), avoiding an extra GET.
@@ -958,9 +943,6 @@ class RemoteConversation(BaseConversation):
         # - 3 polls (with default 1s interval = 3s total) provides high confidence
         #   that the run is truly complete while keeping fallback latency reasonable
         TERMINAL_POLL_THRESHOLD = 3
-        # Capture the run counter at the start to detect stale events
-        with self._terminal_status_lock:
-            expected_run_counter = self._run_counter
 
         while True:
             elapsed = time.monotonic() - start_time
@@ -976,40 +958,20 @@ class RemoteConversation(BaseConversation):
             # Wait for either:
             # 1. WebSocket delivers terminal status event (preferred)
             # 2. Poll interval expires (fallback - check status via REST)
-            if self._run_complete_event.wait(timeout=poll_interval):
-                # Check if this terminal status is for the current run
-                # (not a stale event from a previous run)
-                with self._terminal_status_lock:
-                    if self._terminal_status_run_counter == expected_run_counter:
-                        # Get the terminal status and clear state atomically
-                        ws_status = self._terminal_status
-                        self._terminal_status = None
-                    else:
-                        # Stale event from a previous run - clear and continue waiting
-                        logger.debug(
-                            "Ignoring stale terminal status event "
-                            "(expected run %d, got run %d)",
-                            expected_run_counter,
-                            self._terminal_status_run_counter,
-                        )
-                        ws_status = None
-                        self._terminal_status = None
+            try:
+                ws_status = self._terminal_status_queue.get(timeout=poll_interval)
+                # Handle ERROR/STUCK states - raises ConversationRunError
+                self._handle_conversation_status(ws_status)
 
-                self._run_complete_event.clear()
-
-                if ws_status is not None:
-                    # Handle ERROR/STUCK states - raises ConversationRunError
-                    self._handle_conversation_status(ws_status)
-
-                    logger.info(
-                        "Run completed via WebSocket notification "
-                        "(status: %s, elapsed: %.1fs)",
-                        ws_status,
-                        elapsed,
-                    )
-                    return
-                else:
-                    continue
+                logger.info(
+                    "Run completed via WebSocket notification "
+                    "(status: %s, elapsed: %.1fs)",
+                    ws_status,
+                    elapsed,
+                )
+                return
+            except Empty:
+                pass  # Queue.get() timed out, fall through to REST polling
 
             # Poll the server for status as a health check and fallback.
             # This catches ERROR/STUCK states that need immediate attention,
@@ -1041,9 +1003,6 @@ class RemoteConversation(BaseConversation):
                         # This is only called in the fallback path, so it doesn't
                         # add overhead in the common case where WS works.
                         self._state.events.reconcile()
-                        self._run_complete_event.clear()
-                        with self._terminal_status_lock:
-                            self._terminal_status = None
                         return
                 else:
                     consecutive_terminal_polls = 0
