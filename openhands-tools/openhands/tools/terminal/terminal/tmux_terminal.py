@@ -2,8 +2,19 @@
 
 import fcntl
 import os
+import subprocess
+import sys
 import time
 import uuid
+
+
+# Workaround for Python 3.13+ race condition with libtmux.
+# Python 3.13 uses posix_spawn() more aggressively for subprocess calls,
+# which can cause a race condition in libtmux where list-sessions query
+# runs before tmux has fully registered a newly created session.
+# See: https://docs.python.org/3/whatsnew/3.13.html#subprocess
+if sys.version_info >= (3, 13) and hasattr(subprocess, "_USE_POSIX_SPAWN"):
+    subprocess._USE_POSIX_SPAWN = False
 
 import libtmux
 from libtmux.exc import TmuxObjectDoesNotExist
