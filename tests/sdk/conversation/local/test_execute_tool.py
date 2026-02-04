@@ -18,7 +18,8 @@ from openhands.sdk.tool import (
     Tool,
     ToolDefinition,
     ToolExecutor,
-    register_tool,
+    register_tool as register_tool_public,
+    registry as tool_registry,
 )
 
 
@@ -75,8 +76,18 @@ class ExecuteToolTestTool(
         ]
 
 
-# Register the test tool
-register_tool(ExecuteToolTestTool.name, ExecuteToolTestTool)
+@pytest.fixture(autouse=True)
+def _tool_registry_snapshot():
+    registry_snapshot = dict(tool_registry._REG)
+    module_snapshot = dict(tool_registry._MODULE_QUALNAMES)
+    register_tool_public(ExecuteToolTestTool.name, ExecuteToolTestTool)
+    try:
+        yield
+    finally:
+        tool_registry._REG.clear()
+        tool_registry._REG.update(registry_snapshot)
+        tool_registry._MODULE_QUALNAMES.clear()
+        tool_registry._MODULE_QUALNAMES.update(module_snapshot)
 
 
 class ExecuteToolDummyAgent(AgentBase):
@@ -239,7 +250,7 @@ def test_execute_tool_with_conversation_context():
                 )
             ]
 
-    register_tool("context_aware", ContextAwareTool)
+    register_tool_public("context_aware", ContextAwareTool)
 
     agent = ExecuteToolDummyAgent(tools=[Tool(name="context_aware", params={})])
     conversation = Conversation(agent=agent)
