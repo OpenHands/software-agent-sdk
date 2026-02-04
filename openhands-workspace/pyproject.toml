@@ -1,6 +1,6 @@
 [project]
 name = "openhands-workspace"
-version = "1.10.0"
+version = "1.11.0"
 description = "OpenHands Workspace - Docker and container-based workspace implementations"
 
 requires-python = ">=3.12"

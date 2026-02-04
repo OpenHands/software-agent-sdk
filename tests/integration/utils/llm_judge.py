@@ -173,11 +173,7 @@ the information available, assuming the agent's behavior is correct afterward.
 
     try:
         # Get LLM response with tool calling
-        messages = [
-            Message(
-                role="user", content=[TextContent(text=prompt, enable_truncation=False)]
-            )
-        ]
+        messages = [Message(role="user", content=[TextContent(text=prompt)])]
         response = llm.completion(
             messages=messages,
             tools=[judgment_tool],  # type: ignore[arg-type]
