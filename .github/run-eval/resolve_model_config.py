@@ -122,7 +122,7 @@ MODELS = {
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
-        "llm_config": {"model": "litellm_proxy/together_ai/Qwen/Qwen3-Coder-Next-FP8"},
+        "llm_config": {"model": "litellm_proxy/openrouter/qwen/qwen3-coder-next"},
     },
 }
 
