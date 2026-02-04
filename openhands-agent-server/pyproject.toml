@@ -1,6 +1,6 @@
 [project]
 name = "openhands-agent-server"
-version = "1.10.0"
+version = "1.11.0"
 description = "OpenHands Agent Server - REST/WebSocket interface for OpenHands AI Agent"
 
 requires-python = ">=3.12"

@@ -34,6 +34,7 @@ def test_conversation_close_calls_executor_close(mock_llm):
             llm=mock_llm,
             tools=[Tool(name="test_terminal")],
         )
+        # delete_on_close=True is required to trigger executor cleanup
         conversation = Conversation(
             agent=agent, workspace=temp_dir, delete_on_close=True
         )
@@ -69,6 +70,7 @@ def test_conversation_del_calls_close(mock_llm):
             llm=mock_llm,
             tools=[Tool(name="test_terminal")],
         )
+        # delete_on_close=True is required to trigger executor cleanup
         conversation = Conversation(
             agent=agent, workspace=temp_dir, delete_on_close=True
         )
