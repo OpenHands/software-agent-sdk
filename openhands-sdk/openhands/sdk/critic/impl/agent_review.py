@@ -1,26 +1,31 @@
+from __future__ import annotations
+
 import json
 import re
 import subprocess
 from collections.abc import Callable, Sequence
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 
 from pydantic import ConfigDict
+from pydantic.json_schema import SkipJsonSchema
 
-from openhands.sdk import Agent, Conversation
 from openhands.sdk.critic.base import CriticBase, CriticResult
-from openhands.sdk.event import LLMConvertibleEvent
-from openhands.sdk.hooks.config import HookDefinition, HookType
-from openhands.sdk.hooks.executor import HookResult
-from openhands.sdk.hooks.types import HookDecision, HookEvent
 from openhands.sdk.llm import LLM, TextContent
 from openhands.sdk.logger import get_logger
 
+
+if TYPE_CHECKING:
+    from openhands.sdk import Agent
+    from openhands.sdk.event import LLMConvertibleEvent
+    from openhands.sdk.hooks.config import HookDefinition
+    from openhands.sdk.hooks.executor import HookResult
+    from openhands.sdk.hooks.types import HookEvent
 
 logger = get_logger(__name__)
 
 
 # Type for agent factory function - allows users to provide custom agent creation
-AgentFactory = Callable[[LLM], Agent]
+AgentFactory = Callable[[LLM], "Agent"]
 
 
 def _default_agent_factory(llm: LLM) -> Agent:
@@ -30,6 +35,7 @@ def _default_agent_factory(llm: LLM) -> Agent:
     to analyze the diff and provide feedback. For a more capable critic
     agent with file browsing tools, use get_critic_agent from openhands.tools.preset.
     """
+    from openhands.sdk import Agent
     from openhands.sdk.context.condenser import LLMSummarizingCondenser
 
     condenser = LLMSummarizingCondenser(
@@ -89,7 +95,9 @@ class AgentReviewCritic(CriticBase):
     model_config: ClassVar[ConfigDict] = ConfigDict(arbitrary_types_allowed=True)
 
     llm: LLM
-    agent_factory: AgentFactory | None = None
+    # Use SkipJsonSchema to exclude from JSON schema since Callable types
+    # can't be serialized
+    agent_factory: SkipJsonSchema[AgentFactory | None] = None
 
     review_style: str = "roasted"
     max_diff_chars: int = 100_000
@@ -99,6 +107,8 @@ class AgentReviewCritic(CriticBase):
         events: Sequence[LLMConvertibleEvent],  # noqa: ARG002
         git_patch: str | None = None,
     ) -> CriticResult:
+        from openhands.sdk import Conversation
+
         if not git_patch or not git_patch.strip():
             return CriticResult(score=0.0, message="Empty git patch")
 
@@ -112,6 +122,13 @@ class AgentReviewCritic(CriticBase):
 
         final_text = self._extract_final_text(list(conversation.state.events))
         return self._parse_output(final_text)
+
+    @staticmethod
+    def _get_llm_convertible_event_type() -> type:
+        """Lazy import of LLMConvertibleEvent to avoid circular imports."""
+        from openhands.sdk.event import LLMConvertibleEvent
+
+        return LLMConvertibleEvent
 
     def _build_prompt(self, git_patch: str) -> str:
         style = (
@@ -203,6 +220,9 @@ def create_critic_stop_hook(
             ]
         )
     """
+    from openhands.sdk.hooks.config import HookDefinition, HookType
+    from openhands.sdk.hooks.executor import HookResult
+    from openhands.sdk.hooks.types import HookDecision
 
     def critic_callback(_event: HookEvent) -> HookResult:
         """Callback that runs the critic agent on the current git diff."""
