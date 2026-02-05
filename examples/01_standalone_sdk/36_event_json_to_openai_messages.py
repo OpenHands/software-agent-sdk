@@ -1,3 +1,5 @@
+"""Load persisted events and convert them into LLM-ready messages."""
+
 import json
 import os
 import uuid
