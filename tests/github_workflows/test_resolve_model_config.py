@@ -124,6 +124,7 @@ def test_find_models_by_id_preserves_full_config():
 # Note: claude-4.5-sonnet is implemented as claude-sonnet-4-5-20250929 (pinned version)
 EXPECTED_MODELS = [
     "claude-4.5-opus",
+    "claude-opus-4-6",
     "claude-sonnet-4-5-20250929",
     "gemini-3-pro",
     "gemini-3-flash",
@@ -194,3 +195,13 @@ def test_gpt_oss_20b_config():
     assert model["id"] == "gpt-oss-20b"
     assert model["display_name"] == "GPT OSS 20B"
     assert model["llm_config"]["model"] == "litellm_proxy/gpt-oss-20b"
+
+
+def test_claude_opus_4_6_config():
+    """Test that claude-opus-4-6 has correct configuration."""
+    model = MODELS["claude-opus-4-6"]
+
+    assert model["id"] == "claude-opus-4-6"
+    assert model["display_name"] == "Claude Opus 4.6"
+    assert model["llm_config"]["model"] == "litellm_proxy/anthropic/claude-opus-4-6"
+    assert model["llm_config"]["temperature"] == 0.0

@@ -56,6 +56,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "claude-opus-4-6": {
+        "id": "claude-opus-4-6",
+        "display_name": "Claude Opus 4.6",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-6",
+            "temperature": 0.0,
+        },
+    },
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
