@@ -49,6 +49,7 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/15_browser_use.py",
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
+    "examples/01_standalone_sdk/35_subscription_login.py",
     "examples/02_remote_agent_server/04_vscode_with_docker_sandboxed_server.py",
 }
 

@@ -135,6 +135,8 @@ EXPECTED_MODELS = [
     "deepseek-v3.2-reasoner",
     "qwen-3-coder",
     "glm-4.7",
+    "qwen3-coder-next",
+    "qwen3-coder-30b-a3b-instruct",
 ]
 
 
