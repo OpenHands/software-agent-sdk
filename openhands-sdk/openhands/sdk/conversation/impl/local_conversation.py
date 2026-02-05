@@ -875,6 +875,10 @@ class LocalConversation(BaseConversation):
         conversation.run() flow. It handles agent initialization automatically,
         so tools can be executed before the first run() call.
 
+        Note: This method bypasses the agent loop, including confirmation
+        policies and security analyzer checks. Callers are responsible for
+        applying any safeguards before executing potentially destructive tools.
+
         This is useful for:
         - Pre-run setup operations (e.g., indexing repositories)
         - Manual tool execution for environment setup
@@ -902,7 +906,6 @@ class LocalConversation(BaseConversation):
                 f"Tool '{tool_name}' not found. Available tools: {available_tools}"
             )
 
-        # Execute the tool
         # Execute the tool
         if not tool.executor:
             raise NotImplementedError(f"Tool '{tool_name}' has no executor")
