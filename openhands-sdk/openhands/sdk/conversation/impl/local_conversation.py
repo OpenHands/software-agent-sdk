@@ -907,6 +907,8 @@ class LocalConversation(BaseConversation):
             )
 
         # Execute the tool
+        if not tool.executor:
+            raise NotImplementedError(f"Tool '{tool_name}' has no executor")
         return tool(action, self)
 
     def __del__(self) -> None:

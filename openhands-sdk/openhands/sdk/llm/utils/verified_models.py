@@ -1,5 +1,6 @@
 VERIFIED_OPENAI_MODELS = [
     "gpt-5.2",
+    "gpt-5.2-codex",
     "gpt-5.1",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
@@ -46,12 +47,14 @@ VERIFIED_OPENHANDS_MODELS = [
     "claude-opus-4-5-20251101",
     "claude-sonnet-4-5-20250929",
     "gpt-5.2",
+    "gpt-5.2-codex",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
     "gpt-5.1",
     "gemini-3-pro-preview",
     "deepseek-chat",
     "kimi-k2-thinking",
+    "kimi-k2.5",
     "devstral-medium-2512",
     "devstral-2512",
 ]
