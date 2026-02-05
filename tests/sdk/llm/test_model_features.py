@@ -294,6 +294,8 @@ def test_prompt_cache_retention_support(model, expected_retention):
         ("kimi-k2-thinking-0905", True),
         ("Kimi-K2-Thinking", True),  # Case insensitive
         ("moonshot/kimi-k2-thinking", True),  # With provider prefix
+        ("kimi-k2.5", True),
+        ("Kimi-K2.5", True),  # Case insensitive
         # DeepSeek reasoner model
         ("deepseek/deepseek-reasoner", True),
         ("DeepSeek/deepseek-reasoner", True),
@@ -321,6 +323,9 @@ def test_send_reasoning_content_support(model, expected_send_reasoning):
         ("Kimi-K2-Thinking", 1.0),  # Case insensitive
         ("moonshot/kimi-k2-thinking", 1.0),  # With provider prefix
         ("litellm_proxy/kimi-k2-thinking", 1.0),  # With litellm proxy prefix
+        # kimi-k2.5 models should also default to 1.0
+        ("kimi-k2.5", 1.0),
+        ("Kimi-K2.5", 1.0),  # Case insensitive
         # All other models should default to 0.0
         ("kimi-k2-instruct", 0.0),  # Different kimi variant
         ("gpt-4", 0.0),
