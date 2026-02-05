@@ -126,7 +126,17 @@ MODELS = {
     "qwen3-coder-next": {
         "id": "qwen3-coder-next",
         "display_name": "Qwen3 Coder Next",
-        "llm_config": {"model": "litellm_proxy/together_ai/Qwen/Qwen3-Coder-Next-FP8"},
+        "llm_config": {"model": "litellm_proxy/openrouter/qwen/qwen3-coder-next"},
+    },
+    "qwen3-coder-30b-a3b-instruct": {
+        "id": "qwen3-coder-30b-a3b-instruct",
+        "display_name": "Qwen3 Coder 30B A3B Instruct",
+        "llm_config": {"model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct"},
+    },
+    "gpt-oss-20b": {
+        "id": "gpt-oss-20b",
+        "display_name": "GPT OSS 20B",
+        "llm_config": {"model": "litellm_proxy/gpt-oss-20b"},
     },
 }
 

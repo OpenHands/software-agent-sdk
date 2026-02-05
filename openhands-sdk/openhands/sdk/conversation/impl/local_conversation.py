@@ -46,6 +46,7 @@ from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
 )
+from openhands.sdk.tool.schema import Action, Observation
 from openhands.sdk.utils.cipher import Cipher
 from openhands.sdk.workspace import LocalWorkspace
 
@@ -866,6 +867,49 @@ class LocalConversation(BaseConversation):
             self.agent.step(self, on_event=self._on_event, on_token=self._on_token)
 
         logger.info("Condensation request processed")
+
+    def execute_tool(self, tool_name: str, action: Action) -> Observation:
+        """Execute a tool directly without going through the agent loop.
+
+        This method allows executing tools before or outside of the normal
+        conversation.run() flow. It handles agent initialization automatically,
+        so tools can be executed before the first run() call.
+
+        Note: This method bypasses the agent loop, including confirmation
+        policies and security analyzer checks. Callers are responsible for
+        applying any safeguards before executing potentially destructive tools.
+
+        This is useful for:
+        - Pre-run setup operations (e.g., indexing repositories)
+        - Manual tool execution for environment setup
+        - Testing tool behavior outside the agent loop
+
+        Args:
+            tool_name: The name of the tool to execute (e.g., "sleeptime_compute")
+            action: The action to pass to the tool executor
+
+        Returns:
+            The observation returned by the tool execution
+
+        Raises:
+            KeyError: If the tool is not found in the agent's tools
+            NotImplementedError: If the tool has no executor
+        """
+        # Ensure agent is initialized (loads plugins and initializes tools)
+        self._ensure_agent_ready()
+
+        # Get the tool from the agent's tools_map
+        tool = self.agent.tools_map.get(tool_name)
+        if tool is None:
+            available_tools = list(self.agent.tools_map.keys())
+            raise KeyError(
+                f"Tool '{tool_name}' not found. Available tools: {available_tools}"
+            )
+
+        # Execute the tool
+        if not tool.executor:
+            raise NotImplementedError(f"Tool '{tool_name}' has no executor")
+        return tool(action, self)
 
     def __del__(self) -> None:
         """Ensure cleanup happens when conversation is destroyed."""
