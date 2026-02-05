@@ -5,6 +5,10 @@ from openhands.sdk.llm.utils.unverified_models import (
     _list_bedrock_foundation_models,
     get_unverified_models,
 )
+from openhands.sdk.llm.utils.verified_models import (
+    VERIFIED_ANTHROPIC_MODELS,
+    VERIFIED_MODELS,
+)
 
 
 def test_organize_models_and_providers():
@@ -72,3 +76,9 @@ def test_list_bedrock_models_with_boto3(monkeypatch):
     result = _list_bedrock_foundation_models("us-east-1", "key", "secret")
 
     assert result == ["bedrock/anthropic.claude-3"]
+
+
+def test_claude_opus_4_6_in_verified_models():
+    """Verify that claude-opus-4-6 is in the verified Anthropic models list."""
+    assert "claude-opus-4-6" in VERIFIED_ANTHROPIC_MODELS
+    assert "claude-opus-4-6" in VERIFIED_MODELS["anthropic"]
