@@ -1000,3 +1000,35 @@ class TestRemoteConversation:
 
         # Verify trailing slash was removed and workspace host was normalized
         assert conversation.workspace.host == "http://localhost:8000"
+
+    @patch(
+        "openhands.sdk.conversation.impl.remote_conversation.WebSocketCallbackClient"
+    )
+    def test_remote_conversation_execute_tool_not_implemented(self, mock_ws_client):
+        """Test that execute_tool raises NotImplementedError for RemoteConversation."""
+        # Setup mocks
+        mock_client_instance = self.setup_mock_client()
+
+        conversation_id = str(uuid.uuid4())
+        mock_conv_response = self.create_mock_conversation_response(conversation_id)
+        mock_events_response = self.create_mock_events_response()
+
+        mock_client_instance.post.return_value = mock_conv_response
+        mock_client_instance.get.return_value = mock_events_response
+
+        mock_ws_instance = Mock()
+        mock_ws_client.return_value = mock_ws_instance
+
+        # Create conversation
+        conversation = RemoteConversation(agent=self.agent, workspace=self.workspace)
+
+        # Create a dummy action (using a simple mock)
+        from unittest.mock import MagicMock
+
+        mock_action = MagicMock()
+
+        # Verify execute_tool raises NotImplementedError
+        with pytest.raises(NotImplementedError) as exc_info:
+            conversation.execute_tool("any_tool", mock_action)
+
+        assert "not yet supported for RemoteConversation" in str(exc_info.value)
