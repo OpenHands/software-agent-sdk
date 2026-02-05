@@ -137,6 +137,26 @@ def test_load_project_skills_agents_directory_precedence(tmp_path):
     assert skills[0].content == "From .agents/skills."
 
 
+def test_load_project_skills_merges_agents_and_openhands(tmp_path):
+    """Test loading unique skills from .agents/skills and .openhands/skills."""
+    agents_dir = tmp_path / ".agents" / "skills"
+    openhands_dir = tmp_path / ".openhands" / "skills"
+    agents_dir.mkdir(parents=True)
+    openhands_dir.mkdir(parents=True)
+
+    (agents_dir / "agent_skill.md").write_text(
+        "---\nname: agent_skill\n---\nAgent skill content."
+    )
+    (openhands_dir / "legacy_skill.md").write_text(
+        "---\nname: legacy_skill\n---\nLegacy skill content."
+    )
+
+    skills = load_project_skills(tmp_path)
+    assert len(skills) == 2
+    skill_names = {skill.name for skill in skills}
+    assert skill_names == {"agent_skill", "legacy_skill"}
+
+
 def test_load_project_skills_with_microagents_directory(tmp_path):
     """Test load_project_skills loads from .openhands/microagents directory (legacy)."""
     # Create .openhands/microagents directory
