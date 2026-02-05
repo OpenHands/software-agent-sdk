@@ -7,8 +7,9 @@ from pydantic import SecretStr
 
 
 conversation_id = uuid.uuid4()
-log_dir = Path(".logs") / conversation_id.hex
-persistence_base_dir = Path(".conversations")
+artifact_dir = Path(".pr") / "event-json-to-openai-messages" / conversation_id.hex
+log_dir = artifact_dir / "logs"
+persistence_base_dir = artifact_dir / "conversations"
 
 os.environ.setdefault("LOG_JSON", "true")
 os.environ.setdefault("LOG_TO_FILE", "true")
@@ -86,10 +87,12 @@ convertible_events = [
 ]
 llm_messages = LLMConvertibleEvent.events_to_messages(convertible_events)
 
-chat_messages = llm.format_messages_for_llm(llm_messages)
-logger.info("Chat Completions messages:\n%s", json.dumps(chat_messages, indent=2))
-
 if llm.uses_responses_api():
+    logger.info("Formatting messages for the OpenAI Responses API.")
     instructions, input_items = llm.format_messages_for_responses(llm_messages)
     logger.info("Responses instructions:\n%s", instructions)
     logger.info("Responses input:\n%s", json.dumps(input_items, indent=2))
+else:
+    logger.info("Formatting messages for the OpenAI Chat Completions API.")
+    chat_messages = llm.format_messages_for_llm(llm_messages)
+    logger.info("Chat Completions messages:\n%s", json.dumps(chat_messages, indent=2))
