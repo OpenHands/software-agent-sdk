@@ -18,6 +18,7 @@ You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHA
 Approve PRs that are straightforward and low-risk:
 
 - **Configuration changes**: Adding models to config files, updating CI/workflow settings
+- **CI/Infrastructure changes**: Changing runner types, fixing workflow paths, updating job configurations
 - **Cosmetic changes**: Typo fixes, formatting, comment improvements, README updates
 - **Documentation-only changes**: Docstring updates, clarifying notes, API documentation improvements
 - **Simple additions**: Adding entries to lists/dictionaries following existing patterns
@@ -27,6 +28,7 @@ Approve PRs that are straightforward and low-risk:
 Examples:
 - A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
 - A PR adding documentation notes to docstrings clarifying method behavior (e.g., security considerations, bypass behaviors)
+- A PR changing CI runners or fixing workflow infrastructure issues (e.g., standardizing runner types to fix path inconsistencies)
 
 ### When to COMMENT
 
