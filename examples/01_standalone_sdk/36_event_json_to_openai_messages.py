@@ -7,9 +7,10 @@ from pydantic import SecretStr
 
 
 conversation_id = uuid.uuid4()
-artifact_dir = Path(".pr") / "event-json-to-openai-messages" / conversation_id.hex
-log_dir = artifact_dir / "logs"
-persistence_base_dir = artifact_dir / "conversations"
+persistence_root = Path(".conversations")
+log_dir = (
+    persistence_root / "logs" / "event-json-to-openai-messages" / conversation_id.hex
+)
 
 os.environ.setdefault("LOG_JSON", "true")
 os.environ.setdefault("LOG_TO_FILE", "true")
@@ -47,10 +48,14 @@ agent = Agent(
     tools=[Tool(name=TerminalTool.name)],
 )
 
+######
+# Create a conversation that persists its events
+######
+
 conversation = Conversation(
     agent=agent,
     workspace=os.getcwd(),
-    persistence_dir=str(persistence_base_dir),
+    persistence_dir=str(persistence_root),
     conversation_id=conversation_id,
 )
 
@@ -69,12 +74,7 @@ assert conversation.state.persistence_dir is not None
 persistence_dir = Path(conversation.state.persistence_dir)
 event_dir = persistence_dir / "events"
 
-logger.info("Log directory: %s", log_dir)
-logger.info("Persistence directory: %s", persistence_dir)
-logger.info("Event directory: %s", event_dir)
-
 event_paths = sorted(event_dir.glob("event-*.json"))
-logger.info("Event files: %s", [path.name for path in event_paths])
 
 if not event_paths:
     raise RuntimeError("No event files found. Was persistence enabled?")
@@ -85,7 +85,6 @@ if not event_paths:
 
 
 events = [Event.model_validate_json(path.read_text()) for path in event_paths]
-logger.info("Loaded %s events", len(events))
 
 convertible_events = [
     event for event in events if isinstance(event, LLMConvertibleEvent)
