@@ -35,7 +35,7 @@ jobs:
         concurrency:
             group: pr-review-${{ github.event.pull_request.number }}
             cancel-in-progress: true
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         env:
             LLM_MODEL: litellm_proxy/claude-sonnet-4-5-20250929
             LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
