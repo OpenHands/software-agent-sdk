@@ -310,106 +310,110 @@ def get_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
     )
 
 
-llm_api_key = get_required_env("LLM_API_KEY")
-llm = LLM(
-    model=os.getenv("LLM_MODEL", "anthropic/claude-haiku-4-5"),
-    api_key=llm_api_key,
-    base_url=os.getenv("LLM_BASE_URL", None),
-)
-
-# Setup critic
-critic = get_default_critic(llm)
-if critic is None:
-    print("⚠️  No All-Hands LLM proxy detected, trying explicit env vars...")
-    critic = APIBasedCritic(
-        server_url=get_required_env("CRITIC_SERVER_URL"),
-        api_key=get_required_env("CRITIC_API_KEY"),
-        model_name=get_required_env("CRITIC_MODEL_NAME"),
+def main() -> None:
+    """Run the iterative refinement example with critic model."""
+    llm_api_key = get_required_env("LLM_API_KEY")
+    llm = LLM(
+        model=os.getenv("LLM_MODEL", "anthropic/claude-haiku-4-5"),
+        api_key=llm_api_key,
+        base_url=os.getenv("LLM_BASE_URL", None),
     )
 
-# Create agent with critic
-agent = Agent(
-    llm=llm,
-    tools=[
-        Tool(name=TerminalTool.name),
-        Tool(name=FileEditorTool.name),
-        Tool(name=TaskTrackerTool.name),
-    ],
-    critic=critic,
-)
+    # Setup critic
+    critic = get_default_critic(llm)
+    if critic is None:
+        print("⚠️  No All-Hands LLM proxy detected, trying explicit env vars...")
+        critic = APIBasedCritic(
+            server_url=get_required_env("CRITIC_SERVER_URL"),
+            api_key=get_required_env("CRITIC_API_KEY"),
+            model_name=get_required_env("CRITIC_MODEL_NAME"),
+        )
 
-# Create workspace and collector
-workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
-print(f"📁 Created workspace: {workspace}")
-collector = CriticResultCollector()
-
-# Create conversation with callback
-conversation = Conversation(
-    agent=agent,
-    workspace=str(workspace),
-    callbacks=[collector.callback],
-)
-
-print("\n" + "=" * 70)
-print("🚀 Starting Iterative Refinement with Critic Model")
-print("=" * 70)
-print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
-print(f"Max iterations: {MAX_ITERATIONS}")
-
-# Initial task
-print("\n--- Iteration 1: Initial Task ---")
-conversation.send_message(INITIAL_TASK_PROMPT)
-conversation.run()
-
-iteration = 1
-while iteration < MAX_ITERATIONS:
-    # Check critic result
-    if collector.latest_result is None:
-        print("\n⚠️  No critic result available, assuming task incomplete")
-        score = 0.0
-    else:
-        score = collector.latest_result.score
-
-    print(f"\n📈 Iteration {iteration} final score: {score:.3f}")
-
-    if score >= SUCCESS_THRESHOLD:
-        print(f"✅ Success threshold ({SUCCESS_THRESHOLD:.0%}) met!")
-        break
-
-    # Prepare for next iteration
-    iteration += 1
-    collector.reset()
-
-    print(f"\n--- Iteration {iteration}: Follow-up Refinement ---")
-    print(f"Score {score:.3f} < threshold {SUCCESS_THRESHOLD:.3f}, sending feedback...")
-
-    followup_prompt = get_followup_prompt(
-        collector.latest_result or CriticResult(score=0.0, message=None),
-        iteration,
+    # Create agent with critic
+    agent = Agent(
+        llm=llm,
+        tools=[
+            Tool(name=TerminalTool.name),
+            Tool(name=FileEditorTool.name),
+            Tool(name=TaskTrackerTool.name),
+        ],
+        critic=critic,
     )
-    conversation.send_message(followup_prompt)
+
+    # Create workspace and collector
+    workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
+    print(f"📁 Created workspace: {workspace}")
+    collector = CriticResultCollector()
+
+    # Create conversation with callback
+    conversation = Conversation(
+        agent=agent,
+        workspace=str(workspace),
+        callbacks=[collector.callback],
+    )
+
+    print("\n" + "=" * 70)
+    print("🚀 Starting Iterative Refinement with Critic Model")
+    print("=" * 70)
+    print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
+    print(f"Max iterations: {MAX_ITERATIONS}")
+
+    # Initial task
+    print("\n--- Iteration 1: Initial Task ---")
+    conversation.send_message(INITIAL_TASK_PROMPT)
     conversation.run()
 
-# Final summary
-print("\n" + "=" * 70)
-print("📊 ITERATIVE REFINEMENT COMPLETE")
-print("=" * 70)
-print(f"Total iterations: {iteration}")
+    iteration = 1
+    while iteration < MAX_ITERATIONS:
+        # Check critic result
+        if collector.latest_result is None:
+            print("\n⚠️  No critic result available, assuming task incomplete")
+            score = 0.0
+        else:
+            score = collector.latest_result.score
 
-if collector.latest_result:
-    final_score = collector.latest_result.score
-    print(f"Final critic score: {final_score:.3f}")
-    print(f"Success: {'✅ YES' if final_score >= SUCCESS_THRESHOLD else '❌ NO'}")
-else:
-    print("Final critic score: N/A (no critic results)")
+        print(f"\n📈 Iteration {iteration} final score: {score:.3f}")
 
-# List created files
-print("\nCreated files:")
-for path in sorted(workspace.rglob("*")):
-    if path.is_file():
-        relative = path.relative_to(workspace)
-        print(f"  - {relative}")
+        if score >= SUCCESS_THRESHOLD:
+            print(f"✅ Success threshold ({SUCCESS_THRESHOLD:.0%}) met!")
+            break
 
-# Report cost
-cost = llm.metrics.accumulated_cost
-print(f"\nEXAMPLE_COST: {cost:.4f}")
+        # Prepare for next iteration - save latest_result BEFORE reset
+        iteration += 1
+        last_result = collector.latest_result or CriticResult(score=0.0, message=None)
+        collector.reset()
+
+        print(f"\n--- Iteration {iteration}: Follow-up Refinement ---")
+        print(f"Score {score:.3f} < threshold {SUCCESS_THRESHOLD:.3f}, sending...")
+
+        followup_prompt = get_followup_prompt(last_result, iteration)
+        conversation.send_message(followup_prompt)
+        conversation.run()
+
+    # Final summary
+    print("\n" + "=" * 70)
+    print("📊 ITERATIVE REFINEMENT COMPLETE")
+    print("=" * 70)
+    print(f"Total iterations: {iteration}")
+
+    if collector.latest_result:
+        final_score = collector.latest_result.score
+        print(f"Final critic score: {final_score:.3f}")
+        print(f"Success: {'✅ YES' if final_score >= SUCCESS_THRESHOLD else '❌ NO'}")
+    else:
+        print("Final critic score: N/A (no critic results)")
+
+    # List created files
+    print("\nCreated files:")
+    for path in sorted(workspace.rglob("*")):
+        if path.is_file():
+            relative = path.relative_to(workspace)
+            print(f"  - {relative}")
+
+    # Report cost
+    cost = llm.metrics.accumulated_cost
+    print(f"\nEXAMPLE_COST: {cost:.4f}")
+
+
+if __name__ == "__main__":
+    main()
