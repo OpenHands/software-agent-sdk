@@ -131,7 +131,7 @@ MODELS = {
     },
     "gpt-oss-20b": {
         "id": "gpt-oss-20b",
-        "display_name": "gpt-oss-20b",
+        "display_name": "GPT OSS 20B",
         "llm_config": {"model": "litellm_proxy/gpt-oss-20b"},
     },
 }
