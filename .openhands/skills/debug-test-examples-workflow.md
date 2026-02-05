@@ -1,46 +1,44 @@
-# Debugging test-examples Workflow
+---
+name: debug-test-examples-workflow
+description: Guide for debugging failing example tests in the run-examples.yml workflow. Use this skill when investigating CI failures in the test-examples workflow, when example scripts fail to run correctly, when needing to isolate specific test failures, or when analyzing workflow logs and failure patterns.
+---
 
-This document describes the methodology for debugging failing example tests in the `run-examples.yml` workflow.
+# Debugging test-examples Workflow
 
 ## Overview
 
-The `run-examples.yml` workflow runs example scripts from the `examples/` directory to verify they work correctly. Tests are triggered by:
-- Adding the `test-examples` label to a PR
+The `run-examples.yml` workflow runs example scripts from `examples/` directory. Triggers:
+- Adding `test-examples` label to a PR
 - Manual workflow dispatch
 - Scheduled nightly runs
 
-## Debugging Methodology
+## Debugging Steps
 
-### 1. Isolate the Failing Tests
+### 1. Isolate Failing Tests
 
-When debugging specific test failures, modify `tests/examples/test_examples.py` to focus on the failing tests:
+Modify `tests/examples/test_examples.py` to focus on specific tests:
 
 ```python
-# Comment out other directories to focus on specific tests
 _TARGET_DIRECTORIES = (
     # EXAMPLES_ROOT / "01_standalone_sdk",
-    EXAMPLES_ROOT / "02_remote_agent_server",  # Keep only the failing directory
-    # EXAMPLES_ROOT / "05_skills_and_plugins" / "01_loading_agentskills",
+    EXAMPLES_ROOT / "02_remote_agent_server",  # Keep only failing directory
 )
 ```
 
-### 2. Add Failing Tests to Exclusion List
+### 2. Exclude Tests
 
-If tests need to be excluded temporarily or permanently, add them to `_EXCLUDED_EXAMPLES`:
+Add to `_EXCLUDED_EXAMPLES` with explanation:
 
 ```python
 _EXCLUDED_EXAMPLES = {
-    # ... existing exclusions ...
-    # Add comment explaining why the test is excluded
+    # Reason for exclusion
     "examples/path/to/failing_test.py",
 }
 ```
 
-### 3. Trigger the Workflow
+### 3. Trigger Workflow
 
-To trigger the workflow on a PR:
-1. Remove the `test-examples` label
-2. Re-add the `test-examples` label
+Toggle the `test-examples` label:
 
 ```bash
 # Remove label
@@ -54,66 +52,47 @@ curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
   -d '{"labels":["test-examples"]}'
 ```
 
-### 4. Monitor Workflow Progress
+### 4. Monitor Progress
 
 ```bash
-# Check workflow status
+# Check status
 curl -s -H "Authorization: token $GITHUB_TOKEN" \
   "https://api.github.com/repos/OpenHands/software-agent-sdk/actions/runs/{RUN_ID}" | jq '{status, conclusion}'
 
-# Download and inspect logs
+# Download logs
 curl -sL -H "Authorization: token $GITHUB_TOKEN" \
   "https://api.github.com/repos/OpenHands/software-agent-sdk/actions/runs/{RUN_ID}/logs" -o logs.zip
 unzip logs.zip -d logs
-cat logs/test-examples/10_Run\ examples.txt | tail -100
 ```
 
-### 5. Analyze Failure Patterns
+## Common Failure Patterns
 
-Common failure patterns:
-
-1. **Port conflicts**: Tests using fixed ports (8010, 8011) cannot run in parallel
-   - Solution: Run tests sequentially with `-n 1` or use different ports
-
-2. **Container issues**: Docker/Apptainer tests may fail due to:
-   - Missing Docker setup in CI
-   - tmux initialization issues inside containers
-   - Image pull failures
-
-3. **LLM-related failures**: Transient failures from LLM API
-   - These are usually flaky and may pass on retry
-
-4. **Example code bugs**: Errors in the example code itself
-   - Check the traceback for the specific error
+| Pattern | Cause | Solution |
+|---------|-------|----------|
+| Port conflicts | Fixed ports (8010, 8011) | Run with `-n 1` or use different ports |
+| Container issues | Docker/Apptainer setup | Check Docker availability, image pulls |
+| LLM failures | Transient API errors | Retry the test |
+| Example bugs | Code errors | Check traceback |
 
 ## Known Issues
 
-### Docker/Apptainer Sandboxed Server Tests
-
-The following tests are excluded due to tmux initialization issues inside containers:
+Docker/Apptainer sandboxed server tests excluded due to tmux initialization issues:
 - `02_convo_with_docker_sandboxed_server.py`
 - `03_browser_use_with_docker_sandboxed_server.py`
 - `04_convo_with_api_sandboxed_server.py`
 - `05_vscode_with_docker_sandboxed_server.py`
 - `08_convo_with_apptainer_sandboxed_server.py`
 
-Root cause: The TmuxTerminal fails with "Could not find object" when trying to create a new tmux session via libtmux inside Docker/Apptainer containers.
+Root cause: TmuxTerminal fails with "Could not find object" when creating tmux sessions inside containers.
 
-## Workflow Configuration
+## Key Configuration
 
-Key workflow settings in `.github/workflows/run-examples.yml`:
+**Workflow** (`.github/workflows/run-examples.yml`):
+- Runner: `blacksmith-2vcpu-ubuntu-2404`
+- Timeout: 60 minutes
+- Parallelism: `-n 4`
 
-- **Runner**: `blacksmith-2vcpu-ubuntu-2404`
-- **Timeout**: 60 minutes
-- **Parallelism**: `-n 4` (4 parallel workers)
-- **Docker**: Available on the runner, login to GHCR for image pulls
-- **Apptainer**: Set up via `eWaterCycle/setup-apptainer@v2`
-
-## Test Configuration
-
-Key settings in `tests/examples/test_examples.py`:
-
-- **Timeout per example**: 600 seconds (10 minutes)
-- **Target directories**: Defined in `_TARGET_DIRECTORIES`
-- **Excluded examples**: Defined in `_EXCLUDED_EXAMPLES`
-- **LLM-specific examples**: Defined in `_LLM_SPECIFIC_EXAMPLES` with model overrides
+**Tests** (`tests/examples/test_examples.py`):
+- Timeout per example: 600 seconds
+- Target directories: `_TARGET_DIRECTORIES`
+- Excluded examples: `_EXCLUDED_EXAMPLES`

@@ -52,14 +52,6 @@ jobs:
               with:
                   node-version: '22'
 
-            - name: Setup Docker
-              run: |
-                  # Verify Docker is available
-                  docker --version
-                  docker info
-                  # Login to GitHub Container Registry to pull images
-                  echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
-
             - name: Setup Apptainer
               uses: eWaterCycle/setup-apptainer@v2
               with:

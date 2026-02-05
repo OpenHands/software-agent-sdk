@@ -49,18 +49,8 @@ _EXCLUDED_EXAMPLES = {
     "examples/01_standalone_sdk/15_browser_use.py",
     "examples/01_standalone_sdk/16_llm_security_analyzer.py",
     "examples/01_standalone_sdk/27_observability_laminar.py",
-    # 30_tom_agent.py has a bug - it accesses conversation.agent.tools_map before
-    # the agent is initialized. Needs to be fixed in the example code.
-    "examples/01_standalone_sdk/30_tom_agent.py",
     "examples/01_standalone_sdk/35_subscription_login.py",
-    # Docker/Apptainer sandboxed server examples are excluded due to tmux initialization
-    # issues inside containers. The TmuxTerminal fails with "Could not find object"
-    # when trying to create a new tmux session. See issue #1886 for details.
-    "examples/02_remote_agent_server/02_convo_with_docker_sandboxed_server.py",
-    "examples/02_remote_agent_server/03_browser_use_with_docker_sandboxed_server.py",
-    "examples/02_remote_agent_server/04_convo_with_api_sandboxed_server.py",
-    "examples/02_remote_agent_server/05_vscode_with_docker_sandboxed_server.py",
-    "examples/02_remote_agent_server/08_convo_with_apptainer_sandboxed_server.py",
+    "examples/02_remote_agent_server/04_vscode_with_docker_sandboxed_server.py",
 }
 
 
