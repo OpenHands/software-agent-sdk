@@ -43,7 +43,7 @@ Toggle the `test-examples` label:
 ```bash
 # Remove label
 curl -X DELETE -H "Authorization: token $GITHUB_TOKEN" \
-  "https://api.github.com/repos/OpenHands/software-agent-sdk/issues/{PR_NUMBER}/labels/test-examples"
+  "https://api.github.com/repos/OpenHands/software-agent-sdk/issues/${PR_NUMBER}/labels/test-examples"
 
 # Add label
 curl -X POST -H "Authorization: token $GITHUB_TOKEN" \
