@@ -13,7 +13,7 @@ permissions:
 
 jobs:
     sdk-tests:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -82,7 +82,7 @@ jobs:
                   if-no-files-found: warn
 
     tools-tests:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         timeout-minutes: 15
         steps:
             - name: Checkout
@@ -140,7 +140,7 @@ jobs:
                   if-no-files-found: warn
 
     agent-server-tests:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -197,7 +197,7 @@ jobs:
                   if-no-files-found: warn
 
     cross-tests:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Checkout
               uses: actions/checkout@v5
@@ -254,7 +254,7 @@ jobs:
                   if-no-files-found: warn
 
     coverage-report:
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         needs: [sdk-tests, tools-tests, agent-server-tests, cross-tests]
         if: always() && github.event_name == 'pull_request'
         steps:
