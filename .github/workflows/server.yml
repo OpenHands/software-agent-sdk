@@ -212,7 +212,8 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: binary
             PLATFORM: ${{ matrix.platform }}
-            GITHUB_SHA: ${{ github.sha }}
+            # Use PR head SHA for pull requests to match the image tag expected by run-examples.yml
+            GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
             GITHUB_REF: ${{ github.ref }}
             CI: 'true'
 
