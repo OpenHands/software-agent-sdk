@@ -2,8 +2,9 @@
 # To set this up:
 #  1. Copy this file to .github/workflows/pr-review.yml in your repository
 #  2. Add your LLM_API_KEY to the repository secrets
-#  3. Commit this file to your repository
-#  4. Trigger the review by either:
+#  3. For 'cloud' mode, also add OPENHANDS_CLOUD_API_KEY to secrets
+#  4. Commit this file to your repository
+#  5. Trigger the review by either:
 #     - Adding the "review-this" label to any PR, OR
 #     - Requesting openhands-agent as a reviewer
 name: PR Review by OpenHands
@@ -31,6 +32,9 @@ jobs:
             LLM_BASE_URL: <YOUR_LLM_BASE_URL>
             # Review style: 'standard' for pragmatic review, 'roasted' for Linus-style
             REVIEW_STYLE: standard
+            # Review mode: 'sdk' runs locally, 'cloud' launches in OpenHands Cloud
+            # For 'cloud' mode, set OPENHANDS_CLOUD_API_KEY secret
+            REVIEW_MODE: sdk
             # PR context will be automatically provided by the agent script
             PR_NUMBER: ${{ github.event.pull_request.number }}
             PR_TITLE: ${{ github.event.pull_request.title }}
@@ -72,15 +76,21 @@ jobs:
 
             - name: Install OpenHands dependencies
               run: |
-                  # Install OpenHands SDK and tools from local checkout
-                  uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools
+                  # Install OpenHands SDK, tools, and workspace from local checkout
+                  uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools ./software-agent-sdk/openhands-workspace
 
             - name: Check required configuration
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
               run: |
                   if [ -z "$LLM_API_KEY" ]; then
                     echo "Error: LLM_API_KEY secret is not set."
+                    exit 1
+                  fi
+
+                  if [ "$REVIEW_MODE" = "cloud" ] && [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
+                    echo "Error: OPENHANDS_CLOUD_API_KEY secret is required for 'cloud' mode."
                     exit 1
                   fi
 
@@ -88,6 +98,7 @@ jobs:
                   echo "PR Title: $PR_TITLE"
                   echo "Repository: $REPO_NAME"
                   echo "LLM model: $LLM_MODEL"
+                  echo "Review mode: $REVIEW_MODE"
                   if [ -n "$LLM_BASE_URL" ]; then
                     echo "LLM base URL: $LLM_BASE_URL"
                   fi
@@ -96,6 +107,7 @@ jobs:
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+                  OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
               run: |
                   # Change to the PR repository directory so agent can analyze the code
                   cd pr-repo
