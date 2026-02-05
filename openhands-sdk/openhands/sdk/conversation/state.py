@@ -45,6 +45,25 @@ class ConversationExecutionStatus(str, Enum):
     STUCK = "stuck"  # Conversation is stuck in a loop or unable to proceed
     DELETING = "deleting"  # Conversation is in the process of being deleted
 
+    def is_terminal(self) -> bool:
+        """Check if this status represents a terminal state.
+
+        Terminal states indicate the run has completed and the agent is no longer
+        actively processing. These are: FINISHED, ERROR, STUCK.
+
+        Note: IDLE is NOT a terminal state - it's the initial state of a conversation
+        before any run has started. Including IDLE would cause false positives when
+        the WebSocket delivers the initial state update during connection.
+
+        Returns:
+            True if this is a terminal status, False otherwise.
+        """
+        return self in (
+            ConversationExecutionStatus.FINISHED,
+            ConversationExecutionStatus.ERROR,
+            ConversationExecutionStatus.STUCK,
+        )
+
 
 class ConversationState(OpenHandsModel):
     # ===== Public, validated fields =====

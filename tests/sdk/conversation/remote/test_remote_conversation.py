@@ -512,7 +512,12 @@ class TestRemoteConversation:
     def test_remote_conversation_run_blocking_polls_until_finished(
         self, mock_ws_client
     ):
-        """Test that blocking=True polls until status is not running."""
+        """Test that blocking=True polls until status is not running.
+
+        The implementation waits for WebSocket to deliver terminal status, but falls
+        back to REST polling if WebSocket doesn't deliver. The fallback requires 3
+        consecutive terminal polls (TERMINAL_POLL_THRESHOLD) before returning.
+        """
         # Setup mocks
         conversation_id = str(uuid.uuid4())
         mock_client_instance = self.setup_mock_client(conversation_id=conversation_id)
@@ -549,8 +554,11 @@ class TestRemoteConversation:
         conversation.run(blocking=True, poll_interval=0.01)  # Fast polling for test
 
         # Verify polling happened multiple times
-        assert poll_count[0] == 3, (
-            f"Should have polled 3 times (2 running + 1 finished), got {poll_count[0]}"
+        # With the fallback mechanism, we need 3 consecutive terminal polls:
+        # 2 running + 3 finished = 5 total polls
+        assert poll_count[0] == 5, (
+            f"Should have polled 5 times (2 running + 3 finished for fallback "
+            f"threshold), got {poll_count[0]}"
         )
 
     @patch(
