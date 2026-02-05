@@ -155,8 +155,8 @@ jobs:
                   # Create branch
                   git checkout -b "$BRANCH"
 
-                  # Update versions using uv
-                  uv add "openhands-sdk==$VERSION" "openhands-tools==$VERSION"
+                  # Update versions using uv (openhands-cli requires Python 3.12)
+                  uv add --python 3.12 "openhands-sdk==$VERSION" "openhands-tools==$VERSION"
 
                   # Check if there are changes
                   if git diff --quiet; then
