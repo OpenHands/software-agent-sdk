@@ -23,7 +23,7 @@ Approve PRs that are straightforward and low-risk:
 - **Test-only changes**: Adding or updating tests without changing production code
 - **Dependency updates**: Version bumps with passing CI
 
-Example: A PR adding a new model to `resolve_model_config.py` with corresponding test updates is a good candidate for approval.
+Example: A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates is a good candidate for approval.
 
 ### When to COMMENT
 
