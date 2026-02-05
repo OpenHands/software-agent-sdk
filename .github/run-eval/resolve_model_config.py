@@ -129,6 +129,11 @@ MODELS = {
         "display_name": "Qwen3 Coder 30B A3B Instruct",
         "llm_config": {"model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct"},
     },
+    "gpt-oss-20b": {
+        "id": "gpt-oss-20b",
+        "display_name": "GPT OSS 20B",
+        "llm_config": {"model": "litellm_proxy/gpt-oss-20b"},
+    },
 }
 
 
