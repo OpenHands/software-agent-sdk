@@ -50,8 +50,6 @@ VERIFIED_MISTRAL_MODELS = [
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    # Claude 4.6 family
-    "claude-opus-4-6-20260205",
     # Claude 4.5 family
     "claude-opus-4-5-20251101",
     "claude-sonnet-4-5-20250929",
