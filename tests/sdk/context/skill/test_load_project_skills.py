@@ -93,6 +93,50 @@ def test_load_project_skills_with_skills_directory(tmp_path):
     assert isinstance(skills[0].trigger, KeywordTrigger)
 
 
+def test_load_project_skills_with_agents_directory(tmp_path):
+    """Test load_project_skills loads from .agents/skills directory."""
+    # Create .agents/skills directory
+    skills_dir = tmp_path / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+
+    # Create a test skill file
+    skill_file = skills_dir / "agent_skill.md"
+    skill_file.write_text(
+        "---\nname: agent_skill\ntriggers:\n  - agent\n---\nAgent skill content."
+    )
+
+    skills = load_project_skills(tmp_path)
+    assert len(skills) == 1
+    assert skills[0].name == "agent_skill"
+    assert skills[0].content == "Agent skill content."
+    assert isinstance(skills[0].trigger, KeywordTrigger)
+
+
+def test_load_project_skills_agents_directory_precedence(tmp_path):
+    """Test .agents/skills takes precedence over other directories."""
+    agents_dir = tmp_path / ".agents" / "skills"
+    skills_dir = tmp_path / ".openhands" / "skills"
+    microagents_dir = tmp_path / ".openhands" / "microagents"
+    agents_dir.mkdir(parents=True)
+    skills_dir.mkdir(parents=True)
+    microagents_dir.mkdir(parents=True)
+
+    (agents_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom .agents/skills."
+    )
+    (skills_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom .openhands/skills."
+    )
+    (microagents_dir / "duplicate.md").write_text(
+        "---\nname: duplicate\n---\nFrom .openhands/microagents."
+    )
+
+    skills = load_project_skills(tmp_path)
+    assert len(skills) == 1
+    assert skills[0].name == "duplicate"
+    assert skills[0].content == "From .agents/skills."
+
+
 def test_load_project_skills_with_microagents_directory(tmp_path):
     """Test load_project_skills loads from .openhands/microagents directory (legacy)."""
     # Create .openhands/microagents directory
