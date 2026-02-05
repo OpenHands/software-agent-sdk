@@ -76,11 +76,8 @@ REASONING_EFFORT_MODELS: list[str] = [
 
 EXTENDED_THINKING_MODELS: list[str] = [
     # Anthropic model family
-    # We did not include sonnet 3.7 here as it doesn't bring
+    # We did not include sonnet 3.7 and 4 here as they don't brings
     # significant performance improvements for agents
-    # Claude 4.6 family
-    "claude-opus-4-6",
-    # Claude 4.5 family
     "claude-sonnet-4-5",
     "claude-haiku-4-5",
 ]
@@ -92,14 +89,11 @@ PROMPT_CACHE_MODELS: list[str] = [
     "claude-3-5-haiku",
     "claude-3-haiku-20240307",
     "claude-3-opus-20240229",
-    # Claude 4 family
     "claude-sonnet-4",
     "claude-opus-4",
-    # Claude 4.5 family
+    # Anthropic Haiku 4.5 variants (dash only; official IDs use hyphens)
     "claude-haiku-4-5",
     "claude-opus-4-5",
-    # Claude 4.6 family
-    "claude-opus-4-6",
 ]
 
 # Models that support a top-level prompt_cache_retention parameter

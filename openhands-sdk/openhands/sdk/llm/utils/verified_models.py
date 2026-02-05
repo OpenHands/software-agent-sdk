@@ -20,18 +20,12 @@ VERIFIED_OPENAI_MODELS = [
 ]
 
 VERIFIED_ANTHROPIC_MODELS = [
-    # Claude 4.6 family
-    "claude-opus-4-6-20260205",
-    # Claude 4.5 family
     "claude-sonnet-4-5-20250929",
     "claude-haiku-4-5-20251001",
     "claude-opus-4-5-20251101",
-    # Claude 4 family
     "claude-sonnet-4-20250514",
     "claude-opus-4-20250514",
-    # Claude 4.1 family
     "claude-opus-4-1-20250805",
-    # Claude 3.x family
     "claude-3-7-sonnet-20250219",
     "claude-3-sonnet-20240229",
     "claude-3-opus-20240229",
@@ -50,16 +44,13 @@ VERIFIED_MISTRAL_MODELS = [
 ]
 
 VERIFIED_OPENHANDS_MODELS = [
-    # Claude 4.5 family
     "claude-opus-4-5-20251101",
     "claude-sonnet-4-5-20250929",
-    # GPT-5 family
     "gpt-5.2",
     "gpt-5.2-codex",
     "gpt-5.1-codex-max",
     "gpt-5.1-codex",
     "gpt-5.1",
-    # Other models
     "gemini-3-pro-preview",
     "deepseek-chat",
     "kimi-k2-thinking",
