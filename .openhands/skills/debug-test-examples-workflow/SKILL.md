@@ -74,16 +74,6 @@ unzip logs.zip -d logs
 | LLM failures | Transient API errors | Retry the test |
 | Example bugs | Code errors | Check traceback |
 
-## Known Issues
-
-Docker/Apptainer sandboxed server tests excluded due to tmux initialization issues:
-- `02_convo_with_docker_sandboxed_server.py`
-- `03_browser_use_with_docker_sandboxed_server.py`
-- `04_convo_with_api_sandboxed_server.py`
-- `05_vscode_with_docker_sandboxed_server.py`
-- `08_convo_with_apptainer_sandboxed_server.py`
-
-Root cause: TmuxTerminal fails with "Could not find object" when creating tmux sessions inside containers.
 
 ## Key Configuration
 
