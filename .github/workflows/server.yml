@@ -162,15 +162,17 @@ jobs:
                 # Each job specifies exactly what it builds and where it runs
                 include:
                     # Python variant
+                    # NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility
+                    # issue with Python 3.13. See issue #1886 for details.
                     - variant: python
                       arch: amd64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
                       runner: ubuntu-24.04
                       platform: linux/amd64
 
                     - variant: python
                       arch: arm64
-                      base_image: nikolaik/python-nodejs:python3.13-nodejs22
+                      base_image: nikolaik/python-nodejs:python3.12-nodejs22
                       runner: ubuntu-24.04-arm
                       platform: linux/arm64
 
@@ -210,7 +212,8 @@ jobs:
             ARCH: ${{ matrix.arch }}
             TARGET: binary
             PLATFORM: ${{ matrix.platform }}
-            GITHUB_SHA: ${{ github.sha }}
+            # Use PR head SHA for pull requests to match the image tag expected by run-examples.yml
+            GITHUB_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
             GITHUB_REF: ${{ github.ref }}
             CI: 'true'
 
