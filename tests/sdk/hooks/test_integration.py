@@ -941,3 +941,88 @@ fi
             )
         ]
         assert len(feedback_messages) == 1, "Feedback message should be injected once"
+
+    def test_auto_load_hooks_from_working_directory(self, tmp_path):
+        """Test that hooks are auto-loaded from .openhands/hooks.json in working dir."""
+        import json
+        from unittest.mock import patch
+
+        from pydantic import SecretStr
+
+        from openhands.sdk.agent import Agent
+        from openhands.sdk.conversation import LocalConversation
+        from openhands.sdk.conversation.state import ConversationExecutionStatus
+        from openhands.sdk.llm import LLM
+
+        # Create .openhands/hooks.json in the working directory
+        openhands_dir = tmp_path / ".openhands"
+        openhands_dir.mkdir()
+
+        # Create a stop hook that logs when it's called
+        stop_log_file = tmp_path / "stop_hook_called.log"
+        hooks_dir = openhands_dir / "hooks"
+        hooks_dir.mkdir()
+        script = hooks_dir / "on_stop.sh"
+        script.write_text(f"""#!/bin/bash
+echo "Auto-loaded stop hook called" >> {stop_log_file}
+echo '{{"decision": "allow"}}'
+exit 0
+""")
+        script.chmod(0o755)
+
+        # Create hooks.json
+        hooks_json = openhands_dir / "hooks.json"
+        hooks_json.write_text(
+            json.dumps(
+                {
+                    "stop": [
+                        {
+                            "matcher": "*",
+                            "hooks": [
+                                {
+                                    "type": "command",
+                                    "command": ".openhands/hooks/on_stop.sh",
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+        )
+
+        llm = LLM(model="test-model", api_key=SecretStr("test-key"))
+        agent = Agent(llm=llm, tools=[])
+
+        # Create a mock agent that sets FINISHED immediately
+        step_count = 0
+
+        def mock_step(self, conversation, on_event, on_token=None):
+            nonlocal step_count
+            step_count += 1
+            conversation.state.execution_status = ConversationExecutionStatus.FINISHED
+
+        with patch.object(Agent, "step", mock_step):
+            # NOTE: No hook_config passed - should auto-load from working directory
+            conversation = LocalConversation(
+                agent=agent,
+                workspace=tmp_path,
+                callbacks=[],
+                visualizer=None,
+                max_iteration_per_run=10,
+            )
+
+            # Send a message to start (triggers plugin/hook loading)
+            conversation.send_message("Hello")
+
+            # Verify hook processor was created from auto-loaded config
+            assert conversation._hook_processor is not None
+
+            # Run the conversation
+            conversation.run()
+
+            # Close to trigger session end
+            conversation.close()
+
+        # Verify the stop hook was called
+        assert stop_log_file.exists(), "Stop hook should have been called"
+        assert "Auto-loaded stop hook called" in stop_log_file.read_text()
