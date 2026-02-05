@@ -1,9 +1,12 @@
 """Tmux-based terminal backend implementation."""
 
+import fcntl
+import os
 import time
 import uuid
 
 import libtmux
+from libtmux.exc import TmuxObjectDoesNotExist
 
 from openhands.sdk.logger import get_logger
 from openhands.sdk.utils import sanitized_env
@@ -13,6 +16,10 @@ from openhands.tools.terminal.terminal import TerminalInterface
 
 
 logger = get_logger(__name__)
+
+# Lock file for serializing tmux session creation to prevent race conditions in libtmux
+# Namespaced by UID to avoid unnecessary cross-user serialization
+_TMUX_LOCK_FILE = f"/tmp/openhands-tmux-session-{os.getuid()}.lock"
 
 
 class TmuxTerminal(TerminalInterface):
@@ -52,13 +59,43 @@ class TmuxTerminal(TerminalInterface):
 
         logger.debug(f"Initializing tmux terminal with command: {window_command}")
         session_name = f"openhands-{self.username}-{uuid.uuid4()}"
-        self.session = self.server.new_session(
-            session_name=session_name,
-            start_directory=self.work_dir,
-            kill_session=True,
-            x=1000,
-            y=1000,
-        )
+
+        # Serialize tmux session creation to prevent libtmux race conditions
+        # File lock provides both cross-process and intra-process synchronization
+        lock_fd = None
+        try:
+            lock_fd = os.open(_TMUX_LOCK_FILE, os.O_CREAT | os.O_RDWR, 0o666)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            max_retries = 3
+            retry_delay = 0.5
+            last_error = None
+            for attempt in range(max_retries):
+                try:
+                    self.session = self.server.new_session(
+                        session_name=session_name,
+                        start_directory=self.work_dir,
+                        kill_session=True,
+                        x=1000,
+                        y=1000,
+                    )
+                    break
+                except TmuxObjectDoesNotExist as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        logger.warning(
+                            f"Tmux session creation failed (attempt {attempt + 1}/"
+                            f"{max_retries}), retrying in {retry_delay}s: {e}"
+                        )
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+            else:
+                raise RuntimeError(
+                    f"Failed to create tmux session after {max_retries} attempts"
+                ) from last_error
+        finally:
+            if lock_fd is not None:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
         for k, v in env.items():
             self.session.set_environment(k, v)
 
