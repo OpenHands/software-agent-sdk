@@ -364,6 +364,14 @@ class LocalConversation(BaseConversation):
                 else:
                     final_hook_config = plugin_hooks
 
+        # Auto-load hooks from working directory if no explicit config
+        if final_hook_config is None:
+            final_hook_config = HookConfig.load(
+                working_dir=str(self.workspace.working_dir)
+            )
+            if final_hook_config.is_empty():
+                final_hook_config = None
+
         # Set up hook processor with the combined config
         if final_hook_config is not None:
             self._hook_processor, self._on_event = create_hook_callback(
