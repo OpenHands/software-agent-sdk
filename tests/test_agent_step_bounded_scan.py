@@ -68,12 +68,8 @@ def test_agent_step_latest_user_message_scan_is_bounded(tmp_path):
             )
         )
 
-    blocked_user_msg = MessageEvent(
-        source="user",
-        llm_message=Message(role="user", content=[TextContent(text="hi")]),
-    )
-    conv._on_event(blocked_user_msg)
-    conv.state.last_user_message_id = blocked_user_msg.id
+    conv.send_message("hi")
+    blocked_user_msg = conv.state.events[-1]
 
     conv.state.block_message(blocked_user_msg.id, "blocked")
 
@@ -91,13 +87,9 @@ def test_agent_step_uses_last_user_message_id(tmp_path):
     workspace = LocalWorkspace(working_dir=tmp_path)
     conv = LocalConversation(agent=agent, workspace=workspace)
 
-    message = MessageEvent(
-        source="user",
-        llm_message=Message(role="user", content=[TextContent(text="hi")]),
-    )
-    conv._on_event(message)
+    conv.send_message("hi")
+    message = conv.state.events[-1]
 
-    conv.state.last_user_message_id = message.id
     conv.state.block_message(message.id, "blocked")
 
     conv.state._events = _FailingIterEvents(conv.state.events)
