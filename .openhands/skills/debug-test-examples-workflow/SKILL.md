@@ -80,7 +80,7 @@ unzip logs.zip -d logs
 **Workflow** (`.github/workflows/run-examples.yml`):
 - Runner: `blacksmith-2vcpu-ubuntu-2404`
 - Timeout: 60 minutes
-- Parallelism: `-n 4`
+- Parallelism: `-n 4` (pytest-xdist: 4 parallel workers)
 
 **Tests** (`tests/examples/test_examples.py`):
 - Timeout per example: 600 seconds
