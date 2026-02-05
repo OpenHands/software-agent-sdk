@@ -1,6 +1,6 @@
 ---
 name: debug-test-examples-workflow
-description: Guide for debugging failing example tests in the run-examples.yml workflow. Use this skill when investigating CI failures in the test-examples workflow, when example scripts fail to run correctly, when needing to isolate specific test failures, or when analyzing workflow logs and failure patterns.
+description: Guide for debugging failing example tests in the `test-examples` labeled workflow. Use this skill when investigating CI failures in the run-examples.yml workflow, when example scripts fail to run correctly, when needing to isolate specific test failures, or when analyzing workflow logs and failure patterns.
 ---
 
 # Debugging test-examples Workflow
