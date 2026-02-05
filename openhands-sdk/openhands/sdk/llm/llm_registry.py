@@ -66,7 +66,7 @@ class LLMRegistry:
 
     @property
     def usage_to_llm(self) -> MappingProxyType[str, LLM]:
-        """Access the internal usage-ID-to-LLM mapping."""
+        """Access the internal usage-ID-to-LLM mapping (read-only view)."""
 
         return MappingProxyType(self._usage_to_llm)
 
