@@ -102,8 +102,12 @@ def register_planning_tools() -> None:
     logger.debug("Tool: PlanningFileEditorTool registered.")
 
 
-def get_planning_tools() -> list[Tool]:
+def get_planning_tools(plan_path: str | None = None) -> list[Tool]:
     """Get the planning agent tool specifications.
+
+    Args:
+        plan_path: Optional absolute path to PLAN.md file. If provided, will be
+            passed to PlanningFileEditorTool via params.
 
     Returns:
         List of tools optimized for planning and analysis tasks, including
@@ -117,10 +121,15 @@ def get_planning_tools() -> list[Tool]:
     from openhands.tools.grep import GrepTool
     from openhands.tools.planning_file_editor import PlanningFileEditorTool
 
+    # Build params for PlanningFileEditorTool if plan_path is provided
+    planning_tool_params = {}
+    if plan_path:
+        planning_tool_params["plan_path"] = plan_path
+
     return [
         Tool(name=GlobTool.name),
         Tool(name=GrepTool.name),
-        Tool(name=PlanningFileEditorTool.name),
+        Tool(name=PlanningFileEditorTool.name, params=planning_tool_params),
     ]
 
 
