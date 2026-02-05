@@ -60,7 +60,7 @@ MODELS = {
         "id": "claude-4.6-opus",
         "display_name": "Claude 4.6 Opus",
         "llm_config": {
-            "model": "litellm_proxy/anthropic/claude-opus-4-6-20260205",
+            "model": "litellm_proxy/anthropic/claude-opus-4-6",
             "temperature": 0.0,
         },
     },
