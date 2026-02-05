@@ -709,10 +709,10 @@ def load_user_skills() -> list[Skill]:
 def load_project_skills(work_dir: str | Path) -> list[Skill]:
     """Load skills from project-specific directories.
 
-    Searches for skills in {work_dir}/.openhands/skills/ and
-    {work_dir}/.openhands/microagents/ (legacy). Skills from both
-    directories are merged, with skills/ taking precedence for
-    duplicate names.
+    Searches for skills in {work_dir}/.agents/skills/,
+    {work_dir}/.openhands/skills/, and {work_dir}/.openhands/microagents/
+    (legacy). Skills from these directories are merged, with
+    .agents/skills taking precedence for duplicate names.
 
     Also loads third-party skill files (AGENTS.md, .cursorrules, etc.)
     directly from the work directory.
@@ -745,8 +745,10 @@ def load_project_skills(work_dir: str | Path) -> list[Skill]:
         except (SkillError, OSError) as e:
             logger.warning(f"Failed to load third-party skill from {path}: {e}")
 
-    # Load project-specific skills from .openhands/skills and legacy microagents
+    # Load project-specific skills from .agents/skills, .openhands/skills,
+    # and legacy microagents
     project_skills_dirs = [
+        work_dir / ".agents" / "skills",
         work_dir / ".openhands" / "skills",
         work_dir / ".openhands" / "microagents",  # Legacy support
     ]
