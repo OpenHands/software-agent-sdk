@@ -101,3 +101,7 @@ else:
     logger.info("Formatting messages for the OpenAI Chat Completions API.")
     chat_messages = llm.format_messages_for_llm(llm_messages)
     logger.info("Chat Completions messages:\n%s", json.dumps(chat_messages, indent=2))
+
+# Report cost
+cost = llm.metrics.accumulated_cost
+print(f"EXAMPLE_COST: {cost}")
