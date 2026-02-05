@@ -79,6 +79,11 @@ logger.info("Event files: %s", [path.name for path in event_paths])
 if not event_paths:
     raise RuntimeError("No event files found. Was persistence enabled?")
 
+######
+# Read from serialized events
+######
+
+
 events = [Event.model_validate_json(path.read_text()) for path in event_paths]
 logger.info("Loaded %s events", len(events))
 
