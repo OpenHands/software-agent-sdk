@@ -1,6 +1,8 @@
 # syntax=docker/dockerfile:1.7
 
-ARG BASE_IMAGE=nikolaik/python-nodejs:python3.13-nodejs22
+# NOTE: Using Python 3.12 due to PyInstaller+libtmux compatibility issue
+# with Python 3.13. See issue #1886 for details.
+ARG BASE_IMAGE=nikolaik/python-nodejs:python3.12-nodejs22
 ARG USERNAME=openhands
 ARG UID=10001
 ARG GID=10001
@@ -10,7 +12,7 @@ ARG PORT=8000
 # Builder (source mode)
 # We copy source + build a venv here for local dev and debugging.
 ####################################################################################
-FROM python:3.13-bullseye AS builder
+FROM python:3.12-bullseye AS builder
 ARG USERNAME UID GID
 ENV UV_PROJECT_ENVIRONMENT=/agent-server/.venv
 ENV UV_PYTHON_INSTALL_DIR=/agent-server/uv-managed-python
@@ -28,7 +30,7 @@ COPY --chown=${USERNAME}:${USERNAME} openhands-tools ./openhands-tools
 COPY --chown=${USERNAME}:${USERNAME} openhands-workspace ./openhands-workspace
 COPY --chown=${USERNAME}:${USERNAME} openhands-agent-server ./openhands-agent-server
 RUN --mount=type=cache,target=/home/${USERNAME}/.cache,uid=${UID},gid=${GID} \
-    uv python install 3.13 && uv venv --python 3.13 .venv && uv sync --frozen --no-editable --managed-python
+    uv python install 3.12 && uv venv --python 3.12 .venv && uv sync --frozen --no-editable --managed-python
 
 ####################################################################################
 # Binary Builder (binary mode)

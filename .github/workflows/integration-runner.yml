@@ -200,7 +200,7 @@ jobs:
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             ) && needs.setup-matrix.result == 'success'
         needs: [setup-matrix, post-initial-comment]
-        runs-on: blacksmith-4vcpu-ubuntu-2204
+        runs-on: ubuntu-22.04
         permissions:
             contents: read
             id-token: write
@@ -350,7 +350,7 @@ jobs:
                 github.event_name == 'workflow_dispatch' ||
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pull-requests: write

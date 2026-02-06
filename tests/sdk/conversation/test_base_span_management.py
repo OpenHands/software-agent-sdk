@@ -8,6 +8,7 @@ from uuid import UUID
 from openhands.sdk.conversation.base import BaseConversation
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.llm.llm import LLM
+from openhands.sdk.tool.schema import Action, Observation
 
 
 class MockConversation(BaseConversation):
@@ -62,6 +63,10 @@ class MockConversation(BaseConversation):
     def condense(self) -> None:
         """Mock implementation of condense method."""
         pass
+
+    def execute_tool(self, tool_name: str, action: Action) -> Observation:
+        """Mock implementation of execute_tool method."""
+        raise NotImplementedError("Mock execute_tool not implemented")
 
 
 def test_base_conversation_span_management():
