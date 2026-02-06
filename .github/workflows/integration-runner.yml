@@ -66,7 +66,7 @@ jobs:
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
         needs: [post-initial-comment]
-        runs-on: blacksmith-4vcpu-ubuntu-2204
+        runs-on: ubuntu-22.04
         permissions:
             contents: read
             id-token: write
@@ -74,7 +74,7 @@ jobs:
             issues: write
         strategy:
             matrix:
-                python-version: ['3.12']
+                python-version: ['3.13']
                 job-config:
                     - name: Claude Sonnet 4.5
                       run-suffix: sonnet_run
@@ -241,7 +241,7 @@ jobs:
                 github.event_name == 'workflow_dispatch' ||
                 (github.event_name == 'schedule' && github.repository == 'OpenHands/software-agent-sdk')
             )
-        runs-on: blacksmith-2vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         permissions:
             contents: read
             pull-requests: write
@@ -258,7 +258,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.12'
+                  python-version: '3.13'
 
             - name: Install Python dependencies using uv
               run: |

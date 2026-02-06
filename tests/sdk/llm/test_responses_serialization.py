@@ -48,6 +48,49 @@ def test_system_to_responses_value_instructions_concat():
     assert inputs == []
 
 
+def test_subscription_codex_transport_does_not_use_top_level_instructions_and_prepend_system_to_user():  # noqa: E501
+    m_sys = Message(role="system", content=[TextContent(text="SYS")])
+    m_user = Message(role="user", content=[TextContent(text="USER")])
+
+    llm = LLM(model="gpt-5.1-codex", base_url="https://chatgpt.com/backend-api/codex")
+    llm._is_subscription = True  # Mark as subscription-based
+    instr, inputs = llm.format_messages_for_responses([m_sys, m_user])
+
+    assert instr is not None
+    assert "OpenHands agent" in instr
+    assert len(inputs) >= 1
+    first_user = next(it for it in inputs if it.get("role") == "user")
+    content = first_user.get("content")
+    assert isinstance(content, list)
+    assert content[0]["type"] == "input_text"
+    assert "SYS" in content[0]["text"]
+
+
+def test_subscription_codex_transport_injects_synthetic_user_message_when_none_exists():
+    m_sys = Message(role="system", content=[TextContent(text="SYS")])
+    m_asst = Message(role="assistant", content=[TextContent(text="ASST")])
+
+    llm = LLM(model="gpt-5.1-codex", base_url="https://chatgpt.com/backend-api/codex")
+    llm._is_subscription = True  # Mark as subscription-based
+    instr, inputs = llm.format_messages_for_responses([m_sys, m_asst])
+
+    assert instr is not None
+    assert "OpenHands agent" in instr
+    assert len(inputs) >= 1
+    first = inputs[0]
+    assert first.get("role") == "user"
+    assert "SYS" in first["content"][0]["text"]
+
+
+def test_api_codex_models_keep_system_as_instructions():
+    m_sys = Message(role="system", content=[TextContent(text="SYS")])
+    llm = LLM(model="gpt-5.1-codex")
+    instr, inputs = llm.format_messages_for_responses([m_sys])
+
+    assert instr == "SYS"
+    assert inputs == []
+
+
 def test_user_to_responses_dict_with_and_without_vision():
     m = Message(
         role="user",
@@ -104,6 +147,28 @@ def test_tool_to_responses_emits_function_call_output_with_fc_prefix():
     out = m.to_responses_dict(vision_enabled=False)
     assert all(item["type"] == "function_call_output" for item in out)
     assert all(item["call_id"].startswith("fc_") for item in out)
+
+
+def test_tool_to_responses_truncates_output_over_limit():
+    from unittest.mock import patch
+
+    from openhands.sdk.utils import DEFAULT_TEXT_CONTENT_LIMIT
+
+    long_text = "A" * (DEFAULT_TEXT_CONTENT_LIMIT + 1000)
+    m = Message(
+        role="tool",
+        tool_call_id="abc",
+        name="foo",
+        content=[TextContent(text=long_text)],
+    )
+
+    with patch("openhands.sdk.llm.message.logger") as mock_logger:
+        out = m.to_responses_dict(vision_enabled=False)
+
+        mock_logger.warning.assert_called_once()
+        assert out[0]["type"] == "function_call_output"
+        assert len(out[0]["output"]) == DEFAULT_TEXT_CONTENT_LIMIT
+        assert "<response clipped>" in out[0]["output"]
 
 
 def test_assistant_includes_reasoning_passthrough():

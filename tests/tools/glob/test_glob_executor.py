@@ -317,8 +317,8 @@ def test_extract_search_path_from_pattern_nested_glob():
 def test_extract_search_path_from_pattern_deep_nesting():
     """Test _extract_search_path_from_pattern with deeply nested absolute path."""
     search_path, pattern = GlobExecutor._extract_search_path_from_pattern(
-        "/usr/local/lib/python3.12/**/*.so"
+        "/usr/local/lib/python3.13/**/*.so"
     )
 
-    assert search_path == Path("/usr/local/lib/python3.12").resolve()
+    assert search_path == Path("/usr/local/lib/python3.13").resolve()
     assert pattern == "**/*.so"
