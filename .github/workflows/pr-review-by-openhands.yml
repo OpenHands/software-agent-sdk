@@ -42,7 +42,8 @@ jobs:
               uses: actions/checkout@v4
               with:
                   repository: OpenHands/software-agent-sdk
-                  ref: main
+                  # Use the PR branch to test action changes from the PR itself
+                  ref: ${{ github.event.pull_request.head.ref }}
                   sparse-checkout: .github/actions/pr-review
 
             - name: Run PR Review
@@ -53,6 +54,7 @@ jobs:
                   llm-base-url: ''
                   review-style: standard
                   sdk-version: main
+                  use-pr-branch-for-sdk: 'true'
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
                   github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}

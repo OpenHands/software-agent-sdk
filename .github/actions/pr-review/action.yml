@@ -28,6 +28,10 @@ inputs:
         description: SDK version tag or branch name to use (e.g., v1.0.0 or main)
         required: false
         default: main
+    use-pr-branch-for-sdk:
+        description: When true and reviewing a PR on the SDK repo itself, use the PR's head branch instead of sdk-version
+        required: false
+        default: 'false'
     llm-api-key:
         description: LLM API key (required for sdk mode)
         required: false
@@ -41,11 +45,25 @@ inputs:
 runs:
     using: composite
     steps:
+        - name: Determine SDK ref to use
+          id: sdk-ref
+          shell: bash
+          run: |
+              # If use-pr-branch-for-sdk is true and we're reviewing a PR on the SDK repo itself,
+              # use the PR's head branch instead of the sdk-version input
+              if [ "${{ inputs.use-pr-branch-for-sdk }}" = "true" ] && [ "${{ github.repository }}" = "OpenHands/software-agent-sdk" ]; then
+                echo "ref=${{ github.event.pull_request.head.ref }}" >> $GITHUB_OUTPUT
+                echo "Using PR branch '${{ github.event.pull_request.head.ref }}' for SDK (reviewing SDK repo PR)"
+              else
+                echo "ref=${{ inputs.sdk-version }}" >> $GITHUB_OUTPUT
+                echo "Using sdk-version '${{ inputs.sdk-version }}' for SDK"
+              fi
+
         - name: Checkout software-agent-sdk repository
           uses: actions/checkout@v4
           with:
               repository: OpenHands/software-agent-sdk
-              ref: ${{ inputs.sdk-version }}
+              ref: ${{ steps.sdk-ref.outputs.ref }}
               path: software-agent-sdk
 
         - name: Checkout PR repository
