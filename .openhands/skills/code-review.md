@@ -18,12 +18,17 @@ You have permission to **APPROVE** or **COMMENT** on PRs. Do not use REQUEST_CHA
 Approve PRs that are straightforward and low-risk:
 
 - **Configuration changes**: Adding models to config files, updating CI/workflow settings
+- **CI/Infrastructure changes**: Changing runner types, fixing workflow paths, updating job configurations
 - **Cosmetic changes**: Typo fixes, formatting, comment improvements, README updates
+- **Documentation-only changes**: Docstring updates, clarifying notes, API documentation improvements
 - **Simple additions**: Adding entries to lists/dictionaries following existing patterns
 - **Test-only changes**: Adding or updating tests without changing production code
 - **Dependency updates**: Version bumps with passing CI
 
-Example: A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates is a good candidate for approval.
+Examples:
+- A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
+- A PR adding documentation notes to docstrings clarifying method behavior (e.g., security considerations, bypass behaviors)
+- A PR changing CI runners or fixing workflow infrastructure issues (e.g., standardizing runner types to fix path inconsistencies)
 
 ### When to COMMENT
 
@@ -54,6 +59,17 @@ If there are significant issues, leave detailed comments explaining the concerns
 - **Breaking Changes**: API changes affecting users, removed public fields/methods, changed defaults
 - **Code Quality**: Code duplication, missing comments for non-obvious decisions, inline imports (unless necessary for circular deps)
 - **Repository Conventions**: Use `pyright` not `mypy`, put fixtures in `conftest.py`, avoid `sys.path.insert` hacks
+
+## What NOT to Comment On
+
+Do not leave comments for:
+
+- **Nitpicks**: Minor style preferences, optional improvements, or "nice-to-haves" that don't affect correctness or maintainability
+- **Good behavior observed**: Don't comment just to praise code that follows best practices - this adds noise. Simply approve if the code is good.
+- **Suggestions for additional tests on simple changes**: For straightforward PRs (config changes, model additions, etc.), don't suggest adding test coverage unless tests are clearly missing for new logic
+- **Obvious or self-explanatory code**: Don't ask for comments on code that is already clear
+
+If a PR is approvable, just approve it. Don't add "one small suggestion" or "consider doing X" comments that delay merging without adding real value.
 
 ## Communication Style
 

@@ -10,7 +10,7 @@ on:
 
 jobs:
     publish:
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         outputs:
             version: ${{ steps.extract_version.outputs.version }}
         steps:
@@ -35,7 +35,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.13'
+                  python-version: '3.12'
 
             - name: Build and publish all packages
               env:
@@ -68,7 +68,7 @@ jobs:
 
     create-version-bump-prs:
         needs: publish
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         if: github.event_name == 'release'
         env:
             VERSION: ${{ needs.publish.outputs.version }}
@@ -128,7 +128,7 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.13'
+                  python-version: '3.12'
 
             - name: Install Poetry
               run: |

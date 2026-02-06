@@ -1,4 +1,5 @@
 from collections.abc import Callable
+from types import MappingProxyType
 from typing import ClassVar
 from uuid import uuid4
 
@@ -64,10 +65,10 @@ class LLMRegistry:
                 logger.warning(f"Failed to emit event: {e}")
 
     @property
-    def usage_to_llm(self) -> dict[str, LLM]:
-        """Access the internal usage-ID-to-LLM mapping."""
+    def usage_to_llm(self) -> MappingProxyType[str, LLM]:
+        """Access the internal usage-ID-to-LLM mapping (read-only view)."""
 
-        return self._usage_to_llm
+        return MappingProxyType(self._usage_to_llm)
 
     def add(self, llm: LLM) -> None:
         """Add an LLM instance to the registry.

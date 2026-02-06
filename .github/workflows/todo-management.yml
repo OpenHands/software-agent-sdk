@@ -44,7 +44,7 @@ permissions:
 
 jobs:
     scan-todos:
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
     # Only run if triggered manually or if 'automatic-todo' label was added
         if: >
             github.event_name == 'workflow_dispatch' ||
@@ -120,7 +120,7 @@ jobs:
     process-todos:
         needs: scan-todos
         if: needs.scan-todos.outputs.todo-count > 0
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         strategy:
             matrix:
                 todo: ${{ fromJson(needs.scan-todos.outputs.todos) }}
@@ -297,7 +297,7 @@ jobs:
     summary:
         needs: [scan-todos, process-todos]
         if: always()
-        runs-on: blacksmith-4vcpu-ubuntu-2404
+        runs-on: ubuntu-24.04
         steps:
             - name: Generate Summary
               run: |
