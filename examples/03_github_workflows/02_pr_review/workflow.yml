@@ -27,14 +27,15 @@ jobs:
             github.event.requested_reviewer.login == 'openhands-agent'
         runs-on: ubuntu-latest
         env:
-            # Configuration (modify these values as needed)
+            # Mode: 'sdk' runs locally, 'cloud' launches in OpenHands Cloud
+            # For 'cloud' mode, set OPENHANDS_CLOUD_API_KEY secret
+            # In 'cloud' mode, LLM_MODEL and LLM_BASE_URL are ignored
+            MODE: sdk
+            # LLM configuration (only used in 'sdk' mode)
             LLM_MODEL: <YOUR_LLM_MODEL>
             LLM_BASE_URL: <YOUR_LLM_BASE_URL>
             # Review style: 'standard' for pragmatic review, 'roasted' for Linus-style
             REVIEW_STYLE: standard
-            # Review mode: 'sdk' runs locally, 'cloud' launches in OpenHands Cloud
-            # For 'cloud' mode, set OPENHANDS_CLOUD_API_KEY secret
-            REVIEW_MODE: sdk
             # PR context will be automatically provided by the agent script
             PR_NUMBER: ${{ github.event.pull_request.number }}
             PR_TITLE: ${{ github.event.pull_request.title }}
@@ -84,23 +85,30 @@ jobs:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
               run: |
-                  if [ -z "$LLM_API_KEY" ]; then
-                    echo "Error: LLM_API_KEY secret is not set."
-                    exit 1
-                  fi
-
-                  if [ "$REVIEW_MODE" = "cloud" ] && [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
-                    echo "Error: OPENHANDS_CLOUD_API_KEY secret is required for 'cloud' mode."
-                    exit 1
+                  # Check required secrets based on mode
+                  if [ "$MODE" = "sdk" ]; then
+                    if [ -z "$LLM_API_KEY" ]; then
+                      echo "Error: LLM_API_KEY secret is required for 'sdk' mode."
+                      exit 1
+                    fi
+                  elif [ "$MODE" = "cloud" ]; then
+                    if [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
+                      echo "Error: OPENHANDS_CLOUD_API_KEY secret is required for 'cloud' mode."
+                      exit 1
+                    fi
                   fi
 
                   echo "PR Number: $PR_NUMBER"
                   echo "PR Title: $PR_TITLE"
                   echo "Repository: $REPO_NAME"
-                  echo "LLM model: $LLM_MODEL"
-                  echo "Review mode: $REVIEW_MODE"
-                  if [ -n "$LLM_BASE_URL" ]; then
-                    echo "LLM base URL: $LLM_BASE_URL"
+                  echo "Mode: $MODE"
+                  if [ "$MODE" = "sdk" ]; then
+                    echo "LLM model: $LLM_MODEL"
+                    if [ -n "$LLM_BASE_URL" ]; then
+                      echo "LLM base URL: $LLM_BASE_URL"
+                    fi
+                  else
+                    echo "Note: LLM_MODEL and LLM_BASE_URL are ignored in cloud mode"
                   fi
 
             - name: Run PR review
