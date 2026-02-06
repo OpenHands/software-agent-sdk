@@ -4,7 +4,7 @@ import copy
 import json
 import os
 import warnings
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, get_args, get_origin
 
@@ -15,8 +15,10 @@ from pydantic import (
     Field,
     PrivateAttr,
     SecretStr,
+    ValidationInfo,
     field_serializer,
     field_validator,
+    model_serializer,
     model_validator,
 )
 from pydantic.json_schema import SkipJsonSchema
@@ -99,7 +101,6 @@ from openhands.sdk.logger import ENV_LOG_DIR, get_logger
 logger = get_logger(__name__)
 
 __all__ = ["LLM"]
-
 
 # Exceptions we retry on
 LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
@@ -310,6 +311,23 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             "coding agents."
         ),
     )
+    profile_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional profile identifier for persistence. When set, this LLM will be "
+            "serialized as a profile reference "
+            "({kind: profile_ref, profile_id: <name>}) instead of embedding full "
+            "configuration."
+        ),
+    )
+    profile_ref: bool = Field(
+        default=False,
+        exclude=True,
+        repr=False,
+        description=(
+            "Internal flag indicating this LLM was loaded from a profile reference."
+        ),
+    )
     usage_id: str = Field(
         default="default",
         serialization_alias="usage_id",
@@ -356,6 +374,17 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         extra="ignore", arbitrary_types_allowed=True
     )
 
+    def to_profile_ref(self) -> dict[str, str]:
+        """Return a persisted profile reference payload.
+
+        This is an explicit opt-in persistence format used by ConversationState to
+        avoid persisting full LLM configuration (and secrets) into serialized state.
+        """
+
+        if not self.profile_id:
+            raise ValueError("Cannot build profile ref payload without profile_id")
+        return {"kind": "profile_ref", "profile_id": self.profile_id}
+
     # =========================================================================
     # Validators
     # =========================================================================
@@ -384,12 +413,46 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             )
         return v
 
+    @classmethod
+    def _expand_profile_reference(
+        cls, data: dict[str, Any], info: ValidationInfo
+    ) -> dict[str, Any]:
+        if data.get("kind") != "profile_ref":
+            return data
+
+        profile_id = data.get("profile_id")
+        if not profile_id:
+            raise ValueError("profile_id must be specified in LLM profile refs")
+
+        if info.context is None or "llm_registry" not in info.context:
+            raise ValueError(
+                "LLM registry required in context to load profile references."
+            )
+
+        registry = info.context["llm_registry"]
+        llm = registry.load_profile(profile_id)
+        expanded = llm.model_dump(exclude_none=True)
+        expanded["profile_id"] = profile_id
+        merged = {**expanded, **data}
+        merged.pop("kind", None)
+        merged["profile_ref"] = True
+        return merged
+
     @model_validator(mode="before")
     @classmethod
-    def _coerce_inputs(cls, data):
-        if not isinstance(data, dict):
+    def _coerce_inputs(cls, data: Any, info: ValidationInfo):
+        if not isinstance(data, Mapping):
             return data
         d = dict(data)
+
+        d = cls._expand_profile_reference(d, info)
+
+        profile_id = d.get("profile_id")
+        if profile_id and "model" not in d:
+            raise ValueError(
+                "Invalid LLM payload: profile_id without model. "
+                "Use kind=profile_ref for persisted profile references."
+            )
 
         model_val = d.get("model")
         if not model_val:
@@ -480,6 +543,13 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
     )
     def _serialize_secrets(self, v: SecretStr | None, info):
         return serialize_secret(v, info)
+
+    @model_serializer(mode="wrap")
+    def _serialize_profile_reference(self, handler, info):
+        data = handler(self)
+        if info.context and info.context.get("persist_profile_ref") and self.profile_id:
+            return self.to_profile_ref()
+        return data
 
     # =========================================================================
     # Public API

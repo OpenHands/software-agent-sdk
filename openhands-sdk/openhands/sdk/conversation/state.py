@@ -3,7 +3,7 @@ import json
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import Path
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 from pydantic import Field, PrivateAttr, model_validator
 
@@ -18,6 +18,12 @@ from openhands.sdk.event import ActionEvent, ObservationEvent, UserRejectObserva
 from openhands.sdk.event.base import Event
 from openhands.sdk.io import FileStore, InMemoryFileStore, LocalFileStore
 from openhands.sdk.logger import get_logger
+
+
+if TYPE_CHECKING:
+    from openhands.sdk.llm.llm_registry import LLMRegistry
+
+
 from openhands.sdk.security.analyzer import SecurityAnalyzerBase
 from openhands.sdk.security.confirmation_policy import (
     ConfirmationPolicyBase,
@@ -200,8 +206,15 @@ class ConversationState(OpenHandsModel):
                 "redacted and lost on restore. Consider providing a cipher to "
                 "preserve secrets."
             )
-        payload = self.model_dump_json(exclude_none=True, context=context)
-        fs.write(BASE_STATE, payload)
+        payload = self.model_dump(
+            mode="json",
+            exclude_none=True,
+            context={**(context or {}), "persist_profile_ref": True},
+        )
+        if self.agent.llm.profile_id and self.agent.llm.profile_ref:
+            payload["agent"]["llm"] = self.agent.llm.to_profile_ref()
+
+        fs.write(BASE_STATE, json.dumps(payload))
 
     # ===== Factory: open-or-create (no load/save methods needed) =====
     @classmethod
@@ -213,6 +226,7 @@ class ConversationState(OpenHandsModel):
         persistence_dir: str | None = None,
         max_iterations: int = 500,
         stuck_detection: bool = True,
+        llm_registry: "LLMRegistry | None" = None,
         cipher: Cipher | None = None,
     ) -> "ConversationState":
         """Create a new conversation state or resume from persistence.
@@ -230,6 +244,10 @@ class ConversationState(OpenHandsModel):
         history), but all other configuration can be freely changed: LLM,
         agent_context, condenser, system prompts, etc.
 
+        When conversation state is persisted with LLM profile references (instead
+        of inlined credentials), pass an ``llm_registry`` so profile IDs can be
+        expanded during restore.
+
         Args:
             id: Unique conversation identifier
             agent: The Agent to use (tools must match persisted on restore)
@@ -237,6 +255,8 @@ class ConversationState(OpenHandsModel):
             persistence_dir: Directory for persisting state and events
             max_iterations: Maximum iterations per run
             stuck_detection: Whether to enable stuck detection
+            llm_registry: Optional registry used to expand profile references when
+                conversations persist profile IDs instead of inline credentials.
             cipher: Optional cipher for encrypting/decrypting secrets in
                     persisted state. If provided, secrets are encrypted when
                     saving and decrypted when loading. If not provided, secrets
@@ -260,35 +280,69 @@ class ConversationState(OpenHandsModel):
         except FileNotFoundError:
             base_text = None
 
+        context: dict[str, object] = {}
+        registry = llm_registry
+        if registry is None:
+            from openhands.sdk.llm.llm_registry import LLMRegistry
+
+            registry = LLMRegistry()
+        context["llm_registry"] = registry
+
+        # Ensure we have a registry available during both dump and validate.
+        #
+        # We do NOT implicitly write profile files here. Instead, persistence will
+        # store a profile reference only when the runtime LLM already has an
+        # explicit ``profile_id``.
+
         # ---- Resume path ----
         if base_text:
-            # Use cipher context for decrypting secrets if provided
-            context = {"cipher": cipher} if cipher else None
-            state = cls.model_validate(json.loads(base_text), context=context)
+            base_payload = json.loads(base_text)
+            # Add cipher context for decrypting secrets if provided
+            if cipher:
+                context["cipher"] = cipher
 
-            # Restore the conversation with the same id
-            if state.id != id:
+            persisted_id = ConversationID(base_payload.get("id"))
+            if persisted_id != id:
                 raise ValueError(
                     f"Conversation ID mismatch: provided {id}, "
-                    f"but persisted state has {state.id}"
+                    f"but persisted state has {persisted_id}"
                 )
 
+            persisted_agent_payload = base_payload.get("agent")
+            if persisted_agent_payload is None:
+                raise ValueError("Persisted conversation is missing agent state")
+
             # Attach event log early so we can read history for tool verification
+            event_log = EventLog(file_store, dir_path=EVENTS_DIR)
+
+            persisted_agent = AgentBase.model_validate(
+                persisted_agent_payload,
+                context={"llm_registry": registry},
+            )
+            agent.verify(persisted_agent, events=event_log)
+
+            # Use runtime-provided Agent directly (PR #1542 / issue #1451)
+            #
+            # Persist LLMs as profile references only when an explicit profile_id is
+            # set on the runtime LLM.
+            agent_payload = agent.model_dump(
+                mode="json",
+                exclude_none=True,
+                context={"expose_secrets": True, "persist_profile_ref": True},
+            )
+            if agent.llm.profile_id and agent.llm.profile_ref:
+                agent_payload["llm"] = agent.llm.to_profile_ref()
+
+            base_payload["agent"] = agent_payload
+            base_payload["workspace"] = workspace.model_dump(mode="json")
+            base_payload["max_iterations"] = max_iterations
+
+            state = cls.model_validate(base_payload, context=context)
             state._fs = file_store
-            state._events = EventLog(file_store, dir_path=EVENTS_DIR)
+            state._events = event_log
             state._cipher = cipher
 
-            # Verify compatibility (agent class + tools)
-            agent.verify(state.agent, events=state._events)
-
-            # Commit runtime-provided values (may autosave)
             state._autosave_enabled = True
-            state.agent = agent
-            state.workspace = workspace
-            state.max_iterations = max_iterations
-
-            # Note: stats are already deserialized from base_state.json above.
-            # Do NOT reset stats here - this would lose accumulated metrics.
 
             logger.info(
                 f"Resumed conversation {state.id} from persistent storage.\n"

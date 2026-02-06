@@ -29,8 +29,12 @@ def create_test_event(event_id: str, content: str = "Test content") -> MessageEv
     return event
 
 
-def test_conversation_basic_creation():
+def test_conversation_basic_creation(tmp_path, monkeypatch):
     """Test basic conversation creation and properties."""
+    # Isolate profile directory to avoid polluting user's home
+    home_dir = tmp_path / "home"
+    monkeypatch.setenv("HOME", str(home_dir))
+
     agent = create_test_agent()
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -40,7 +44,11 @@ def test_conversation_basic_creation():
         assert conv.id is not None
         assert isinstance(conv.id, uuid.UUID)  # UUID type
         assert conv.state is not None
-        assert conv._state.agent == agent
+        # Agent gets profile_id assigned (based on usage_id) during creation
+        # Compare core properties rather than exact equality
+        assert conv._state.agent.llm.model == agent.llm.model
+        assert conv._state.agent.tools == agent.tools
+        assert conv._state.agent.__class__ == agent.__class__
 
 
 def test_conversation_event_log_functionality():

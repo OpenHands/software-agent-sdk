@@ -1,0 +1,7 @@
+{
+  "model": "litellm_proxy/openai/gpt-5-mini",
+  "base_url": "https://llm-proxy.eval.all-hands.dev",
+  "temperature": 0.2,
+  "max_output_tokens": 4096,
+  "usage_id": "agent"
+}

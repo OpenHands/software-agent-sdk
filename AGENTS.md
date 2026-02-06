@@ -167,6 +167,9 @@ mkdir -p .pr
 - Avoid getattr/hasattr guards and instead enforce type correctness by relying on explicit type assertions and proper object usage, ensuring functions only receive the expected Pydantic models or typed inputs. Prefer type hints and validated models over runtime shape checks.
 - Prefer accessing typed attributes directly. If necessary, convert inputs up front into a canonical shape; avoid purely hypothetical fallbacks.
 - Use real newlines in commit messages; do not write literal "\n".
+
+## Example Scripts
+- Example scripts in `examples/` should run code directly at module level without wrapping in `if __name__ == "__main__":` guards. This saves a level of indentation and keeps examples concise.
 </CODE>
 
 <TESTING>
