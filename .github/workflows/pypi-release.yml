@@ -128,7 +128,6 @@ jobs:
               uses: astral-sh/setup-uv@v7
               with:
                   version: latest
-                  python-version: '3.13'
 
             - name: Install Poetry
               run: |

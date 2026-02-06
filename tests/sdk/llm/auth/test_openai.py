@@ -65,6 +65,7 @@ def test_build_authorize_url():
 
 def test_openai_codex_models():
     """Test that OPENAI_CODEX_MODELS contains expected models."""
+    assert "gpt-5.3-codex" in OPENAI_CODEX_MODELS
     assert "gpt-5.2-codex" in OPENAI_CODEX_MODELS
     assert "gpt-5.2" in OPENAI_CODEX_MODELS
     assert "gpt-5.1-codex-max" in OPENAI_CODEX_MODELS
