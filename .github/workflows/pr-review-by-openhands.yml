@@ -38,16 +38,8 @@ jobs:
             cancel-in-progress: true
         runs-on: ubuntu-24.04
         steps:
-            - name: Checkout for composite action
-              uses: actions/checkout@v4
-              with:
-                  repository: OpenHands/software-agent-sdk
-                  # Use the PR branch to test action changes from the PR itself
-                  ref: ${{ github.event.pull_request.head.ref }}
-                  sparse-checkout: .github/actions/pr-review
-
             - name: Run PR Review
-              uses: ./.github/actions/pr-review
+              uses: OpenHands/software-agent-sdk/.github/actions/pr-review@main
               with:
                   mode: cloud
                   llm-model: anthropic/claude-sonnet-4-5-20250929
