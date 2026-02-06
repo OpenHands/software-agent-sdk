@@ -56,6 +56,14 @@ MODELS = {
             "temperature": 0.0,
         },
     },
+    "claude-4.6-opus": {
+        "id": "claude-4.6-opus",
+        "display_name": "Claude 4.6 Opus",
+        "llm_config": {
+            "model": "litellm_proxy/anthropic/claude-opus-4-6",
+            "temperature": 0.0,
+        },
+    },
     "gemini-3-pro": {
         "id": "gemini-3-pro",
         "display_name": "Gemini 3 Pro",
@@ -128,6 +136,11 @@ MODELS = {
         "id": "qwen3-coder-30b-a3b-instruct",
         "display_name": "Qwen3 Coder 30B A3B Instruct",
         "llm_config": {"model": "litellm_proxy/Qwen3-Coder-30B-A3B-Instruct"},
+    },
+    "gpt-oss-20b": {
+        "id": "gpt-oss-20b",
+        "display_name": "GPT OSS 20B",
+        "llm_config": {"model": "litellm_proxy/gpt-oss-20b"},
     },
 }
 
