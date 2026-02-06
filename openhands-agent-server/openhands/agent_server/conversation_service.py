@@ -39,10 +39,14 @@ def _compose_conversation_info(
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
-    # Use exclude_none=True to filter out masked/null secret values that would
-    # cause ValidationError during re-validation (issue #12714).
+    data = state.model_dump(mode="json")
+    # Filter null secret values that would cause ValidationError during
+    # re-validation (issue #12714). We target only the secrets dicts rather
+    # than using blanket exclude_none=True, which would drop legitimate None
+    # values from Optional fields that lack defaults.
+    _filter_invalid_secrets_in_state(data)
     return ConversationInfo(
-        **state.model_dump(mode="json", exclude_none=True),
+        **data,
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
@@ -50,13 +54,47 @@ def _compose_conversation_info(
     )
 
 
+def _is_null_secret(value: Any) -> bool:
+    """Check whether a single secret entry is null or has a null value.
+
+    A secret is considered null when:
+    - The value itself is None
+    - It is a dict whose ``value`` key is None and whose ``kind`` is either
+      ``StaticSecret`` or absent (untyped).
+
+    Returns:
+        True if the secret entry should be discarded.
+    """
+    if value is None:
+        return True
+    if isinstance(value, dict) and value.get("value") is None:
+        kind = value.get("kind", "")
+        if kind in ("StaticSecret", ""):
+            return True
+    return False
+
+
+def _filter_secrets_dict(secrets: dict[str, Any]) -> dict[str, Any]:
+    """Return a copy of *secrets* with null/invalid entries removed.
+
+    Args:
+        secrets: Mapping of secret names to their serialized representations.
+
+    Returns:
+        A new dict containing only valid secret entries.
+    """
+    return {
+        key: value for key, value in secrets.items() if not _is_null_secret(value)
+    }
+
+
 def _filter_invalid_secrets(data: dict[str, Any]) -> dict[str, Any]:
     """Filter out secrets with null/invalid values from a parsed conversation dict.
 
+    Targets the top-level ``secrets`` key used by ``StoredConversation``.
     When secrets are masked (due to missing cipher or key rotation), their values
     become null. This causes Pydantic ValidationError when re-validating because
-    SecretSource expects valid string values. This function removes such entries
-    before validation.
+    SecretSource expects valid typed values.
 
     Args:
         data: Parsed JSON dict that may contain a 'secrets' key.
@@ -65,20 +103,29 @@ def _filter_invalid_secrets(data: dict[str, Any]) -> dict[str, Any]:
         The same dict with invalid secret entries removed.
     """
     secrets = data.get("secrets")
-    if not secrets or not isinstance(secrets, dict):
-        return data
+    if secrets and isinstance(secrets, dict):
+        data["secrets"] = _filter_secrets_dict(secrets)
+    return data
 
-    filtered: dict[str, Any] = {}
-    for key, value in secrets.items():
-        if value is None:
-            continue
-        if isinstance(value, dict) and value.get("value") is None:
-            kind = value.get("kind", "")
-            if kind in ("StaticSecret", ""):
-                continue
-        filtered[key] = value
 
-    data["secrets"] = filtered
+def _filter_invalid_secrets_in_state(data: dict[str, Any]) -> dict[str, Any]:
+    """Filter null secrets from a ``ConversationState`` model dump.
+
+    Unlike ``_filter_invalid_secrets`` which targets the top-level ``secrets``
+    key on ``StoredConversation``, this targets ``secret_registry.secret_sources``
+    used by ``ConversationState``.
+
+    Args:
+        data: Dict produced by ``ConversationState.model_dump()``.
+
+    Returns:
+        The same dict with null secret entries removed from the registry.
+    """
+    registry = data.get("secret_registry")
+    if registry and isinstance(registry, dict):
+        sources = registry.get("secret_sources")
+        if sources and isinstance(sources, dict):
+            registry["secret_sources"] = _filter_secrets_dict(sources)
     return data
 
 
