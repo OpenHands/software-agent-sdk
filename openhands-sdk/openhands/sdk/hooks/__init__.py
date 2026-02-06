@@ -19,7 +19,6 @@ from openhands.sdk.hooks.conversation_hooks import (
 from openhands.sdk.hooks.executor import HookExecutor, HookResult
 from openhands.sdk.hooks.manager import HookManager
 from openhands.sdk.hooks.types import HookDecision, HookEvent, HookEventType
-from openhands.sdk.hooks.utils import load_project_hooks
 
 
 __all__ = [
@@ -36,5 +35,4 @@ __all__ = [
     "HookDecision",
     "HookEventProcessor",
     "create_hook_callback",
-    "load_project_hooks",
 ]
