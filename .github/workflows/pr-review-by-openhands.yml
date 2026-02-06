@@ -41,12 +41,10 @@ jobs:
             - name: Run PR Review
               uses: OpenHands/software-agent-sdk/.github/actions/pr-review@main
               with:
-                  mode: cloud
                   llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
                   review-style: standard
                   sdk-version: main
                   use-pr-branch-for-sdk: 'true'
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
-                  openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
                   github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}

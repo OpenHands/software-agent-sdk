@@ -14,9 +14,6 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 - **Automatic Trigger**: Reviews are triggered when:
   - The `review-this` label is added to a PR, OR
   - openhands-agent is requested as a reviewer
-- **Two Review Modes**:
-  - **SDK Mode** (`mode: sdk`): Runs the agent locally in the GitHub Actions runner. The review completes within the CI job. Requires `llm-api-key`, `llm-model`, and optionally `llm-base-url`.
-  - **Cloud Mode** (`mode: cloud`): Launches the review in [OpenHands Cloud](https://app.all-hands.dev). The CI job posts a comment with a link to track progress and exits immediately, allowing the review to run asynchronously. Only requires `openhands-cloud-api-key` - the model configured in your cloud account will be used.
 - **Inline Review Comments**: Posts review comments directly on specific lines of code in the PR diff, rather than a single giant comment. This makes it easier to:
   - See exactly which lines the feedback refers to
   - Address issues one by one
@@ -49,16 +46,10 @@ cp examples/03_github_workflows/02_pr_review/workflow.yml .github/workflows/pr-r
 
 ### 2. Configure secrets
 
-Set the following secrets in your GitHub repository settings based on your chosen mode:
+Set the following secrets in your GitHub repository settings:
 
-**For SDK Mode (`mode: sdk`):**
 - **`LLM_API_KEY`** (required): Your LLM API key
   - Get one from the [OpenHands LLM Provider](https://docs.all-hands.dev/openhands/usage/llms/openhands-llms)
-
-**For Cloud Mode (`mode: cloud`):**
-- **`OPENHANDS_CLOUD_API_KEY`** (required): Your OpenHands Cloud API key
-  - Get one from [OpenHands Cloud Settings](https://app.all-hands.dev/settings/api-keys)
-  - Note: `llm-model` and `llm-base-url` are ignored in cloud mode - the model configured in your cloud account will be used
 
 **Note**: The workflow automatically uses the `GITHUB_TOKEN` secret that's available in all GitHub Actions workflows.
 
@@ -70,10 +61,7 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
-      # Mode: 'sdk' runs locally, 'cloud' launches in OpenHands Cloud
-      # In 'cloud' mode, llm-model and llm-base-url are ignored
-      mode: sdk
-      # LLM configuration (only used in 'sdk' mode)
+      # LLM configuration
       llm-model: anthropic/claude-sonnet-4-5-20250929
       llm-base-url: ''
       # Review style: 'standard' or 'roasted' (Linus Torvalds style)
@@ -82,7 +70,6 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       sdk-version: main
       # Secrets
       llm-api-key: ${{ secrets.LLM_API_KEY }}
-      openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
 
@@ -120,35 +107,6 @@ There are two ways to trigger an automated review of a pull request:
 
 **Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
 
-### Review Modes
-
-#### SDK Mode (Default)
-
-In SDK mode (`mode: sdk`), the review runs entirely within the GitHub Actions runner:
-
-- The agent analyzes the PR diff and posts inline comments
-- The CI job waits for the review to complete
-- Cost and token usage are logged in the CI output
-- Requires `llm-api-key`, `llm-model`, and optionally `llm-base-url`
-
-#### Cloud Mode
-
-In Cloud mode (`mode: cloud`), the review is launched in OpenHands Cloud:
-
-- A new conversation is created in OpenHands Cloud
-- The CI job posts a comment with a link to track progress
-- The CI job exits immediately (fast CI completion)
-- The review continues asynchronously in the cloud
-- When complete, the agent posts inline comments to the PR
-- Only requires `openhands-cloud-api-key` - `llm-model` and `llm-base-url` are ignored
-- The model configured in your OpenHands Cloud account will be used
-
-Cloud mode is useful when:
-- You want faster CI completion times
-- You want to track review progress in the OpenHands Cloud UI
-- You want to interact with the review conversation
-- You want to use the model configured in your cloud account
-
 ## Composite Action
 
 This workflow uses a reusable composite action located at `.github/actions/pr-review/action.yml` in the software-agent-sdk repository. The composite action handles:
@@ -162,11 +120,10 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `mode` | Review mode: 'sdk' or 'cloud' | No | `sdk` |
-| `llm-model` | LLM model (sdk mode only) | No | `anthropic/claude-sonnet-4-5-20250929` |
-| `llm-base-url` | LLM base URL (sdk mode only) | No | `''` |
+| `llm-model` | LLM model to use | No | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `standard` |
 | `sdk-version` | SDK version tag or branch name | No | `main` |
-| `llm-api-key` | LLM API key (sdk mode) | No | - |
-| `openhands-cloud-api-key` | OpenHands Cloud API key (cloud mode) | No | - |
+| `use-pr-branch-for-sdk` | Use PR branch for SDK when reviewing SDK repo | No | `false` |
+| `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
