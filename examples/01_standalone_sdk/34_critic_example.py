@@ -99,136 +99,75 @@ class CriticResultCollector:
         self.latest_result = None
 
 
-# Complex multi-step task prompt for iterative refinement demonstration.
-# This task is designed to be challenging enough that the agent may not complete
-# it perfectly on the first try, demonstrating the value of the critic in guiding
-# improvements.
+# Task prompt designed to be moderately complex with subtle requirements.
+# The task is simple enough to complete in 1-2 iterations, but has specific
+# requirements that are easy to miss - triggering critic feedback.
 INITIAL_TASK_PROMPT = """\
-Please help me create a complete full-stack task management application with user
-authentication, task categories, and priority levels. This is a complex project
-that requires careful attention to detail.
+Create a Python word statistics tool called `wordstats` that analyzes text files.
 
-## Project Structure
+## Structure
 
-Create a directory called 'taskmanager' with the following structure:
+Create directory `wordstats/` with:
+- `stats.py` - Main module with `analyze_file(filepath)` function
+- `cli.py` - Command-line interface
+- `tests/test_stats.py` - Unit tests
 
-### 1. Backend (Flask API) - taskmanager/backend/
+## Requirements for stats.py
 
-Create these files:
-- `app.py` - Main Flask application with the following endpoints:
-  - POST /api/auth/register - Register new user (username, email, password)
-  - POST /api/auth/login - Login and return JWT token
-  - GET /api/auth/me - Get current user profile (authenticated)
-  - GET /api/tasks - Get all tasks for authenticated user (with filtering)
-  - POST /api/tasks - Create a new task
-  - PUT /api/tasks/<id> - Update a task
-  - DELETE /api/tasks/<id> - Delete a task
-  - GET /api/categories - Get all categories for user
-  - POST /api/categories - Create a new category
+The `analyze_file(filepath)` function must return a dict with these EXACT keys:
+- `lines`: total line count (including empty lines)
+- `words`: word count
+- `chars`: character count (including whitespace)
+- `unique_words`: count of unique words (case-insensitive)
 
-- `models.py` - SQLAlchemy models:
-  - User model (id, username, email, password_hash, created_at)
-  - Task model (id, title, description, due_date, priority, completed, \
-category_id, user_id, created_at, updated_at)
-  - Category model (id, name, color, user_id)
+### Important edge cases (often missed!):
+1. Empty files must return all zeros, not raise an exception
+2. Hyphenated words count as ONE word (e.g., "well-known" = 1 word)
+3. Numbers like "123" or "3.14" are NOT counted as words
+4. Contractions like "don't" count as ONE word
+5. File not found must raise FileNotFoundError with a clear message
 
-- `auth.py` - Authentication utilities:
-  - Password hashing with werkzeug.security
-  - JWT token generation and validation
-  - Login required decorator
-  - Email validation
+## Requirements for cli.py
 
-- `config.py` - Configuration (database URI, secret key, etc.)
+When run as `python cli.py <filepath>`:
+- Print each stat on its own line: "Lines: X", "Words: X", etc.
+- Exit with code 1 if file not found, printing error to stderr
+- Exit with code 0 on success
 
-- `requirements.txt` - Dependencies (flask, flask-sqlalchemy, pyjwt, werkzeug)
+## Required Tests (test_stats.py)
 
-### 2. Frontend (HTML/CSS/JS) - taskmanager/frontend/
-
-Create these files:
-- `index.html` - Main page with:
-  - Login/Register forms (toggle between them)
-  - Task list display with filtering by category and priority
-  - Add task form with category and priority selection
-  - Category management section
-  - Each task shows title, description, due date, priority badge, category, \
-complete checkbox, delete button
-
-- `styles.css` - Styling:
-  - Clean, modern design with CSS variables for theming
-  - Responsive layout (mobile-first)
-  - Form styling with validation states
-  - Task card styling with priority color indicators
-  - Category badges with custom colors
-
-- `app.js` - Frontend logic:
-  - API calls to backend with proper error handling
-  - JWT token storage in localStorage with expiration check
-  - Dynamic DOM updates without page reload
-  - Form validation (client-side)
-  - Filter tasks by category and priority
-  - Sort tasks by due date or priority
-
-### 3. Tests - taskmanager/tests/
-
-Create these files:
-- `__init__.py` (empty)
-- `test_auth.py` - Authentication tests (at least 5 tests):
-  - Test user registration with valid data
-  - Test duplicate username rejection
-  - Test duplicate email rejection
-  - Test login with valid credentials
-  - Test login with invalid credentials
-
-- `test_tasks.py` - Task API tests (at least 6 tests):
-  - Test create task with all fields
-  - Test create task with category
-  - Test get tasks with filtering
-  - Test update task priority
-  - Test delete task
-  - Test task isolation between users
-
-- `test_categories.py` - Category API tests (at least 3 tests):
-  - Test create category
-  - Test get categories
-  - Test category isolation between users
-
-- `conftest.py` - Pytest fixtures for test database and test client
-
-### 4. Documentation
-
-- `README.md` with:
-  - Project title and description
-  - Features list (authentication, tasks, categories, priorities)
-  - Installation instructions
-  - How to run the backend
-  - How to run tests
-  - API documentation with example curl commands for ALL endpoints
-
-- `taskmanager/__init__.py` (empty, makes it a package)
-
-## Requirements
-
-1. The backend must use SQLite database (stored as taskmanager.db)
-2. Passwords must be hashed (never stored in plain text)
-3. JWT tokens must expire after 24 hours
-4. All task and category endpoints must require authentication
-5. Tasks must have priority levels: low, medium, high
-6. Categories must have customizable colors
-7. Tests must pass when run with pytest
+Write tests that verify:
+1. Basic counting on normal text
+2. Empty file returns all zeros
+3. Hyphenated words counted correctly
+4. Numbers are excluded from word count
+5. FileNotFoundError raised for missing files
 
 ## Verification Steps
 
-After creating all files:
-1. List all created files to verify the structure
-2. Install dependencies: pip install -r taskmanager/backend/requirements.txt
-3. Run the tests: cd taskmanager && python -m pytest tests/ -v
-4. Verify ALL tests pass (should be at least 14 tests total)
+1. Create a sample file `sample.txt` with this EXACT content (no trailing newline):
+```
+Hello world!
+This is a well-known test file.
 
-Please complete ALL of these steps. The task is only complete when:
-- All files exist with proper implementation
-- All 14+ tests pass
-- The application structure is correct
-- Categories and priorities are fully implemented
+It has 5 lines, including empty ones.
+Numbers like 42 and 3.14 don't count as words.
+```
+
+2. Run: `python wordstats/cli.py sample.txt`
+   Expected output:
+   - Lines: 5
+   - Words: 21
+   - Chars: 130
+   - Unique words: 21
+
+3. Run the tests: `python -m pytest wordstats/tests/ -v`
+   ALL tests must pass.
+
+The task is complete ONLY when:
+- All files exist
+- The CLI outputs the correct stats for sample.txt
+- All 5+ tests pass
 """
 
 
@@ -239,49 +178,40 @@ The task appears incomplete (iteration {iteration}, \
 success likelihood: {score_percent:.1f}%).
 {issues_text}
 
-Please review what you've done so far and complete any remaining steps:
+Please review what you've done and verify each requirement:
 
-## Checklist - Backend (taskmanager/backend/)
-- [ ] app.py - Flask app with ALL 9 endpoints:
-  - POST /api/auth/register, POST /api/auth/login, GET /api/auth/me
-  - GET/POST /api/tasks, PUT/DELETE /api/tasks/<id>
-  - GET/POST /api/categories
-- [ ] models.py - User, Task (with priority), and Category models
-- [ ] auth.py - Password hashing, JWT, login_required, email validation
-- [ ] config.py - Configuration settings
-- [ ] requirements.txt - All dependencies listed
+## File Checklist
+- [ ] wordstats/stats.py - analyze_file() function
+- [ ] wordstats/cli.py - Command-line interface
+- [ ] wordstats/tests/test_stats.py - Unit tests (5+ tests)
+- [ ] sample.txt - Test file with exact content specified
 
-## Checklist - Frontend (taskmanager/frontend/)
-- [ ] index.html - Login/Register, task list with filters, category management
-- [ ] styles.css - Modern styling with priority colors and category badges
-- [ ] app.js - API calls, JWT storage, filtering, sorting
+## Edge Cases Often Missed
+- [ ] Empty files return {{"lines": 0, "words": 0, "chars": 0, "unique_words": 0}}
+- [ ] Hyphenated words like "well-known" count as 1 word
+- [ ] Numbers (42, 3.14) are NOT counted as words
+- [ ] Contractions like "don't" count as 1 word
+- [ ] FileNotFoundError raised with clear message for missing files
 
-## Checklist - Tests (taskmanager/tests/)
-- [ ] __init__.py
-- [ ] conftest.py - Pytest fixtures
-- [ ] test_auth.py - At least 5 authentication tests (including email validation)
-- [ ] test_tasks.py - At least 6 task API tests (including priority and category)
-- [ ] test_categories.py - At least 3 category API tests
+## Expected Output for sample.txt
+Run: python wordstats/cli.py sample.txt
+- Lines: 5
+- Words: 21 (numbers excluded, hyphenated words count as one)
+- Chars: 130
+- Unique words: 21
 
-## Checklist - Documentation
-- [ ] README.md - Full documentation with API examples for ALL endpoints
-- [ ] taskmanager/__init__.py
+## Verification Steps
+1. Check if all files exist: `ls -la wordstats/ wordstats/tests/`
+2. Run the CLI: `python wordstats/cli.py sample.txt`
+3. Verify output matches expected values exactly
+4. Run tests: `python -m pytest wordstats/tests/ -v`
 
-## Critical Requirements Often Missed
-- [ ] Category model with color field
-- [ ] Task priority field (low, medium, high)
-- [ ] test_categories.py file (separate from test_tasks.py)
-- [ ] GET /api/auth/me endpoint
-- [ ] At least 14 total tests
+Common mistakes to fix:
+- Counting numbers as words (they shouldn't be)
+- Splitting hyphenated words (they should stay together)
+- Wrong character count (remember newlines!)
 
-## Verification
-1. List all files in taskmanager/ to see what exists
-2. If any files are missing, create them
-3. Run tests: cd taskmanager && python -m pytest tests/ -v
-4. Verify at least 14 tests pass
-
-List what files exist and what's missing, then complete the remaining tasks.
-Use the finish tool only when ALL files exist and ALL 14+ tests pass.
+List what's working and what needs fixing, then complete the task.
 """
 
 
@@ -314,8 +244,10 @@ def main() -> None:
     """Run the iterative refinement example with critic model."""
     llm_api_key = get_required_env("LLM_API_KEY")
     llm = LLM(
-        model=os.getenv("LLM_MODEL", "anthropic/claude-haiku-4-5"),
+        # model="anthropic/claude-haiku-4-5",
+        model="litellm_proxy/moonshot/kimi-k2.5",
         api_key=llm_api_key,
+        top_p=0.95,
         base_url=os.getenv("LLM_BASE_URL", None),
     )
 
