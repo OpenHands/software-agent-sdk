@@ -125,3 +125,11 @@ jobs:
                       *.log
                       output/
                   retention-days: 7
+
+            - name: Upload Laminar trace info for evaluation
+              uses: actions/upload-artifact@v5
+              if: success()
+              with:
+                  name: pr-review-trace-${{ github.event.pull_request.number }}
+                  path: pr-repo/laminar_trace_info.json
+                  retention-days: 90
