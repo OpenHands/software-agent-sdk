@@ -37,110 +37,22 @@ jobs:
             group: pr-review-${{ github.event.pull_request.number }}
             cancel-in-progress: true
         runs-on: ubuntu-24.04
-        env:
-            # Mode: 'cloud' launches the review in OpenHands Cloud
-            # This allows the review to run asynchronously without blocking CI
-            # In 'cloud' mode, LLM_MODEL and LLM_BASE_URL are ignored
-            MODE: cloud
-            # LLM configuration (only used in 'sdk' mode)
-            LLM_MODEL: anthropic/claude-sonnet-4-5-20250929
-            LLM_BASE_URL: ''
-            # PR context will be automatically provided by the agent script
-            PR_NUMBER: ${{ github.event.pull_request.number }}
-            PR_TITLE: ${{ github.event.pull_request.title }}
-            PR_BODY: ${{ github.event.pull_request.body }}
-            PR_BASE_BRANCH: ${{ github.event.pull_request.base.ref }}
-            PR_HEAD_BRANCH: ${{ github.event.pull_request.head.ref }}
-            REPO_NAME: ${{ github.repository }}
         steps:
-            - name: Checkout software-agent-sdk repository
-              uses: actions/checkout@v5
+            - name: Checkout for composite action
+              uses: actions/checkout@v4
               with:
                   repository: OpenHands/software-agent-sdk
-                  path: software-agent-sdk
+                  ref: main
+                  sparse-checkout: .github/actions/pr-review
 
-            - name: Checkout PR repository
-              uses: actions/checkout@v5
+            - name: Run PR Review
+              uses: ./.github/actions/pr-review
               with:
-                  # When using pull_request_target, explicitly checkout the PR branch
-                  # This ensures we review the actual PR code (including fork PRs)
-                  repository: ${{ github.event.pull_request.head.repo.full_name }}
-                  ref: ${{ github.event.pull_request.head.ref }}
-                  fetch-depth: 0
-                  # Security: Don't persist credentials to prevent untrusted PR code from using them
-                  persist-credentials: false
-                  path: pr-repo
-
-            - name: Set up Python
-              uses: actions/setup-python@v6
-              with:
-                  python-version: '3.13'
-
-            - name: Install uv
-              uses: astral-sh/setup-uv@v7
-              with:
-                  enable-cache: true
-
-            - name: Install GitHub CLI
-              run: |
-                  # Install GitHub CLI for posting review comments
-                  sudo apt-get update
-                  sudo apt-get install -y gh
-
-            - name: Install OpenHands dependencies
-              run: |
-                  # Install OpenHands SDK, tools, and workspace from local checkout
-                  uv pip install --system ./software-agent-sdk/openhands-sdk ./software-agent-sdk/openhands-tools ./software-agent-sdk/openhands-workspace
-
-            - name: Check required configuration
-              env:
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
-              run: |
-                  # Check required secrets based on mode
-                  if [ "$MODE" = "sdk" ]; then
-                    if [ -z "$LLM_API_KEY" ]; then
-                      echo "Error: LLM_API_KEY secret is required for 'sdk' mode."
-                      exit 1
-                    fi
-                  elif [ "$MODE" = "cloud" ]; then
-                    if [ -z "$OPENHANDS_CLOUD_API_KEY" ]; then
-                      echo "Error: OPENHANDS_CLOUD_API_KEY secret is required for 'cloud' mode."
-                      exit 1
-                    fi
-                  fi
-
-                  echo "PR Number: $PR_NUMBER"
-                  echo "PR Title: $PR_TITLE"
-                  echo "Repository: $REPO_NAME"
-                  echo "Mode: $MODE"
-                  if [ "$MODE" = "sdk" ]; then
-                    echo "LLM model: $LLM_MODEL"
-                    if [ -n "$LLM_BASE_URL" ]; then
-                      echo "LLM base URL: $LLM_BASE_URL"
-                    fi
-                  else
-                    echo "Note: LLM_MODEL and LLM_BASE_URL are ignored in cloud mode"
-                  fi
-
-            - name: Run PR review
-              env:
-                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
-                  GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
-                  OPENHANDS_CLOUD_API_KEY: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
-              run: |
-                  # Change to the PR repository directory so agent can analyze the code
-                  cd pr-repo
-
-                  # Run the PR review script from the software-agent-sdk checkout
-                  uv run python ../software-agent-sdk/examples/03_github_workflows/02_pr_review/agent_script.py
-
-            - name: Upload logs as artifact
-              uses: actions/upload-artifact@v5
-              if: always()
-              with:
-                  name: openhands-pr-review-logs
-                  path: |
-                      *.log
-                      output/
-                  retention-days: 7
+                  mode: cloud
+                  llm-model: anthropic/claude-sonnet-4-5-20250929
+                  llm-base-url: ''
+                  review-style: standard
+                  sdk-version: main
+                  llm-api-key: ${{ secrets.LLM_API_KEY }}
+                  openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+                  github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
