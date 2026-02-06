@@ -108,6 +108,8 @@ jobs:
               env:
                   LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
                   GITHUB_TOKEN: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
+                  # Enable Laminar observability for trajectory uploads
+                  LMNR_PROJECT_API_KEY: ${{ secrets.LAMINAR_ACTIONS_API_KEY }}
               run: |
                   # Change to the PR repository directory so agent can analyze the code
                   cd pr-repo
