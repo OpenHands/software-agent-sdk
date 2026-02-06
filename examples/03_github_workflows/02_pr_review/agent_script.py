@@ -293,7 +293,9 @@ def main():
 
         # Capture and store trace ID for delayed evaluation
         # When the PR is merged/closed, we can use this trace_id to evaluate
-        # how well the review comments were addressed
+        # how well the review comments were addressed.
+        # Note: Laminar methods gracefully handle the uninitialized case by
+        # returning None or early-returning, so no try/except needed.
         trace_id = Laminar.get_trace_id()
         if trace_id:
             # Set trace metadata for later retrieval and filtering

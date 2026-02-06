@@ -132,4 +132,4 @@ jobs:
               with:
                   name: pr-review-trace-${{ github.event.pull_request.number }}
                   path: pr-repo/laminar_trace_info.json
-                  retention-days: 90
+                  retention-days: 30

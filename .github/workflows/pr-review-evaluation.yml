@@ -30,13 +30,18 @@ jobs:
             REPO_NAME: ${{ github.repository }}
             PR_MERGED: ${{ github.event.pull_request.merged }}
         steps:
+            # Note: actions/download-artifact@v5 only works within the same workflow run.
+            # We use dawidd6/action-download-artifact to download from a different workflow.
             - name: Check if review trace exists
               id: check-trace
-              uses: actions/download-artifact@v5
+              uses: dawidd6/action-download-artifact@v6
               continue-on-error: true
               with:
+                  workflow: pr-review-by-openhands.yml
                   name: pr-review-trace-${{ github.event.pull_request.number }}
                   path: trace-info
+                  search_artifacts: true
+                  if_no_artifact_found: warn
 
             - name: Skip if no review trace
               if: steps.check-trace.outcome == 'failure'

@@ -213,7 +213,12 @@ def extract_human_responses(
 
 
 def truncate_text(text: str, max_chars: int = 50000) -> str:
-    """Truncate text to a maximum number of characters."""
+    """Truncate text to stay within reasonable API payload limits.
+
+    Max 50k chars chosen to stay well under typical API payload limits
+    while preserving enough context for evaluation. This keeps the
+    evaluation trace size manageable for Laminar processing.
+    """
     if len(text) <= max_chars:
         return text
     return text[:max_chars] + f"\n\n... [truncated, {len(text)} total chars]"
