@@ -352,28 +352,18 @@ class LocalConversation(BaseConversation):
 
             logger.info(f"Loaded {len(self._plugin_specs)} plugin(s) via Conversation")
 
-        # Combine explicit hook_config, working directory hooks, and plugin hooks
-        # Order: explicit hooks -> working directory hooks -> plugin hooks
-        # This ensures project-level hooks (.openhands/hooks.json) are always respected
-        configs_to_merge: list[HookConfig] = []
-
-        # 1. Explicit hook_config passed to constructor (runs first)
-        if self._pending_hook_config is not None:
-            configs_to_merge.append(self._pending_hook_config)
-
-        # 2. Working directory hooks (.openhands/hooks.json) - always loaded
-        working_dir_hooks = HookConfig.load(working_dir=str(self.workspace.working_dir))
-        if not working_dir_hooks.is_empty():
-            configs_to_merge.append(working_dir_hooks)
-
-        # 3. Plugin hooks (runs last)
+        # Combine explicit hook_config with plugin hooks
+        # Explicit hooks run first (before plugin hooks)
+        final_hook_config = self._pending_hook_config
         if all_plugin_hooks:
             plugin_hooks = HookConfig.merge(all_plugin_hooks)
             if plugin_hooks is not None:
-                configs_to_merge.append(plugin_hooks)
-
-        # Merge all configs
-        final_hook_config = HookConfig.merge(configs_to_merge)
+                if final_hook_config is not None:
+                    final_hook_config = HookConfig.merge(
+                        [final_hook_config, plugin_hooks]
+                    )
+                else:
+                    final_hook_config = plugin_hooks
 
         # Set up hook processor with the combined config
         if final_hook_config is not None:
