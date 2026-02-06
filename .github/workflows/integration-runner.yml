@@ -80,6 +80,9 @@ jobs:
                       run-suffix: sonnet_run
                       llm-config:
                           model: litellm_proxy/claude-sonnet-4-5-20250929
+                      restore-llm-config-2:
+                          model: litellm_proxy/gpt-5.1-codex-max
+                          max_input_tokens: 100000
                     - name: GPT-5.1 Codex Max
                       run-suffix: gpt51_codex_run
                       llm-config:
@@ -159,6 +162,34 @@ jobs:
                     echo "Running full integration test suite."
                   fi
                   echo "TEST_TYPE_ARGS=$TEST_TYPE_ARGS" >> "$GITHUB_ENV"
+
+
+            - name: Run restore conversation test once (two real LLMs)
+              if: ${{ matrix.job-config.run-suffix == 'sonnet_run' && env.TEST_TYPE_ARGS == '--test-type integration' }}
+              env:
+                  LLM_CONFIG: ${{ toJson(matrix.job-config.llm-config) }}
+                  RESTORE_LLM_CONFIG_2: ${{ toJson(matrix.job-config.restore-llm-config-2) }}
+                  LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+                  LLM_BASE_URL: https://llm-proxy.app.all-hands.dev
+              run: |
+                  set -eo pipefail
+
+                  AGENT_SDK_VERSION=$(git rev-parse --short HEAD)
+                  EVAL_NOTE="${AGENT_SDK_VERSION}_t10_restore_once"
+
+                  uv run python tests/integration/run_infer.py \
+                    --llm-config "$LLM_CONFIG" \
+                    --num-workers 1 \
+                    --eval-note "$EVAL_NOTE" \
+                    --eval-ids t10_restore_conversation \
+                    --test-type integration
+
+
+
+            - name: Skip t10 in the matrix runs (it runs once above)
+              if: ${{ env.TEST_TYPE_ARGS == '--test-type integration' }}
+              run: echo "SKIP_T10=1" >> "$GITHUB_ENV"
+
 
             - name: Run integration test evaluation for ${{ matrix.job-config.name }}
               env:
