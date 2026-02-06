@@ -100,6 +100,30 @@ class StartConversationRequest(BaseModel):
         default_factory=dict,
         description="Secrets available in the conversation",
     )
+
+    @field_validator("secrets", mode="before")
+    @classmethod
+    def filter_null_secrets(cls, v: dict[str, Any]) -> dict[str, Any]:
+        """Filter out secrets with null values before validation.
+
+        After secret masking (e.g., missing cipher or key rotation), secret values
+        may become null. These null entries cause ValidationError because SecretSource
+        expects valid typed values. Remove them gracefully instead of failing.
+        """
+        if not isinstance(v, dict):
+            return v
+
+        return {
+            key: value
+            for key, value in v.items()
+            if value is not None
+            and not (
+                isinstance(value, dict)
+                and value.get("value") is None
+                and value.get("kind", "") in ("StaticSecret", "")
+            )
+        }
+
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,
         description=(

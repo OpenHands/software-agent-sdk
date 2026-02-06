@@ -1,8 +1,10 @@
 import asyncio
 import importlib
+import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -37,13 +39,69 @@ def _compose_conversation_info(
     # Use mode='json' so SecretStr in nested structures (e.g. LookupSecret.headers,
     # agent.agent_context.secrets) serialize to strings. Without it, validation
     # fails because ConversationInfo expects dict[str, str] but receives SecretStr.
+    # Use exclude_none=True to filter out masked/null secret values that would
+    # cause ValidationError during re-validation (issue #12714).
     return ConversationInfo(
-        **state.model_dump(mode="json"),
+        **state.model_dump(mode="json", exclude_none=True),
         title=stored.title,
         metrics=stored.metrics,
         created_at=stored.created_at,
         updated_at=stored.updated_at,
     )
+
+
+def _filter_invalid_secrets(data: dict[str, Any]) -> dict[str, Any]:
+    """Filter out secrets with null/invalid values from a parsed conversation dict.
+
+    When secrets are masked (due to missing cipher or key rotation), their values
+    become null. This causes Pydantic ValidationError when re-validating because
+    SecretSource expects valid string values. This function removes such entries
+    before validation.
+
+    Args:
+        data: Parsed JSON dict that may contain a 'secrets' key.
+
+    Returns:
+        The same dict with invalid secret entries removed.
+    """
+    secrets = data.get("secrets")
+    if not secrets or not isinstance(secrets, dict):
+        return data
+
+    filtered: dict[str, Any] = {}
+    for key, value in secrets.items():
+        if value is None:
+            continue
+        if isinstance(value, dict) and value.get("value") is None:
+            kind = value.get("kind", "")
+            if kind in ("StaticSecret", ""):
+                continue
+        filtered[key] = value
+
+    data["secrets"] = filtered
+    return data
+
+
+def _preprocess_stored_conversation_json(json_str: str) -> str:
+    """Preprocess stored conversation JSON to handle null secret values.
+
+    This is applied before Pydantic validation to gracefully handle conversations
+    that were persisted with masked/null secrets (e.g., after key rotation or
+    missing OH_SECRET_KEY).
+
+    Args:
+        json_str: Raw JSON string from meta.json.
+
+    Returns:
+        Cleaned JSON string safe for Pydantic validation.
+    """
+    try:
+        data = json.loads(json_str)
+    except (json.JSONDecodeError, TypeError):
+        return json_str
+
+    _filter_invalid_secrets(data)
+    return json.dumps(data)
 
 
 @dataclass
@@ -416,8 +474,9 @@ class ConversationService:
                 if not meta_file.exists():
                     continue
                 json_str = meta_file.read_text()
+                cleaned_json = _preprocess_stored_conversation_json(json_str)
                 stored = StoredConversation.model_validate_json(
-                    json_str,
+                    cleaned_json,
                     context={
                         "cipher": self.cipher,
                     },

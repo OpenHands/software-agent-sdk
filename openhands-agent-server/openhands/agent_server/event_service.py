@@ -53,9 +53,14 @@ class EventService:
         return self.conversations_dir / self.stored.id.hex
 
     async def load_meta(self):
+        from openhands.agent_server.conversation_service import (
+            _preprocess_stored_conversation_json,
+        )
+
         meta_file = self.conversation_dir / "meta.json"
+        cleaned_json = _preprocess_stored_conversation_json(meta_file.read_text())
         self.stored = StoredConversation.model_validate_json(
-            meta_file.read_text(),
+            cleaned_json,
             context={
                 "cipher": self.cipher,
             },
