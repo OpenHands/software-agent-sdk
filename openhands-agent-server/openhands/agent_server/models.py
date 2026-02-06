@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field, field_validator
 
+from openhands.agent_server.secret_utils import filter_secrets_dict
 from openhands.agent_server.utils import OpenHandsUUID, utc_now
 from openhands.sdk import LLM, AgentBase, Event, ImageContent, Message, TextContent
 from openhands.sdk.conversation.state import (
@@ -109,20 +110,13 @@ class StartConversationRequest(BaseModel):
         After secret masking (e.g., missing cipher or key rotation), secret values
         may become null. These null entries cause ValidationError because SecretSource
         expects valid typed values. Remove them gracefully instead of failing.
+
+        Delegates to :func:`secret_utils.filter_secrets_dict` so the filtering
+        logic is defined in a single place.
         """
         if not isinstance(v, dict):
             return v
-
-        return {
-            key: value
-            for key, value in v.items()
-            if value is not None
-            and not (
-                isinstance(value, dict)
-                and value.get("value") is None
-                and value.get("kind", "") in ("StaticSecret", "")
-            )
-        }
+        return filter_secrets_dict(v)
 
     tool_module_qualnames: dict[str, str] = Field(
         default_factory=dict,

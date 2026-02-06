@@ -1,10 +1,8 @@
 import asyncio
 import importlib
-import json
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 from uuid import UUID, uuid4
 
 import httpx
@@ -20,6 +18,10 @@ from openhands.agent_server.models import (
     UpdateConversationRequest,
 )
 from openhands.agent_server.pub_sub import Subscriber
+from openhands.agent_server.secret_utils import (
+    filter_invalid_secrets_in_state,
+    preprocess_stored_conversation_json,
+)
 from openhands.agent_server.server_details_router import update_last_execution_time
 from openhands.agent_server.utils import safe_rmtree, utc_now
 from openhands.sdk import LLM, Event, Message
@@ -44,7 +46,7 @@ def _compose_conversation_info(
     # re-validation (issue #12714). We target only the secrets dicts rather
     # than using blanket exclude_none=True, which would drop legitimate None
     # values from Optional fields that lack defaults.
-    _filter_invalid_secrets_in_state(data)
+    filter_invalid_secrets_in_state(data)
     return ConversationInfo(
         **data,
         title=stored.title,
@@ -53,102 +55,6 @@ def _compose_conversation_info(
         updated_at=stored.updated_at,
     )
 
-
-def _is_null_secret(value: Any) -> bool:
-    """Check whether a single secret entry is null or has a null value.
-
-    A secret is considered null when:
-    - The value itself is None
-    - It is a dict whose ``value`` key is None and whose ``kind`` is either
-      ``StaticSecret`` or absent (untyped).
-
-    Returns:
-        True if the secret entry should be discarded.
-    """
-    if value is None:
-        return True
-    if isinstance(value, dict) and value.get("value") is None:
-        kind = value.get("kind", "")
-        if kind in ("StaticSecret", ""):
-            return True
-    return False
-
-
-def _filter_secrets_dict(secrets: dict[str, Any]) -> dict[str, Any]:
-    """Return a copy of *secrets* with null/invalid entries removed.
-
-    Args:
-        secrets: Mapping of secret names to their serialized representations.
-
-    Returns:
-        A new dict containing only valid secret entries.
-    """
-    return {
-        key: value for key, value in secrets.items() if not _is_null_secret(value)
-    }
-
-
-def _filter_invalid_secrets(data: dict[str, Any]) -> dict[str, Any]:
-    """Filter out secrets with null/invalid values from a parsed conversation dict.
-
-    Targets the top-level ``secrets`` key used by ``StoredConversation``.
-    When secrets are masked (due to missing cipher or key rotation), their values
-    become null. This causes Pydantic ValidationError when re-validating because
-    SecretSource expects valid typed values.
-
-    Args:
-        data: Parsed JSON dict that may contain a 'secrets' key.
-
-    Returns:
-        The same dict with invalid secret entries removed.
-    """
-    secrets = data.get("secrets")
-    if secrets and isinstance(secrets, dict):
-        data["secrets"] = _filter_secrets_dict(secrets)
-    return data
-
-
-def _filter_invalid_secrets_in_state(data: dict[str, Any]) -> dict[str, Any]:
-    """Filter null secrets from a ``ConversationState`` model dump.
-
-    Unlike ``_filter_invalid_secrets`` which targets the top-level ``secrets``
-    key on ``StoredConversation``, this targets ``secret_registry.secret_sources``
-    used by ``ConversationState``.
-
-    Args:
-        data: Dict produced by ``ConversationState.model_dump()``.
-
-    Returns:
-        The same dict with null secret entries removed from the registry.
-    """
-    registry = data.get("secret_registry")
-    if registry and isinstance(registry, dict):
-        sources = registry.get("secret_sources")
-        if sources and isinstance(sources, dict):
-            registry["secret_sources"] = _filter_secrets_dict(sources)
-    return data
-
-
-def _preprocess_stored_conversation_json(json_str: str) -> str:
-    """Preprocess stored conversation JSON to handle null secret values.
-
-    This is applied before Pydantic validation to gracefully handle conversations
-    that were persisted with masked/null secrets (e.g., after key rotation or
-    missing OH_SECRET_KEY).
-
-    Args:
-        json_str: Raw JSON string from meta.json.
-
-    Returns:
-        Cleaned JSON string safe for Pydantic validation.
-    """
-    try:
-        data = json.loads(json_str)
-    except (json.JSONDecodeError, TypeError):
-        return json_str
-
-    _filter_invalid_secrets(data)
-    return json.dumps(data)
 
 
 @dataclass
@@ -521,7 +427,7 @@ class ConversationService:
                 if not meta_file.exists():
                     continue
                 json_str = meta_file.read_text()
-                cleaned_json = _preprocess_stored_conversation_json(json_str)
+                cleaned_json = preprocess_stored_conversation_json(json_str)
                 stored = StoredConversation.model_validate_json(
                     cleaned_json,
                     context={
