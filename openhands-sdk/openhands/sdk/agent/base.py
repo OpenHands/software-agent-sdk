@@ -248,8 +248,8 @@ class AgentBase(DiscriminatedUnionMixin, ABC):
         - Conversation instructions
 
         This content should NOT be included in the cached system prompt to enable
-        cross-conversation cache sharing. Instead, it should be provided as a
-        separate user message at the start of the conversation.
+        cross-conversation cache sharing. Instead, it is sent as a second content
+        block (without a cache marker) inside the system message.
 
         Returns:
             The dynamic context string, or None if no context is configured.

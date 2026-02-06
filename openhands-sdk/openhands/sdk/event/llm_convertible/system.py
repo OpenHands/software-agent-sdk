@@ -13,17 +13,17 @@ class SystemPromptEvent(LLMConvertibleEvent):
     """System prompt added by the agent.
 
     The system prompt can optionally include dynamic context that varies between
-    conversations. When `dynamic_context` is provided, it will be sent as a
-    separate user message rather than being included in the system message.
-    This enables better prompt caching across conversations, as the static
-    system prompt can be cached and reused while the dynamic context varies.
+    conversations. When ``dynamic_context`` is provided, it is included as a
+    second content block in the same system message (without a cache marker).
+    The static block carries ``cache_prompt=True`` so that Anthropic's prefix
+    caching covers only the constant portion, enabling cross-conversation cache
+    hits while the dynamic portion is re-processed each time.
 
     Attributes:
         system_prompt: The static system prompt text (cacheable across conversations)
         tools: List of available tools
         dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
-            When provided, this is converted to a user message instead of being
-            appended to the system message, enabling cross-conversation cache sharing.
+            Sent as a second TextContent block inside the system message.
     """
 
     source: SourceType = "agent"
@@ -35,8 +35,8 @@ class SystemPromptEvent(LLMConvertibleEvent):
         default=None,
         description=(
             "Optional dynamic per-conversation context (runtime info, repo context, "
-            "secrets). When provided, this is sent as a separate user message to "
-            "enable cross-conversation prompt caching."
+            "secrets). When provided, this is included as a second content block in "
+            "the system message to enable cross-conversation prompt caching."
         ),
     )
 
@@ -73,31 +73,18 @@ class SystemPromptEvent(LLMConvertibleEvent):
         return content
 
     def to_llm_message(self) -> Message:
-        """Convert to LLM message format.
+        """Convert to a single system LLM message.
 
-        Returns only the static system prompt. The dynamic_context is handled
-        separately by to_llm_messages() to enable proper prompt caching.
+        When ``dynamic_context`` is present the message contains two content
+        blocks: the static prompt (with ``cache_prompt=True`` so it acts as an
+        Anthropic prefix-cache breakpoint) followed by the dynamic context
+        (unmarked, so it is not cached).  When there is no dynamic context the
+        message contains only the static prompt with the cache marker.
         """
-        return Message(role="system", content=[self.system_prompt])
-
-    def to_llm_messages(self) -> list[Message]:
-        """Convert to LLM message format, potentially returning multiple messages.
-
-        When dynamic_context is provided, returns two messages:
-        1. System message with static prompt (cacheable)
-        2. User message with dynamic context (not cached)
-
-        This structure enables cross-conversation prompt caching by keeping the
-        static system prompt separate from per-conversation dynamic content.
-
-        Returns:
-            List of Message objects. Contains 1 message if no dynamic_context,
-            or 2 messages if dynamic_context is provided.
-        """
-        messages = [Message(role="system", content=[self.system_prompt])]
+        static_block = self.system_prompt.model_copy(update={"cache_prompt": True})
         if self.dynamic_context:
-            messages.append(Message(role="user", content=[self.dynamic_context]))
-        return messages
+            return Message(role="system", content=[static_block, self.dynamic_context])
+        return Message(role="system", content=[static_block])
 
     def __str__(self) -> str:
         """Plain text string representation for SystemPromptEvent."""

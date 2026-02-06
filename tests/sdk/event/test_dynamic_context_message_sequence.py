@@ -1,34 +1,20 @@
-"""Test that dynamic context doesn't create consecutive user messages.
+"""Test that dynamic context is handled via cache breakpoints in system message.
 
-When SystemPromptEvent has dynamic_context and a user message follows,
-the message sequence sent to the LLM should NOT have consecutive user messages.
-
-LLMs typically expect alternating user/assistant messages after system prompt.
-Two consecutive user messages would break this expectation and could cause
-issues with some LLM providers.
+When SystemPromptEvent has dynamic_context, it should be included as a second
+content block inside the system message (with no cache marker), while the
+static block carries cache_prompt=True.  This enables cross-conversation
+prompt caching via Anthropic's prefix-cache breakpoints.
 """
 
 from typing import cast
-
-import pytest
 
 from openhands.sdk.event.base import LLMConvertibleEvent
 from openhands.sdk.event.llm_convertible import MessageEvent, SystemPromptEvent
 from openhands.sdk.llm import Message, TextContent
 
 
-def test_dynamic_context_followed_by_user_message_no_consecutive_users():
-    """Test dynamic_context + user message doesn't create consecutive users.
-
-    This is a regression test for the prompt caching fix where:
-    1. SystemPromptEvent emits [system_msg, user_msg] when dynamic_context is present
-    2. User sends "Hi" which becomes another user message
-    3. The final sequence should NOT have [user, user] consecutive messages
-
-    Expected behavior: The dynamic context should be merged or handled such that
-    we don't end up with two consecutive user messages.
-    """
-    # Create SystemPromptEvent WITH dynamic context
+def test_dynamic_context_produces_two_system_content_blocks():
+    """Dynamic context should appear as a second content block in the system message."""
     system_event = SystemPromptEvent(
         source="agent",
         system_prompt=TextContent(text="You are a helpful assistant."),
@@ -38,7 +24,6 @@ def test_dynamic_context_followed_by_user_message_no_consecutive_users():
         ),
     )
 
-    # Create user message (what the user types in the UI)
     user_message = MessageEvent(
         source="user",
         llm_message=Message(
@@ -47,42 +32,31 @@ def test_dynamic_context_followed_by_user_message_no_consecutive_users():
         ),
     )
 
-    # Convert to LLM messages
     events = cast(list[LLMConvertibleEvent], [system_event, user_message])
     messages = LLMConvertibleEvent.events_to_messages(events)
 
-    # Check for consecutive user messages
+    # Should be [system, user] — no extra messages
+    assert len(messages) == 2
     roles = [m.role for m in messages]
-    print(f"Message roles: {roles}")  # Debug output
+    assert roles == ["system", "user"]
 
-    # There should NOT be consecutive user messages
-    for i in range(len(roles) - 1):
-        if roles[i] == "user" and roles[i + 1] == "user":
-            pytest.fail(
-                f"Found consecutive user messages at positions {i} and {i + 1}. "
-                f"Full role sequence: {roles}. "
-                "This will cause issues with LLMs that expect "
-                "alternating user/assistant messages."
-            )
+    # System message should have 2 content blocks
+    sys_msg = messages[0]
+    assert len(sys_msg.content) == 2
+    assert isinstance(sys_msg.content[0], TextContent)
+    assert isinstance(sys_msg.content[1], TextContent)
+    assert sys_msg.content[0].text == "You are a helpful assistant."
+    assert "Working directory" in sys_msg.content[1].text
 
-    # Verify we have the expected structure:
-    # - System message should be first
-    # - User message(s) should eventually contain "Hi"
-    assert messages[0].role == "system"
-    assert any(
-        m.role == "user"
-        and any(isinstance(c, TextContent) and "Hi" in c.text for c in m.content)
-        for m in messages
-    ), "User's 'Hi' message should be present in the message sequence"
+    # User message should be unmodified
+    user_msg = messages[1]
+    assert len(user_msg.content) == 1
+    assert isinstance(user_msg.content[0], TextContent)
+    assert user_msg.content[0].text == "Hi"
 
 
 def test_system_prompt_without_dynamic_context_followed_by_user():
-    """Test that system prompt without dynamic_context works correctly.
-
-    This is a baseline test - without dynamic_context, there should be
-    no issue with consecutive user messages.
-    """
-    # Create SystemPromptEvent WITHOUT dynamic context
+    """System prompt without dynamic_context produces a single content block."""
     system_event = SystemPromptEvent(
         source="agent",
         system_prompt=TextContent(text="You are a helpful assistant."),
@@ -90,7 +64,6 @@ def test_system_prompt_without_dynamic_context_followed_by_user():
         dynamic_context=None,
     )
 
-    # Create user message
     user_message = MessageEvent(
         source="user",
         llm_message=Message(
@@ -102,20 +75,13 @@ def test_system_prompt_without_dynamic_context_followed_by_user():
     events = cast(list[LLMConvertibleEvent], [system_event, user_message])
     messages = LLMConvertibleEvent.events_to_messages(events)
 
-    roles = [m.role for m in messages]
-    print(f"Message roles (no dynamic context): {roles}")
-
-    # Should be: [system, user]
     assert len(messages) == 2
-    assert roles == ["system", "user"]
+    assert [m.role for m in messages] == ["system", "user"]
+    assert len(messages[0].content) == 1
 
 
-def test_dynamic_context_message_content_preserved():
-    """Test that dynamic context content is preserved in the message sequence.
-
-    Even after fixing the consecutive user message issue, we need to ensure
-    the dynamic context information is still available to the LLM.
-    """
+def test_dynamic_context_content_preserved_in_system_message():
+    """Dynamic context text must be preserved inside the system message."""
     dynamic_content = (
         "Working directory: /workspace\nDate: 2024-01-15\nUser: test@example.com"
     )
@@ -138,16 +104,54 @@ def test_dynamic_context_message_content_preserved():
     events = cast(list[LLMConvertibleEvent], [system_event, user_message])
     messages = LLMConvertibleEvent.events_to_messages(events)
 
-    # Collect all text content
-    all_text = []
-    for m in messages:
-        for c in m.content:
-            if isinstance(c, TextContent):
-                all_text.append(c.text)
+    # Dynamic context should be in the system message, not in the user message
+    sys_content_texts = [
+        c.text for c in messages[0].content if isinstance(c, TextContent)
+    ]
+    assert any("Working directory" in t for t in sys_content_texts)
+    assert any("Date: 2024-01-15" in t for t in sys_content_texts)
 
-    full_text = "\n".join(all_text)
+    # User message should only contain the user's text
+    user_content_texts = [
+        c.text for c in messages[1].content if isinstance(c, TextContent)
+    ]
+    assert user_content_texts == ["Hi"]
 
-    # Dynamic context should be present somewhere in the messages
-    assert "Working directory" in full_text, "Dynamic context should be preserved"
-    assert "Date: 2024-01-15" in full_text, "Dynamic context should be preserved"
-    assert "Hi" in full_text, "User message should be preserved"
+
+def test_cache_marker_on_static_block_only():
+    """cache_prompt is True on static block, False on dynamic."""
+    system_event = SystemPromptEvent(
+        source="agent",
+        system_prompt=TextContent(text="Static prompt"),
+        tools=[],
+        dynamic_context=TextContent(text="Dynamic context"),
+    )
+
+    msg = system_event.to_llm_message()
+
+    assert len(msg.content) == 2
+    # Static block has cache marker
+    assert msg.content[0].cache_prompt is True
+    assert isinstance(msg.content[0], TextContent)
+    assert msg.content[0].text == "Static prompt"
+    # Dynamic block does NOT have cache marker
+    assert msg.content[1].cache_prompt is False
+    assert isinstance(msg.content[1], TextContent)
+    assert msg.content[1].text == "Dynamic context"
+
+
+def test_cache_marker_when_no_dynamic_context():
+    """Single static block still gets cache marker."""
+    system_event = SystemPromptEvent(
+        source="agent",
+        system_prompt=TextContent(text="Static prompt"),
+        tools=[],
+        dynamic_context=None,
+    )
+
+    msg = system_event.to_llm_message()
+
+    assert len(msg.content) == 1
+    assert msg.content[0].cache_prompt is True
+    assert isinstance(msg.content[0], TextContent)
+    assert msg.content[0].text == "Static prompt"

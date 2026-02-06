@@ -184,9 +184,10 @@ class Agent(AgentBase):
                 f"prefix_event_types={event_types}."
             )
 
-        # Prepare system message with separate static and dynamic content
-        # The dynamic_context is sent as a separate user message to enable
-        # cross-conversation prompt caching of the static system prompt.
+        # Prepare system message with separate static and dynamic content.
+        # The dynamic_context is included as a second content block in the
+        # system message (without a cache marker) to enable cross-conversation
+        # prompt caching of the static system prompt.
         dynamic_context = self.dynamic_context
         event = SystemPromptEvent(
             source="agent",
