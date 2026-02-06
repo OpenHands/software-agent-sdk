@@ -3,7 +3,14 @@ from __future__ import annotations
 from typing import Any
 
 from openhands.sdk.llm.options.common import apply_defaults_if_absent
-from openhands.sdk.llm.utils.model_features import get_features
+from openhands.sdk.llm.utils.model_features import get_features, model_matches
+
+
+# Anthropic models that cannot have both temperature and top_p specified
+ANTHROPIC_EXCLUSIVE_SAMPLING_MODELS: list[str] = [
+    "claude-opus-4-6",
+    "claude-opus-4.6",
+]
 
 
 def select_chat_options(
@@ -93,5 +100,11 @@ def select_chat_options(
     # Pass through user-provided extra_body unchanged
     if llm.litellm_extra_body:
         out["extra_body"] = llm.litellm_extra_body
+
+    # Anthropic models like Claude Opus 4.6 cannot have both temperature and top_p
+    # specified. If both are present, prefer temperature and remove top_p.
+    if model_matches(llm.model, ANTHROPIC_EXCLUSIVE_SAMPLING_MODELS):
+        if "temperature" in out and "top_p" in out:
+            out.pop("top_p", None)
 
     return out
