@@ -27,6 +27,7 @@ Approve PRs that are straightforward and low-risk:
 
 Examples:
 - A PR adding a new model to `resolve_model_config.py` or `verified_models.py` with corresponding test updates
+- A PR adding a new model to subscription/authentication model lists (e.g., `OPENAI_CODEX_MODELS` in `llm/auth/openai.py`)
 - A PR adding documentation notes to docstrings clarifying method behavior (e.g., security considerations, bypass behaviors)
 - A PR changing CI runners or fixing workflow infrastructure issues (e.g., standardizing runner types to fix path inconsistencies)
 
