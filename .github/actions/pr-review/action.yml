@@ -17,9 +17,10 @@ inputs:
         required: false
         default: ''
     review-style:
-        description: "Review style: 'standard' or 'roasted'"
+        description: "Review style: 'standard' (balanced review covering style, readability, and security) or 'roasted' (Linus Torvalds-style brutally honest
+            feedback focusing on data structures, simplicity, and pragmatism)"
         required: false
-        default: standard
+        default: roasted
     sdk-version:
         description: Git ref to use for the SDK (tag, branch, or commit SHA, e.g., v1.0.0, main, or abc1234)
         required: false
