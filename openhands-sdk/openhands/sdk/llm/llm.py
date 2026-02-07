@@ -1036,20 +1036,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         if (
             self.max_input_tokens is None
             or self.max_input_tokens >= MIN_CONTEXT_WINDOW_TOKENS
+            or os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower()
+            in ("true", "1", "yes")
         ):
-            return
-
-        if os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower() in (
-            "true",
-            "1",
-            "yes",
-        ):
-            logger.warning(
-                "Context window (%d) below minimum (%d), proceeding due to %s",
-                self.max_input_tokens,
-                MIN_CONTEXT_WINDOW_TOKENS,
-                ENV_ALLOW_SHORT_CONTEXT_WINDOWS,
-            )
             return
 
         raise LLMContextWindowTooSmallError(
