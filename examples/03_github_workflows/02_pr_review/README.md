@@ -7,6 +7,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 - **`workflow.yml`**: GitHub Actions workflow file that triggers on PR labels
 - **`agent_script.py`**: Python script that runs the OpenHands agent for PR review
 - **`prompt.py`**: The prompt asking the agent to write the PR review
+- **`evaluate_review.py`**: Script to evaluate review effectiveness when PR is closed
 - **`README.md`**: This documentation file
 
 ## Features
@@ -101,3 +102,36 @@ There are two ways to trigger an automated review of a pull request:
 5. Review comments will be posted to the PR when complete
 
 **Note**: Both methods require write access to the repository, ensuring only authorized users can trigger the AI review.
+
+## Review Evaluation (Observability)
+
+When Laminar observability is enabled (`LMNR_PROJECT_API_KEY` secret is set), the workflow captures trace data that enables delayed evaluation of review effectiveness.
+
+### How It Works
+
+1. **During Review**: The agent script captures the Laminar trace ID and stores it as a GitHub artifact
+2. **On PR Close/Merge**: The evaluation workflow (`pr-review-evaluation.yml`) runs automatically:
+   - Downloads the trace ID from the artifact
+   - Fetches all PR comments and the final diff from GitHub
+   - Creates an evaluation trace in Laminar with the review context
+   - Optionally scores the original review trace
+
+### Evaluation Metrics
+
+The evaluation script provides:
+- **Review Engagement Score**: Preliminary score based on human responses to agent comments
+- **Comment Analysis**: Structured data for signal processing (which comments were addressed)
+- **Final Diff Context**: The actual code changes for comparison
+
+### Laminar Signal Integration
+
+Configure a Laminar signal to analyze the evaluation traces:
+
+1. Create a signal named `pr_review_effectiveness`
+2. Filter by tag: `pr-review-evaluation`
+3. Use the signal prompt to analyze:
+   - Which agent comments were addressed in the final patch
+   - Which comments received human responses
+   - Overall review effectiveness score
+
+See [GitHub Issue #1953](https://github.com/OpenHands/software-agent-sdk/issues/1953) for the full implementation details.
