@@ -21,6 +21,10 @@ inputs:
             feedback focusing on data structures, simplicity, and pragmatism)"
         required: false
         default: roasted
+    sdk-repo:
+        description: GitHub repository for the SDK (owner/repo)
+        required: false
+        default: OpenHands/software-agent-sdk
     sdk-version:
         description: Git ref to use for the SDK (tag, branch, or commit SHA, e.g., v1.0.0, main, or abc1234)
         required: false
@@ -38,7 +42,7 @@ runs:
         - name: Checkout software-agent-sdk repository
           uses: actions/checkout@v4
           with:
-              repository: OpenHands/software-agent-sdk
+              repository: ${{ inputs.sdk-repo }}
               ref: ${{ inputs.sdk-version }}
               path: software-agent-sdk
 

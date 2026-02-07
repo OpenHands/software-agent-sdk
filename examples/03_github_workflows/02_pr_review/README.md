@@ -69,6 +69,8 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       review-style: roasted
       # SDK git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
       sdk-version: main
+      # Optional: override the SDK repo (owner/repo) if you forked it
+      sdk-repo: OpenHands/software-agent-sdk
       # Secrets
       llm-api-key: ${{ secrets.LLM_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -125,5 +127,6 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `standard` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
+| `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
 | `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
