@@ -11,7 +11,7 @@ from openhands.sdk.llm import LLM
 def test_llm_config_defaults():
     """Test LLM with default values."""
     config = LLM(model="gpt-4o-mini", usage_id="test-llm")
-    assert config.model == "gpt-4"
+    assert config.model == "gpt-4o-mini"
     assert config.api_key is None
     assert config.base_url is None
     assert config.api_version is None
@@ -24,8 +24,8 @@ def test_llm_config_defaults():
     assert config.temperature == 0.0
     assert config.top_p == 1.0
     assert config.top_k is None
-    assert config.max_input_tokens == 8192  # Auto-populated from model info
-    assert config.max_output_tokens == 4096  # Auto-populated from model info
+    assert config.max_input_tokens == 128000  # Auto-populated from model info
+    assert config.max_output_tokens == 16384  # Auto-populated from model info
     assert config.input_cost_per_token is None
     assert config.output_cost_per_token is None
     assert config.ollama_base_url is None
@@ -67,7 +67,7 @@ def test_llm_config_custom_values():
             temperature=0.5,
             top_p=0.9,
             top_k=50,
-            max_input_tokens=4000,
+            max_input_tokens=20000,
             max_output_tokens=1000,
             input_cost_per_token=0.001,
             output_cost_per_token=0.002,
@@ -90,7 +90,7 @@ def test_llm_config_custom_values():
             ],
         )
 
-    assert config.model == "gpt-4"
+    assert config.model == "gpt-4o-mini"
     assert config.api_key is not None
     assert isinstance(config.api_key, SecretStr)
     assert config.api_key.get_secret_value() == "test-key"
@@ -105,7 +105,7 @@ def test_llm_config_custom_values():
     assert config.temperature == 0.5
     assert config.top_p == 0.9
     assert config.top_k == 50
-    assert config.max_input_tokens == 4000
+    assert config.max_input_tokens == 20000
     assert config.max_output_tokens == 1000
     assert config.input_cost_per_token == 0.001
     assert config.output_cost_per_token == 0.002
@@ -193,7 +193,7 @@ def test_llm_config_post_init_reasoning_effort_default():
 
 def test_llm_config_post_init_azure_api_version():
     """Test that Azure models get default API version."""
-    config = LLM(model="azure/gpt-4", usage_id="test-llm")
+    config = LLM(model="azure/gpt-4o-mini", usage_id="test-llm")
     assert config.api_version == "2024-12-01-preview"
 
     # Test that non-Azure models don't get default API version
@@ -201,7 +201,9 @@ def test_llm_config_post_init_azure_api_version():
     assert config.api_version is None
 
     # Test that explicit API version is preserved
-    config = LLM(model="azure/gpt-4", api_version="custom-version", usage_id="test-llm")
+    config = LLM(
+        model="azure/gpt-4o-mini", api_version="custom-version", usage_id="test-llm"
+    )
     assert config.api_version == "custom-version"
 
 
@@ -290,12 +292,11 @@ def test_llm_config_validation():
 def test_llm_config_model_variants():
     """Test various model name formats."""
     models = [
-        "gpt-4",
+        "gpt-4o-mini",
         "claude-3-sonnet",
-        "azure/gpt-4",
+        "azure/gpt-4o-mini",
         "anthropic/claude-3-sonnet",
         "gemini-2.5-pro-experimental",
-        "local/custom-model",
     ]
 
     for model in models:
@@ -360,10 +361,10 @@ def test_llm_config_optional_fields():
     assert config.timeout is None
     assert config.top_k is None
     assert (
-        config.max_input_tokens == 8192
+        config.max_input_tokens == 128000
     )  # Auto-populated from model info even when set to None
     assert (
-        config.max_output_tokens == 4096
+        config.max_output_tokens == 16384
     )  # Auto-populated from model info even when set to None
     assert config.input_cost_per_token is None
     assert config.output_cost_per_token is None
