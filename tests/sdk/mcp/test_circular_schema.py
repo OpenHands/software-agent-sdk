@@ -250,9 +250,7 @@ class TestCircularSchemaFix:
             """A linked list node with optional next pointer."""
 
             value: int = Field(description="The value")
-            next: "LinkedListNode | None" = Field(
-                default=None, description="Next node"
-            )
+            next: "LinkedListNode | None" = Field(default=None, description="Next node")
 
         LinkedListNode.model_rebuild()
 
