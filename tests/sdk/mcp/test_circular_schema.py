@@ -14,8 +14,6 @@ Related: Datadog logs from conversation ab9909a07571431a86ab6f1be36f555f
 """
 
 import json
-import sys
-from typing import List, Optional
 
 import pytest
 from pydantic import Field
@@ -79,7 +77,8 @@ class TestCircularSchemaHandling:
         The fix ensures to_mcp_schema() works without RecursionError.
 
         This test verifies the fix for the bug that caused:
-            litellm.APIConnectionError: OpenrouterException - maximum recursion depth exceeded
+            litellm.APIConnectionError: OpenrouterException -
+            maximum recursion depth exceeded
         in conversation ab9909a07571431a86ab6f1be36f555f
         """
 
@@ -88,7 +87,7 @@ class TestCircularSchemaHandling:
             """A tree node that can have children of the same type."""
 
             value: str = Field(description="The value of this node")
-            children: Optional[List["TreeNode"]] = Field(
+            children: list["TreeNode"] | None = Field(
                 default=None, description="Child nodes"
             )
 
@@ -251,7 +250,7 @@ class TestCircularSchemaFix:
             """A linked list node with optional next pointer."""
 
             value: int = Field(description="The value")
-            next: Optional["LinkedListNode"] = Field(
+            next: "LinkedListNode | None" = Field(
                 default=None, description="Next node"
             )
 
