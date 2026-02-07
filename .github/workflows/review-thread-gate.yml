@@ -16,7 +16,6 @@ concurrency:
 
 jobs:
     unresolved-review-threads:
-        if: github.event_name == 'pull_request'
         runs-on: ubuntu-latest
         steps:
             - name: Fail when unresolved review threads remain (unless waived)
@@ -29,7 +28,9 @@ jobs:
                         return;
                       }
 
-                      const waiverMatch = pr.body?.match(/review-thread-waiver\s*:\s*(.+)/i);
+                      const waiverMatch = pr.body?.match(
+                        /review-thread-waiver\s*:\s*(.+?)(?:\n|$)/i,
+                      );
                       const waiverReason = waiverMatch?.[1]?.trim() || null;
 
                       const unresolved = [];
@@ -110,3 +111,4 @@ jobs:
                         `Found ${unresolved.length} unresolved review thread(s). Resolve all threads or add ` +
                         '`review-thread-waiver: <reason>` to the PR body for an intentional waiver.',
                       );
+
