@@ -46,8 +46,8 @@ jobs:
                   # LLM configuration
                   llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
-                  # Review style: 'standard' or 'roasted' (Linus Torvalds style)
-                  review-style: standard
+                  # Review style: roasted (other option: standard)
+                  review-style: roasted
                   # SDK version to use (version tag or branch name)
                   sdk-version: main
                   # Secrets

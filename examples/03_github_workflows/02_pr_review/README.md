@@ -65,8 +65,8 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       # LLM configuration
       llm-model: anthropic/claude-sonnet-4-5-20250929
       llm-base-url: ''
-      # Review style: 'standard' or 'roasted' (Linus Torvalds style)
-      review-style: standard
+      # Review style: roasted (other option: standard)
+      review-style: roasted
       # SDK git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
       sdk-version: main
       # Secrets
