@@ -49,23 +49,54 @@ def py_type(spec: dict[str, Any]) -> Any:
     return Any
 
 
-def _process_schema_node(node, defs):
+def _process_schema_node(
+    node: dict[str, Any],
+    defs: dict[str, Any],
+    _visiting: frozenset[str] | None = None,
+) -> dict[str, Any]:
     """Recursively process a schema node to simplify and resolve $ref.
 
-    https://www.reddit.com/r/mcp/comments/1kjo9gt/toolinputschema_conversion_from_pydanticmodel/
-    https://gist.github.com/leandromoreira/3de4819e4e4df9422d87f1d3e7465c16
+    This function resolves JSON Schema $ref references and simplifies the schema
+    structure for compatibility with MCP tool schemas. It handles circular
+    references by tracking visited refs and stopping recursion when a cycle
+    is detected.
+
+    Args:
+        node: The schema node to process.
+        defs: The $defs dictionary containing reference definitions.
+        _visiting: Internal parameter tracking refs currently being processed
+            in the current recursion path to detect cycles.
+
+    Returns:
+        A simplified schema dict with $ref resolved (except for circular refs).
+
+    References:
+        https://www.reddit.com/r/mcp/comments/1kjo9gt/toolinputschema_conversion_from_pydanticmodel/
+        https://gist.github.com/leandromoreira/3de4819e4e4df9422d87f1d3e7465c16
     """
+    if _visiting is None:
+        _visiting = frozenset()
+
     # Handle $ref references
     if "$ref" in node:
         ref_path = node["$ref"]
         if ref_path.startswith("#/$defs/"):
             ref_name = ref_path.split("/")[-1]
             if ref_name in defs:
+                # Check for circular reference - if we're already visiting this
+                # ref in the current path, don't recurse (would cause infinite loop)
+                if ref_name in _visiting:
+                    # Return a generic object type for circular refs
+                    # This breaks the cycle while preserving schema validity
+                    return {"type": "object"}
+
+                # Add this ref to the visiting set for this recursion path
+                new_visiting = _visiting | {ref_name}
                 # Process the referenced definition
-                return _process_schema_node(defs[ref_name], defs)
+                return _process_schema_node(defs[ref_name], defs, new_visiting)
 
     # Start with a new schema object
-    result = {}
+    result: dict[str, Any] = {}
 
     # Copy the basic properties
     if "type" in node:
@@ -76,7 +107,7 @@ def _process_schema_node(node, defs):
         non_null_types = [t for t in node["anyOf"] if t.get("type") != "null"]
         if non_null_types:
             # Process the first non-null type
-            processed = _process_schema_node(non_null_types[0], defs)
+            processed = _process_schema_node(non_null_types[0], defs, _visiting)
             result.update(processed)
 
     # Handle description
@@ -90,7 +121,9 @@ def _process_schema_node(node, defs):
 
         # Process each property
         for prop_name, prop_schema in node["properties"].items():
-            result["properties"][prop_name] = _process_schema_node(prop_schema, defs)
+            result["properties"][prop_name] = _process_schema_node(
+                prop_schema, defs, _visiting
+            )
 
         # Add required fields if present
         if "required" in node:
@@ -99,7 +132,7 @@ def _process_schema_node(node, defs):
     # Handle arrays
     if node.get("type") == "array" and "items" in node:
         result["type"] = "array"
-        result["items"] = _process_schema_node(node["items"], defs)
+        result["items"] = _process_schema_node(node["items"], defs, _visiting)
 
     # Handle enum
     if "enum" in node:
