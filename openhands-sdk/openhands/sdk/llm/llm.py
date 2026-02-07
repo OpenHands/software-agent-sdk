@@ -74,6 +74,7 @@ from litellm.utils import (
 )
 
 from openhands.sdk.llm.exceptions import (
+    LLMContextWindowTooSmallError,
     LLMNoResponseError,
     map_provider_exception,
 )
@@ -110,6 +111,12 @@ LLM_RETRY_EXCEPTIONS: tuple[type[Exception], ...] = (
     InternalServerError,
     LLMNoResponseError,
 )
+
+# Minimum context window size required for OpenHands to function properly
+MIN_CONTEXT_WINDOW_TOKENS = 16384
+
+# Environment variable to override the minimum context window check
+ENV_ALLOW_SHORT_CONTEXT_WINDOWS = "ALLOW_SHORT_CONTEXT_WINDOWS"
 
 
 class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
@@ -989,6 +996,9 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
         ):
             self.max_input_tokens = self._model_info.get("max_input_tokens")
 
+        # Validate context window size
+        self._validate_context_window_size()
+
         if self.max_output_tokens is None:
             if any(
                 m in self.model
@@ -1020,6 +1030,38 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                     self.max_output_tokens,
                     self.model,
                 )
+
+    def _validate_context_window_size(self) -> None:
+        """Validate that the context window is large enough for OpenHands.
+
+        Raises:
+            LLMContextWindowTooSmallError: If the context window is below the
+                minimum required and the override env var is not set.
+        """
+        # Skip if we don't know the context window size
+        if self.max_input_tokens is None:
+            return
+
+        # Skip if context window is large enough
+        if self.max_input_tokens >= MIN_CONTEXT_WINDOW_TOKENS:
+            return
+
+        # Check if the override is set
+        allow_short = os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower()
+        if allow_short in ("true", "1", "yes"):
+            logger.warning(
+                "Context window size (%d tokens) is below minimum (%d tokens). "
+                "Proceeding anyway because %s is set.",
+                self.max_input_tokens,
+                MIN_CONTEXT_WINDOW_TOKENS,
+                ENV_ALLOW_SHORT_CONTEXT_WINDOWS,
+            )
+            return
+
+        raise LLMContextWindowTooSmallError(
+            context_window=self.max_input_tokens,
+            min_required=MIN_CONTEXT_WINDOW_TOKENS,
+        )
 
     def vision_is_active(self) -> bool:
         with warnings.catch_warnings():
