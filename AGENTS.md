@@ -157,6 +157,13 @@ mkdir -p .pr
 - Any analysis that helps reviewers understand the PR but isn't needed long-term
 </PR_ARTIFACTS>
 
+<REVIEW_WORKFLOW>
+- After addressing inline review comments, mark the corresponding review threads as resolved.
+- Prefer resolving threads only once fixes are pushed or a clear decision is documented.
+- Use the GitHub API (GraphQL `resolveReviewThread`) when you cannot resolve threads in the UI.
+</REVIEW_WORKFLOW>
+
+
 <CODE>
 - Avoid hacky trick like `sys.path.insert` when resolving package dependency
 - Use existing packages/libraries instead of implementing yourselves whenever possible.
