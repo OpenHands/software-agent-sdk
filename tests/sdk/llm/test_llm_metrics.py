@@ -8,7 +8,7 @@ from openhands.sdk.llm.utils.metrics import Cost, Metrics, ResponseLatency, Toke
 
 def test_cost_creation_valid():
     """Test creating a valid Cost instance."""
-    cost = Cost(cost=5.0, model="gpt-4")
+    cost = Cost(cost=5.0, model="gpt-4o-mini")
     assert cost.cost == 5.0
     assert cost.model == "gpt-4"
     assert hasattr(cost, "timestamp")
@@ -16,14 +16,14 @@ def test_cost_creation_valid():
 
 def test_cost_creation_zero():
     """Test creating a Cost instance with zero cost."""
-    cost = Cost(cost=0.0, model="gpt-4")
+    cost = Cost(cost=0.0, model="gpt-4o-mini")
     assert cost.cost == 0.0
 
 
 def test_cost_creation_negative_fails():
     """Test that negative cost raises ValidationError."""
     with pytest.raises(ValidationError) as exc_info:
-        Cost(cost=-1.0, model="gpt-4")
+        Cost(cost=-1.0, model="gpt-4o-mini")
 
     errors = exc_info.value.errors()
     assert len(errors) == 1
@@ -49,7 +49,7 @@ def test_cost_pydantic_features():
 
 def test_response_latency_creation_valid():
     """Test creating a valid ResponseLatency instance."""
-    latency = ResponseLatency(model="gpt-4", latency=1.5, response_id="test-123")
+    latency = ResponseLatency(model="gpt-4o-mini", latency=1.5, response_id="test-123")
     assert latency.latency == 1.5
     assert latency.response_id == "test-123"
     assert latency.model == "gpt-4"
@@ -57,14 +57,14 @@ def test_response_latency_creation_valid():
 
 def test_response_latency_creation_zero():
     """Test creating a ResponseLatency instance with zero latency."""
-    latency = ResponseLatency(model="gpt-4", latency=0.0, response_id="test-123")
+    latency = ResponseLatency(model="gpt-4o-mini", latency=0.0, response_id="test-123")
     assert latency.latency == 0.0
 
 
 def test_response_latency_creation_negative_fails():
     """Test that negative latency raises ValidationError."""
     with pytest.raises(ValidationError) as exc_info:
-        ResponseLatency(model="gpt-4", latency=-0.5, response_id="test-123")
+        ResponseLatency(model="gpt-4o-mini", latency=-0.5, response_id="test-123")
 
     errors = exc_info.value.errors()
     assert len(errors) == 1
@@ -74,7 +74,7 @@ def test_response_latency_creation_negative_fails():
 
 def test_response_latency_pydantic_features():
     """Test Pydantic features work correctly."""
-    latency = ResponseLatency(model="gpt-4", latency=2.3, response_id="test-789")
+    latency = ResponseLatency(model="gpt-4o-mini", latency=2.3, response_id="test-789")
 
     # Test model_dump
     data = latency.model_dump()
@@ -90,7 +90,7 @@ def test_response_latency_pydantic_features():
 def test_token_usage_creation_valid():
     """Test creating a valid TokenUsage instance."""
     usage = TokenUsage(
-        model="gpt-4",
+        model="gpt-4o-mini",
         prompt_tokens=100,
         completion_tokens=50,
         cache_read_tokens=10,
@@ -112,7 +112,7 @@ def test_token_usage_creation_valid():
 def test_token_usage_creation_zeros():
     """Test creating a TokenUsage instance with zero values."""
     usage = TokenUsage(
-        model="gpt-4",
+        model="gpt-4o-mini",
         prompt_tokens=0,
         completion_tokens=0,
         cache_read_tokens=0,
@@ -131,7 +131,7 @@ def test_token_usage_negative_prompt_tokens_fails():
     """Test that negative prompt_tokens raises ValidationError."""
     with pytest.raises(ValidationError) as exc_info:
         TokenUsage(
-            model="gpt-4",
+            model="gpt-4o-mini",
             prompt_tokens=-1,
             completion_tokens=50,
             cache_read_tokens=0,
@@ -152,7 +152,7 @@ def test_token_usage_negative_completion_tokens_fails():
     """Test that negative completion_tokens raises ValidationError."""
     with pytest.raises(ValidationError) as exc_info:
         TokenUsage(
-            model="gpt-4",
+            model="gpt-4o-mini",
             prompt_tokens=100,
             completion_tokens=-1,
             cache_read_tokens=0,
@@ -173,7 +173,7 @@ def test_token_usage_negative_cache_tokens_fails():
     """Test that negative cache tokens raise ValidationError."""
     with pytest.raises(ValidationError):
         TokenUsage(
-            model="gpt-4",
+            model="gpt-4o-mini",
             prompt_tokens=100,
             completion_tokens=50,
             cache_read_tokens=-1,
@@ -185,7 +185,7 @@ def test_token_usage_negative_cache_tokens_fails():
 
     with pytest.raises(ValidationError):
         TokenUsage(
-            model="gpt-4",
+            model="gpt-4o-mini",
             prompt_tokens=100,
             completion_tokens=50,
             cache_read_tokens=0,
@@ -199,7 +199,7 @@ def test_token_usage_negative_cache_tokens_fails():
 def test_token_usage_addition():
     """Test that TokenUsage instances can be added together."""
     usage1 = TokenUsage(
-        model="gpt-4",
+        model="gpt-4o-mini",
         prompt_tokens=100,
         completion_tokens=50,
         cache_read_tokens=10,
@@ -210,7 +210,7 @@ def test_token_usage_addition():
     )
 
     usage2 = TokenUsage(
-        model="gpt-4",
+        model="gpt-4o-mini",
         prompt_tokens=200,
         completion_tokens=75,
         cache_read_tokens=20,
