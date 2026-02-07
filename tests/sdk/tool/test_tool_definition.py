@@ -84,6 +84,17 @@ class ComplexObservation(Observation):
         return [TextContent(text=f"Data: {self.data}, Count: {self.count}")]
 
 
+class StrictObservation(Observation):
+    """Observation with required fields for validation testing."""
+
+    message: str = Field(description="Required message field")
+    value: int = Field(description="Required value field")
+
+    @property
+    def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
+        return [TextContent(text=f"{self.message}: {self.value}")]
+
+
 class MockTestTool(ToolDefinition[ToolMockAction, ToolMockObservation]):
     """Concrete mock tool for testing."""
 
@@ -422,14 +433,6 @@ class TestTool:
 
     def test_executor_with_observation_validation(self):
         """Test that executor return values are validated."""
-
-        class StrictObservation(Observation):
-            message: str = Field(description="Required message field")
-            value: int = Field(description="Required value field")
-
-            @property
-            def to_llm_content(self) -> Sequence[TextContent | ImageContent]:
-                return [TextContent(text=f"{self.message}: {self.value}")]
 
         class ValidExecutor(ToolExecutor):
             def __call__(self, action, conversation=None) -> StrictObservation:
