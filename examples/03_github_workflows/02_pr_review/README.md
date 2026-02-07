@@ -4,6 +4,7 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 
 ## Files
 
+- **`action.yml`**: Symlink to the composite GitHub Action (`.github/actions/pr-review/action.yml`)
 - **`workflow.yml`**: Example GitHub Actions workflow file that uses the composite action
 - **`agent_script.py`**: Python script that runs the OpenHands agent for PR review
 - **`prompt.py`**: The prompt asking the agent to write the PR review
@@ -66,7 +67,7 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       llm-base-url: ''
       # Review style: 'standard' or 'roasted' (Linus Torvalds style)
       review-style: standard
-      # SDK version to use (version tag or branch name, e.g., 'v1.0.0' or 'main')
+      # SDK git ref to use (tag, branch, or commit SHA, e.g., 'v1.0.0', 'main', or 'abc1234')
       sdk-version: main
       # Secrets
       llm-api-key: ${{ secrets.LLM_API_KEY }}
@@ -123,7 +124,6 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `llm-model` | LLM model to use | No | `anthropic/claude-sonnet-4-5-20250929` |
 | `llm-base-url` | LLM base URL (optional) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `standard` |
-| `sdk-version` | SDK version tag or branch name | No | `main` |
-| `use-pr-branch-for-sdk` | Use PR branch for SDK when reviewing SDK repo | No | `false` |
+| `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |

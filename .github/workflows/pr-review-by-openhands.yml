@@ -44,7 +44,7 @@ jobs:
                   llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
                   review-style: standard
-                  sdk-version: main
-                  use-pr-branch-for-sdk: 'true'
+                  # Use the PR's head commit SHA to test SDK changes on the SDK repo itself
+                  sdk-version: ${{ github.event.pull_request.head.sha }}
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.ALLHANDS_BOT_GITHUB_PAT }}
