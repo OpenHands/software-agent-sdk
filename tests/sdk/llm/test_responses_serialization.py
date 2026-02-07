@@ -171,6 +171,28 @@ def test_tool_to_responses_truncates_output_over_limit():
         assert "<response clipped>" in out[0]["output"]
 
 
+def test_tool_to_responses_includes_images_in_function_call_output_when_vision_enabled():  # noqa: E501
+    url = "data:image/png;base64,AAAA"
+    m = Message(
+        role="tool",
+        tool_call_id="abc",
+        name="foo",
+        content=[ImageContent(image_urls=[url])],
+    )
+
+    out = m.to_responses_dict(vision_enabled=True)
+
+    assert all(item["type"] == "function_call_output" for item in out)
+    assert all(item["call_id"].startswith("fc_") for item in out)
+    assert not any(item["type"] == "message" for item in out)
+
+    first = out[0]
+    payload = first["output"]
+    assert isinstance(payload, list)
+    assert payload[0]["type"] == "input_image"
+    assert payload[0]["image_url"] == url
+
+
 def test_assistant_includes_reasoning_passthrough():
     ri = ReasoningItemModel(
         id="rid1",
