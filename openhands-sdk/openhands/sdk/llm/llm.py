@@ -1032,26 +1032,20 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
                 )
 
     def _validate_context_window_size(self) -> None:
-        """Validate that the context window is large enough for OpenHands.
-
-        Raises:
-            LLMContextWindowTooSmallError: If the context window is below the
-                minimum required and the override env var is not set.
-        """
-        # Skip if we don't know the context window size
-        if self.max_input_tokens is None:
+        """Validate that the context window is large enough for OpenHands."""
+        if (
+            self.max_input_tokens is None
+            or self.max_input_tokens >= MIN_CONTEXT_WINDOW_TOKENS
+        ):
             return
 
-        # Skip if context window is large enough
-        if self.max_input_tokens >= MIN_CONTEXT_WINDOW_TOKENS:
-            return
-
-        # Check if the override is set
-        allow_short = os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower()
-        if allow_short in ("true", "1", "yes"):
+        if os.environ.get(ENV_ALLOW_SHORT_CONTEXT_WINDOWS, "").lower() in (
+            "true",
+            "1",
+            "yes",
+        ):
             logger.warning(
-                "Context window size (%d tokens) is below minimum (%d tokens). "
-                "Proceeding anyway because %s is set.",
+                "Context window (%d) below minimum (%d), proceeding due to %s",
                 self.max_input_tokens,
                 MIN_CONTEXT_WINDOW_TOKENS,
                 ENV_ALLOW_SHORT_CONTEXT_WINDOWS,
@@ -1059,8 +1053,7 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
             return
 
         raise LLMContextWindowTooSmallError(
-            context_window=self.max_input_tokens,
-            min_required=MIN_CONTEXT_WINDOW_TOKENS,
+            self.max_input_tokens, MIN_CONTEXT_WINDOW_TOKENS
         )
 
     def vision_is_active(self) -> bool:
