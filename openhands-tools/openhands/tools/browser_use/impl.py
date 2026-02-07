@@ -156,6 +156,7 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         session_timeout_minutes: int = 30,
         init_timeout_seconds: int = 30,
         full_output_save_dir: str | None = None,
+        inject_scripts: list[str] | None = None,
         **config,
     ):
         """Initialize BrowserToolExecutor with timeout protection.
@@ -166,7 +167,11 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             session_timeout_minutes: Browser session timeout in minutes
             init_timeout_seconds: Timeout for browser initialization in seconds
             full_output_save_dir: Absolute path to directory to save full output
-            logs and files, used when truncation is needed.
+                logs and files, used when truncation is needed.
+            inject_scripts: List of JavaScript code strings to inject into every
+                new document. Scripts are injected via CDP's
+                Page.addScriptToEvaluateOnNewDocument and run before page scripts.
+                Useful for injecting recording tools like rrweb.
             **config: Additional configuration options
         """
 
@@ -179,6 +184,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             if os.getenv("OH_ENABLE_VNC", "false").lower() in {"true", "1", "yes"}:
                 headless = False  # Force headless off if VNC is enabled
                 logger.info("VNC is enabled - running browser in non-headless mode")
+
+            # Configure scripts to inject
+            if inject_scripts:
+                self._server.set_inject_scripts(inject_scripts)
 
             self._config = {
                 "headless": headless,
@@ -223,6 +232,8 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
             BrowserObservation,
             BrowserScrollAction,
             BrowserSetStorageAction,
+            BrowserStartRecordingAction,
+            BrowserStopRecordingAction,
             BrowserSwitchTabAction,
             BrowserTypeAction,
         )
@@ -256,6 +267,10 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
                 result = await self.switch_tab(action.tab_id)
             elif isinstance(action, BrowserCloseTabAction):
                 result = await self.close_tab(action.tab_id)
+            elif isinstance(action, BrowserStartRecordingAction):
+                result = await self.start_recording()
+            elif isinstance(action, BrowserStopRecordingAction):
+                result = await self.stop_recording()
             else:
                 error_msg = f"Unsupported action type: {type(action)}"
                 return BrowserObservation.from_text(
@@ -283,23 +298,64 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         if not self._initialized:
             # Initialize browser session with our config
             await self._server._init_browser_session(**self._config)
+            # Inject any configured scripts after session is ready
+            await self._server._inject_scripts_to_session()
             self._initialized = True
 
     # Navigation & Browser Control Methods
     async def navigate(self, url: str, new_tab: bool = False) -> str:
-        """Navigate to a URL."""
+        """Navigate to a URL.
+
+        If recording is active, events from the current page are flushed
+        to Python storage before navigation to preserve cross-page recordings.
+        Recording is automatically restarted on the new page.
+        """
         await self._ensure_initialized()
-        return await self._server._navigate(url, new_tab)
+        # Flush recording events before navigation to preserve them
+        is_recording = self._server._is_recording
+        if is_recording:
+            await self._server._flush_recording_events()
+
+        result = await self._server._navigate(url, new_tab)
+
+        # Restart recording on new page if it was active
+        if is_recording:
+            await self._server._restart_recording_on_new_page()
+
+        return result
 
     async def go_back(self) -> str:
-        """Go back in browser history."""
+        """Go back in browser history.
+
+        If recording is active, events from the current page are flushed
+        to Python storage before navigation. Recording is automatically
+        restarted on the new page.
+        """
         await self._ensure_initialized()
-        return await self._server._go_back()
+        # Flush recording events before navigation to preserve them
+        is_recording = self._server._is_recording
+        if is_recording:
+            await self._server._flush_recording_events()
+
+        result = await self._server._go_back()
+
+        # Restart recording on new page if it was active
+        if is_recording:
+            await self._server._restart_recording_on_new_page()
+
+        return result
 
     # Page Interaction
     async def click(self, index: int, new_tab: bool = False) -> str:
-        """Click an element by index."""
+        """Click an element by index.
+
+        If recording is active, events are flushed before the click
+        in case it causes a navigation.
+        """
         await self._ensure_initialized()
+        # Flush recording events before click (might cause navigation)
+        if self._server._is_recording:
+            await self._server._flush_recording_events()
         return await self._server._click(index, new_tab)
 
     async def type_text(self, index: int, text: str) -> str:
@@ -375,6 +431,27 @@ class BrowserToolExecutor(ToolExecutor[BrowserAction, BrowserObservation]):
         return await self._server._get_content(
             extract_links=extract_links, start_from_char=start_from_char
         )
+
+    # Session Recording
+    async def start_recording(self) -> str:
+        """Start recording the browser session using rrweb.
+        
+        Recording events are periodically flushed to numbered JSON files
+        (1.json, 2.json, etc.) in the full_output_save_dir if configured.
+        Events are flushed every 5 seconds or when they exceed 1 MB.
+        """
+        await self._ensure_initialized()
+        return await self._server._start_recording(save_dir=self.full_output_save_dir)
+
+    async def stop_recording(self) -> str:
+        """Stop recording and save remaining events to file.
+
+        Stops the periodic flush, collects any remaining events, and saves
+        them to a final numbered JSON file. Returns a summary message with
+        the total events and file count.
+        """
+        await self._ensure_initialized()
+        return await self._server._stop_recording()
 
     async def close_browser(self) -> str:
         """Close the browser session."""
