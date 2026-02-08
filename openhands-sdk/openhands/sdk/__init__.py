@@ -25,6 +25,7 @@ from openhands.sdk.io import FileStore, LocalFileStore
 from openhands.sdk.llm import (
     LLM,
     ImageContent,
+    LLMProfileStore,
     LLMRegistry,
     LLMStreamChunk,
     Message,
@@ -66,6 +67,7 @@ except PackageNotFoundError:
 __all__ = [
     "LLM",
     "LLMRegistry",
+    "LLMProfileStore",
     "LLMStreamChunk",
     "TokenCallbackType",
     "ConversationStats",
