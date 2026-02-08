@@ -9,8 +9,8 @@ task successfully.
 
 Key concepts demonstrated:
 1. Setting up a critic to evaluate agent actions in real-time
-2. Capturing critic results via callbacks
-3. Using low critic scores to trigger corrective follow-up prompts
+2. Using the SDK's IterativeRefinement class for automatic retry logic
+3. Custom follow-up prompt generation based on critic feedback
 4. Iterating until the task is completed successfully or max iterations reached
 
 For All-Hands LLM proxy (llm-proxy.*.all-hands.dev), the critic is auto-configured
@@ -18,14 +18,16 @@ using the same base_url with /vllm suffix and "critic" as the model name.
 """
 
 import os
-import re
 import tempfile
 from pathlib import Path
 
-from openhands.sdk import LLM, Agent, Conversation, Event, Tool
-from openhands.sdk.critic import APIBasedCritic, CriticResult
-from openhands.sdk.critic.base import CriticBase
-from openhands.sdk.event import ActionEvent, MessageEvent
+from openhands.sdk import LLM, Agent, Conversation, Tool
+from openhands.sdk.critic import (
+    APIBasedCritic,
+    CriticResult,
+    IterativeRefinement,
+    get_default_critic,
+)
 from openhands.tools.file_editor import FileEditorTool
 from openhands.tools.task_tracker import TaskTrackerTool
 from openhands.tools.terminal import TerminalTool
@@ -46,57 +48,6 @@ def get_required_env(name: str) -> str:
         f"Missing required environment variable: {name}. "
         f"Set {name} before running this example."
     )
-
-
-def get_default_critic(llm: LLM) -> CriticBase | None:
-    """Auto-configure critic for All-Hands LLM proxy.
-
-    When the LLM base_url matches `llm-proxy.*.all-hands.dev`, returns an
-    APIBasedCritic configured with:
-    - server_url: {base_url}/vllm
-    - api_key: same as LLM
-    - model_name: "critic"
-
-    Returns None if base_url doesn't match or api_key is not set.
-    """
-    base_url = llm.base_url
-    api_key = llm.api_key
-    if base_url is None or api_key is None:
-        return None
-
-    # Match: llm-proxy.{env}.all-hands.dev (e.g., staging, prod, eval)
-    pattern = r"^https?://llm-proxy\.[^./]+\.all-hands\.dev"
-    if not re.match(pattern, base_url):
-        return None
-
-    return APIBasedCritic(
-        server_url=f"{base_url.rstrip('/')}/vllm",
-        api_key=api_key,
-        model_name="critic",
-    )
-
-
-class CriticResultCollector:
-    """Collects critic results from conversation events via callback."""
-
-    def __init__(self) -> None:
-        self.results: list[CriticResult] = []
-        self.latest_result: CriticResult | None = None
-
-    def callback(self, event: Event) -> None:
-        """Callback to capture critic results from events."""
-        if isinstance(event, (ActionEvent, MessageEvent)):
-            if event.critic_result is not None:
-                self.results.append(event.critic_result)
-                self.latest_result = event.critic_result
-                print(f"\n📊 Critic Score: {event.critic_result.score:.3f}")
-                if event.critic_result.message:
-                    print(f"   Details: {event.critic_result.message[:100]}...")
-
-    def reset(self) -> None:
-        """Reset collected results for a new iteration."""
-        self.results = []
-        self.latest_result = None
 
 
 # Task prompt designed to be moderately complex with subtle requirements.
@@ -251,7 +202,7 @@ def main() -> None:
         base_url=os.getenv("LLM_BASE_URL", None),
     )
 
-    # Setup critic
+    # Setup critic - auto-configure for All-Hands proxy or use explicit env vars
     critic = get_default_critic(llm)
     if critic is None:
         print("⚠️  No All-Hands LLM proxy detected, trying explicit env vars...")
@@ -272,70 +223,34 @@ def main() -> None:
         critic=critic,
     )
 
-    # Create workspace and collector
+    # Create workspace
     workspace = Path(tempfile.mkdtemp(prefix="critic_demo_"))
     print(f"📁 Created workspace: {workspace}")
-    collector = CriticResultCollector()
 
-    # Create conversation with callback
+    # Create iterative refinement runner
+    # The IterativeRefinement class handles the retry loop automatically
+    refinement = IterativeRefinement(
+        success_threshold=SUCCESS_THRESHOLD,
+        max_iterations=MAX_ITERATIONS,
+        followup_prompt_fn=get_followup_prompt,
+        verbose=True,
+    )
+
+    # Create conversation with the collector's callback
     conversation = Conversation(
         agent=agent,
         workspace=str(workspace),
-        callbacks=[collector.callback],
+        callbacks=[refinement.collector.callback],
     )
 
     print("\n" + "=" * 70)
     print("🚀 Starting Iterative Refinement with Critic Model")
     print("=" * 70)
-    print(f"Success threshold: {SUCCESS_THRESHOLD:.0%}")
-    print(f"Max iterations: {MAX_ITERATIONS}")
 
-    # Initial task
-    print("\n--- Iteration 1: Initial Task ---")
-    conversation.send_message(INITIAL_TASK_PROMPT)
-    conversation.run()
+    # Run with iterative refinement - the SDK handles the retry loop
+    refinement.run(conversation, INITIAL_TASK_PROMPT)
 
-    iteration = 1
-    while iteration < MAX_ITERATIONS:
-        # Check critic result
-        if collector.latest_result is None:
-            print("\n⚠️  No critic result available, assuming task incomplete")
-            score = 0.0
-        else:
-            score = collector.latest_result.score
-
-        print(f"\n📈 Iteration {iteration} final score: {score:.3f}")
-
-        if score >= SUCCESS_THRESHOLD:
-            print(f"✅ Success threshold ({SUCCESS_THRESHOLD:.0%}) met!")
-            break
-
-        # Prepare for next iteration - save latest_result BEFORE reset
-        iteration += 1
-        last_result = collector.latest_result or CriticResult(score=0.0, message=None)
-        collector.reset()
-
-        print(f"\n--- Iteration {iteration}: Follow-up Refinement ---")
-        print(f"Score {score:.3f} < threshold {SUCCESS_THRESHOLD:.3f}, sending...")
-
-        followup_prompt = get_followup_prompt(last_result, iteration)
-        conversation.send_message(followup_prompt)
-        conversation.run()
-
-    # Final summary
-    print("\n" + "=" * 70)
-    print("📊 ITERATIVE REFINEMENT COMPLETE")
-    print("=" * 70)
-    print(f"Total iterations: {iteration}")
-
-    if collector.latest_result:
-        final_score = collector.latest_result.score
-        print(f"Final critic score: {final_score:.3f}")
-        print(f"Success: {'✅ YES' if final_score >= SUCCESS_THRESHOLD else '❌ NO'}")
-    else:
-        print("Final critic score: N/A (no critic results)")
-
-    # List created files
+    # Print additional info about created files
     print("\nCreated files:")
     for path in sorted(workspace.rglob("*")):
         if path.is_file():
