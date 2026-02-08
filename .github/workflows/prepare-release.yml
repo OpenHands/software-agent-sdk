@@ -49,6 +49,11 @@ jobs:
                   echo "🔧 Setting version to ${{ inputs.version }}"
                   make set-package-version version=${{ inputs.version }}
 
+            - name: Update sdk_ref default in run-eval workflow
+              run: |
+                  echo "🔧 Updating sdk_ref default to v${{ inputs.version }} in run-eval.yml"
+                  sed -i "s/^\([[:space:]]*default: v\)[0-9]\+\.[0-9]\+\.[0-9]\+\([[:space:]]*$\)/\1${{ inputs.version }}\2/" .github/workflows/run-eval.yml
+
             - name: Commit version changes
               run: |
                   git add .
