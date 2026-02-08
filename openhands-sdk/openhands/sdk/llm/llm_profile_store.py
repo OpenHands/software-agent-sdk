@@ -65,7 +65,27 @@ class LLMProfileStore:
     def _get_profile_path(self, name: str) -> Path:
         """Get the full path for a profile name."""
         filename = name if name.endswith(".json") else f"{name}.json"
-        return self.base_dir / filename
+def _get_profile_path(self, name: str) -> Path:
+    """Get the full path for a profile name.
+    
+    Args:
+        name: Profile name (must be a simple filename without path separators)
+        
+    Raises:
+        ValueError: If name contains path separators or is invalid
+    """
+    # Remove .json extension if present for consistent handling
+    clean_name = name.removesuffix(".json")
+    
+    # Validate: no path separators, not empty, no hidden files
+    if not clean_name or "/" in clean_name or "\\" in clean_name or clean_name.startswith("."):
+        raise ValueError(
+            f"Invalid profile name: {name!r}. "
+            "Profile names must be simple filenames without path separators."
+        )
+    
+    filename = f"{clean_name}.json"
+    return self.base_dir / filename
 
     def save(self, name: str, llm: "LLM", include_secrets: bool = False) -> None:
         """Save a profile to the profile directory.
