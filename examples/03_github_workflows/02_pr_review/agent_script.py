@@ -280,7 +280,7 @@ def _start_cloud_conversation(
         raise RuntimeError(f"Cloud API request failed: {e.reason}") from e
 
 
-def run_cloud_mode(pr_info: dict, review_style: str) -> None:
+def run_cloud_mode(pr_info: dict, prompt: str) -> None:
     """Run the PR review in OpenHands Cloud mode.
 
     This mode:
@@ -293,8 +293,8 @@ def run_cloud_mode(pr_info: dict, review_style: str) -> None:
     bot will use the model configured in your OpenHands Cloud account.
 
     Args:
-        pr_info: Dictionary containing PR information
-        review_style: Review style ('standard' or 'roasted')
+        pr_info: Dictionary containing PR information (repo_name, number)
+        prompt: The review prompt to send to the cloud
     """
     # Get cloud-specific configuration (already validated in main())
     cloud_api_key = _get_required_env("OPENHANDS_CLOUD_API_KEY")
@@ -307,9 +307,6 @@ def run_cloud_mode(pr_info: dict, review_style: str) -> None:
     )
 
     try:
-        # Prepare review context (shared with SDK mode)
-        prompt, _ = _prepare_review_context(pr_info, review_style)
-
         logger.info("Starting OpenHands Cloud conversation...")
 
         # Create conversation via cloud API
@@ -345,22 +342,19 @@ def run_cloud_mode(pr_info: dict, review_style: str) -> None:
         sys.exit(1)
 
 
-def run_sdk_mode(pr_info: dict, review_style: str) -> None:
+def run_sdk_mode(prompt: str, skill_trigger: str) -> None:
     """Run the PR review in SDK mode (local execution).
 
     This is the original behavior - runs the agent locally and monitors
     until completion.
 
     Args:
-        pr_info: Dictionary containing PR information
-        review_style: Review style ('standard' or 'roasted')
+        prompt: The review prompt to send to the agent
+        skill_trigger: The skill trigger to use (e.g., '/codereview')
     """
     github_token = os.getenv("GITHUB_TOKEN")
 
     try:
-        # Prepare review context (shared with cloud mode)
-        prompt, skill_trigger = _prepare_review_context(pr_info, review_style)
-
         # Configure LLM
         api_key = os.getenv("LLM_API_KEY")
         model = os.getenv("LLM_MODEL", "anthropic/claude-sonnet-4-5-20250929")
@@ -496,11 +490,14 @@ def main():
     logger.info(f"Reviewing PR #{pr_info['number']}: {pr_info['title']}")
     logger.info(f"Review style: {review_style}")
 
+    # Prepare review context (shared by both modes)
+    prompt, skill_trigger = _prepare_review_context(pr_info, review_style)
+
     # Run the appropriate mode
     if mode == "cloud":
-        run_cloud_mode(pr_info, review_style)
+        run_cloud_mode(pr_info, prompt)
     else:
-        run_sdk_mode(pr_info, review_style)
+        run_sdk_mode(prompt, skill_trigger)
 
 
 if __name__ == "__main__":
