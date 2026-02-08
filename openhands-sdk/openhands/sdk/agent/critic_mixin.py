@@ -85,11 +85,10 @@ class CriticMixin:
             return False, None
 
         config = self.critic.iterative_refinement
-        agent_state = conversation.state.agent_state
 
         # Increment iteration counter using the agent state
-        agent_state.iterative_refinement_iteration += 1
-        iteration = agent_state.iterative_refinement_iteration
+        conversation.state.agent_state.iterative_refinement_iteration += 1
+        iteration = conversation.state.agent_state.iterative_refinement_iteration
 
         # Check if we've exceeded max iterations
         if iteration >= config.max_iterations:
