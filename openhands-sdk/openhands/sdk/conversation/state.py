@@ -166,24 +166,10 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _handle_legacy_fields(cls, data: Any) -> Any:
-        """Handle legacy field names for backward compatibility."""
-        if not isinstance(data, dict):
-            return data
-
-        # Handle legacy 'secrets_manager' field name
-        if "secrets_manager" in data:
+    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
+        """Handle legacy 'secrets_manager' field name for backward compatibility."""
+        if isinstance(data, dict) and "secrets_manager" in data:
             data["secret_registry"] = data.pop("secrets_manager")
-
-        # Handle legacy 'iterative_refinement_iteration' field
-        # Migrate to agent_state.iterative_refinement_iteration
-        if "iterative_refinement_iteration" in data:
-            iteration = data.pop("iterative_refinement_iteration")
-            if "agent_state" not in data:
-                data["agent_state"] = {}
-            if isinstance(data["agent_state"], dict):
-                data["agent_state"]["iterative_refinement_iteration"] = iteration
-
         return data
 
     @property
