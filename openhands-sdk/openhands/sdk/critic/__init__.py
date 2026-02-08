@@ -6,7 +6,6 @@ from openhands.sdk.critic.impl import (
     PassCritic,
 )
 from openhands.sdk.critic.result import CriticResult
-from openhands.sdk.critic.utils import get_default_critic
 
 
 __all__ = [
@@ -19,6 +18,4 @@ __all__ = [
     "APIBasedCritic",
     "EmptyPatchCritic",
     "PassCritic",
-    # Utilities
-    "get_default_critic",
 ]

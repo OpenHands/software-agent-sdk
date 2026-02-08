@@ -141,6 +141,14 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
+    # Critic iterative refinement state
+    iterative_refinement_iteration: int = Field(
+        default=0,
+        ge=0,
+        description="Current iteration count for critic iterative refinement. "
+        "Tracks how many refinement cycles have been performed.",
+    )
+
     # ===== Private attrs (NOT Fields) =====
     _fs: FileStore = PrivateAttr()  # filestore for persistence
     _events: EventLog = PrivateAttr()  # now the storage for events
