@@ -237,6 +237,61 @@ class Agent(AgentBase):
             logger.error(f"✗ Critic evaluation failed: {e}", exc_info=True)
             return None
 
+    def _check_iterative_refinement(
+        self, conversation: LocalConversation, action_event: ActionEvent
+    ) -> tuple[bool, str | None]:
+        """Check if iterative refinement should continue after a FinishAction.
+
+        Returns:
+            A tuple of (should_continue, followup_message).
+            If should_continue is True, the agent should continue with the
+            followup_message instead of finishing.
+        """
+        # Check if critic has iterative refinement config
+        if self.critic is None or self.critic.iterative_refinement is None:
+            return False, None
+
+        config = self.critic.iterative_refinement
+
+        # Get or initialize iteration counter from conversation state
+        # We store it in the state to persist across agent steps
+        state = conversation.state
+        iteration = getattr(state, "_iterative_refinement_iteration", 0)
+        iteration += 1
+        state._iterative_refinement_iteration = iteration  # type: ignore[attr-defined]
+
+        # Check if we've exceeded max iterations
+        if iteration >= config.max_iterations:
+            logger.info(
+                f"Iterative refinement: max iterations "
+                f"({config.max_iterations}) reached"
+            )
+            return False, None
+
+        # Get the critic result from the action event
+        critic_result = action_event.critic_result
+        if critic_result is None:
+            logger.warning("Iterative refinement: no critic result on FinishAction")
+            return False, None
+
+        # Check if score meets threshold
+        if critic_result.score >= config.success_threshold:
+            logger.info(
+                f"Iterative refinement: success threshold "
+                f"({config.success_threshold:.0%}) met with score "
+                f"{critic_result.score:.3f}"
+            )
+            return False, None
+
+        # Score below threshold, generate follow-up prompt
+        logger.info(
+            f"Iterative refinement: score {critic_result.score:.3f} < "
+            f"threshold {config.success_threshold:.3f}, "
+            f"iteration {iteration + 1}/{config.max_iterations}"
+        )
+        followup = self.critic.get_followup_prompt(critic_result, iteration + 1)
+        return True, followup
+
     def _execute_actions(
         self,
         conversation: LocalConversation,
@@ -704,7 +759,22 @@ class Agent(AgentBase):
 
         # Set conversation state
         if tool.name == FinishTool.name:
-            state.execution_status = ConversationExecutionStatus.FINISHED
+            # Check if iterative refinement should continue
+            should_continue, followup = self._check_iterative_refinement(
+                conversation, action_event
+            )
+            if should_continue and followup:
+                # Send follow-up message and continue agent loop
+                followup_msg = MessageEvent(
+                    source="user",
+                    llm_message=Message(
+                        role="user", content=[TextContent(text=followup)]
+                    ),
+                )
+                on_event(followup_msg)
+                # Don't set FINISHED - let the agent continue
+            else:
+                state.execution_status = ConversationExecutionStatus.FINISHED
         return obs_event
 
     def _maybe_emit_vllm_tokens(
