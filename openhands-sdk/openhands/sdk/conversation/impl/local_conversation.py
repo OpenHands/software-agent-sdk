@@ -72,8 +72,6 @@ class LocalConversation(BaseConversation):
     _resolved_plugins: list[ResolvedPluginSource] | None
     _plugins_loaded: bool
     _pending_hook_config: HookConfig | None  # Hook config to combine with plugin hooks
-    # Iterative refinement state
-    _iterative_refinement_iteration: int
 
     def __init__(
         self,
@@ -422,78 +420,6 @@ class LocalConversation(BaseConversation):
 
             self._agent_ready = True
 
-            # Initialize iterative refinement counter
-            self._iterative_refinement_iteration = 0
-
-    def _check_iterative_refinement(self) -> tuple[bool, str | None]:
-        """Check if iterative refinement should retry the task.
-
-        Returns:
-            A tuple of (should_retry, followup_message).
-            If should_retry is True, the conversation should continue with
-            the followup_message sent to the agent.
-        """
-        # Check if critic has iterative refinement config
-        critic = self.agent.critic
-        if critic is None or critic.iterative_refinement is None:
-            return False, None
-
-        config = critic.iterative_refinement
-        self._iterative_refinement_iteration += 1
-
-        # Check if we've exceeded max iterations
-        if self._iterative_refinement_iteration >= config.max_iterations:
-            logger.info(
-                f"Iterative refinement: max iterations "
-                f"({config.max_iterations}) reached"
-            )
-            return False, None
-
-        # Get the latest critic result from events
-        latest_critic_result = self._get_latest_critic_result()
-        if latest_critic_result is None:
-            logger.warning("Iterative refinement: no critic result found")
-            return False, None
-
-        # Check if score meets threshold
-        if latest_critic_result.score >= config.success_threshold:
-            logger.info(
-                f"Iterative refinement: success threshold "
-                f"({config.success_threshold:.0%}) met with score "
-                f"{latest_critic_result.score:.3f}"
-            )
-            return False, None
-
-        # Score below threshold, generate follow-up prompt
-        logger.info(
-            f"Iterative refinement: score {latest_critic_result.score:.3f} < "
-            f"threshold {config.success_threshold:.3f}, "
-            f"iteration {self._iterative_refinement_iteration + 1}"
-        )
-        followup = critic.get_followup_prompt(
-            latest_critic_result, self._iterative_refinement_iteration + 1
-        )
-        return True, followup
-
-    def _get_latest_critic_result(self):
-        """Get the latest critic result from conversation events.
-
-        Returns:
-            CriticResult | None: The latest critic result, or None if not found.
-        """
-        from openhands.sdk.critic.result import CriticResult
-        from openhands.sdk.event import ActionEvent
-
-        # Search events in reverse order for the latest critic result
-        for event in reversed(list(self._state.events)):
-            if isinstance(event, ActionEvent) and event.critic_result is not None:
-                return event.critic_result
-            # Also check MessageEvent (has critic_result attribute)
-            critic_result = getattr(event, "critic_result", None)
-            if critic_result is not None and isinstance(critic_result, CriticResult):
-                return critic_result
-        return None
-
     @observe(name="conversation.send_message")
     def send_message(self, message: str | Message, sender: str | None = None) -> None:
         """Send a message to the agent.
@@ -617,26 +543,7 @@ class LocalConversation(BaseConversation):
                                     ConversationExecutionStatus.RUNNING
                                 )
                                 continue
-
-                        # Check iterative refinement if critic is configured
-                        should_retry, retry_msg = self._check_iterative_refinement()
-                        if should_retry:
-                            logger.info("Iterative refinement: retrying task")
-                            if retry_msg:
-                                feedback_msg = MessageEvent(
-                                    source="user",
-                                    llm_message=Message(
-                                        role="user",
-                                        content=[TextContent(text=retry_msg)],
-                                    ),
-                                )
-                                self._on_event(feedback_msg)
-                            self._state.execution_status = (
-                                ConversationExecutionStatus.RUNNING
-                            )
-                            continue
-
-                        # No hooks or hooks allowed stopping, and no retry needed
+                        # No hooks or hooks allowed stopping
                         break
 
                     # Check for stuck patterns if enabled
