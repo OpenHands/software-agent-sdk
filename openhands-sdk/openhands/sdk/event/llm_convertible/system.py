@@ -10,12 +10,34 @@ from openhands.sdk.tool import ToolDefinition
 
 
 class SystemPromptEvent(LLMConvertibleEvent):
-    """System prompt added by the agent."""
+    """System prompt added by the agent.
+
+    The system prompt can optionally include dynamic context that varies between
+    conversations. When ``dynamic_context`` is provided, it is included as a
+    second content block in the same system message (without a cache marker).
+    The static block carries ``cache_prompt=True`` so that Anthropic's prefix
+    caching covers only the constant portion, enabling cross-conversation cache
+    hits while the dynamic portion is re-processed each time.
+
+    Attributes:
+        system_prompt: The static system prompt text (cacheable across conversations)
+        tools: List of available tools
+        dynamic_context: Optional per-conversation context (hosts, repo info, etc.)
+            Sent as a second TextContent block inside the system message.
+    """
 
     source: SourceType = "agent"
     system_prompt: TextContent = Field(..., description="The system prompt text")
     tools: list[ToolDefinition] = Field(
         ..., description="List of tools as ToolDefinition objects"
+    )
+    dynamic_context: TextContent | None = Field(
+        default=None,
+        description=(
+            "Optional dynamic per-conversation context (runtime info, repo context, "
+            "secrets). When provided, this is included as a second content block in "
+            "the system message to enable cross-conversation prompt caching."
+        ),
     )
 
     @property
@@ -24,6 +46,12 @@ class SystemPromptEvent(LLMConvertibleEvent):
         content = Text()
         content.append("System Prompt:\n", style="bold")
         content.append(self.system_prompt.text)
+        if self.dynamic_context:
+            content.append("\n\nDynamic Context:\n", style="bold italic")
+            context_preview = self.dynamic_context.text[:500]
+            if len(self.dynamic_context.text) > 500:
+                context_preview += "..."
+            content.append(context_preview)
         content.append(f"\n\nTools Available: {len(self.tools)}")
         for tool in self.tools:
             # Use ToolDefinition properties directly
@@ -45,7 +73,18 @@ class SystemPromptEvent(LLMConvertibleEvent):
         return content
 
     def to_llm_message(self) -> Message:
-        return Message(role="system", content=[self.system_prompt])
+        """Convert to a single system LLM message.
+
+        When ``dynamic_context`` is present the message contains two content
+        blocks: the static prompt (with ``cache_prompt=True`` so it acts as an
+        Anthropic prefix-cache breakpoint) followed by the dynamic context
+        (unmarked, so it is not cached).  When there is no dynamic context the
+        message contains only the static prompt with the cache marker.
+        """
+        static_block = self.system_prompt.model_copy(update={"cache_prompt": True})
+        if self.dynamic_context:
+            return Message(role="system", content=[static_block, self.dynamic_context])
+        return Message(role="system", content=[static_block])
 
     def __str__(self) -> str:
         """Plain text string representation for SystemPromptEvent."""
@@ -56,6 +95,12 @@ class SystemPromptEvent(LLMConvertibleEvent):
             else self.system_prompt.text
         )
         tool_count = len(self.tools)
+        context_info = ""
+        if self.dynamic_context:
+            context_info = (
+                f"\n  Dynamic Context: {len(self.dynamic_context.text)} chars"
+            )
         return (
-            f"{base_str}\n  System: {prompt_preview}\n  Tools: {tool_count} available"
+            f"{base_str}\n  System: {prompt_preview}\n  "
+            f"Tools: {tool_count} available{context_info}"
         )

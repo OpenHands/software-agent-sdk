@@ -1086,7 +1086,12 @@ class LLM(BaseModel, RetryMixin, NonNativeToolCallingMixin):
           tool message as cacheable.
         """
         if len(messages) > 0 and messages[0].role == "system":
-            messages[0].content[-1].cache_prompt = True
+            # Only auto-mark when no content block already carries a cache
+            # marker.  SystemPromptEvent explicitly marks the static block so
+            # the dynamic block stays unmarked, enabling cross-conversation
+            # prefix caching.
+            if not any(c.cache_prompt for c in messages[0].content):
+                messages[0].content[-1].cache_prompt = True
         # NOTE: this is only needed for anthropic
         for message in reversed(messages):
             if message.role in ("user", "tool"):

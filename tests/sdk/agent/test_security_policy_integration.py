@@ -30,7 +30,7 @@ def test_security_policy_in_system_message():
             base_url="http://test",
         )
     )
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that security policy section is present
     assert "🔐 Security Policy" in system_message
@@ -111,7 +111,7 @@ def test_custom_security_policy_in_system_message():
         )
 
         # Get system message - this should include our custom policy
-        system_message = agent.system_message
+        system_message = agent.static_system_message
 
         # Verify that custom policy content appears in system message
         assert "Custom Test Security Policy" in system_message
@@ -161,7 +161,7 @@ def test_llm_security_analyzer_template_kwargs():
     )
 
     # Get system message (security analyzer context is automatically included)
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that the security risk assessment section is included in the system prompt
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -188,7 +188,7 @@ def test_llm_security_analyzer_sandbox_mode():
     )
 
     # Get system message (security analyzer context is automatically included)
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     print(agent.system_prompt_kwargs)
 
@@ -216,7 +216,7 @@ def test_no_security_analyzer_still_includes_risk_assessment():
     )
 
     # Get the system message with no security analyzer
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
@@ -244,7 +244,7 @@ def test_non_llm_security_analyzer_still_includes_risk_assessment():
     )
 
     # Get the system message
-    system_message = agent.system_message
+    system_message = agent.static_system_message
 
     # Verify that the security risk assessment section is NOT included
     assert "<SECURITY_RISK_ASSESSMENT>" in system_message
