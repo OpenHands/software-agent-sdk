@@ -176,6 +176,19 @@ class LocalConversation(BaseConversation):
         # Default callback: persist every event to state
         def _default_callback(e):
             self._state.events.append(e)
+            # Track user MessageEvent IDs here so hook callbacks (which may
+            # synthesize or alter user messages) are captured in one place.
+            if isinstance(e, MessageEvent) and e.source == "user":
+                # Track the latest user message ID for hook-blocked checks.
+                # Keep the most recent real user prompt; feedback from stop hooks
+                # should not be re-checked by UserPromptSubmit hooks.
+                if e.llm_message.content:
+                    first = e.llm_message.content[0]
+                    if isinstance(first, TextContent) and first.text.startswith(
+                        "[Stop hook feedback] "
+                    ):
+                        return
+                self._state.last_user_message_id = e.id
 
         callback_list = list(callbacks) if callbacks else []
         composed_list = callback_list + [_default_callback]
