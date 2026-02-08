@@ -24,7 +24,6 @@ from pathlib import Path
 from openhands.sdk import LLM, Agent, Conversation, Tool
 from openhands.sdk.critic import (
     APIBasedCritic,
-    CriticResult,
     IterativeRefinementConfig,
     get_default_critic,
 )
@@ -120,75 +119,6 @@ The task is complete ONLY when:
 - The CLI outputs the correct stats for sample.txt
 - All 5+ tests pass
 """
-
-
-# Follow-up prompt template for iterative refinement.
-# Uses the critic's evaluation to craft specific guidance for improvement.
-FOLLOWUP_PROMPT_TEMPLATE = """\
-The task appears incomplete (iteration {iteration}, \
-success likelihood: {score_percent:.1f}%).
-{issues_text}
-
-Please review what you've done and verify each requirement:
-
-## File Checklist
-- [ ] wordstats/stats.py - analyze_file() function
-- [ ] wordstats/cli.py - Command-line interface
-- [ ] wordstats/tests/test_stats.py - Unit tests (5+ tests)
-- [ ] sample.txt - Test file with exact content specified
-
-## Edge Cases Often Missed
-- [ ] Empty files return {{"lines": 0, "words": 0, "chars": 0, "unique_words": 0}}
-- [ ] Hyphenated words like "well-known" count as 1 word
-- [ ] Numbers (42, 3.14) are NOT counted as words
-- [ ] Contractions like "don't" count as 1 word
-- [ ] FileNotFoundError raised with clear message for missing files
-
-## Expected Output for sample.txt
-Run: python wordstats/cli.py sample.txt
-- Lines: 5
-- Words: 21 (numbers excluded, hyphenated words count as one)
-- Chars: 130
-- Unique words: 21
-
-## Verification Steps
-1. Check if all files exist: `ls -la wordstats/ wordstats/tests/`
-2. Run the CLI: `python wordstats/cli.py sample.txt`
-3. Verify output matches expected values exactly
-4. Run tests: `python -m pytest wordstats/tests/ -v`
-
-Common mistakes to fix:
-- Counting numbers as words (they shouldn't be)
-- Splitting hyphenated words (they should stay together)
-- Wrong character count (remember newlines!)
-
-List what's working and what needs fixing, then complete the task.
-"""
-
-
-def get_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
-    """Generate a follow-up prompt based on critic feedback."""
-    score_percent = critic_result.score * 100
-
-    # Extract potential issues from critic metadata if available
-    issues = []
-    if critic_result.metadata and "categorized_features" in critic_result.metadata:
-        categorized = critic_result.metadata["categorized_features"]
-        if "agent_behavioral_issues" in categorized:
-            issues = [
-                f.get("display_name", f.get("name", "Unknown issue"))
-                for f in categorized["agent_behavioral_issues"]
-            ]
-
-    issues_text = ""
-    if issues:
-        issues_text = f"\nPotential issues identified: {', '.join(issues)}"
-
-    return FOLLOWUP_PROMPT_TEMPLATE.format(
-        iteration=iteration,
-        score_percent=score_percent,
-        issues_text=issues_text,
-    )
 
 
 def main() -> None:
