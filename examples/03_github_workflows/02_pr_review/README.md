@@ -184,3 +184,4 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
 | `llm-api-key` | LLM API key | Yes | - |
 | `github-token` | GitHub token for API access | Yes | - |
+| `lmnr-project-api-key` | Laminar project API key for trajectory uploads | No | `''` |
