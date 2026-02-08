@@ -41,8 +41,8 @@ jobs:
             - name: Run PR Review
               uses: OpenHands/software-agent-sdk/.github/actions/pr-review@main
               with:
-                  llm-model: anthropic/claude-sonnet-4-5-20250929
-                  llm-base-url: ''
+                  llm-model: litellm_proxy/claude-sonnet-4-5-20250929
+                  llm-base-url: https://llm-proxy.app.all-hands.dev
                   # Review style: roasted (other option: standard)
                   review-style: roasted
                   # Use the PR's head commit SHA to test SDK changes on the SDK repo itself
