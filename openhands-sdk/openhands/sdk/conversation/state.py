@@ -8,6 +8,7 @@ from typing import Any, Self
 from pydantic import Field, PrivateAttr, model_validator
 
 from openhands.sdk.agent.base import AgentBase
+from openhands.sdk.agent.state import AgentState
 from openhands.sdk.conversation.conversation_stats import ConversationStats
 from openhands.sdk.conversation.event_store import EventLog
 from openhands.sdk.conversation.fifo_lock import FIFOLock
@@ -141,12 +142,12 @@ class ConversationState(OpenHandsModel):
         description="Registry for handling secrets and sensitive data",
     )
 
-    # Critic iterative refinement state
-    iterative_refinement_iteration: int = Field(
-        default=0,
-        ge=0,
-        description="Current iteration count for critic iterative refinement. "
-        "Tracks how many refinement cycles have been performed.",
+    # Agent-specific runtime state
+    agent_state: AgentState = Field(
+        default_factory=AgentState,
+        description="Agent-specific runtime state that persists across iterations. "
+        "Contains state for features like iterative refinement, and extensible "
+        "metadata for agent-specific data.",
     )
 
     # ===== Private attrs (NOT Fields) =====
@@ -165,10 +166,24 @@ class ConversationState(OpenHandsModel):
 
     @model_validator(mode="before")
     @classmethod
-    def _handle_secrets_manager_alias(cls, data: Any) -> Any:
-        """Handle legacy 'secrets_manager' field name for backward compatibility."""
-        if isinstance(data, dict) and "secrets_manager" in data:
+    def _handle_legacy_fields(cls, data: Any) -> Any:
+        """Handle legacy field names for backward compatibility."""
+        if not isinstance(data, dict):
+            return data
+
+        # Handle legacy 'secrets_manager' field name
+        if "secrets_manager" in data:
             data["secret_registry"] = data.pop("secrets_manager")
+
+        # Handle legacy 'iterative_refinement_iteration' field
+        # Migrate to agent_state.iterative_refinement_iteration
+        if "iterative_refinement_iteration" in data:
+            iteration = data.pop("iterative_refinement_iteration")
+            if "agent_state" not in data:
+                data["agent_state"] = {}
+            if isinstance(data["agent_state"], dict):
+                data["agent_state"]["iterative_refinement_iteration"] = iteration
+
         return data
 
     @property

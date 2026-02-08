@@ -1,6 +1,6 @@
 from importlib.metadata import PackageNotFoundError, version
 
-from openhands.sdk.agent import Agent, AgentBase
+from openhands.sdk.agent import Agent, AgentBase, AgentState
 from openhands.sdk.context import (
     AgentContext,
     load_project_skills,
@@ -79,6 +79,7 @@ __all__ = [
     "ToolDefinition",
     "AgentBase",
     "Agent",
+    "AgentState",
     "Action",
     "Observation",
     "MCPClient",
