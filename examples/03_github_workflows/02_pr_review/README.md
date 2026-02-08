@@ -12,6 +12,9 @@ This example demonstrates how to set up a GitHub Actions workflow for automated 
 
 ## Features
 
+- **Two Review Modes**:
+  - **SDK Mode** (default): Runs the agent locally in GitHub Actions
+  - **Cloud Mode**: Launches the review in OpenHands Cloud for faster CI completion
 - **Automatic Trigger**: Reviews are triggered when:
   - The `review-this` label is added to a PR, OR
   - openhands-agent is requested as a reviewer
@@ -47,21 +50,30 @@ cp examples/03_github_workflows/02_pr_review/workflow.yml .github/workflows/pr-r
 
 ### 2. Configure secrets
 
-Set the following secrets in your GitHub repository settings:
+Set the following secrets in your GitHub repository settings based on your chosen mode:
 
+**For SDK Mode (default):**
 - **`LLM_API_KEY`** (required): Your LLM API key
   - Get one from the [OpenHands LLM Provider](https://docs.all-hands.dev/openhands/usage/llms/openhands-llms)
 
-**Note**: The workflow automatically uses the `GITHUB_TOKEN` secret that's available in all GitHub Actions workflows.
+**For Cloud Mode:**
+- **`OPENHANDS_CLOUD_API_KEY`** (required): Your OpenHands Cloud API key
+  - Get one from your [OpenHands Cloud account](https://app.all-hands.dev)
+
+**Note**: The workflow automatically uses the `GITHUB_TOKEN` secret that's available in all GitHub Actions workflows. For cloud mode, you may not need a GitHub token if your OpenHands Cloud account already has access to the repository.
 
 ### 3. Customize the workflow (optional)
 
-Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
+Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs.
+
+**SDK Mode Configuration (default):**
 
 ```yaml
 - name: Run PR Review
   uses: ./.github/actions/pr-review
   with:
+      # Review mode: 'sdk' runs the agent locally in GitHub Actions
+      mode: sdk
       # LLM configuration
       llm-model: anthropic/claude-sonnet-4-5-20250929
       llm-base-url: ''
@@ -75,6 +87,32 @@ Edit `.github/workflows/pr-review-by-openhands.yml` to customize the inputs:
       llm-api-key: ${{ secrets.LLM_API_KEY }}
       github-token: ${{ secrets.GITHUB_TOKEN }}
 ```
+
+**Cloud Mode Configuration:**
+
+```yaml
+- name: Run PR Review
+  uses: ./.github/actions/pr-review
+  with:
+      # Review mode: 'cloud' launches the review in OpenHands Cloud
+      mode: cloud
+      # Review style: roasted (other option: standard)
+      review-style: roasted
+      # SDK git ref to use
+      sdk-version: main
+      # Secrets for cloud mode
+      openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+      # Optional: custom cloud API URL
+      # openhands-cloud-api-url: https://app.all-hands.dev
+      # Optional: GitHub token for posting comments (may not be needed if cloud has repo access)
+      github-token: ${{ secrets.GITHUB_TOKEN }}
+```
+
+**Cloud Mode Benefits:**
+- Faster CI completion (exits after starting the review)
+- Track review progress in OpenHands Cloud UI
+- Interact with the review conversation
+- Uses the LLM model configured in your OpenHands Cloud account
 
 ### 4. Create the review label
 
@@ -177,10 +215,13 @@ This workflow uses a reusable composite action located at `.github/actions/pr-re
 
 | Input | Description | Required | Default |
 |-------|-------------|----------|---------|
-| `llm-model` | LLM model to use | No | `anthropic/claude-sonnet-4-5-20250929` |
-| `llm-base-url` | LLM base URL (optional) | No | `''` |
+| `mode` | Review mode: 'sdk' or 'cloud' | No | `sdk` |
+| `llm-model` | LLM model (sdk mode only) | No | `anthropic/claude-sonnet-4-5-20250929` |
+| `llm-base-url` | LLM base URL (sdk mode only) | No | `''` |
 | `review-style` | Review style: 'standard' or 'roasted' | No | `roasted` |
 | `sdk-version` | Git ref for SDK (tag, branch, or commit SHA) | No | `main` |
 | `sdk-repo` | SDK repository (owner/repo) | No | `OpenHands/software-agent-sdk` |
-| `llm-api-key` | LLM API key | Yes | - |
-| `github-token` | GitHub token for API access | Yes | - |
+| `llm-api-key` | LLM API key (required for sdk mode) | No | - |
+| `github-token` | GitHub token (required for sdk mode) | No | - |
+| `openhands-cloud-api-key` | OpenHands Cloud API key (required for cloud mode) | No | - |
+| `openhands-cloud-api-url` | OpenHands Cloud API URL | No | `https://app.all-hands.dev` |

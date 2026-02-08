@@ -3,7 +3,9 @@
 #
 # To set this up:
 #  1. Copy this file to .github/workflows/pr-review.yml in your repository
-#  2. Add LLM_API_KEY to repository secrets
+#  2. Add required secrets to your repository:
+#     - For 'sdk' mode: LLM_API_KEY
+#     - For 'cloud' mode: OPENHANDS_CLOUD_API_KEY
 #  3. Customize the inputs below as needed
 #  4. Commit this file to your repository
 #  5. Trigger the review by either:
@@ -43,13 +45,18 @@ jobs:
             - name: Run PR Review
               uses: ./.github/actions/pr-review
               with:
-                  # LLM configuration
+                  # Review mode: 'sdk' (run locally) or 'cloud' (launch in OpenHands Cloud)
+                  mode: sdk
+                  # LLM configuration (only used in 'sdk' mode, ignored in 'cloud' mode)
                   llm-model: anthropic/claude-sonnet-4-5-20250929
                   llm-base-url: ''
                   # Review style: roasted (other option: standard)
                   review-style: roasted
                   # SDK version to use (version tag or branch name)
                   sdk-version: main
-                  # Secrets
+                  # Secrets for 'sdk' mode
                   llm-api-key: ${{ secrets.LLM_API_KEY }}
                   github-token: ${{ secrets.GITHUB_TOKEN }}
+                  # Secrets for 'cloud' mode (uncomment and set mode: cloud to use)
+                  # openhands-cloud-api-key: ${{ secrets.OPENHANDS_CLOUD_API_KEY }}
+                  # openhands-cloud-api-url: https://app.all-hands.dev
