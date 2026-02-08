@@ -25,7 +25,7 @@ def test_whitespace_api_key_converted_to_none():
 
 def test_valid_api_key_preserved():
     """Test that valid API keys are preserved."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("valid-key"), usage_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("valid-key"), usage_id="test-llm")
     assert llm.api_key is not None
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "valid-key"
@@ -74,7 +74,9 @@ def test_bedrock_model_with_none_api_key():
 
 def test_non_bedrock_model_with_valid_key():
     """Test that non-Bedrock models work normally with valid API keys."""
-    llm = LLM(model="gpt-4", api_key=SecretStr("valid-openai-key"), usage_id="test-llm")
+    llm = LLM(
+        model="gpt-4o-mini", api_key=SecretStr("valid-openai-key"), usage_id="test-llm"
+    )
     assert llm.api_key is not None
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "valid-openai-key"
@@ -102,7 +104,7 @@ def test_aws_credentials_handling():
 
 def test_plain_string_api_key():
     """Test that plain string API keys are converted to SecretStr."""
-    llm = LLM(model="gpt-4", api_key="my-plain-string-key", usage_id="test-llm")
+    llm = LLM(model="gpt-4o-mini", api_key="my-plain-string-key", usage_id="test-llm")
     assert llm.api_key is not None
     assert isinstance(llm.api_key, SecretStr)
     assert llm.api_key.get_secret_value() == "my-plain-string-key"

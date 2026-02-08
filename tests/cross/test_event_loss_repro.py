@@ -156,7 +156,7 @@ def test_event_loss_race_condition_with_ws_delay(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
 
-    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
     workspace = RemoteWorkspace(
         host=server_env_for_repro["host"], working_dir="/tmp/workspace/project"

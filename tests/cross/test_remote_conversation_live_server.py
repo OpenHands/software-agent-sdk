@@ -192,7 +192,7 @@ def test_remote_conversation_over_real_server(server_env, patched_llm):
     from pathlib import Path
 
     # Create an Agent with a real LLM object (patched for determinism)
-    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
 
     # Create conversation via factory pointing at the live server
@@ -493,7 +493,7 @@ def test_conversation_stats_with_live_server(
     monkeypatch.setattr(LLM, "completion", fake_completion_with_cost, raising=True)
 
     # Create an Agent with a real LLM object
-    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
 
     # Create conversation via factory pointing at the live server
@@ -636,7 +636,7 @@ def test_events_not_lost_during_client_disconnection(
     )
 
     # Create an Agent with empty tools list (finish is a built-in tool)
-    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
 
     workspace = RemoteWorkspace(
@@ -798,7 +798,7 @@ def test_post_run_reconcile_needed_under_ws_callback_lag(
         LLM, "completion", fake_completion_with_finish_tool, raising=True
     )
 
-    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(llm=llm, tools=[])
     workspace = RemoteWorkspace(
         host=server_env["host"], working_dir="/tmp/workspace/project"
@@ -978,7 +978,7 @@ def test_security_risk_field_with_live_server(
 
     # Create an Agent (security analyzer functionality has been deprecated and removed)
     # Using empty tools list since tools need to be registered in the server
-    llm = LLM(model="gpt-4", api_key=SecretStr("test"))
+    llm = LLM(model="gpt-4o-mini", api_key=SecretStr("test"))
     agent = Agent(
         llm=llm,
         tools=[],

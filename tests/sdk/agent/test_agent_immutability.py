@@ -13,7 +13,7 @@ class TestAgentImmutability:
     def setup_method(self):
         """Set up test environment."""
         self.llm: LLM = LLM(
-            model="gpt-4", api_key=SecretStr("test-key"), usage_id="test-llm"
+            model="gpt-4o-mini", api_key=SecretStr("test-key"), usage_id="test-llm"
         )
 
     def test_agent_is_frozen(self):

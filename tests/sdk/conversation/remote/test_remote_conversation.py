@@ -23,7 +23,7 @@ class TestRemoteConversation:
     def setup_method(self):
         """Set up test environment."""
         self.host: str = "http://localhost:8000"
-        self.llm: LLM = LLM(model="gpt-4", api_key=SecretStr("test-key"))
+        self.llm: LLM = LLM(model="gpt-4o-mini", api_key=SecretStr("test-key"))
         self.agent: Agent = Agent(llm=self.llm, tools=[])
         self.mock_client: Mock = Mock(spec=httpx.Client)
         self.workspace: RemoteWorkspace = RemoteWorkspace(

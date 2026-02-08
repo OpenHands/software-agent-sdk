@@ -168,7 +168,7 @@ def test_openai_subscription_auth_create_llm_invalid_model(tmp_path):
     store.save(creds)
 
     with pytest.raises(ValueError, match="not supported for subscription access"):
-        auth.create_llm(model="gpt-4")
+        auth.create_llm(model="gpt-4o-mini")
 
 
 def test_openai_subscription_auth_create_llm_no_credentials(tmp_path):
