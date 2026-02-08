@@ -25,6 +25,7 @@ from openhands.sdk.security.confirmation_policy import (
     NeverConfirm,
 )
 from openhands.sdk.utils.cipher import Cipher
+from openhands.sdk.utils.deprecation import warn_deprecated
 from openhands.sdk.utils.models import OpenHandsModel
 from openhands.sdk.workspace.base import BaseWorkspace
 
@@ -173,6 +174,17 @@ class ConversationState(OpenHandsModel):
 
         # Handle legacy 'secrets_manager' field name
         if "secrets_manager" in data:
+            warn_deprecated(
+                "ConversationState.secrets_manager",
+                deprecated_in="1.12.0",
+                removed_in="1.15.0",
+                details=(
+                    "The 'secrets_manager' field has been renamed to "
+                    "'secret_registry'. Please update your code to use "
+                    "'secret_registry' instead."
+                ),
+                stacklevel=4,
+            )
             data["secret_registry"] = data.pop("secrets_manager")
 
         # Handle legacy 'iterative_refinement_iteration' field
