@@ -18,27 +18,12 @@ FollowupPromptFn = Callable[[CriticResult, int], str]
 
 
 def _default_followup_prompt(critic_result: CriticResult, iteration: int) -> str:
-    """Generate a default follow-up prompt based on critic feedback."""
+    """Generate a simple follow-up prompt based on success probability only."""
     score_percent = critic_result.score * 100
-
-    # Extract potential issues from critic metadata if available
-    issues: list[str] = []
-    if critic_result.metadata and "categorized_features" in critic_result.metadata:
-        categorized = critic_result.metadata["categorized_features"]
-        if "agent_behavioral_issues" in categorized:
-            issues = [
-                f.get("display_name", f.get("name", "Unknown issue"))
-                for f in categorized["agent_behavioral_issues"]
-            ]
-
-    issues_text = ""
-    if issues:
-        issues_text = f"\nPotential issues identified: {', '.join(issues)}"
 
     return (
         f"The task appears incomplete (iteration {iteration}, "
-        f"success likelihood: {score_percent:.1f}%).\n"
-        f"{issues_text}\n\n"
+        f"success likelihood: {score_percent:.1f}%).\n\n"
         "Please review what you've done and verify each requirement is met.\n"
         "List what's working and what needs fixing, then complete the task.\n"
     )
