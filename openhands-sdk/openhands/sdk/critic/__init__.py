@@ -1,6 +1,7 @@
 from openhands.sdk.critic.base import CriticBase
 from openhands.sdk.critic.impl import (
     AgentFinishedCritic,
+    AgentReviewCritic,
     APIBasedCritic,
     EmptyPatchCritic,
     PassCritic,
@@ -12,6 +13,7 @@ __all__ = [
     "CriticBase",
     "CriticResult",
     "AgentFinishedCritic",
+    "AgentReviewCritic",
     "APIBasedCritic",
     "EmptyPatchCritic",
     "PassCritic",
